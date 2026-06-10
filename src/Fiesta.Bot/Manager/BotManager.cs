@@ -79,6 +79,10 @@ public sealed class BotManager : IAsyncDisposable
     public Task<ActionResult> SayAsync(string id, string text, CancellationToken ct = default)
         => ActAsync(id, $"say: \"{text}\"", s => s.SendAsync(ChatCodec.BuildChatReq(text), ct));
 
+    /// <summary>Whisper <paramref name="text"/> to the player named <paramref name="to"/>.</summary>
+    public Task<ActionResult> WhisperAsync(string id, string to, string text, CancellationToken ct = default)
+        => ActAsync(id, $"whisper {to}: \"{text}\"", s => s.SendAsync(ChatCodec.BuildWhisperReq(to, text), ct));
+
     // The real client's cast sequence (from Z:/Buff.pcapng): TARGET the handle
     // (BAT TargettingReq), switch to battle/cast mode (ACT ChangemodeReq=2), THEN
     // send the skill cast (SKILLBASH_OBJ_CAST_REQ). Firing a bare cast with no
@@ -103,6 +107,12 @@ public sealed class BotManager : IAsyncDisposable
     public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)
         => ActAsync(id, $"use item slot={slot} type={invenType}",
             s => s.SendAsync(new PROTO_NC_ITEM_USE_REQ { invenslot = slot, invenType = invenType }, ct));
+
+    /// <summary>Equip the inventory item at <paramref name="slot"/> (the server
+    /// derives the target equipment slot from the item itself).</summary>
+    public Task<ActionResult> EquipAsync(string id, byte slot, CancellationToken ct = default)
+        => ActAsync(id, $"equip inventory slot {slot}",
+            s => s.SendAsync(new PROTO_NC_ITEM_EQUIP_REQ { slot = slot }, ct));
 
     /// <summary>Issue a GM command (e.g. <c>&amp;levelup 46</c>, <c>&amp;makeitem SafeProtection01</c>).
     /// GM commands are routed through the chat channel — the server processes the

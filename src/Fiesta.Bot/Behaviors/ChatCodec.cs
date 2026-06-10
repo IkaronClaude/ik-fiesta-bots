@@ -25,6 +25,23 @@ public static class ChatCodec
     /// <summary>S→C ACT_SOMEONECHAT_CMD opcode.</summary>
     public static readonly ushort SomeoneChatOpcode = PacketRegistry.GetOpcode<PROTO_NC_ACT_SOMEONECHAT_CMD>();
 
+    /// <summary>C→S ACT_WHISPER_REQ opcode.</summary>
+    public static readonly ushort WhisperReqOpcode = PacketRegistry.GetOpcode<PROTO_NC_ACT_WHISPER_REQ>();
+
+    /// <summary>Build a WHISPER_REQ: [itemLinkDataCount=0][receiver Name5(20)][len][text].</summary>
+    public static FiestaPacket BuildWhisperReq(string receiver, string text)
+    {
+        var name = FiestaText.Encode(receiver);
+        var body = FiestaText.Encode(text);
+        if (body.Length > 255) body = body[..255];
+        var payload = new byte[1 + 20 + 1 + body.Length];
+        payload[0] = 0;                               // itemLinkDataCount
+        Array.Copy(name, 0, payload, 1, Math.Min(name.Length, 20)); // receiver Name5, NUL-padded
+        payload[21] = (byte)body.Length;              // len
+        body.CopyTo(payload.AsSpan(22));
+        return new FiestaPacket(WhisperReqOpcode, payload);
+    }
+
     /// <summary>Build a CHAT_REQ frame for plain (no item-link) text.</summary>
     public static FiestaPacket BuildChatReq(string text)
     {
