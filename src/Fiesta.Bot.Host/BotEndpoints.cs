@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Manager;
+using Fiesta.Bot.Pathfinding;
 
 namespace Fiesta.Bot.Host;
 
@@ -38,6 +40,7 @@ public static class BotEndpoints
             group.MapGet("/{id}/equipment", (string id) => Unavailable()).WithSummary("Bot equipment (unavailable)");
             group.MapPost("/{id}/equip", (string id) => Unavailable()).WithSummary("Bot equip (unavailable)");
             group.MapPost("/{id}/walk", (string id) => Unavailable()).WithSummary("Bot walk (unavailable)");
+            group.MapPost("/{id}/walkto", (string id) => Unavailable()).WithSummary("Bot walkto (unavailable)");
             group.MapPost("/{id}/gm", (string id) => Unavailable()).WithSummary("Bot GM command (unavailable)");
             return;
         }
@@ -142,6 +145,22 @@ public static class BotEndpoints
         })
         .WithSummary("Equip the inventory item at the given slot");
 
+        group.MapPost("/{id}/walkto", (string id, WalkToRequest req) =>
+        {
+            if (req.ToX is not { } tx || req.ToY is not { } ty || req.FromX is not { } fx || req.FromY is not { } fy
+                || string.IsNullOrWhiteSpace(req.Map))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["req"] = ["fromX, fromY, toX, toY, map are required"] });
+            var grid = LoadGrid(req.Map!);
+            if (grid is null)
+                return Results.Problem(title: "Block grid unavailable",
+                    detail: $"Set BLOCKINFO_DIR and ensure {req.Map}.shbd exists.", statusCode: StatusCodes.Status503ServiceUnavailable);
+            var path = PathFinder.FindPath(grid, fx, fy, tx, ty);
+            if (path.Count == 0) return Results.Conflict(new { error = "no path to target (start/goal blocked or unreachable)" });
+            var wp = PathFinder.Simplify(path);
+            return ToResult(manager.WalkPath(id, wp), id, new { id, map = req.Map, waypoints = wp.Count, tiles = path.Count });
+        })
+        .WithSummary("Pathfind across the map's block grid and walk there (background)");
+
         group.MapPost("/{id}/walk", async (string id, WalkRequest req) =>
         {
             if (req.ToX is not { } tx || req.ToY is not { } ty || req.FromX is not { } fx || req.FromY is not { } fy)
@@ -162,6 +181,18 @@ public static class BotEndpoints
         })
         .WithSummary("Issue a GM command (e.g. levelup 46, makeitem SafeProtection01, learnskill 1580, getmoney 1000000)");
     }
+
+    // Block grids loaded from BLOCKINFO_DIR/<Map>.shbd (BYO), cached per map.
+    private static readonly ConcurrentDictionary<string, BlockGrid?> _grids = new(StringComparer.OrdinalIgnoreCase);
+
+    private static BlockGrid? LoadGrid(string map) => _grids.GetOrAdd(map, m =>
+    {
+        var dir = Environment.GetEnvironmentVariable("BLOCKINFO_DIR");
+        if (string.IsNullOrWhiteSpace(dir)) return null;
+        var path = Path.Combine(dir, m + ".shbd");
+        try { return File.Exists(path) ? BlockGrid.Load(path) : null; }
+        catch { return null; }
+    });
 
     private static IResult ToResult(BotManager.ActionResult result, string id, object ok) => result switch
     {
@@ -211,6 +242,16 @@ public sealed record WalkRequest
     public uint? FromY { get; init; }
     public uint? ToX { get; init; }
     public uint? ToY { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/walkto</c>. Pathfinds on <c>Map</c>'s grid.</summary>
+public sealed record WalkToRequest
+{
+    public uint? FromX { get; init; }
+    public uint? FromY { get; init; }
+    public uint? ToX { get; init; }
+    public uint? ToY { get; init; }
+    public string? Map { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/gm</c>. The '&' prefix is added if omitted.</summary>

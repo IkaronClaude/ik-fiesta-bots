@@ -53,6 +53,27 @@ public static class PathFinder
         return Array.Empty<(uint, uint)>();
     }
 
+    /// <summary>Drop collinear intermediate waypoints, keeping only the start, the
+    /// corners (direction changes), and the goal — so we issue one MoverunCmd per
+    /// straight run instead of one per tile.</summary>
+    public static IReadOnlyList<(uint X, uint Y)> Simplify(IReadOnlyList<(uint X, uint Y)> path)
+    {
+        if (path.Count <= 2) return path;
+        var outp = new List<(uint X, uint Y)> { path[0] };
+        for (int i = 1; i < path.Count - 1; i++)
+        {
+            var (ax, ay) = path[i - 1];
+            var (bx, by) = path[i];
+            var (cx, cy) = path[i + 1];
+            // keep b if the direction a->b differs from b->c
+            if (Math.Sign((long)bx - ax) != Math.Sign((long)cx - bx) ||
+                Math.Sign((long)by - ay) != Math.Sign((long)cy - by))
+                outp.Add(path[i]);
+        }
+        outp.Add(path[^1]);
+        return outp;
+    }
+
     private static int Heur(int x, int y, int gx, int gy)
     {
         int dx = Math.Abs(x - gx), dy = Math.Abs(y - gy);
