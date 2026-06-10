@@ -513,6 +513,26 @@ only needs a slot). **Capture a real client using a skill scroll (e.g.
 (skills 1580/1581) are separate castable skills sharing a cooldown; some
 unrelated skills also share cooldowns (e.g. Fighter Concuss/Devastate).
 
+### Full.pcapng decoded → use-item + clean-logout SOLVED (2026-06-11)
+Operator capture `Z:/Full.pcapng` (labeled in `Z:/Full.pcapng.txt`) covers
+money/buy/use-scroll/sell/cast/walk/NPC-dialogue/quests/clean-logout. Findings:
+- **use-item addressing fixed**: `ITEM_USE_REQ` invenType = **9** (normal item
+  bag), not 0. With 9 the server finds the item (USE_ACK `useditem`=real id);
+  with 0 it returned `useditem=0xFFFF`. `/use-item` now defaults invenType=9.
+  (A remaining `USE_ACK error` on our test char is class-specific — the
+  GM-frankenstein Guardian using a UseClass-9 scroll; fine on a legit char.)
+- **Clean logout SOLVED** (fixes the relog kick): the client sends Char
+  `LOGOUTREADY` (0x1071) + User quit (0x0C18) on **zone**, and the quit on **WM**.
+  There's a **~10s combat-logout countdown** (cancelled if damaged) — so `StopAsync`
+  sends the quit and then keeps the sessions running (answering heartbeats) until
+  the **server** closes the links (don't cancel/close mid-countdown). Verified:
+  stop → immediate relog now survives (no `LinkendClientCmd`).
+- **Walk** = `ACT` cmd 25 (0x2019), 16B = from(x,y u32)→to(x,y u32) per step;
+  `ACT` cmd 18 (0x2012) = single point. **Buy** = Item cmd 3 (0x3003). **Sell** =
+  `ITEM_SELL_REQ` cmd 6 (0x3006) {slot, count u32}. **Quest accept differs**:
+  remote (Shutian) = `Quest StartReq` (0x4414) after a `ReadReq` (0x4416) list
+  browse; local (Robin, at NPC) = `Quest ScriptCmdAck` (0x4402) dialogue only.
+
 ### TODO / roadmap (operator-requested)
 - **Fix FiestaLib-Reloaded bugs upstream** (sibling repo, push allowed → bump the
   pinned submodule hash): the chat structs read `content` as

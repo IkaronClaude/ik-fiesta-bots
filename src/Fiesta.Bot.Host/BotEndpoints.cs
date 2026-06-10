@@ -99,7 +99,9 @@ public static class BotEndpoints
         {
             if (req.Slot is not { } slot)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["slot"] = ["inventory slot is required"] });
-            return ToResult(await manager.UseItemAsync(id, slot, req.InvenType ?? 0), id, new { id, usedSlot = slot });
+            // invenType 9 = the normal item bag (from the client capture); the
+            // earlier default of 0 made the server reply "no item at that address".
+            return ToResult(await manager.UseItemAsync(id, slot, req.InvenType ?? 9), id, new { id, usedSlot = slot });
         })
         .WithSummary("Use an inventory item by slot");
 
