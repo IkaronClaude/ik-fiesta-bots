@@ -33,6 +33,10 @@ public static class BotEndpoints
             group.MapPost("/{id}/say", (string id) => Unavailable()).WithSummary("Bot chat (unavailable)");
             group.MapPost("/{id}/cast", (string id) => Unavailable()).WithSummary("Bot cast (unavailable)");
             group.MapPost("/{id}/use-item", (string id) => Unavailable()).WithSummary("Bot use-item (unavailable)");
+            group.MapPost("/{id}/whisper", (string id) => Unavailable()).WithSummary("Bot whisper (unavailable)");
+            group.MapGet("/{id}/inventory", (string id) => Unavailable()).WithSummary("Bot inventory (unavailable)");
+            group.MapGet("/{id}/equipment", (string id) => Unavailable()).WithSummary("Bot equipment (unavailable)");
+            group.MapPost("/{id}/equip", (string id) => Unavailable()).WithSummary("Bot equip (unavailable)");
             group.MapPost("/{id}/gm", (string id) => Unavailable()).WithSummary("Bot GM command (unavailable)");
             return;
         }
@@ -99,6 +103,42 @@ public static class BotEndpoints
         })
         .WithSummary("Use an inventory item by slot");
 
+        group.MapPost("/{id}/whisper", async (string id, WhisperRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.To) || string.IsNullOrEmpty(req.Text))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["to/text"] = ["to and text are required"] });
+            return ToResult(await manager.WhisperAsync(id, req.To, req.Text), id, new { id, to = req.To, whispered = req.Text });
+        })
+        .WithSummary("Whisper a message to a named player");
+
+        group.MapGet("/{id}/inventory", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var inv = bot.ZoneView?.Inventory;
+            if (inv is null) return Results.Conflict(new { error = "bot is not in zone yet" });
+            return Results.Ok(new { id, items = inv.OrderBy(kv => kv.Key).Select(kv => new { slot = kv.Key, itemId = kv.Value }) });
+        })
+        .WithSummary("List the bot's bag contents (slot → itemId)");
+
+        group.MapGet("/{id}/equipment", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var eq = bot.ZoneView?.Equipment;
+            if (eq is null) return Results.Conflict(new { error = "bot is not in zone yet" });
+            return Results.Ok(new { id, worn = eq.OrderBy(kv => kv.Key).Select(kv => new { equipSlot = kv.Key, itemId = kv.Value }) });
+        })
+        .WithSummary("List the bot's worn gear (equip slot → itemId)");
+
+        group.MapPost("/{id}/equip", async (string id, EquipRequest req) =>
+        {
+            if (req.Slot is not { } slot)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["slot"] = ["inventory slot is required"] });
+            return ToResult(await manager.EquipAsync(id, slot), id, new { id, equippedFromSlot = slot });
+        })
+        .WithSummary("Equip the inventory item at the given slot");
+
         group.MapPost("/{id}/gm", async (string id, GmRequest req) =>
         {
             if (string.IsNullOrWhiteSpace(req.Command))
@@ -138,6 +178,19 @@ public sealed record UseItemRequest
 {
     public byte? Slot { get; init; }
     public byte? InvenType { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/equip</c>.</summary>
+public sealed record EquipRequest
+{
+    public byte? Slot { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/whisper</c>.</summary>
+public sealed record WhisperRequest
+{
+    public string? To { get; init; }
+    public string? Text { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/gm</c>. The '&' prefix is added if omitted.</summary>

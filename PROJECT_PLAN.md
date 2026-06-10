@@ -473,6 +473,55 @@ cast-and-go.)
   server-side → next login can `LinkendClientCmd`-kick. Add a clean logout, or
   always `/stop` (cancel) before shutdown.
 - Behaviour/scripting layer (Lua?) on top of the manual action endpoints — later.
+
+## Endpoint expansion + gear/buff demo (2026-06-11)
+
+### Action endpoints now: /say /whisper /cast /use-item /equip /gm + GET /inventory /equipment
+- **/equip** {slot} — `ITEM_EQUIP_REQ {slot}`; server derives the target equip slot
+  from the item's `Equip` column. Live-verified: equipped the Life set
+  (body/legs/feet) as Guardian, no kick.
+- **/whisper** {to,text} — `ACT_WHISPER_REQ` (`[0][receiver Name5(20)][len][text]`,
+  hand-coded like chat). Built; live-verify pending a recipient online.
+- **GET /inventory** — bag slot→itemId, tracked in `ZoneView` from the login
+  `CHAR_CLIENT_ITEM_CMD` + live `ITEM_CELLCHANGE_CMD`/`EQUIPCHANGE`. Live-verified
+  (makeitem a scroll → shows at its slot).
+- **GET /equipment** — worn gear (equip slot→itemId) from `EQUIPCHANGE` events.
+  NB only tracks session equips; login-worn decode (by item box) is a TODO.
+
+### Buff-boost via gear (live-verified)
+Class is gated by `tCharacterShape.nClass` (loads at login). Set BotPriest to
+Guardian (10) via SQL → equipped the **Life set** (LifeArmor 53016 / LifePants
+53017 / LifeBoots 53018, `InxName` LifeArmor/LifePants/LifeBoots, DemandLv 75,
+UseClass 10). Buffed maxHP: **1965 (no set) → 2630 (Life set)** from
+`BAT_TARGETINFO` (the +HP bundles set base HP + amplified buff; isolating the
+buff term needs the remove-buff command). The lvl-75 set boosts buff **power
+(HP), not duration**.
+
+### Class tree (corrected by operator)
+Cleric(6) → HighCleric(7) → **lvl-60 Paladin** → lvl-80 Divine Paladin (visual
+only, no JCQ). Guardian/HolyKnight are the **lvl-100** split. (ClassName.shn
+acEngName labels 9/10 "HolyKnight/Guardian"; `nClass=10` works for equipping the
+UseClass-10 Life set regardless of the label.)
+
+### use-item is NOT working yet — needs a capture
+`/use-item` sends `ITEM_USE_REQ {invenslot, invenType}`. With invenType=0 the
+server ignores it; with ≠0 it replies `ITEM_USE_ACK { error=1794, useditem=0xFFFF }`
+= "no item at that address" — so the inven addressing is wrong (the bag `Inven`
+is a packed bitfield, not the plain slot I pass; equip works because EQUIP_REQ
+only needs a slot). **Capture a real client using a skill scroll (e.g.
+`Z:/UseItem.pcapng`) to nail the USE_REQ bytes.** Skill note: Endure [01]/[02]
+(skills 1580/1581) are separate castable skills sharing a cooldown; some
+unrelated skills also share cooldowns (e.g. Fighter Concuss/Devastate).
+
+### TODO / roadmap (operator-requested)
+- **Fix FiestaLib-Reloaded bugs upstream** (sibling repo, push allowed → bump the
+  pinned submodule hash): the chat structs read `content` as
+  `ReadBytes(itemLinkDataCount)` (should be `len`); `SHINE_ITEM_VAR_STRUCT.Read`
+  does `ReadBytes(itemid)`. We work around these locally — fix at source instead.
+- **Walk** (movement) — next goal. Client move packet is `ACT` cmd 25 (0x2019,
+  16 bytes = from(x,y u32)+to(x,y u32)) seen in the zone captures.
+- Then: **per-event log** → **/debug** (bot whispers all events to a player) →
+  **track nearby dropped items** → **item pickup** → **pathfinding**.
 - **2-bot chat-observe test** (one `/say`s, the other's ZoneView decodes
   `SOMEONECHAT`) needs a **second account** — only `testuser` creds are held.
 - Cast packet (`SKILLBASH_OBJ_CAST_REQ` vs `SKILLENCHANT_REQ`) confirmed only once
