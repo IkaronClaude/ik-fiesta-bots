@@ -1,0 +1,26 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+
+# Rider / VS
+.idea/
+.vs/
+
+# Secrets / operator-provided BYO data (NEVER commit)
+# The XOR cipher table is intentionally kept out of git history (see PROJECT_PLAN.md).
+xor-table*.bin
+xor-table*.hex
+appsettings.*.Local.json
+*.env
+.env
+
+# Reference captures (may contain session data)
+*.pcap
+*.pcapng
+
+# Loadout templates that are operator-local (the schema + samples are tracked,
+# operator instances are not)
+templates/local/

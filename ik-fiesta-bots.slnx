@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/lib/" />
+  <Folder Name="/lib/FiestaLib-Reloaded/" />
+  <Folder Name="/lib/FiestaLib-Reloaded/src/">
+    <Project Path="lib/FiestaLib-Reloaded/src/FiestaLibReloaded.Config/FiestaLibReloaded.Config.csproj" />
+    <Project Path="lib/FiestaLib-Reloaded/src/FiestaLibReloaded.Networking/FiestaLibReloaded.Networking.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Fiesta.Bot.Host/Fiesta.Bot.Host.csproj" />
+    <Project Path="src/Fiesta.Bot/Fiesta.Bot.csproj" />
+  </Folder>
+</Solution>
