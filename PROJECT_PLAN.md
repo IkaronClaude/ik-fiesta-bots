@@ -201,9 +201,28 @@ CHAR_LOGIN_ACK. Live-verified: BotFighter → zone 62.171.171.24:9016 (zone00).
 cmd encoding). No hand-written hex consts. `FiestaPacket.Department/Command`
 expose the split for logging.
 
-### Next: zone entry — build [1801] from scratch (task 15)
-Connect to the zone endpoint from CHAR_LOGIN_ACK, handshake, build
-`PROTO_NC_MAP_LOGIN_REQ` (0x1801): chardata (PROTO_NC_CHAR_ZONE_CHARDATA_REQ,
-wldmanhandle = live WM handle) + the 49 data-file checksums. ⚠️ ItemInfo (idx 8)
-checksum MUST be computed fresh from `Z:/ClientProd2/ressystem/ItemInfo.shn`
-(pcap's is stale). Success = `[1038]` NC_CHAR_CLIENT_BASE_CMD = in zone.
+## Zone entry — [1801] from scratch (SOLVED, live-verified 2026-06-09)
+
+`PROTO_NC_MAP_LOGIN_REQ` (0x1801, sizeof 1590) = chardata
+(PROTO_NC_CHAR_ZONE_CHARDATA_REQ: wldmanhandle = live WM handle + charid Name5)
++ checksum[49] (Name8 = 32 ASCII-hex chars each). Each checksum =
+MD5(file[:0x24] + Encryption(file[0x24:])) over the client's reference .shn.
+
+- **49-file order recovered** by computing the checksum over every .shn in
+  ClientProd2/ressystem and matching a reference [1801] (48/49; idx 8=ItemInfo
+  differed — the pcap's stale file, as warned). Full list in `DataFileChecksums.Files`.
+- Computing all 49 fresh from ClientProd2 → server-matching values. Sent [1801],
+  got **[1038] (Char cmd 56) = IN ZONE on the first try** (no [1804] DataFail).
+- `[1804]` MAP_LOGINFAIL carries `nWrongDataFileIndex` (the failing file) — used
+  for iteration; `[1038]` has no FiestaLib struct so we treat any non-[1804]
+  post-[1801] frame as in-zone.
+- BYO: operator points `--data-dir` at their client `ressystem` (must match the
+  server's data). Code: `Zone/Encryption.cs`, `Zone/DataFileChecksums.cs`,
+  `Zone/ZoneEntry.cs`. Spelled **Encryption** in our code (PDB symbol is the
+  misspelled `Encription`).
+
+## Full chain DONE
+log in → create char → decline tutorial → reconnect → [1801] → in zone — all
+typed, no capture replay, live-verified end to end (BotFighter @ zone00, 9016).
+**Next: task 16 (session runtime — keepalive + inbound dispatch + state) to STAY
+in zone and act (buff/party).**
