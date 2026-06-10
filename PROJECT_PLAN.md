@@ -109,7 +109,7 @@ ik-fiesta-bots/
    live (`[1804]` until right, `[1038]` = in zone).
 5. Bot session runtime: keepalive, inbound dispatch, per-bot state.
 6. [done] Multi-bot manager + HTTP control API (spawn/list/stop + behaviors).
-7. Account provisioning via ik-fiesta-api master key (+ API GM-level addition).
+7. [in progress] Account provisioning via ik-fiesta-api master key (+ API GM-level addition).
 8. Loadout templates (JSON) + GM-command gearing.
 9. Web UI for templates + bot control.
 
@@ -296,7 +296,37 @@ connection is owned by its session's `DisposeAsync` (no double-dispose).
   Also locally verified: validation 400s, dup-id 409, and the no-XOR-table 503
   path (health `botsEnabled:false`).
 
-**Next: task 18 (account provisioning via ik-fiesta-api master key + the GM-level
-API addition), then 19 (loadout templates + GM gearing), 20 (web UI). Behaviors
-(buff-in-town first) hang off the running `BotSession.PacketReceived` /
-`SendAsync`.**
+## Account provisioning (task 18, PART A done — bots-side client built 2026-06-10)
+`Accounts/ApiAccountProvisioner.cs` — POSTs `api/accounts` with `X-Api-Key` to
+ik-fiesta-api, maps the 201 to `ProvisionedAccount` (UserNo + ready
+`BotCredentials`, in-game pw MD5'd the same way the API hashes `sUserPW`). 409 →
+`AccountExistsException`. Host: `Host/AccountEndpoints.cs` maps `POST /api/accounts`
+(validation 400, 409, 502 on upstream error), registered from env
+`FIESTA_API_BASE_URL` + `FIESTA_API_KEY` only when both are set — else 503
+(health reports `provisioningEnabled`). Verified locally: build green, 503 +
+validation paths. Optional by design (bots also take creds fed directly to spawn).
+
+### Pending (all touch PROD — need operator input/decision):
+- **Live-verify provisioning.** Needs the API base URL (`https://fiesta.ikaron.uk`,
+  the `fiesta` traefik ingress — confirm the account path) + a **valid API key**
+  (minted by an admin via `POST /api/apikeys`, stored hashed in `Account.tApiKey`;
+  I don't have one). Creating an account is a prod write.
+- **GM-level addition (Part B, sibling repo `ik-fiesta-api`).** The in-game GM
+  field is **`Account.tUser.nAuthID`** (DB-confirmed: default **1** = normal,
+  **9** = admin/GM marker; the API's admin JWT keys off `nAuthID==9`). `testuser`
+  = nUserNo 100, nAuthID 1. The addition: master-key-gated way to set `nAuthID`
+  on create (extra field on `CreateAccountRequest` + `UPDATE tUser` in
+  `AccountService`, trusted-caller-only). Then build/push the API image + Argo
+  sync. NOTE: whether `nAuthID` alone enables in-game GM *commands* (vs. just web
+  admin) is unconfirmed — verify by setting it and trying a GM command in-zone
+  (task-19 RE). Alternative now that we have DB access: grant GM via direct SQL
+  `UPDATE tUser SET nAuthID=9` for testing without the API change.
+
+**Cluster/DB access is now authorized** (kubectl + sqlcmd into `mssql-0`/`fiesta`
+ns — see workspace `C:/Projects/CLAUDE.md`). This relaxes the old "don't touch
+mssql/SA directly" guardrail to: reads/inspection free, **confirm before prod
+mutations**. The API-routing for account *creation* remains the clean design.
+
+**Next: finish task 18 (live verify + Part B, pending operator input), then 19
+(loadout templates + GM gearing), 20 (web UI). Behaviors (buff-in-town first)
+hang off the running `BotSession.PacketReceived` / `SendAsync`.**
