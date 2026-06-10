@@ -58,9 +58,34 @@ public sealed class BotManager : IAsyncDisposable
     {
         if (!_bots.TryGetValue(id, out var handle)) return false;
         handle.Log("stop requested");
+        var inZone = handle.Phase == BotPhase.InZone && handle.ZoneSession is { } zs0 && handle.WmSession is not null;
         if (handle.Phase is not (BotPhase.Stopped or BotPhase.Failed))
             handle.SetPhase(BotPhase.Stopping);
-        handle.Cts.Cancel();
+
+        if (inZone)
+        {
+            // Clean logout: send the quit frames (zone: LOGOUTREADY+quit, WM: quit),
+            // then DON'T cancel — keep the sessions running so they answer heartbeats
+            // through the server's ~10s logout countdown (combat-logout: needs ~10s
+            // with no damage). The server closes both links when it completes, which
+            // ends RunTask. Cancelling/closing mid-countdown aborts the logout and
+            // leaves the char "online" → the next login is duplicate-kicked.
+            using var logoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            try { await handle.ZoneSession!.LogoutAsync(logoutReady: true, logoutCts.Token); } catch { }
+            if (handle.WmSession is { } ws) try { await ws.LogoutAsync(logoutReady: false, logoutCts.Token); } catch { }
+
+            if (handle.RunTask is { } t)
+            {
+                try { await t.WaitAsync(TimeSpan.FromSeconds(14), ct); } // ~10s timer + slack
+                catch (TimeoutException) { handle.Log("clean logout didn't complete in 14s — forcing"); handle.Cts.Cancel(); }
+                catch (OperationCanceledException) { }
+            }
+        }
+        else
+        {
+            handle.Cts.Cancel();
+        }
+
         if (handle.RunTask is { } task)
         {
             try { await task.WaitAsync(TimeSpan.FromSeconds(10), ct); }
@@ -173,6 +198,7 @@ public sealed class BotManager : IAsyncDisposable
             var wmSession = new BotSession(wmConn, sel.Name, wmResult.WmHandle, wmEp, Log,
                 linkTag: "wm", logInbound: opt.LogInbound);
             handle.ZoneSession = zoneSession;
+            handle.WmSession = wmSession;
 
             // Perception model (nearby players + chat) is always on — cheap, and the
             // status/say surface and any behavior read from it. The buff behavior is

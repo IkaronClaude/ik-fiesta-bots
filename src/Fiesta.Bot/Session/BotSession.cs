@@ -22,6 +22,11 @@ public sealed class BotSession : IAsyncDisposable
     // hand-written hex. The server drives heartbeats; the client only answers.
     private static readonly ushort OpHeartbeatReq = Opcode(ProtocolCommand.Misc, MiscOpcode.HeartbeatReq);
     private static readonly ushort OpHeartbeatAck = Opcode(ProtocolCommand.Misc, MiscOpcode.HeartbeatAck);
+    // Clean-logout pair the real client sends on "Quit Game" (from Full.pcapng):
+    // Char LOGOUTREADY (0x1071) then User cmd 24 (0x0C18, payload 0x00). Without
+    // this the server keeps the char "online" briefly and a quick relog is kicked.
+    private static readonly ushort OpLogoutReady = (ushort)(((int)ProtocolCommand.Char << 10) | 113);
+    private static readonly ushort OpQuitGame = (ushort)(((int)ProtocolCommand.User << 10) | 24);
 
     private readonly FiestaClientConnection _conn;
     private readonly Action<string> _log;
@@ -47,6 +52,22 @@ public sealed class BotSession : IAsyncDisposable
     /// <summary>Send a C→S frame (enciphered + serialized by the connection).</summary>
     public Task SendAsync(FiestaPacket packet, CancellationToken ct = default)
         => _conn.SendAsync(packet, ct);
+
+    /// <summary>Send the client's clean-logout sequence so the server drops the
+    /// character immediately (avoids a duplicate-login kick on the next login).
+    /// Best-effort — never throws.</summary>
+    public async Task LogoutAsync(bool logoutReady = true, CancellationToken ct = default)
+    {
+        try
+        {
+            // Zone link sends LOGOUTREADY first; both links send the quit (User cmd 24).
+            if (logoutReady)
+                await _conn.SendAsync(new FiestaPacket(OpLogoutReady, ReadOnlyMemory<byte>.Empty), ct);
+            await _conn.SendAsync(new FiestaPacket(OpQuitGame, new byte[] { 0x00 }), ct);
+            _log($"[Session:{State.CharName}] >> clean logout ({(logoutReady ? "LOGOUTREADY + quit" : "quit")})");
+        }
+        catch (Exception ex) { _log($"[Session:{State.CharName}] logout send failed: {ex.Message}"); }
+    }
 
     /// <summary>Send a typed C→S body.</summary>
     public Task SendAsync<T>(T body, CancellationToken ct = default) where T : IFiestaPacketBody

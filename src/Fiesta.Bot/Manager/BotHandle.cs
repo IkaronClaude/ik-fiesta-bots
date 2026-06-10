@@ -57,6 +57,10 @@ public sealed class BotHandle
     /// <summary>The zone perception model (nearby players + chat), live once in zone.</summary>
     public ZoneView? ZoneView { get; internal set; }
 
+    /// <summary>The WM-link session (held open alongside the zone one); needed to
+    /// send the WM-side quit on a clean logout.</summary>
+    public BotSession? WmSession { get; internal set; }
+
     internal CancellationTokenSource Cts { get; }
     internal Task? RunTask { get; set; }
 
