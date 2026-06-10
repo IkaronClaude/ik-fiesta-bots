@@ -9,6 +9,10 @@ obj/
 .idea/
 .vs/
 
+# Per-dev working notes (auto-loaded by Claude Code; free-form, not a team doc).
+# PROJECT_PLAN.md is the committed authoritative log — CLAUDE.md just points to it.
+CLAUDE.md
+
 # Secrets / operator-provided BYO data (NEVER commit)
 # The XOR cipher table is intentionally kept out of git history (see PROJECT_PLAN.md).
 xor-table*.bin
