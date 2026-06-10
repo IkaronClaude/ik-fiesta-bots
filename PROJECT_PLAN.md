@@ -128,3 +128,47 @@ skill-cast + nearby-player tracking), then **party** (invite/accept), then
   confirm which inbound opcodes carry nearby-player spawn/positions.
 - No network in the build sandbox — submodule added from local checkout, URL
   repointed to GitHub. `git submodule update --init` will work for a real clone.
+
+## Refinements (added mid-build)
+
+- **ik-fiesta-api integration is OPTIONAL.** Bots accept login creds fed directly
+  (the CLI already does `--user/--pass/--passmd5`). API master-key provisioning
+  is one option, not a requirement.
+- **GM-permission detection at runtime.** The bot must detect whether GM commands
+  are allowed for its account; if NOT, it must not attempt to grab the "correct"
+  gear. Future fallback: players trade items to the bot, which then equips them.
+  So gearing has two modes: GM self-gear (admin accounts) vs player-traded gear.
+- **k8s-ready.** Ship a Dockerfile (multi-stage, BYO XOR table at runtime via
+  env — never baked). Local dev/testing stays `dotnet run` direct.
+
+## Login handshake (SOLVED, live-verified 2026-06-09)
+
+Login→WM chain works end-to-end, typed, no capture replay. Verified vs the live
+k8s server (62.171.171.24). The real client C→S Login order (from the reference
+pcap, decoded with fiesta-proxy `tools/session_client.py`):
+
+1. `VERSION_CHECK_REQ` 0x0C65 — **sent first**, server version-gates and drops the
+   socket if missing. 64-byte key = build version string `"10022024000000"` (the
+   client leaves the tail as uninitialised stack, so only the prefix is checked).
+2. `US_LOGIN_REQ` 0x0C5A — sUserName[260] + sPassword[36]=MD5hex + spawnapps Name5
+   = **"Original"** (build tag; login is rejected without it).
+3. `XTRAP_REQ` 0x0C04 (anti-cheat key) + `WORLD_STATUS_REQ` 0x0C1B (empty).
+4. `WORLDSELECT_REQ` 0x0C0B worldno → `WORLDSELECT_ACK` 0x0C0C carries OTP
+   (validate_new[64] @19) + WM ip/port.
+Then WM: `LOGINWORLD_REQ` 0x0C0F (user + OTP echoed) → `LOGINWORLD_ACK` 0x0C14
+(wm handle + avatars). `CHAR_LOGIN_REQ` 0x1001 (slot) → `CHAR_LOGIN_ACK` 0x1003
+(zone ip/port). These build-identity constants live in `ClientProfile.ClientProd2`
+(VersionKey/SpawnAppsTag/XtrapKey) — NOT session data, same spirit as [1801]
+checksums.
+
+### ⚠️ [1801] ItemInfo checksum — DO NOT trust the pcap
+The reference pcap was captured with a **stale ItemInfo.shn** (its idx-8 checksum
+fails on the current server — that's the known "DataFail file 8"). When building
+[1801], compute the idx-8 (ItemInfo) checksum FRESH from
+`Z:/ClientProd2/ressystem/ItemInfo.shn` (the BYO file matching the server), never
+copy it from the capture. All 49 checksums = `MD5(file[:0x24] + Encription(file[0x24:]))`.
+
+### Next blocker: no character
+The login chain reaches WM but the empty server's account has 0 avatars, so no
+zone endpoint. Need character provisioning (protocol CHAR_CREATE vs API/DB seed)
+before the zone phase ([1801]) can be exercised.
