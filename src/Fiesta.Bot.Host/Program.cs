@@ -1,7 +1,9 @@
 // ik-fiesta-bots host — ASP.NET minimal API + multi-bot manager.
-// Skeleton for now: health + Swagger. Bot spawn/list/stop + behaviors land as
-// the core library (Fiesta.Bot) fills in. See PROJECT_PLAN.md.
+// Health + Swagger + the bot control surface (spawn/list/status/stop). Behaviors
+// (buff/party/gear) land on top of the running BotSessions. See PROJECT_PLAN.md.
 using Fiesta.Bot.Host;
+using Fiesta.Bot.Manager;
+using Fiesta.Bot.Net;
 
 // Subcommand: `login-test` drives the typed login chain against a live server.
 if (args.Length > 0 && args[0] == "login-test")
@@ -12,14 +14,42 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 
+// The BotManager needs the BYO XOR table (cipher for the C→S link). If it's not
+// configured the host still starts — the bot endpoints just return 503 with the
+// reason — so /health and Swagger stay useful in a misconfigured environment.
+byte[]? xorTable = null;
+string? xorError = null;
+try
+{
+    xorTable = XorTableLoader.FromEnvironment();
+    if (xorTable is null)
+        xorError = "No XOR table configured. Set XOR_TABLE_HEX or XOR_TABLE_PATH (BYO; not shipped).";
+}
+catch (Exception ex) { xorError = ex.Message; }
+
+if (xorTable is not null)
+    builder.Services.AddSingleton(sp =>
+    {
+        var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Bots");
+        return new BotManager(xorTable, m => logger.LogInformation("{BotLog}", m));
+    });
+
 var app = builder.Build();
 
 app.MapOpenApi();
 app.UseSwaggerUI(o => o.SwaggerEndpoint("/openapi/v1.json", "ik-fiesta-bot API"));
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok", service = "ik-fiesta-bot" }))
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "ok",
+    service = "ik-fiesta-bot",
+    botsEnabled = xorTable is not null,
+    botsDisabledReason = xorTable is null ? xorError : null,
+}))
    .WithTags("Meta")
    .WithSummary("Liveness probe");
+
+app.MapBotEndpoints(app.Services.GetService<BotManager>(), xorError);
 
 app.Run();
 return 0;
