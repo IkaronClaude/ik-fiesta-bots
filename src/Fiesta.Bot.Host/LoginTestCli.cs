@@ -21,6 +21,16 @@ public static class LoginTestCli
         var worldNo = byte.Parse(opt.GetValueOrDefault("world", "0"));
         byte? slot = opt.TryGetValue("slot", out var s) ? byte.Parse(s) : null;
 
+        // Optional character creation: --create [--char-name X] [--class Fighter] [--gender 0]
+        CharacterSpec? createSpec = null;
+        if (opt.ContainsKey("create") || opt.ContainsKey("char-name"))
+        {
+            var cname = opt.GetValueOrDefault("char-name", $"Bot{Random.Shared.Next(1000, 9999)}");
+            var cls = Enum.TryParse<ClassId>(opt.GetValueOrDefault("class", "Fighter"), true, out var c) ? c : ClassId.Fighter;
+            var gender = byte.Parse(opt.GetValueOrDefault("gender", "0"));
+            createSpec = new CharacterSpec(cname, cls, Gender: gender, Slot: slot ?? 0);
+        }
+
         // Password: --pass = plaintext (MD5'd here), or --passmd5 = already hashed.
         BotCredentials creds = opt.TryGetValue("passmd5", out var md5)
             ? new BotCredentials(user, md5)
@@ -42,7 +52,7 @@ public static class LoginTestCli
             // The WM is usually reachable at the same public host; honor the
             // advertised port. (k8s/proxy may advertise an internal IP.)
             var wmEp = new FiestaEndpoint(host, login.WmAdvertised.Port == 0 ? 9013 : login.WmAdvertised.Port);
-            var (wm, wmConn) = await chain.RunWmAsync(wmEp, creds, login.Otp, slot, cts.Token);
+            var (wm, wmConn) = await chain.RunWmAsync(wmEp, creds, login.Otp, slot, createSpec, cts.Token);
             using (wmConn)
             {
                 Log($"[ok] WM handle={wm.WmHandle}, avatars={wm.Avatars.Count}, " +
