@@ -28,6 +28,34 @@ git submodule update --init --recursive
 dotnet build
 ```
 
+## Control API
+
+Run the host (`dotnet run --project src/Fiesta.Bot.Host`, needs the BYO XOR
+table) and drive bots over HTTP. Swagger at `/`.
+
+**Lifecycle**
+
+| Method & path | Body | Does |
+|---|---|---|
+| `POST /api/bots` | `{host, username, password\|passwordMd5, slot?, create?, charName?, class?, ...}` | Spawn a bot; runs login→WM→zone in the background and stays in zone until stopped. |
+| `GET /api/bots` | — | List bots with status. |
+| `GET /api/bots/{id}` | — | One bot's status: phase, connection counters, `nearbyPlayers`, `lastChat`, recent log. |
+| `POST /api/bots/{id}/stop` | — | Stop and remove a bot. |
+
+**In-zone actions** (manual control — the same seam a future Lua/LLM controller
+drives). All require the bot to be `InZone` (else `409`).
+
+| Method & path | Body | Sends |
+|---|---|---|
+| `POST /api/bots/{id}/say` | `{text}` | Local chat (`ACT_CHAT_REQ`). |
+| `POST /api/bots/{id}/cast` | `{skill, target}` | Cast a skill on a target handle (`BAT_SKILLBASH_OBJ_CAST_REQ`). |
+| `POST /api/bots/{id}/use-item` | `{slot, invenType?}` | Use an inventory item by slot (`ITEM_USE_REQ`). |
+| `POST /api/bots/{id}/gm` | `{command}` | Issue a GM command over chat (`&` prefix added if omitted). Needs the account to be GM (`nAuthID=9`). |
+
+GM examples (Gamigo/NA2016 files): `levelup 46`, `makeitem SafeProtection01`,
+`learnskill 1580`, `getmoney 1000000`. See `PROJECT_PLAN.md` for the full GM
+reference and the Endure-buff IDs.
+
 ## BYO / no copyrighted data
 
 Like `fiesta-docker`, this repo ships **no** copyrighted game data and **no**

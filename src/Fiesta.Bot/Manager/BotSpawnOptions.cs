@@ -1,3 +1,4 @@
+using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 
 namespace Fiesta.Bot.Manager;
@@ -42,4 +43,13 @@ public sealed record BotSpawnOptions
 
     /// <summary>Optional caller-supplied id. When null the manager assigns one.</summary>
     public string? Id { get; init; }
+
+    /// <summary>Enable the buff-in-town behavior with this config. Null = the bot
+    /// just idles in town (a <see cref="Session.ZoneView"/> still tracks nearby
+    /// players + chat for status and on-demand <c>/say</c>).</summary>
+    public BuffConfig? Buff { get; init; }
+
+    /// <summary>Log every inbound frame on both the zone and WM links (opcode +
+    /// dept/cmd + len + hex preview) — packet introspection. Noisy; off by default.</summary>
+    public bool LogInbound { get; init; }
 }

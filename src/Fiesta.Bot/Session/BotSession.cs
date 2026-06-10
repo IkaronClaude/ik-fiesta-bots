@@ -25,12 +25,16 @@ public sealed class BotSession : IAsyncDisposable
 
     private readonly FiestaClientConnection _conn;
     private readonly Action<string> _log;
+    private readonly string _tag;
+    private readonly bool _logInbound;
 
     public BotSession(FiestaClientConnection conn, string charName, ushort wmHandle,
-        FiestaEndpoint zone, Action<string> log)
+        FiestaEndpoint zone, Action<string> log, string linkTag = "zone", bool logInbound = false)
     {
         _conn = conn;
         _log = log;
+        _tag = linkTag;
+        _logInbound = logInbound;
         State = new BotSessionState(charName, wmHandle, zone);
     }
 
@@ -63,6 +67,10 @@ public sealed class BotSession : IAsyncDisposable
             {
                 var pkt = await _conn.ReadPacketAsync(ct);
                 State.RecordInbound(pkt.Opcode);
+
+                if (_logInbound)
+                    _log($"[{_tag}:{State.CharName}] << 0x{pkt.Opcode:X4} d={pkt.Department} c={pkt.Command} " +
+                         $"len={pkt.Payload.Length}{HexPreview(pkt.Payload.Span)}");
 
                 if (pkt.Opcode == OpHeartbeatReq)
                 {
@@ -100,4 +108,15 @@ public sealed class BotSession : IAsyncDisposable
 
     private static ushort Opcode(ProtocolCommand dept, MiscOpcode cmd)
         => (ushort)(((int)dept << 10) | ((int)cmd & 0x3FF));
+
+    // First up-to-48 payload bytes as hex, for inbound introspection.
+    private static string HexPreview(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length == 0) return "";
+        var n = Math.Min(payload.Length, 48);
+        var sb = new System.Text.StringBuilder(" [");
+        for (var i = 0; i < n; i++) sb.Append(payload[i].ToString("X2"));
+        if (payload.Length > n) sb.Append('…');
+        return sb.Append(']').ToString();
+    }
 }

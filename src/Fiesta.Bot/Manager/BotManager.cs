@@ -1,7 +1,11 @@
 using System.Collections.Concurrent;
+using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Session;
 using Fiesta.Bot.Zone;
+using FiestaLibReloaded.Networking;
+using FiestaLibReloaded.Networking.Enums;
+using FiestaLibReloaded.Networking.Structs;
 
 namespace Fiesta.Bot.Manager;
 
@@ -68,6 +72,57 @@ public sealed class BotManager : IAsyncDisposable
         return true;
     }
 
+    /// <summary>Outcome of a manual in-zone action.</summary>
+    public enum ActionResult { Sent, NotFound, NotInZone }
+
+    /// <summary>Make a bot say <paramref name="text"/> in its zone (local chat).</summary>
+    public Task<ActionResult> SayAsync(string id, string text, CancellationToken ct = default)
+        => ActAsync(id, $"say: \"{text}\"", s => s.SendAsync(ChatCodec.BuildChatReq(text), ct));
+
+    // The real client's cast sequence (from Z:/Buff.pcapng): TARGET the handle
+    // (BAT TargettingReq), switch to battle/cast mode (ACT ChangemodeReq=2), THEN
+    // send the skill cast (SKILLBASH_OBJ_CAST_REQ). Firing a bare cast with no
+    // preceding target is rejected by the zone with a LinkendClientCmd kick. The
+    // first two have no FiestaLib opcode attribute, so build them by opcode.
+    private static readonly ushort OpBatTarget =
+        (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.TargettingReq);
+    private static readonly ushort OpActChangeMode =
+        (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.ChangemodeReq);
+
+    /// <summary>Cast a skill on a target zone handle, replaying the client's full
+    /// target → battle-mode → cast sequence so the zone accepts it.</summary>
+    public Task<ActionResult> CastAsync(string id, ushort skill, ushort target, CancellationToken ct = default)
+        => ActAsync(id, $"cast skill {skill} on h={target} (target+mode+cast)", async s =>
+        {
+            await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
+            await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
+            await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
+        });
+
+    /// <summary>Use an inventory item by slot (invenType: 0 = normal bag).</summary>
+    public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)
+        => ActAsync(id, $"use item slot={slot} type={invenType}",
+            s => s.SendAsync(new PROTO_NC_ITEM_USE_REQ { invenslot = slot, invenType = invenType }, ct));
+
+    /// <summary>Issue a GM command (e.g. <c>&amp;levelup 46</c>, <c>&amp;makeitem SafeProtection01</c>).
+    /// GM commands are routed through the chat channel — the server processes the
+    /// <c>&amp;</c>/<c>$</c> prefix when the account has GM authority (nAuthID=9).</summary>
+    public Task<ActionResult> GmAsync(string id, string command, CancellationToken ct = default)
+        => ActAsync(id, $"gm: {command}", s => s.SendAsync(ChatCodec.BuildChatReq(command), ct));
+
+    /// <summary>Shared plumbing for a manual action on an in-zone bot: resolve →
+    /// guard phase → send → log. This is the seam the HTTP endpoints (and later an
+    /// LLM/Lua controller) drive.</summary>
+    private async Task<ActionResult> ActAsync(string id, string logLine, Func<BotSession, Task> send)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } session)
+            return ActionResult.NotInZone;
+        await send(session);
+        handle.Log(logLine);
+        return ActionResult.Sent;
+    }
+
     private async Task RunBotAsync(BotHandle handle)
     {
         var opt = handle.Options;
@@ -103,9 +158,21 @@ public sealed class BotManager : IAsyncDisposable
             // In zone. Run a session on BOTH links — the WM connection keeps
             // receiving heartbeats while in zone and must answer them too, and it
             // has to stay open (the zone validates against a live WM session).
-            await using var zoneSession = new BotSession(zoneConn, sel.Name, wmResult.WmHandle, zoneEp, Log);
-            var wmSession = new BotSession(wmConn, sel.Name, wmResult.WmHandle, wmEp, Log);
+            await using var zoneSession = new BotSession(zoneConn, sel.Name, wmResult.WmHandle, zoneEp, Log,
+                linkTag: "zone", logInbound: opt.LogInbound);
+            var wmSession = new BotSession(wmConn, sel.Name, wmResult.WmHandle, wmEp, Log,
+                linkTag: "wm", logInbound: opt.LogInbound);
             handle.ZoneSession = zoneSession;
+
+            // Perception model (nearby players + chat) is always on — cheap, and the
+            // status/say surface and any behavior read from it. The buff behavior is
+            // opt-in via spawn options.
+            using var zoneView = new ZoneView(zoneSession, Log);
+            handle.ZoneView = zoneView;
+            using var buff = opt.Buff is { } buffCfg
+                ? new BuffInTownBehavior(zoneSession, zoneView, buffCfg, Log, ct)
+                : null;
+
             handle.SetPhase(BotPhase.InZone);
             Log($"*** {sel.Name} IN ZONE ({zoneEp}) — running until stopped ***");
 
