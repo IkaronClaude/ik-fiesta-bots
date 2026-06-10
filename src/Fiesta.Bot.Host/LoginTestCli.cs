@@ -1,5 +1,6 @@
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Net;
+using Fiesta.Bot.Zone;
 
 namespace Fiesta.Bot.Host;
 
@@ -57,6 +58,18 @@ public static class LoginTestCli
             {
                 Log($"[ok] WM handle={wm.WmHandle}, avatars={wm.Avatars.Count}, " +
                     (wm.ZoneAdvertised is { } z ? $"zone={z}" : "no zone (no avatar / not entered)"));
+
+                // Zone entry: build [1801] from scratch and enter. The WM
+                // connection stays open (the zone validates against it).
+                if (wm.ZoneAdvertised is { } zoneAdv && wm.Selected is { } sel)
+                {
+                    var dataDir = opt.GetValueOrDefault("data-dir", "Z:/ClientProd2/ressystem");
+                    var zoneEntry = ZoneEntry.FromDataDir(table, Log, dataDir);
+                    var zoneEp = new FiestaEndpoint(host, zoneAdv.Port); // public host, advertised port
+                    using var zoneConn = await zoneEntry.EnterAsync(zoneEp, wm.WmHandle, sel.Name, cts.Token);
+                    Log($"[ok] *** {sel.Name} IS IN ZONE ({zoneEp}) ***");
+                    await Task.Delay(2000, cts.Token); // brief hold; real keepalive loop is task 16
+                }
             }
             return 0;
         }
