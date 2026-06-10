@@ -457,9 +457,10 @@ learnskill 1580` (Endure [01], `SkillLearnsucCmd` confirmed) → `/cast {skill:1
 target:<player handle>}` → **abstate applied to the target, no kick, operator saw
 the Endure buff land.** `nAuthID` (account admin) is a misnomer — in-game GM is the
 per-**character** `tCharacter.nAdminLevel`; GM commands ride normal chat (`&` prefix).
-**Buff lasts 60 min regardless of the caster's login state** — the bot only needs
-to be online for the ~2s cast, then can log off and the buff persists. (Big for
-buff-in-town: cast-and-go, no need to keep N bots parked.)
+**Buff lasts 60 min regardless of the caster's login state** — so a buff survives
+a bot disconnect/restart. (Design is still **persistent parked bots**: a priest
+stays logged in in town for extended periods, buffing players on demand — not
+cast-and-go.)
 
 ### Packet introspection
 `logInbound` spawn flag logs every inbound frame on **both** zone+WM links
