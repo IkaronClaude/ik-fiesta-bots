@@ -541,7 +541,22 @@ money/buy/use-scroll/sell/cast/walk/NPC-dialogue/quests/clean-logout. Findings:
 - **Walk** (movement) — next goal. Client move packet is `ACT` cmd 25 (0x2019,
   16 bytes = from(x,y u32)+to(x,y u32)) seen in the zone captures.
 - Then: **per-event log** → **/debug** (bot whispers all events to a player) →
-  **track nearby dropped items** → **item pickup** → **pathfinding**.
+  **track nearby dropped items** → **item pickup** → **pathfinding** (started, below).
+
+### Pathfinding — block grid decoded + A* (2026-06-11)
+Walkability is in the server files: `Z:/ServerSource/9Data/Shine/BlockInfo/<Map>.shbd`
+(BYO at runtime). **`.shbd` format (recovered):** 8-byte header = LE u32
+`[bytesPerRow, height]`; then `height` rows × `bytesPerRow` bytes, **1 bit/tile**.
+RouN = 2048×2048 tiles. Mapping (validated against the live spawn/regen points):
+- tile = world ÷ 8 (`>>3`); **Y is flipped**: `tileY = (height-1) - (worldY>>3)`
+- bit order **LSB-first**; **bit 0 = walkable, bit 1 = blocked**
+- `blocked = (row[tx>>3] >> (tx&7)) & 1`
+Built `Pathfinding/BlockGrid.cs` (loader + `IsWalkableWorld` + tile↔world) and
+`Pathfinding/PathFinder.cs` (A*, 8-dir, no corner-cutting). Validated on RouN: a
+43-waypoint path in 2ms, all waypoints walkable; out-of-region goal → no path.
+**Next:** `/walkto {x,y}` — pathfind from the bot's pos and emit MoverunCmd steps
+(simplify to corner waypoints, time each segment to walk speed); track the bot's
+map (`sLoginZone`) + position to pick the right `.shbd` and the start point.
 - **2-bot chat-observe test** (one `/say`s, the other's ZoneView decodes
   `SOMEONECHAT`) needs a **second account** — only `testuser` creds are held.
 - Cast packet (`SKILLBASH_OBJ_CAST_REQ` vs `SKILLENCHANT_REQ`) confirmed only once
