@@ -1,0 +1,3 @@
+[submodule "lib/FiestaLib-Reloaded"]
+	path = lib/FiestaLib-Reloaded
+	url = git@github.com:IkaronClaude/FiestaLib-Reloaded.git
