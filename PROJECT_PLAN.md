@@ -108,7 +108,7 @@ ik-fiesta-bots/
 4. Build `[1801]` from scratch (chardata + 49 checksums via Encription); verify
    live (`[1804]` until right, `[1038]` = in zone).
 5. Bot session runtime: keepalive, inbound dispatch, per-bot state.
-6. Multi-bot manager + HTTP control API (spawn/list/stop + behaviors).
+6. [done] Multi-bot manager + HTTP control API (spawn/list/stop + behaviors).
 7. Account provisioning via ik-fiesta-api master key (+ API GM-level addition).
 8. Loadout templates (JSON) + GM-command gearing.
 9. Web UI for templates + bot control.
@@ -126,8 +126,12 @@ skill-cast + nearby-player tracking), then **party** (invite/accept), then
   + named presets keyed by instance (e.g. "DragonTomb").
 - Buff target selection: nearby players from zone broadcast packets; need to
   confirm which inbound opcodes carry nearby-player spawn/positions.
-- No network in the build sandbox — submodule added from local checkout, URL
-  repointed to GitHub. `git submodule update --init` will work for a real clone.
+- Submodule was added from a local checkout (URL repointed to GitHub), so
+  `git submodule update --init` works for a real clone. (Earlier this note also
+  claimed "no network in the build sandbox" — that was never true and was
+  removed 2026-06-10: the dev/test environment reaches both the live game server
+  at 62.171.171.24 and the internet, which is how every "live-verified" note in
+  this file was produced.)
 
 ## Refinements (added mid-build)
 
@@ -258,7 +262,41 @@ keeps getting heartbeats while in zone) for `--hold <sec>` (default 30).
 Verified: BotFighter held in zone 40s, heartbeats answered on both, ended on
 the hold timer (not a kick).
 
-**Next: task 17 (multi-bot manager + HTTP control API) — a BotManager that owns
-N BotSessions keyed by id, plus minimal-API endpoints to spawn/stop/list/status.
-Then 18 (account provisioning via api master key), 19 (loadout templates + GM
-gearing), 20 (web UI).**
+## Multi-bot manager + control API (task 17, DONE — live-verified 2026-06-10)
+`Manager/BotManager.cs` owns N bots in parallel, keyed by id, in a
+`ConcurrentDictionary`. `Spawn(BotSpawnOptions)` is non-blocking: it kicks the
+**full chain** (the exact orchestration `LoginTestCli` proved — Login → WM with
+optional in-band char-create + tutorial decline → [1801] zone entry → a
+long-lived `BotSession` on BOTH the zone and WM links) onto a background task,
+and returns a `BotHandle` immediately. A managed bot runs **until stopped** (no
+hold timer); `StopAsync(id)` cancels its CTS, awaits wind-down (10s cap), and
+removes it. The WM connection is disposed once via a tiny scope struct; the zone
+connection is owned by its session's `DisposeAsync` (no double-dispose).
+- `BotHandle` tracks lifecycle `Phase` (Pending→LoggingIn→SelectingChar→
+  EnteringZone→InZone→Stopped/Failed), char name, error, and a 200-line ring-
+  buffer log; `Snapshot()` is the serializable status view (pulls live counters
+  off the in-zone `BotSession.State`). Phase/name/error are volatile, log is
+  locked — safe to read from HTTP threads.
+- `Host/BotEndpoints.cs` maps `/api/bots`: `POST` spawn (201 + snapshot),
+  `GET` list, `GET /{id}` status (incl. recent log), `POST /{id}/stop`. Request
+  DTO takes plaintext `password` (MD5'd here) or `passwordMd5`, opt-in char
+  creation (`create`/`charName`/`class`/`gender`). Bad input → 400 ValidationProblem,
+  dup id → 409. `Program.cs` loads the BYO XOR table at startup and registers the
+  `BotManager` singleton (logs via `ILogger`); if the table is missing the host
+  still starts and every bot endpoint returns **503 with the reason** (health
+  reports `botsEnabled:false`).
+- **Live-verified end to end via the HTTP API (2026-06-10).** `POST /api/bots`
+  (testuser, against 62.171.171.24:9010) drove the whole chain: WORLDSELECT →
+  WM (`handle=52500`, existing avatars `Anna`/`Anna2`) → CHAR_LOGIN slot 0 →
+  zone 9016 → [1801]+49 checksums → `0x1038` *** IN ZONE *** on the first try.
+  Sessions ran on BOTH links and answered their heartbeats (1 each); `POST
+  /{id}/stop` cleanly cancelled both (uptime 41s, `disconnectReason=cancelled`)
+  and removed the bot. Note `create:true` is opt-in-**only-if-missing**: the
+  account already had avatars, so no new char was made — it entered `Anna`.
+  Also locally verified: validation 400s, dup-id 409, and the no-XOR-table 503
+  path (health `botsEnabled:false`).
+
+**Next: task 18 (account provisioning via ik-fiesta-api master key + the GM-level
+API addition), then 19 (loadout templates + GM gearing), 20 (web UI). Behaviors
+(buff-in-town first) hang off the running `BotSession.PacketReceived` /
+`SendAsync`.**
