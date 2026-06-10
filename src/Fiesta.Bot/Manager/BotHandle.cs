@@ -54,6 +54,9 @@ public sealed class BotHandle
     /// The WM session is held open alongside it but isn't the status surface.</summary>
     public BotSession? ZoneSession { get; internal set; }
 
+    /// <summary>The zone perception model (nearby players + chat), live once in zone.</summary>
+    public ZoneView? ZoneView { get; internal set; }
+
     internal CancellationTokenSource Cts { get; }
     internal Task? RunTask { get; set; }
 
@@ -80,6 +83,7 @@ public sealed class BotHandle
     public BotSnapshot Snapshot()
     {
         var state = ZoneSession?.State;
+        var view = ZoneView;
         return new BotSnapshot(
             Id: Id,
             Phase: Phase.ToString(),
@@ -93,6 +97,8 @@ public sealed class BotHandle
             UptimeSeconds: state is { } u ? Math.Round(u.Uptime.TotalSeconds, 1) : 0,
             DisconnectReason: state?.DisconnectReason,
             Error: Error,
+            NearbyPlayers: view?.NearbyCount ?? 0,
+            LastChat: view?.LastChat is { } c ? $"<{c.SenderName ?? $"h{c.Handle}"}> {c.Text}" : null,
             CreatedAtUtc: CreatedAtUtc,
             RecentLog: RecentLog());
     }
@@ -112,5 +118,7 @@ public sealed record BotSnapshot(
     double UptimeSeconds,
     string? DisconnectReason,
     string? Error,
+    int NearbyPlayers,
+    string? LastChat,
     DateTime CreatedAtUtc,
     IReadOnlyList<string> RecentLog);

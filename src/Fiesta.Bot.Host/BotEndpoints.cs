@@ -1,3 +1,4 @@
+using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Manager;
 
@@ -29,6 +30,10 @@ public static class BotEndpoints
             group.MapGet("/", Unavailable).WithSummary("List bots (unavailable)");
             group.MapGet("/{id}", (string id) => Unavailable()).WithSummary("Bot status (unavailable)");
             group.MapPost("/{id}/stop", (string id) => Unavailable()).WithSummary("Stop a bot (unavailable)");
+            group.MapPost("/{id}/say", (string id) => Unavailable()).WithSummary("Bot chat (unavailable)");
+            group.MapPost("/{id}/cast", (string id) => Unavailable()).WithSummary("Bot cast (unavailable)");
+            group.MapPost("/{id}/use-item", (string id) => Unavailable()).WithSummary("Bot use-item (unavailable)");
+            group.MapPost("/{id}/gm", (string id) => Unavailable()).WithSummary("Bot GM command (unavailable)");
             return;
         }
 
@@ -68,7 +73,77 @@ public static class BotEndpoints
             return stopped ? Results.Ok(new { id, stopped = true }) : Results.NotFound();
         })
         .WithSummary("Stop a bot and remove it from the manager");
+
+        group.MapPost("/{id}/say", async (string id, SayRequest req) =>
+        {
+            if (string.IsNullOrEmpty(req.Text))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["text"] = ["text is required"] });
+            return ToResult(await manager.SayAsync(id, req.Text), id, new { id, said = req.Text });
+        })
+        .WithSummary("Make a bot say a line in its zone (local chat)");
+
+        group.MapPost("/{id}/cast", async (string id, CastRequest req) =>
+        {
+            if (req.Skill is not { } skill)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["skill"] = ["skill id is required"] });
+            var target = req.Target ?? 0;
+            return ToResult(await manager.CastAsync(id, skill, target), id, new { id, cast = skill, target });
+        })
+        .WithSummary("Cast a skill on a target handle (replays client target+mode+cast sequence)");
+
+        group.MapPost("/{id}/use-item", async (string id, UseItemRequest req) =>
+        {
+            if (req.Slot is not { } slot)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["slot"] = ["inventory slot is required"] });
+            return ToResult(await manager.UseItemAsync(id, slot, req.InvenType ?? 0), id, new { id, usedSlot = slot });
+        })
+        .WithSummary("Use an inventory item by slot");
+
+        group.MapPost("/{id}/gm", async (string id, GmRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Command))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["command"] = ["command is required"] });
+            // GM commands are chat-routed; the server keys off the '&'/'$' prefix.
+            // Prepend '&' if the caller omitted a prefix, for convenience.
+            var cmd = req.Command.Trim();
+            if (cmd is [not ('&' or '$'), ..]) cmd = "&" + cmd;
+            return ToResult(await manager.GmAsync(id, cmd), id, new { id, gm = cmd });
+        })
+        .WithSummary("Issue a GM command (e.g. levelup 46, makeitem SafeProtection01, learnskill 1580, getmoney 1000000)");
     }
+
+    private static IResult ToResult(BotManager.ActionResult result, string id, object ok) => result switch
+    {
+        BotManager.ActionResult.Sent => Results.Ok(ok),
+        BotManager.ActionResult.NotInZone => Results.Conflict(new { error = "bot is not in zone yet" }),
+        _ => Results.NotFound(),
+    };
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/say</c>.</summary>
+public sealed record SayRequest
+{
+    public string? Text { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/cast</c>.</summary>
+public sealed record CastRequest
+{
+    public ushort? Skill { get; init; }
+    public ushort? Target { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/use-item</c>.</summary>
+public sealed record UseItemRequest
+{
+    public byte? Slot { get; init; }
+    public byte? InvenType { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/gm</c>. The '&' prefix is added if omitted.</summary>
+public sealed record GmRequest
+{
+    public string? Command { get; init; }
 }
 
 /// <summary>
@@ -94,6 +169,16 @@ public sealed record SpawnBotRequest
     public string? CharName { get; init; }
     public string? Class { get; init; }
     public byte? Gender { get; init; }
+
+    // Optional buff-in-town behavior. Enable with `buff:true`; skill IDs are the
+    // (learnt) buff skills to cast on request — empty until the priest learns them.
+    public bool Buff { get; init; }
+    public string? BuffTrigger { get; init; }
+    public ushort[]? BuffSkillIds { get; init; }
+    public bool BuffAutoNearby { get; init; }
+
+    /// <summary>Log every inbound frame on both links (zone + WM) for introspection.</summary>
+    public bool LogInbound { get; init; }
 
     public BotSpawnOptions ToOptions()
     {
@@ -129,6 +214,13 @@ public sealed record SpawnBotRequest
             DataDir = string.IsNullOrWhiteSpace(DataDir) ? "Z:/ClientProd2/ressystem" : DataDir!,
             WmPortFallback = WmPortFallback ?? 9013,
             Id = string.IsNullOrWhiteSpace(Id) ? null : Id,
+            Buff = Buff ? new BuffConfig
+            {
+                Trigger = string.IsNullOrWhiteSpace(BuffTrigger) ? "buff" : BuffTrigger!,
+                SkillIds = BuffSkillIds ?? [],
+                AutoBuffNearby = BuffAutoNearby,
+            } : null,
+            LogInbound = LogInbound,
         };
     }
 }

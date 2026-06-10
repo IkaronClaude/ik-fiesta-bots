@@ -2,6 +2,7 @@ using System.Text;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Net;
 using FiestaLibReloaded.Networking;
+using FiestaLibReloaded.Networking.Enums;
 using FiestaLibReloaded.Networking.Structs;
 
 namespace Fiesta.Bot.Zone;
@@ -19,6 +20,16 @@ namespace Fiesta.Bot.Zone;
 public sealed class ZoneEntry
 {
     private static readonly ushort OpMapLoginFail = PacketRegistry.GetOpcode<PROTO_NC_MAP_LOGINFAIL_ACK>();
+    // MAP_LOGINCOMPLETE (0x1803): the client's "finished loading — spawn me in
+    // world" signal, sent right after the server's MAP_LOGIN_ACK. Without it the
+    // character stays in a loading limbo (invisible to others, no broadcasts, GM
+    // commands ignored). Bare opcode, empty payload — like the heartbeat ack.
+    private static readonly ushort OpMapLoginComplete =
+        (ushort)(((int)ProtocolCommand.Map << 10) | (int)MapOpcode.LogincompleteCmd);
+    // MAP_LOGIN_ACK (0x1802): the server's ack that ends the post-[1801] chardata
+    // burst; the client sends MAP_LOGINCOMPLETE only after seeing it.
+    private static readonly ushort OpMapLoginAck =
+        (ushort)(((int)ProtocolCommand.Map << 10) | (int)MapOpcode.LoginAck);
 
     private readonly byte[] _xorTable;
     private readonly Action<string> _log;
@@ -61,13 +72,22 @@ public sealed class ZoneEntry
             await conn.SendAsync(req, ct);
             _log($"[Zone] >> MAP_LOGIN_REQ (0x1801) handle={wmHandle} char='{charName}' (+49 checksums)");
 
+            // After [1801] the server streams the chardata burst and ends it with
+            // MAP_LOGIN_ACK [1802]. The real client waits for [1802], THEN sends
+            // MAP_LOGINCOMPLETE [1803] to finish spawning into the world. Sending
+            // [1803] too early (before [1802]) leaves the char in loading limbo —
+            // invisible to others, no broadcasts, GM/chat ignored. So drain the
+            // burst until [1802] (or, as a fallback, the deadline) before [1803].
             var deadline = DateTime.UtcNow.AddSeconds(10);
+            var sawFrame = false;
             while (DateTime.UtcNow < deadline)
             {
                 var remaining = deadline - DateTime.UtcNow;
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(remaining);
-                var pkt = await conn.ReadPacketAsync(cts.Token);
+                FiestaPacket pkt;
+                try { pkt = await conn.ReadPacketAsync(cts.Token); }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { break; } // deadline
                 _log($"[Zone] << 0x{pkt.Opcode:X4} dept={pkt.Department} cmd={pkt.Command} len={pkt.Payload.Length}");
 
                 if (pkt.Opcode == OpMapLoginFail)
@@ -80,11 +100,16 @@ public sealed class ZoneEntry
                         $"MAP_LOGINFAIL err={f.err} wrongDataFileIndex={f.nWrongDataFileIndex} ({file})");
                 }
 
-                // Anything else after [1801] means the zone accepted us and is
-                // streaming the character's initial state ([1038] burst etc.).
-                _log($"[Zone] *** IN ZONE — first post-login frame 0x{pkt.Opcode:X4} ***");
-                return conn;
+                sawFrame = true;
+                if (pkt.Opcode == OpMapLoginAck) // [1802] — the login ack ending the burst
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", ct);
+                // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
+
+            // Fallback: we saw the burst but no explicit [1802] before the deadline.
+            // Still complete the login so we spawn rather than hang.
+            if (sawFrame)
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", ct);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -92,6 +117,16 @@ public sealed class ZoneEntry
             conn.Dispose();
             throw;
         }
+    }
+
+    /// <summary>Send MAP_LOGINCOMPLETE [1803] to finish spawning into the world,
+    /// then hand back the open connection (now fully in zone).</summary>
+    private async Task<FiestaClientConnection> CompleteLoginAsync(
+        FiestaClientConnection conn, string via, CancellationToken ct)
+    {
+        await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
+        _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
+        return conn;
     }
 
     private static void FillBytes(byte[] dst, string s)

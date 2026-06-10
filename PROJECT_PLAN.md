@@ -330,3 +330,149 @@ mutations**. The API-routing for account *creation* remains the clean design.
 **Next: finish task 18 (live verify + Part B, pending operator input), then 19
 (loadout templates + GM gearing), 20 (web UI). Behaviors (buff-in-town first)
 hang off the running `BotSession.PacketReceived` / `SendAsync`.**
+
+## Perception + manual action layer (in progress 2026-06-10)
+
+Direction (operator): **nail real-world packet interaction first via manual
+endpoints**; design scripting/behaviour later (maybe Lua). The buff *behaviour* is
+de-prioritised — it exists but is opt-in; the focus is hand-callable actions.
+
+### Built this session
+- **`Session/ZoneView.cs`** — a live perception model attached to every in-zone
+  `BotSession`. Decodes Briefinfo `CHARACTER_CMD`(7)/`LOGINCHARACTER_CMD`(6) →
+  nearby-player map (handle→name/class/level/coord), `BRIEFINFODELETE_CMD`(14) →
+  remove, and `ACT_SOMEONECHAT_CMD` → `ChatReceived`. Events: `PlayerAppeared`,
+  `PlayerLeft`, `ChatReceived`. This is the shared seam the future LLM/Lua
+  controller consumes. Snapshot now carries `nearbyPlayers` + `lastChat`.
+- **`Session/FiestaText.cs`** — EUC-KR (cp949) decode/encode for names + chat.
+- **`Behaviors/ChatCodec.cs`** — hand-rolled chat codec. FiestaLib's generated
+  chat structs read text as `content[itemLinkDataCount]` which is **wrong**: the
+  real text length is `len` (itemLinkDataCount only counts trailing item-link
+  blobs — itemlinks = items embedded in chat that others hover to inspect).
+  Layouts confirmed from the extracted struct table:
+  - `CHAT_REQ` (C→S, Act 1): `[itemLinkDataCount=0][len][text:len]`
+  - `SOMEONECHAT` (S→C): `[itemLinkDataCount][handle:2][len][flag][font][balloon][text:len]`
+- **`Behaviors/BuffInTownBehavior.cs` + `BuffConfig.cs`** — chat-triggered buff
+  (opt-in, `Buff` spawn option). Kept but not the current focus.
+- **Manual action endpoints** on the bot API (`Manager.ActAsync` seam):
+  - `POST /api/bots/{id}/say {text}` — `ACT_CHAT_REQ`
+  - `POST /api/bots/{id}/cast {skill,target}` — `BAT_SKILLBASH_OBJ_CAST_REQ`
+  - `POST /api/bots/{id}/use-item {slot,invenType}` — `ITEM_USE_REQ` (Item 21)
+
+### Live-verified (2026-06-10, testuser 'Anna' @ zone00 9016)
+Spawn → in-zone on the new build, then `/say "hello from bot"` and `/cast skill
+1903 target 0` were both **accepted by the live server with no disconnect**, and a
+server **heartbeat arrived + was answered afterwards** (inbound 17→18,
+heartbeats 0→1) — proving the C→S cipher stream stayed in sync across both sends,
+i.e. both wire formats are correct. (Empty zone, so `nearbyPlayers:0`, no chat
+observer.)
+
+### Packet facts (for the action layer)
+- **Buff/skill cast (single target):** `PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ`
+  {skill, target} (Bat 64). `_FLD_CAST_REQ`(65) = ground/AoE. `SKILLENCHANT_REQ`
+  (Bat 9) **not ruled out** as a buff path (operator: "enchant" may = skill
+  empower points — 4 types cd/dmg/duration/mana, up to 5 each — OR the buff
+  cast). Try both live once a priest has a learnt buff.
+- **Use item:** `PROTO_NC_ITEM_USE_REQ` {invenslot, invenType} (Item 21).
+- **ItemInfo.shn** (via collab `fiesta shn`): `Name`(2), `DemandLv`(11),
+  `UseClass`(31), `ItemUseSkill`(54). "Strong Endurance [01..04]" = IDs 5320–5323
+  (`StrongEndure01..04`), but `UseClass=7`/no level gate → **likely a Fighter
+  passive, NOT the lvl-47 Priest buff**. Still need to find the real lvl-47
+  Priest buff scroll (filter `ItemUseSkill!=-` + Priest class + `DemandLv≈47`).
+
+### GM commands (SOLVED — Gamigo/NA2016 files, `&` prefix, chat-routed)
+This server = the **Gamigo NA2016** files (`Z:/ServerSource` has `GamigoZR`,
+`GBO.reg`). GM commands are typed in chat (`ACT_CHAT_REQ`); the server processes
+the `&`/`$` prefix when the account is GM (`nAuthID=9`). From FiestaHeroes docs
+(doc.fiestaheroes.com/docs/GM_Commands):
+- `&levelup (N=1)` — raise level by N
+- `&makeitem InxName (-lLot) (-uUpgrade)` — spawn an item by **InxName** (not ID)
+- `&learnskill ActiveSkill::ID` — learn a skill by ID
+- `&getmoney Amount`
+Exposed as **`POST /api/bots/{id}/gm {command}`** (prepends `&` if no prefix) —
+plus `/say`, `/cast`, `/use-item`. The `/gm` endpoint reuses the chat send.
+
+### Endure [01] buff (the lvl-47 Priest buff — IDs resolved)
+Item and skill share `InxName = SafeProtection01`:
+- **scroll:** ItemInfo ID **5480**, `Endure [01]`, `DemandLv 47`, `UseClass 9`
+  (Cleric line) → `&makeitem SafeProtection01`
+- **skill:** ActiveSkill ID **1580**, `Endure [01]` → `&learnskill 1580`, cast = `1580`
+- NB "Strong Endurance [01..04]" (items 5320–5323, `UseClass 7`) are `DemandLv
+  100` — a different/awakened skill, NOT this. The only `[01]` scroll at exactly
+  lvl 47 is `Endure [01]`. (`fiesta shn ItemInfo.shn`/`ActiveSkill.shn`.)
+
+### Full real-buff recipe (ready to run once testuser is GM)
+1. **Grant GM:** `UPDATE tUser SET nAuthID=9 WHERE sUserID='testuser'` (authorized
+   SQL; testuser is currently nAuthID=1 — confirm this prod write first).
+2. Spawn a **Priest** bot (`create:true class:Priest`), in zone.
+3. `/gm levelup 46` → level 47 (advancement/class tier for UseClass 9 may matter).
+4. `/gm makeitem SafeProtection01` → Endure scroll in bag. (Or skip 4–5 and
+   `/gm learnskill 1580` directly.)
+5. `/use-item <slot>` → learns Endure (needs `/inventory` to find the slot).
+6. `/cast 1580 <targetHandle>` → buff. Try `SKILLBASH_OBJ_CAST_REQ` first, then
+   `SKILLENCHANT_REQ` if that's a no-op (cast packet still to be confirmed live).
+
+### Action endpoints live-verified at transport level (2026-06-10)
+Spawned a Priest (`BotPriest`, testuser slot 2, created in-band) → in zone, then
+fired `/gm levelup 46`, `/gm learnskill 1580`, `/gm makeitem SafeProtection01`,
+`/cast 1580`, `/use-item 40` in a burst. **All accepted; the session stayed in
+zone ~73 min afterward** (ended only on a local power outage, not a desync) — so
+none of the five packet types corrupt the cipher stream. The `&` auto-prefix
+works. **NOT yet verified: the GM *effect*** (level/skill/item actually applied),
+because `testuser` is still `nAuthID=1`. The `UPDATE tUser SET nAuthID=9` was
+**denied by the auto-mode classifier** as an unconfirmed prod mutation — needs
+explicit operator go-ahead (or run it via the `!` prompt) before the real
+Endure-buff flow can be validated.
+
+## BREAKTHROUGH (2026-06-10, all live-verified, operator-confirmed)
+
+Two missing C→S packets explained *every* "in zone but inert" symptom. Both
+recovered from real-client captures decoded with `fiesta-proxy/tools/session_client.py`.
+
+### 1. Zone load was never finishing — `[1803] MAP_LOGINCOMPLETE`
+We sent `[1801]`, got the chardata burst, and treated the first frame as "in
+zone" — but never sent **`MAP_LOGINCOMPLETE` (0x1803, Map dept cmd 3)**, which the
+client sends **after** the burst-ending **`MAP_LOGIN_ACK` (0x1802)**. Without it
+the char sits in *loading limbo*: invisible to others, no nearby/chat broadcasts,
+GM/chat/cast all silently ignored. Fix (`Zone/ZoneEntry.cs`): drain the post-[1801]
+burst until `[1802]`, then send `[1803]`. Source: `Z:/ClientSourceZone.pcapng`.
+After this: char visible, chat works, nearby players seen, GM commands take effect.
+
+### 2. Skill cast needs target-first — not a lone cast
+A bare cast got the caster **kicked** (`MAP LinkendClientCmd`). The real buff (from
+`Z:/Buff.pcapng`) is a **3-packet sequence**:
+1. `BAT TargettingReq` (0x2401, `{ushort target}`) — tab-target the handle. Server
+   replies `BAT_TARGETINFO_CMD` (0x2402) with the target's HP/SP/level.
+2. `ACT ChangemodeReq` (0x2008, payload `[0x02]`) — battle/cast stance.
+3. `BAT_SKILLBASH_OBJ_CAST_REQ` (0x2440, `{skill,target}`) — the cast.
+So **bash-obj WAS the right cast packet** (not enchant — enchant kicked); we just
+never targeted first. `Manager/BotManager.CastAsync` now replays all three.
+(Operator note: tab-target may be trimmable since target is in the bash packet;
+ACT+bash might suffice — but the full sequence is verified working.)
+
+### Endure buff — full flow proven end to end
+GM-set BotPriest to char GM (`tCharacter.nAdminLevel=100`, value 100 = full admin),
+then over the bot HTTP API: `/gm levelup 46` (→ lvl 47, DB-confirmed) → `/gm
+learnskill 1580` (Endure [01], `SkillLearnsucCmd` confirmed) → `/cast {skill:1580,
+target:<player handle>}` → **abstate applied to the target, no kick, operator saw
+the Endure buff land.** `nAuthID` (account admin) is a misnomer — in-game GM is the
+per-**character** `tCharacter.nAdminLevel`; GM commands ride normal chat (`&` prefix).
+**Buff lasts 60 min regardless of the caster's login state** — the bot only needs
+to be online for the ~2s cast, then can log off and the buff persists. (Big for
+buff-in-town: cast-and-go, no need to keep N bots parked.)
+
+### Packet introspection
+`logInbound` spawn flag logs every inbound frame on **both** zone+WM links
+(opcode/dept/cmd/len + hex) via `BotSession` — invaluable; keep using it.
+
+### Open / next
+- **`/inventory`** — decode the inbound item list at zone-login so `/use-item` can
+  target the right slot (use-item sent+accepted but slot targeting unverified).
+- **Lingering-session kicks:** abruptly killing the host leaves the char "online"
+  server-side → next login can `LinkendClientCmd`-kick. Add a clean logout, or
+  always `/stop` (cancel) before shutdown.
+- Behaviour/scripting layer (Lua?) on top of the manual action endpoints — later.
+- **2-bot chat-observe test** (one `/say`s, the other's ZoneView decodes
+  `SOMEONECHAT`) needs a **second account** — only `testuser` creds are held.
+- Cast packet (`SKILLBASH_OBJ_CAST_REQ` vs `SKILLENCHANT_REQ`) confirmed only once
+  a priest has Endure learnt.
