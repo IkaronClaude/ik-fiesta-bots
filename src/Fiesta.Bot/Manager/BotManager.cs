@@ -143,6 +143,42 @@ public sealed class BotManager : IAsyncDisposable
     private static readonly ushort OpMoveRun =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.MoverunCmd);
 
+    /// <summary>Walk a precomputed path: send one MoverunCmd per segment on a
+    /// background task, paced to <paramref name="unitsPerSec"/> so the server
+    /// accepts it as a normal walk. Returns immediately; the walk continues until
+    /// done or the bot is stopped. (Speed is an estimate — tune against the live
+    /// server.)</summary>
+    public ActionResult WalkPath(string id, IReadOnlyList<(uint X, uint Y)> waypoints, double unitsPerSec = 120.0)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } session) return ActionResult.NotInZone;
+        if (waypoints.Count < 2) return ActionResult.Sent;
+        var ct = handle.Cts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                for (int i = 0; i < waypoints.Count - 1 && !ct.IsCancellationRequested; i++)
+                {
+                    var (fx, fy) = waypoints[i];
+                    var (tx, ty) = waypoints[i + 1];
+                    var p = new byte[16];
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), fx);
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), fy);
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), tx);
+                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), ty);
+                    await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
+                    var dist = Math.Sqrt(Math.Pow((double)tx - fx, 2) + Math.Pow((double)ty - fy, 2));
+                    await Task.Delay((int)Math.Clamp(dist / unitsPerSec * 1000, 40, 5000), ct);
+                }
+                handle.Log($"walk-path done ({waypoints.Count} waypoints)");
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { handle.Log($"walk-path error: {ex.Message}"); }
+        }, ct);
+        return ActionResult.Sent;
+    }
+
     /// <summary>Walk from one map coordinate to another (one MoverunCmd step).</summary>
     public Task<ActionResult> WalkAsync(string id, uint fromX, uint fromY, uint toX, uint toY, CancellationToken ct = default)
         => ActAsync(id, $"walk ({fromX},{fromY})->({toX},{toY})", s =>
