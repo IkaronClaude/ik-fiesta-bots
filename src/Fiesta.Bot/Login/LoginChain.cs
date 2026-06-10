@@ -129,7 +129,8 @@ public sealed class LoginChain
     /// caller must keep it open until in-zone, then dispose it.
     /// </summary>
     public async Task<(WmPhaseResult Result, FiestaClientConnection WmConn)> RunWmAsync(
-        FiestaEndpoint wmEp, BotCredentials creds, byte[] otp, byte? selectSlot, CancellationToken ct)
+        FiestaEndpoint wmEp, BotCredentials creds, byte[] otp, byte? selectSlot,
+        CharacterSpec? createIfMissing, CancellationToken ct)
     {
         var conn = await FiestaClientConnection.ConnectAsync(wmEp.Host, wmEp.Port, _xorTable, ct);
         try
@@ -176,6 +177,14 @@ public sealed class LoginChain
                             ? avatars.FirstOrDefault(a => a.Slot == s)
                             : avatars.FirstOrDefault();
 
+                        // First-class character creation: if there's no avatar to
+                        // enter with and a spec was given, create one in-band.
+                        if (selected is null && createIfMissing is not null)
+                        {
+                            selected = await CreateAvatarAsync(conn, createIfMissing, ct);
+                            avatars = new List<AvatarSummary>(avatars) { selected };
+                        }
+
                         if (selected is not null && !charLoginSent)
                         {
                             await conn.SendAsync(new FiestaPacket(0x1001, new byte[] { selected.Slot }), ct);
@@ -184,7 +193,7 @@ public sealed class LoginChain
                         }
                         else if (selected is null)
                         {
-                            _log("[WM] account has no avatars — cannot enter a zone (need char creation)");
+                            _log("[WM] account has no avatars and no create spec — cannot enter a zone");
                             return (new WmPhaseResult(wmHandle, avatars, null, null), conn);
                         }
                         break;
@@ -207,6 +216,56 @@ public sealed class LoginChain
             conn.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// Create a character in-band on an open WM connection (char-select screen):
+    /// AVATAR_CREATE_REQ (0x1401) → CREATESUCC_ACK (0x1406) / CREATEFAIL (0x1404).
+    /// </summary>
+    public async Task<AvatarSummary> CreateAvatarAsync(
+        FiestaClientConnection conn, CharacterSpec spec, CancellationToken ct)
+    {
+        var req = new PROTO_NC_AVATAR_CREATE_REQ { slotnum = spec.Slot };
+        FillBytes(req.name.n5_name, spec.Name);
+        req.char_shape.race = spec.Race;
+        req.char_shape.chrclass = (uint)spec.Class;
+        req.char_shape.gender = spec.Gender;
+        req.char_shape.hairtype = spec.HairType;
+        req.char_shape.haircolor = spec.HairColor;
+        req.char_shape.faceshape = spec.FaceShape;
+        await conn.SendAsync(req, ct);
+        _log($"[WM] >> AVATAR_CREATE_REQ (0x1401) slot={spec.Slot} name='{spec.Name}' " +
+             $"class={spec.Class}({(byte)spec.Class}) gender={spec.Gender}");
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline)
+        {
+            var pkt = await ReadWithTimeout(conn, deadline, ct);
+            Trace("WM", pkt);
+            switch (pkt.Opcode)
+            {
+                case 0x1406: // AVATAR_CREATESUCC_ACK
+                {
+                    var ok = pkt.ReadBody<PROTO_NC_AVATAR_CREATESUCC_ACK>();
+                    var a = ok.avatar;
+                    var sum = new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level);
+                    _log($"[WM] << AVATAR_CREATESUCC_ACK name='{sum.Name}' slot={sum.Slot} level={sum.Level}");
+                    return sum;
+                }
+                case 0x1404: // AVATAR_CREATEFAIL_ACK
+                {
+                    var f = pkt.ReadBody<PROTO_NC_AVATAR_CREATEFAIL_ACK>();
+                    throw new LoginChainException($"AVATAR_CREATEFAIL err={f.err}");
+                }
+                case 0x1403: // AVATAR_CREATEDATAFAIL_ACK
+                {
+                    var f = pkt.ReadBody<PROTO_NC_AVATAR_CREATEDATAFAIL_ACK>();
+                    throw new LoginChainException(
+                        $"AVATAR_CREATEDATAFAIL charid='{AsciiZ(f.charid.n5_name)}' err={f.err}");
+                }
+            }
+        }
+        throw new LoginChainException("AVATAR_CREATE timed out before an ACK");
     }
 
     // ---- helpers ----

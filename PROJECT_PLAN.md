@@ -168,7 +168,28 @@ fails on the current server — that's the known "DataFail file 8"). When buildi
 `Z:/ClientProd2/ressystem/ItemInfo.shn` (the BYO file matching the server), never
 copy it from the capture. All 49 checksums = `MD5(file[:0x24] + Encription(file[0x24:]))`.
 
-### Next blocker: no character
-The login chain reaches WM but the empty server's account has 0 avatars, so no
-zone endpoint. Need character provisioning (protocol CHAR_CREATE vs API/DB seed)
-before the zone phase ([1801]) can be exercised.
+## Character creation (SOLVED, live-verified 2026-06-09)
+
+First-class feature: the bot provisions its own character via the game protocol.
+On the WM connection (char-select), `AVATAR_CREATE_REQ` 0x1401 (slotnum + name
+Name5 + char_shape PROTO_AVATAR_SHAPE_INFO 4B) → `AVATAR_CREATESUCC_ACK` 0x1406
+(new avatar) / `AVATAR_CREATEFAIL` 0x1404. Live-verified: created a level-1
+Fighter "BotFighter" on the empty server.
+
+### char_shape bitfield (4 bytes)
+byte0 = race[0..2) + chrclass[2..7) + gender[7]; byte1 hairtype; byte2 haircolor;
+byte3 faceshape.
+
+### Class IDs (ground truth from ClientProd2 ClassName.shn via `fiesta shn`)
+Level-1 creatable: **Fighter=1, Priest(Cleric)=6, Archer=11, Mage=16, Joker=21**.
+Advancement at lvl 20 → 60 → 100 (lvl-100 is a branch, e.g. Mage→Wizard(20) or
+Warlock(19); Joker line's lvl-100 = Spectre(24) or Reaper/Assassin(25)).
+**Crusader (Sentinel=26)** is creatable at level 60, but only if the account
+already has a level-60+ character. Full tree is in `ClassId` (CharacterSpec.cs).
+
+### Next: tutorial popup → zone entry
+A freshly-created char enters the newbie tutorial: CHAR_LOGIN_REQ 0x1001 is
+answered with `CHAR_TUTORIAL_POPUP_REQ` 0x1110 (Char cmd 272), NOT the
+zone-handoff CHAR_LOGIN_ACK 0x1003. So zone entry (task 15, the [1801] build)
+needs tutorial handling/skip for new chars (existing chars get 0x1003 directly,
+per forge_login_e2e). This is the seam between creation and the zone phase.
