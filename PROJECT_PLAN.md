@@ -187,9 +187,23 @@ Warlock(19); Joker line's lvl-100 = Spectre(24) or Reaper/Assassin(25)).
 **Crusader (Sentinel=26)** is creatable at level 60, but only if the account
 already has a level-60+ character. Full tree is in `ClassId` (CharacterSpec.cs).
 
-### Next: tutorial popup → zone entry
-A freshly-created char enters the newbie tutorial: CHAR_LOGIN_REQ 0x1001 is
-answered with `CHAR_TUTORIAL_POPUP_REQ` 0x1110 (Char cmd 272), NOT the
-zone-handoff CHAR_LOGIN_ACK 0x1003. So zone entry (task 15, the [1801] build)
-needs tutorial handling/skip for new chars (existing chars get 0x1003 directly,
-per forge_login_e2e). This is the seam between creation and the zone phase.
+### Tutorial decline (SOLVED)
+A freshly-created char enters the newbie tutorial: CHAR_LOGIN_REQ is answered
+with `CHAR_TUTORIAL_POPUP_REQ` (Char 272), not CHAR_LOGIN_ACK. Reply with
+`CHAR_TUTORIAL_POPUP_ACK { bIsSkip = 1 }` (Char 273) to decline. The decline
+takes effect server-side on the NEXT login — the declining login itself returns
+CHAR_LOGINFAIL (Char 2), then a fresh login goes straight to CHAR_LOGIN_ACK with
+the zone endpoint. So a new char's full flow is: create → decline → reconnect →
+CHAR_LOGIN_ACK. Live-verified: BotFighter → zone 62.171.171.24:9016 (zone00).
+
+**Opcode convention:** resolve every opcode via `PacketRegistry.GetOpcode<T>()`
+(derived from each struct's `[FiestaOpcode(dept, cmd)]` — the 6-bit dept | 10-bit
+cmd encoding). No hand-written hex consts. `FiestaPacket.Department/Command`
+expose the split for logging.
+
+### Next: zone entry — build [1801] from scratch (task 15)
+Connect to the zone endpoint from CHAR_LOGIN_ACK, handshake, build
+`PROTO_NC_MAP_LOGIN_REQ` (0x1801): chardata (PROTO_NC_CHAR_ZONE_CHARDATA_REQ,
+wldmanhandle = live WM handle) + the 49 data-file checksums. ⚠️ ItemInfo (idx 8)
+checksum MUST be computed fresh from `Z:/ClientProd2/ressystem/ItemInfo.shn`
+(pcap's is stale). Success = `[1038]` NC_CHAR_CLIENT_BASE_CMD = in zone.

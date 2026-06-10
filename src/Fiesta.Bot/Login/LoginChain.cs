@@ -7,32 +7,29 @@ namespace Fiesta.Bot.Login;
 
 /// <summary>
 /// Drives the real client login handshake from typed packets (no capture
-/// replay): Login → WorldManager → (zone endpoint). Every step is built from
-/// FiestaLib structs and every inbound frame is logged by opcode so the exact
-/// server ordering can be confirmed live (REQ→ACK), the same way the OPTool
-/// endpoints were verified.
+/// replay): Login → WorldManager → (zone endpoint), with optional in-band
+/// character creation. Every step is built from FiestaLib structs and every
+/// inbound frame is logged by opcode so the exact server ordering can be
+/// confirmed live (REQ→ACK), the same way the OPTool endpoints were verified.
 ///
-/// Opcodes used (ground truth = FiestaLib opcode list):
-///   C→S US_LOGIN_REQ      0x0C5A  (cmd 90): sUserName[260] + sPassword[36] + spawnapps
-///   S→C LOGIN_ACK         0x0C0A  (cmd 10): world list
-///   C→S WORLDSELECT_REQ   0x0C0B  (cmd 11): worldno
-///   S→C WORLDSELECT_ACK   0x0C0C  (cmd 12): worldstatus + ip + port + validate_new[64]=OTP
-///   S→C LOGINFAIL_ACK     0x0C09  (cmd  9): error
-///   C→S LOGINWORLD_REQ    0x0C0F  (cmd 15): user + validate_new[64]=OTP echoed
-///   S→C LOGINWORLD_ACK    0x0C14  (cmd 20): wmhandle + avatars
-///   S→C LOGINWORLDFAIL    0x0C15  (cmd 21): error
-///   C→S CHAR_LOGIN_REQ    0x1001          : slot
-///   S→C CHAR_LOGIN_ACK    0x1003          : zone ip + port
+/// All opcodes are resolved through <see cref="PacketRegistry.GetOpcode{T}"/> —
+/// i.e. derived from each struct's [FiestaOpcode(department, command)] (the
+/// 6-bit dept | 10-bit cmd encoding) — never hand-written hex.
 /// </summary>
 public sealed class LoginChain
 {
-    private const ushort OpLoginAck       = 0x0C0A;
-    private const ushort OpWorldSelectReq = 0x0C0B;
-    private const ushort OpWorldSelectAck = 0x0C0C;
-    private const ushort OpLoginFailAck   = 0x0C09;
-    private const ushort OpLoginWorldAck  = 0x0C14;
-    private const ushort OpLoginWorldFail = 0x0C15;
-    private const ushort OpCharLoginAck   = 0x1003;
+    // Opcodes we react to, resolved from FiestaLib's struct registry.
+    private static readonly ushort OpLoginFailAck        = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGINFAIL_ACK>();
+    private static readonly ushort OpLoginAck            = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGIN_ACK>();
+    private static readonly ushort OpWorldSelectAck      = PacketRegistry.GetOpcode<PROTO_NC_USER_WORLDSELECT_ACK>();
+    private static readonly ushort OpLoginWorldAck       = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGINWORLD_ACK>();
+    private static readonly ushort OpLoginWorldFail      = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGINWORLDFAIL_ACK>();
+    private static readonly ushort OpCharLoginAck        = PacketRegistry.GetOpcode<PROTO_NC_CHAR_LOGIN_ACK>();
+    private static readonly ushort OpCharLoginFail       = PacketRegistry.GetOpcode<PROTO_NC_CHAR_LOGINFAIL_ACK>();
+    private static readonly ushort OpTutorialPopup       = PacketRegistry.GetOpcode<PROTO_NC_CHAR_TUTORIAL_POPUP_REQ>();
+    private static readonly ushort OpAvatarCreateSucc    = PacketRegistry.GetOpcode<PROTO_NC_AVATAR_CREATESUCC_ACK>();
+    private static readonly ushort OpAvatarCreateFail    = PacketRegistry.GetOpcode<PROTO_NC_AVATAR_CREATEFAIL_ACK>();
+    private static readonly ushort OpAvatarCreateDataFail = PacketRegistry.GetOpcode<PROTO_NC_AVATAR_CREATEDATAFAIL_ACK>();
 
     private readonly byte[] _xorTable;
     private readonly Action<string> _log;
@@ -46,8 +43,8 @@ public sealed class LoginChain
     }
 
     /// <summary>
-    /// Login phase: connect, handshake, US_LOGIN_REQ, select world, return the
-    /// OTP + advertised WM endpoint. The login socket is closed on return.
+    /// Login phase: connect, handshake, version check + US_LOGIN_REQ, select
+    /// world, return the OTP + advertised WM endpoint. Socket closed on return.
     /// </summary>
     public async Task<LoginPhaseResult> RunLoginAsync(
         FiestaEndpoint loginEp, BotCredentials creds, byte worldNo, CancellationToken ct)
@@ -63,7 +60,7 @@ public sealed class LoginChain
         var ver = new PROTO_NC_USER_CLIENT_VERSION_CHECK_REQ();
         FillSBytes(ver.sVersionKey, _profile.VersionKey);
         await conn.SendAsync(ver, ct);
-        _log($"[Login] >> VERSION_CHECK_REQ (0x0C65) ver='{_profile.VersionKey}'");
+        _log($"[Login] >> VERSION_CHECK_REQ ver='{_profile.VersionKey}'");
 
         // 2) Login: user + MD5 password + spawnapps build tag.
         var req = new PROTO_NC_USER_US_LOGIN_REQ();
@@ -71,7 +68,7 @@ public sealed class LoginChain
         FillSBytes(req.sPassword, creds.PasswordMd5);
         FillBytes(req.spawnapps.n5_name, _profile.SpawnAppsTag);
         await conn.SendAsync(req, ct);
-        _log($"[Login] >> US_LOGIN_REQ (0x0C5A) user='{creds.Username}' spawnapps='{_profile.SpawnAppsTag}'");
+        _log($"[Login] >> US_LOGIN_REQ user='{creds.Username}' spawnapps='{_profile.SpawnAppsTag}'");
 
         // 3) XTrap anti-cheat key + world-status probe (the real client sends
         //    both here; harmless if the server stubs them).
@@ -81,7 +78,7 @@ public sealed class LoginChain
             XTrapClientKey = _profile.XtrapKey,
         }, ct);
         await conn.SendAsync(new PROTO_NC_USER_WORLD_STATUS_REQ(), ct);
-        _log("[Login] >> XTRAP_REQ (0x0C04) + WORLD_STATUS_REQ (0x0C1B)");
+        _log("[Login] >> XTRAP_REQ + WORLD_STATUS_REQ");
 
         var worldSelected = false;
         var deadline = DateTime.UtcNow.AddSeconds(10);
@@ -90,43 +87,38 @@ public sealed class LoginChain
             var pkt = await ReadWithTimeout(conn, deadline, ct);
             Trace("Login", pkt);
 
-            switch (pkt.Opcode)
+            if (pkt.Opcode == OpLoginFailAck)
             {
-                case OpLoginFailAck:
-                {
-                    var fail = pkt.ReadBody<PROTO_NC_USER_LOGINFAIL_ACK>();
-                    throw new LoginChainException($"LOGINFAIL_ACK error={fail.error}");
-                }
-                case OpLoginAck:
-                    if (!worldSelected)
-                    {
-                        await conn.SendAsync(new PROTO_NC_USER_WORLDSELECT_REQ { worldno = worldNo }, ct);
-                        worldSelected = true;
-                        _log($"[Login] >> WORLDSELECT_REQ (0x0C0B) worldno={worldNo}");
-                    }
-                    break;
-                case OpWorldSelectAck:
-                {
-                    var ack = pkt.ReadBody<PROTO_NC_USER_WORLDSELECT_ACK>();
-                    var otp = OtpFromValidateNew(ack.validate_new);
-                    var ip = AsciiZ(ack.ip.n4_name);
-                    var wm = new FiestaEndpoint(string.IsNullOrEmpty(ip) ? loginEp.Host : ip, ack.port);
-                    _log($"[Login] << WORLDSELECT_ACK status={ack.worldstatus} wm={wm} otp={Convert.ToHexString(otp.AsSpan(0, 8))}…");
-                    return new LoginPhaseResult(otp, wm, ack.worldstatus);
-                }
-                // Other inbound frames (version check, xtrap, etc.) are just
-                // logged; if one turns out to gate login we add a reply here.
+                var fail = pkt.ReadBody<PROTO_NC_USER_LOGINFAIL_ACK>();
+                throw new LoginChainException($"LOGINFAIL_ACK error={fail.error}");
             }
+            if (pkt.Opcode == OpLoginAck && !worldSelected)
+            {
+                await conn.SendAsync(new PROTO_NC_USER_WORLDSELECT_REQ { worldno = worldNo }, ct);
+                worldSelected = true;
+                _log($"[Login] >> WORLDSELECT_REQ worldno={worldNo}");
+            }
+            else if (pkt.Opcode == OpWorldSelectAck)
+            {
+                var ack = pkt.ReadBody<PROTO_NC_USER_WORLDSELECT_ACK>();
+                var otp = OtpFromValidateNew(ack.validate_new);
+                var ip = AsciiZ(ack.ip.n4_name);
+                var wm = new FiestaEndpoint(string.IsNullOrEmpty(ip) ? loginEp.Host : ip, ack.port);
+                _log($"[Login] << WORLDSELECT_ACK status={ack.worldstatus} wm={wm} otp={Convert.ToHexString(otp.AsSpan(0, 8))}…");
+                return new LoginPhaseResult(otp, wm, ack.worldstatus);
+            }
+            // Other inbound frames (version ack, xtrap ack, world status) are
+            // just logged; add a reply here if one turns out to gate login.
         }
         throw new LoginChainException("Login phase timed out before WORLDSELECT_ACK");
     }
 
     /// <summary>
-    /// WM phase: connect to the WorldManager, send LOGINWORLD_REQ with the OTP,
-    /// read the avatar list, optionally CHAR_LOGIN_REQ a slot, and return the
-    /// zone endpoint + live WM handle. The WM connection is returned OPEN — the
-    /// zone validates the incoming player against a live WM session, so the
-    /// caller must keep it open until in-zone, then dispose it.
+    /// WM phase: connect, LOGINWORLD_REQ (OTP echoed), read the avatar list,
+    /// optionally create a character, decline the newbie tutorial, CHAR_LOGIN a
+    /// slot, and return the zone endpoint + live WM handle. The WM connection is
+    /// returned OPEN — the zone validates the incoming player against a live WM
+    /// session, so the caller must keep it open until in-zone, then dispose it.
     /// </summary>
     public async Task<(WmPhaseResult Result, FiestaClientConnection WmConn)> RunWmAsync(
         FiestaEndpoint wmEp, BotCredentials creds, byte[] otp, byte? selectSlot,
@@ -142,71 +134,78 @@ public sealed class LoginChain
             FillBytes(req.user.n256_name, creds.Username);
             ValidateNewFromOtp(req.validate_new, otp);
             await conn.SendAsync(req, ct);
-            _log("[WM] >> LOGINWORLD_REQ (0x0C0F) + OTP");
+            _log("[WM] >> LOGINWORLD_REQ + OTP");
 
             var avatars = new List<AvatarSummary>();
             ushort wmHandle = 0;
             AvatarSummary? selected = null;
-            FiestaEndpoint? zone = null;
             var charLoginSent = false;
 
-            var deadline = DateTime.UtcNow.AddSeconds(10);
+            var deadline = DateTime.UtcNow.AddSeconds(15);
             while (DateTime.UtcNow < deadline)
             {
                 var pkt = await ReadWithTimeout(conn, deadline, ct);
                 Trace("WM", pkt);
 
-                switch (pkt.Opcode)
+                if (pkt.Opcode == OpLoginWorldFail)
                 {
-                    case OpLoginWorldFail:
-                    {
-                        var fail = pkt.ReadBody<PROTO_NC_USER_LOGINWORLDFAIL_ACK>();
-                        throw new LoginChainException($"LOGINWORLDFAIL error={fail.errorcode.err}");
-                    }
-                    case OpLoginWorldAck:
-                    {
-                        var ack = pkt.ReadBody<PROTO_NC_USER_LOGINWORLD_ACK>();
-                        wmHandle = ack.worldmanager;
-                        foreach (var a in ack.avatar)
-                            avatars.Add(new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level));
-                        _log($"[WM] << LOGINWORLD_ACK handle={wmHandle} numavatars={avatars.Count}: " +
-                             string.Join(", ", avatars.Select(a => $"'{a.Name}'(slot {a.Slot})")));
+                    var fail = pkt.ReadBody<PROTO_NC_USER_LOGINWORLDFAIL_ACK>();
+                    throw new LoginChainException($"LOGINWORLDFAIL error={fail.errorcode.err}");
+                }
+                if (pkt.Opcode == OpCharLoginFail)
+                {
+                    var fail = pkt.ReadBody<PROTO_NC_CHAR_LOGINFAIL_ACK>();
+                    throw new LoginChainException($"CHAR_LOGINFAIL err={fail.err}");
+                }
+                if (pkt.Opcode == OpLoginWorldAck)
+                {
+                    var ack = pkt.ReadBody<PROTO_NC_USER_LOGINWORLD_ACK>();
+                    wmHandle = ack.worldmanager;
+                    foreach (var a in ack.avatar)
+                        avatars.Add(new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level));
+                    _log($"[WM] << LOGINWORLD_ACK handle={wmHandle} numavatars={avatars.Count}: " +
+                         string.Join(", ", avatars.Select(a => $"'{a.Name}'(slot {a.Slot})")));
 
-                        // Pick the avatar to enter with.
-                        selected = selectSlot is { } s
-                            ? avatars.FirstOrDefault(a => a.Slot == s)
-                            : avatars.FirstOrDefault();
+                    selected = selectSlot is { } s
+                        ? avatars.FirstOrDefault(a => a.Slot == s)
+                        : avatars.FirstOrDefault();
 
-                        // First-class character creation: if there's no avatar to
-                        // enter with and a spec was given, create one in-band.
-                        if (selected is null && createIfMissing is not null)
-                        {
-                            selected = await CreateAvatarAsync(conn, createIfMissing, ct);
-                            avatars = new List<AvatarSummary>(avatars) { selected };
-                        }
-
-                        if (selected is not null && !charLoginSent)
-                        {
-                            await conn.SendAsync(new FiestaPacket(0x1001, new byte[] { selected.Slot }), ct);
-                            charLoginSent = true;
-                            _log($"[WM] >> CHAR_LOGIN_REQ (0x1001) slot={selected.Slot} char='{selected.Name}'");
-                        }
-                        else if (selected is null)
-                        {
-                            _log("[WM] account has no avatars and no create spec — cannot enter a zone");
-                            return (new WmPhaseResult(wmHandle, avatars, null, null), conn);
-                        }
-                        break;
-                    }
-                    case OpCharLoginAck:
+                    // First-class character creation: if there's nothing to enter
+                    // with and a spec was given, create one in-band.
+                    if (selected is null && createIfMissing is not null)
                     {
-                        var span = pkt.Payload.Span;
-                        var ip = AsciiZ(span[..Math.Min(16, span.Length)].ToArray());
-                        var port = span.Length >= 18 ? (ushort)(span[16] | (span[17] << 8)) : (ushort)0;
-                        zone = new FiestaEndpoint(string.IsNullOrEmpty(ip) ? wmEp.Host : ip, port);
-                        _log($"[WM] << CHAR_LOGIN_ACK (0x1003) zone={zone}");
-                        return (new WmPhaseResult(wmHandle, avatars, selected, zone), conn);
+                        selected = await CreateAvatarAsync(conn, createIfMissing, ct);
+                        avatars = new List<AvatarSummary>(avatars) { selected };
                     }
+
+                    if (selected is not null && !charLoginSent)
+                    {
+                        await conn.SendAsync(new PROTO_NC_CHAR_LOGIN_REQ { slot = selected.Slot }, ct);
+                        charLoginSent = true;
+                        _log($"[WM] >> CHAR_LOGIN_REQ slot={selected.Slot} char='{selected.Name}'");
+                    }
+                    else if (selected is null)
+                    {
+                        _log("[WM] account has no avatars and no create spec — cannot enter a zone");
+                        return (new WmPhaseResult(wmHandle, avatars, null, null), conn);
+                    }
+                }
+                else if (pkt.Opcode == OpTutorialPopup)
+                {
+                    // Brand-new char drops into the newbie tutorial. Decline it so
+                    // the char proceeds to the normal zone handoff. (The decline
+                    // takes effect server-side on the NEXT login; the declining
+                    // login itself may CHAR_LOGINFAIL — reconnect to enter.)
+                    await conn.SendAsync(new PROTO_NC_CHAR_TUTORIAL_POPUP_ACK { bIsSkip = 1 }, ct);
+                    _log("[WM] >> TUTORIAL_POPUP_ACK bIsSkip=1 (declined)");
+                }
+                else if (pkt.Opcode == OpCharLoginAck)
+                {
+                    var ack = pkt.ReadBody<PROTO_NC_CHAR_LOGIN_ACK>();
+                    var ip = AsciiZ(ack.zoneip.n4_name);
+                    var zone = new FiestaEndpoint(string.IsNullOrEmpty(ip) ? wmEp.Host : ip, ack.zoneport);
+                    _log($"[WM] << CHAR_LOGIN_ACK zone={zone}");
+                    return (new WmPhaseResult(wmHandle, avatars, selected, zone), conn);
                 }
             }
             throw new LoginChainException("WM phase timed out before CHAR_LOGIN_ACK");
@@ -220,7 +219,7 @@ public sealed class LoginChain
 
     /// <summary>
     /// Create a character in-band on an open WM connection (char-select screen):
-    /// AVATAR_CREATE_REQ (0x1401) → CREATESUCC_ACK (0x1406) / CREATEFAIL (0x1404).
+    /// AVATAR_CREATE_REQ → CREATESUCC_ACK / CREATEFAIL.
     /// </summary>
     public async Task<AvatarSummary> CreateAvatarAsync(
         FiestaClientConnection conn, CharacterSpec spec, CancellationToken ct)
@@ -234,7 +233,7 @@ public sealed class LoginChain
         req.char_shape.haircolor = spec.HairColor;
         req.char_shape.faceshape = spec.FaceShape;
         await conn.SendAsync(req, ct);
-        _log($"[WM] >> AVATAR_CREATE_REQ (0x1401) slot={spec.Slot} name='{spec.Name}' " +
+        _log($"[WM] >> AVATAR_CREATE_REQ slot={spec.Slot} name='{spec.Name}' " +
              $"class={spec.Class}({(byte)spec.Class}) gender={spec.Gender}");
 
         var deadline = DateTime.UtcNow.AddSeconds(10);
@@ -242,27 +241,23 @@ public sealed class LoginChain
         {
             var pkt = await ReadWithTimeout(conn, deadline, ct);
             Trace("WM", pkt);
-            switch (pkt.Opcode)
+            if (pkt.Opcode == OpAvatarCreateSucc)
             {
-                case 0x1406: // AVATAR_CREATESUCC_ACK
-                {
-                    var ok = pkt.ReadBody<PROTO_NC_AVATAR_CREATESUCC_ACK>();
-                    var a = ok.avatar;
-                    var sum = new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level);
-                    _log($"[WM] << AVATAR_CREATESUCC_ACK name='{sum.Name}' slot={sum.Slot} level={sum.Level}");
-                    return sum;
-                }
-                case 0x1404: // AVATAR_CREATEFAIL_ACK
-                {
-                    var f = pkt.ReadBody<PROTO_NC_AVATAR_CREATEFAIL_ACK>();
-                    throw new LoginChainException($"AVATAR_CREATEFAIL err={f.err}");
-                }
-                case 0x1403: // AVATAR_CREATEDATAFAIL_ACK
-                {
-                    var f = pkt.ReadBody<PROTO_NC_AVATAR_CREATEDATAFAIL_ACK>();
-                    throw new LoginChainException(
-                        $"AVATAR_CREATEDATAFAIL charid='{AsciiZ(f.charid.n5_name)}' err={f.err}");
-                }
+                var ok = pkt.ReadBody<PROTO_NC_AVATAR_CREATESUCC_ACK>();
+                var a = ok.avatar;
+                var sum = new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level);
+                _log($"[WM] << AVATAR_CREATESUCC_ACK name='{sum.Name}' slot={sum.Slot} level={sum.Level}");
+                return sum;
+            }
+            if (pkt.Opcode == OpAvatarCreateFail)
+            {
+                var f = pkt.ReadBody<PROTO_NC_AVATAR_CREATEFAIL_ACK>();
+                throw new LoginChainException($"AVATAR_CREATEFAIL err={f.err}");
+            }
+            if (pkt.Opcode == OpAvatarCreateDataFail)
+            {
+                var f = pkt.ReadBody<PROTO_NC_AVATAR_CREATEDATAFAIL_ACK>();
+                throw new LoginChainException($"AVATAR_CREATEDATAFAIL charid='{AsciiZ(f.charid.n5_name)}' err={f.err}");
             }
         }
         throw new LoginChainException("AVATAR_CREATE timed out before an ACK");
