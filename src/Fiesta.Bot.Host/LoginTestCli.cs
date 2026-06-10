@@ -1,5 +1,6 @@
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Net;
+using Fiesta.Bot.Session;
 using Fiesta.Bot.Zone;
 
 namespace Fiesta.Bot.Host;
@@ -66,9 +67,26 @@ public static class LoginTestCli
                     var dataDir = opt.GetValueOrDefault("data-dir", "Z:/ClientProd2/ressystem");
                     var zoneEntry = ZoneEntry.FromDataDir(table, Log, dataDir);
                     var zoneEp = new FiestaEndpoint(host, zoneAdv.Port); // public host, advertised port
-                    using var zoneConn = await zoneEntry.EnterAsync(zoneEp, wm.WmHandle, sel.Name, cts.Token);
+                    var zoneConn = await zoneEntry.EnterAsync(zoneEp, wm.WmHandle, sel.Name, cts.Token);
                     Log($"[ok] *** {sel.Name} IS IN ZONE ({zoneEp}) ***");
-                    await Task.Delay(2000, cts.Token); // brief hold; real keepalive loop is task 16
+
+                    // Task 16 — bot session runtime: stay in zone. Run a session on
+                    // BOTH connections (each answers its own Misc heartbeats; the WM
+                    // link keeps receiving them while we're in zone). Hold for --hold
+                    // seconds (default 30) to prove we don't get timed out / kicked.
+                    var holdSec = int.Parse(opt.GetValueOrDefault("hold", "30"));
+                    await using var zoneSession = new BotSession(zoneConn, sel.Name, wm.WmHandle, zoneEp, Log);
+                    var wmSession = new BotSession(wmConn, sel.Name, wm.WmHandle, wmEp, Log);
+                    using var holdCts = new CancellationTokenSource(TimeSpan.FromSeconds(holdSec));
+                    Log($"[hold] staying in zone for {holdSec}s, answering heartbeats…");
+                    await Task.WhenAll(
+                        zoneSession.RunAsync(holdCts.Token),
+                        wmSession.RunAsync(holdCts.Token));
+                    var zs = zoneSession.State; var ws = wmSession.State;
+                    var survived = zs.DisconnectReason == "cancelled" && ws.DisconnectReason == "cancelled";
+                    Log($"[hold] done — zone: {zs.InboundCount} frames / {zs.HeartbeatCount} hb (end: {zs.DisconnectReason}), " +
+                        $"wm: {ws.InboundCount} frames / {ws.HeartbeatCount} hb (end: {ws.DisconnectReason}); " +
+                        $"stayed-in-zone={survived}");
                 }
             }
             return 0;
