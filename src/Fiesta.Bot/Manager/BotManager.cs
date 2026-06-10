@@ -139,6 +139,22 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, $"equip inventory slot {slot}",
             s => s.SendAsync(new PROTO_NC_ITEM_EQUIP_REQ { slot = slot }, ct));
 
+    // Move/run (ACT MoverunCmd, 0x2019): 16 bytes = fromX,fromY,toX,toY (u32 LE).
+    private static readonly ushort OpMoveRun =
+        (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.MoverunCmd);
+
+    /// <summary>Walk from one map coordinate to another (one MoverunCmd step).</summary>
+    public Task<ActionResult> WalkAsync(string id, uint fromX, uint fromY, uint toX, uint toY, CancellationToken ct = default)
+        => ActAsync(id, $"walk ({fromX},{fromY})->({toX},{toY})", s =>
+        {
+            var p = new byte[16];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), fromX);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), fromY);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), toX);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), toY);
+            return s.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
+        });
+
     /// <summary>Issue a GM command (e.g. <c>&amp;levelup 46</c>, <c>&amp;makeitem SafeProtection01</c>).
     /// GM commands are routed through the chat channel — the server processes the
     /// <c>&amp;</c>/<c>$</c> prefix when the account has GM authority (nAuthID=9).</summary>

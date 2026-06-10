@@ -37,6 +37,7 @@ public static class BotEndpoints
             group.MapGet("/{id}/inventory", (string id) => Unavailable()).WithSummary("Bot inventory (unavailable)");
             group.MapGet("/{id}/equipment", (string id) => Unavailable()).WithSummary("Bot equipment (unavailable)");
             group.MapPost("/{id}/equip", (string id) => Unavailable()).WithSummary("Bot equip (unavailable)");
+            group.MapPost("/{id}/walk", (string id) => Unavailable()).WithSummary("Bot walk (unavailable)");
             group.MapPost("/{id}/gm", (string id) => Unavailable()).WithSummary("Bot GM command (unavailable)");
             return;
         }
@@ -141,6 +142,14 @@ public static class BotEndpoints
         })
         .WithSummary("Equip the inventory item at the given slot");
 
+        group.MapPost("/{id}/walk", async (string id, WalkRequest req) =>
+        {
+            if (req.ToX is not { } tx || req.ToY is not { } ty || req.FromX is not { } fx || req.FromY is not { } fy)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["coords"] = ["fromX, fromY, toX, toY are required"] });
+            return ToResult(await manager.WalkAsync(id, fx, fy, tx, ty), id, new { id, from = new[] { fx, fy }, to = new[] { tx, ty } });
+        })
+        .WithSummary("Walk from (fromX,fromY) to (toX,toY) — one MoverunCmd step");
+
         group.MapPost("/{id}/gm", async (string id, GmRequest req) =>
         {
             if (string.IsNullOrWhiteSpace(req.Command))
@@ -193,6 +202,15 @@ public sealed record WhisperRequest
 {
     public string? To { get; init; }
     public string? Text { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/walk</c>. Map coords (u32).</summary>
+public sealed record WalkRequest
+{
+    public uint? FromX { get; init; }
+    public uint? FromY { get; init; }
+    public uint? ToX { get; init; }
+    public uint? ToY { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/gm</c>. The '&' prefix is added if omitted.</summary>
