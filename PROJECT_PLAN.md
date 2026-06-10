@@ -187,14 +187,25 @@ Warlock(19); Joker line's lvl-100 = Spectre(24) or Reaper/Assassin(25)).
 **Crusader (Sentinel=26)** is creatable at level 60, but only if the account
 already has a level-60+ character. Full tree is in `ClassId` (CharacterSpec.cs).
 
-### Tutorial decline (SOLVED)
-A freshly-created char enters the newbie tutorial: CHAR_LOGIN_REQ is answered
-with `CHAR_TUTORIAL_POPUP_REQ` (Char 272), not CHAR_LOGIN_ACK. Reply with
-`CHAR_TUTORIAL_POPUP_ACK { bIsSkip = 1 }` (Char 273) to decline. The decline
-takes effect server-side on the NEXT login — the declining login itself returns
-CHAR_LOGINFAIL (Char 2), then a fresh login goes straight to CHAR_LOGIN_ACK with
-the zone endpoint. So a new char's full flow is: create → decline → reconnect →
-CHAR_LOGIN_ACK. Live-verified: BotFighter → zone 62.171.171.24:9016 (zone00).
+### Tutorial decline (SOLVED — in-session, NO reconnect)
+A freshly-created char enters the newbie tutorial. After `CHAR_LOGIN_REQ`, the
+server sends `CHAR_TUTORIAL_POPUP_REQ` (Char 272, 0x1110) **and**
+`CHAR_LOGIN_ACK` (Char 3, 0x1003) in the same session. Reply to the popup with
+`CHAR_TUTORIAL_POPUP_ACK { bIsSkip = 1 }` (Char 273) to decline. **No reconnect,
+no CHAR_LOGINFAIL** — the earlier "decline only takes effect next login /
+reconnect" theory was WRONG, disproved by `Z:/SkipTutorial.pcapng` and a live
+test. The WM read loop handles `TUTORIAL_POPUP` and `CHAR_LOGIN_ACK` in either
+arrival order; `CHAR_LOGINFAIL` is now a genuine error (it does not occur on the
+happy path). New char must be created on a FREE slot (`FirstFreeSlot`) and
+`CHAR_LOGIN_REQ` uses the **server-reported** slot from `CREATESUCC_ACK`.
+
+Live flow (2026-06-10, Bot2433 Priest, Ikaron acct slot 2):
+```
+>> AVATAR_CREATE_REQ slot=2  << AVATAR_CREATESUCC_ACK slot=2 level=1
+>> CHAR_LOGIN_REQ slot=2     << TUTORIAL_POPUP_REQ (0x1110)
+>> TUTORIAL_POPUP_ACK skip=1 << CHAR_LOGIN_ACK zone=62.171.171.24:9016
+>> MAP_LOGIN_REQ (0x1801)    << 0x1038  *** IN ZONE ***
+```
 
 **Opcode convention:** resolve every opcode via `PacketRegistry.GetOpcode<T>()`
 (derived from each struct's `[FiestaOpcode(dept, cmd)]` — the 6-bit dept | 10-bit
@@ -222,7 +233,32 @@ MD5(file[:0x24] + Encryption(file[0x24:])) over the client's reference .shn.
   misspelled `Encription`).
 
 ## Full chain DONE
-log in → create char → decline tutorial → reconnect → [1801] → in zone — all
-typed, no capture replay, live-verified end to end (BotFighter @ zone00, 9016).
-**Next: task 16 (session runtime — keepalive + inbound dispatch + state) to STAY
-in zone and act (buff/party).**
+log in → create char (free slot) → CHAR_LOGIN → decline tutorial (in-session) →
+[1801] → in zone — all typed, no capture replay, live-verified end to end
+(Bot2433 Priest @ zone00, 9016, 2026-06-10). No reconnect anywhere.
+
+## Session runtime (task 16, DONE — live-verified 2026-06-10)
+`Session/BotSession.cs` + `Session/BotSessionState.cs`. One read loop per
+connection that:
+- pumps inbound S→C frames continuously;
+- auto-answers the server keepalive: on `Misc HEARTBEAT_REQ` (0x0804) it replies
+  a **bare** `HEARTBEAT_ACK` (0x0805, empty payload — matches the real client;
+  the `_SEND` structs carry size+netcmd but the wire frame the client sends is
+  opcode-only). Opcodes derived `(dept<<10)|cmd` from `ProtocolCommand.Misc` +
+  `MiscOpcode`, no hex;
+- updates `State` (uptime, inbound/heartbeat counts, last opcode, connected +
+  disconnect reason) via Interlocked — safe to read from HTTP/status threads;
+- fans every non-keepalive frame to `event PacketReceived` for the buff/party
+  layers; exposes `SendAsync` (typed or raw) for outbound actions.
+Owns the connection; `IAsyncDisposable`. A normal stop is `cancelled`; a kick
+shows as `peer closed`.
+
+LoginTestCli now runs a `BotSession` on BOTH the zone and WM links (the WM link
+keeps getting heartbeats while in zone) for `--hold <sec>` (default 30).
+Verified: BotFighter held in zone 40s, heartbeats answered on both, ended on
+the hold timer (not a kick).
+
+**Next: task 17 (multi-bot manager + HTTP control API) — a BotManager that owns
+N BotSessions keyed by id, plus minimal-API endpoints to spawn/stop/list/status.
+Then 18 (account provisioning via api master key), 19 (loadout templates + GM
+gearing), 20 (web UI).**

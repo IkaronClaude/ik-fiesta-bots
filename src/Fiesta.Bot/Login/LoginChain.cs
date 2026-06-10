@@ -171,10 +171,17 @@ public sealed class LoginChain
                         : avatars.FirstOrDefault();
 
                     // First-class character creation: if there's nothing to enter
-                    // with and a spec was given, create one in-band.
+                    // with and a spec was given, create one in-band. Pick the
+                    // lowest free slot if the requested one is taken — the real
+                    // client creates into an empty slot (capture: existing char on
+                    // slot 0, new char created on slot 1), and CHAR_LOGIN then uses
+                    // the server-reported slot, not the requested one.
                     if (selected is null && createIfMissing is not null)
                     {
-                        selected = await CreateAvatarAsync(conn, createIfMissing, ct);
+                        var spec = createIfMissing;
+                        if (avatars.Any(a => a.Slot == spec.Slot))
+                            spec = spec with { Slot = FirstFreeSlot(avatars) };
+                        selected = await CreateAvatarAsync(conn, spec, ct);
                         avatars = new List<AvatarSummary>(avatars) { selected };
                     }
 
@@ -264,6 +271,14 @@ public sealed class LoginChain
     }
 
     // ---- helpers ----
+
+    /// <summary>Lowest avatar slot (0..255) not already occupied.</summary>
+    private static byte FirstFreeSlot(IReadOnlyList<AvatarSummary> avatars)
+    {
+        for (var s = 0; s < 256; s++)
+            if (avatars.All(a => a.Slot != s)) return (byte)s;
+        throw new LoginChainException("no free avatar slot");
+    }
 
     private void Trace(string tag, FiestaPacket pkt)
         => _log($"[{tag}] << 0x{pkt.Opcode:X4} dept={pkt.Department} cmd={pkt.Command} len={pkt.Payload.Length}");
