@@ -651,3 +651,20 @@ flag-blob[99] | sAnimation[32] | 3`. The typed FiestaLib struct skips the blob, 
   not the NPC-vs-monster discriminator** — that needs a *field* capture (walk a bot
   through a gate into RouCos and re-dump `/npcs`; the bot can now produce that
   itself). Gate *transition* packet still un-decoded — next live step.
+
+### Near-future: multi-map pathfinding via the link graph (operator note 2026-06-11)
+The client already does cross-map autorun (run to a quest location / quest-reward
+NPC across several maps). The graph behind it is **`MapLinkPoint.shn`** (16851 rows
+`MLP_FromID, MLP_ToID, MLP_Weight, MLP_OneWay_Street` — a weighted *directed* graph;
+the IDs index a node table whose per-node (map,coord) still needs resolving). Build
+cross-map routing on top of what we have:
+- **High level:** Dijkstra/A* over the map-to-map graph → an ordered list of gates
+  to take. We can source that graph two ways that converge: (a) the server file
+  `MapLinkPoint.shn`, or (b) **auto-discovered** — the gate `linkMap` destinations
+  we now decode per map already give the edges (RouN→RouCos01/02/03/EventF/…), so
+  roaming bots rebuild the same graph without server files.
+- **Low level (per map):** the verified in-map A* over the `.shbd` block grid, with
+  the target = the coord of the gate whose `linkMap` is the next hop (from `/npcs`).
+- So: pick route → for each hop, walk-to-gate (in-map A*) → take gate (transition
+  packet, TODO capture) → re-acquire on the far side → repeat. This is also exactly
+  the machinery "follow player across a map boundary" needs.
