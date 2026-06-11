@@ -554,9 +554,14 @@ RouN = 2048×2048 tiles. Mapping (validated against the live spawn/regen points)
 Built `Pathfinding/BlockGrid.cs` (loader + `IsWalkableWorld` + tile↔world) and
 `Pathfinding/PathFinder.cs` (A*, 8-dir, no corner-cutting). Validated on RouN: a
 43-waypoint path in 2ms, all waypoints walkable; out-of-region goal → no path.
-**Next:** `/walkto {x,y}` — pathfind from the bot's pos and emit MoverunCmd steps
-(simplify to corner waypoints, time each segment to walk speed); track the bot's
-map (`sLoginZone`) + position to pick the right `.shbd` and the start point.
+`/walkto {fromX,fromY,toX,toY,map}` wires it end to end: loads
+`BLOCKINFO_DIR/<map>.shbd` (cached), A* → `Simplify` (corner waypoints) →
+`BotManager.WalkPath` (one MoverunCmd per segment, paced ~120 u/s on a background
+task). **LIVE-VERIFIED (2026-06-11):** `/walkto (6900,8520)→(6445,8630)` on RouN
+= 59 tiles → 11 waypoints; the char walked it and the DB position went
+(6900,8520) → **(6444,8628)** = the target. No kick (move pace accepted).
+**Polish left:** auto-track the bot's map (`sLoginZone`) + live position so
+`/walkto {x,y}` needs no explicit from/map; tune speed; per-step arrival sync.
 - **2-bot chat-observe test** (one `/say`s, the other's ZoneView decodes
   `SOMEONECHAT`) needs a **second account** — only `testuser` creds are held.
 - Cast packet (`SKILLBASH_OBJ_CAST_REQ` vs `SKILLENCHANT_REQ`) confirmed only once
