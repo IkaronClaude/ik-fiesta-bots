@@ -136,15 +136,163 @@ public sealed class BotManager : IAsyncDisposable
     private static readonly ushort OpActChangeMode =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.ChangemodeReq);
 
-    /// <summary>Cast a skill on a target zone handle, replaying the client's full
-    /// target → battle-mode → cast sequence so the zone accepts it.</summary>
-    public Task<ActionResult> CastAsync(string id, ushort skill, ushort target, CancellationToken ct = default)
-        => ActAsync(id, $"cast skill {skill} on h={target} (target+mode+cast)", async s =>
+    /// <summary>Cast a skill on a target zone handle, replaying the client's
+    /// target → battle-mode → (stop) → cast sequence so the zone accepts it.
+    /// <paramref name="stopFirst"/> sends a STOP_REQ committing our current position
+    /// right before the cast: an offensive SKILLBASH is rejected
+    /// (NC_BAT_SKILLBASH_CAST_FAIL_ACK) if the server considers us moving, so a damage
+    /// skill must STOP first — verified in CombatExtensive.pcapng (every accepted cast
+    /// is preceded by STOP_REQ). A heal is exempt; it can be cast while walking, so it
+    /// passes <c>stopFirst:false</c> to avoid halting a moving bot.</summary>
+    public async Task<ActionResult> CastAsync(string id, ushort skill, ushort target, bool stopFirst = true, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
+        await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
+        // Offensive skills enforce UsableDegree — the target must be within our facing
+        // arc — so we must FACE it before casting (else NC_BAT_SKILLBASH_CAST_FAIL_ACK).
+        // There's no rotate packet; the client turns via MOVERUN, whose from->to vector
+        // sets facing. Send a tiny MOVERUN toward the target (just enough to turn, capped
+        // so a ranged caster never closes into melee), then STOP, then cast. Verified in
+        // CombatExtensive.pcapng: every accepted cast is preceded by MOVERUN→target. Heal
+        // passes stopFirst:false (self-cast needs no facing and can be cast while moving).
+        if (stopFirst && handle.Position is { } pos && NpcPos(handle, target) is { } tp)
         {
-            await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
-            await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
-            await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
-        });
+            var dx = (double)tp.X - pos.X; var dy = (double)tp.Y - pos.Y;
+            var dist = Math.Sqrt(dx * dx + dy * dy);
+            uint faceX = pos.X, faceY = pos.Y;
+            if (dist > 1)
+            {
+                var step = Math.Min(16.0, dist - 1); // enough to set facing; never overshoot
+                faceX = (uint)Math.Round(pos.X + dx / dist * step);
+                faceY = (uint)Math.Round(pos.Y + dy / dist * step);
+            }
+            var mv = new byte[16];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(0), pos.X);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(4), pos.Y);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(8), faceX);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(12), faceY);
+            await s.SendAsync(new FiestaPacket(OpMoveRun, mv), ct);
+            var stop = new byte[8];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), faceX);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), faceY);
+            await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
+            handle.SetPosition(faceX, faceY);
+        }
+        await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
+        handle.Log($"cast skill {skill} on h={target} ({(stopFirst ? "target+mode+face+cast" : "target+mode+cast")})");
+        return ActionResult.Sent;
+    }
+
+    /// <summary>Cast a heal skill on yourself (cast target = own handle). The client's
+    /// "a heal lands on me even with an enemy targeted" is a client-side redirect, so
+    /// the bot self-targets explicitly — otherwise the server heals the enemy/ally in
+    /// the cast packet. Needs the self handle (from the [1802] login ack).</summary>
+    public Task<ActionResult> HealSelfAsync(string id, ushort skill, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return Task.FromResult(ActionResult.NotFound);
+        if (handle.SelfHandle is not { } self) return Task.FromResult(ActionResult.NotInZone);
+        return CastAsync(id, skill, self, stopFirst: false, ct: ct); // heal castable while moving
+    }
+
+    /// <summary>Attack: cast a (damage) skill on <paramref name="target"/>, or the
+    /// nearest non-gate mob in view when target is 0. Bare target→mode→cast — it does
+    /// NOT engage auto-attack or move the bot into melee (that would be wrong for a
+    /// ranged/AoE caster; a mage casts without ever auto-attacking). To melee-swing,
+    /// call <see cref="AutoAttackAsync"/> separately.</summary>
+    public Task<ActionResult> AttackAsync(string id, ushort skill, ushort target = 0, CancellationToken ct = default)
+    {
+        if (target == 0 && _bots.TryGetValue(id, out var h) && NearestMob(h) is { } m) target = m;
+        if (target == 0) return Task.FromResult(ActionResult.NotFound);
+        return CastAsync(id, skill, target, ct: ct); // damage: STOP-then-cast (default)
+    }
+
+    // STOP (ACT StopReq 0x2012): 8 bytes [x u32][y u32] — the position the char halts at.
+    private static readonly ushort OpActStop =
+        (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.StopReq);
+    // BASHSTART / BASHSTOP (BAT 0x242B / 0x2432, empty): begin / end melee auto-attack on
+    // the current target. While bashing the server streams SWING_START/SWING_DAMAGE
+    // (0x2447/0x2448) until the mob dies or we BASHSTOP — verified in CombatExtensive.pcapng.
+    private const ushort OpBatBashStart = (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.BashstartCmd);
+    private const ushort OpBatBashStop = (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.BashstopCmd);
+
+    /// <summary>Begin auto-attacking (melee swings) a target, or the nearest mob if 0.
+    /// Mirrors the real client (CombatExtensive.pcapng, "click once, many swings"):
+    /// target → battle mode → a short MOVERUN toward the mob + STOP (close to melee
+    /// range and FACE it — a swing is rejected otherwise) → BASHSTART, after which the
+    /// server streams continuous swing/damage until the mob dies or
+    /// <see cref="StopAttackAsync"/>. Auto-attack is inherently melee; skills are cast
+    /// separately via <see cref="AttackAsync"/>/<see cref="CastAsync"/> and are NOT
+    /// coupled to this (a mage never auto-attacks).</summary>
+    public async Task<ActionResult> AutoAttackAsync(string id, ushort target = 0, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        if (target == 0 && NearestMob(handle) is { } m) target = m;
+        if (target == 0) return ActionResult.NotFound;
+
+        await s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct);
+        await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
+
+        // Close to melee range + face the mob: a final MOVERUN toward it then STOP. The
+        // server validates a swing against position/facing, so this is what lets the
+        // first bash land when we're near but not engaged.
+        if (handle.Position is { } pos && NpcPos(handle, target) is { } tp)
+        {
+            var dx = (double)pos.X - tp.X; var dy = (double)pos.Y - tp.Y;
+            var dist = Math.Sqrt(dx * dx + dy * dy);
+            const double melee = 30.0; // stand this far from the mob (adjacent)
+            uint standX = pos.X, standY = pos.Y;
+            if (dist > 1)
+            {
+                standX = (uint)Math.Round(tp.X + dx / dist * Math.Min(dist, melee));
+                standY = (uint)Math.Round(tp.Y + dy / dist * Math.Min(dist, melee));
+            }
+            var mv = new byte[16];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(0), pos.X);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(4), pos.Y);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(8), standX);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(12), standY);
+            await s.SendAsync(new FiestaPacket(OpMoveRun, mv), ct);
+            var stop = new byte[8];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), standX);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), standY);
+            await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
+            handle.SetPosition(standX, standY);
+        }
+        await s.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
+        handle.Log($"auto-attack h={target}");
+        return ActionResult.Sent;
+    }
+
+    /// <summary>Stop auto-attacking (BAT BashstopCmd).</summary>
+    public Task<ActionResult> StopAttackAsync(string id, CancellationToken ct = default)
+        => ActAsync(id, "stop auto-attack", s => s.SendAsync(new FiestaPacket(OpBatBashStop, Array.Empty<byte>()), ct));
+
+    /// <summary>Position of a nearby NPC/mob by zone handle (null if not in view).</summary>
+    private static (uint X, uint Y)? NpcPos(BotHandle handle, ushort target)
+    {
+        if (handle.ZoneView is not { } view) return null;
+        foreach (var n in view.NearbyNpcs) if (n.Handle == target) return (n.X, n.Y);
+        return null;
+    }
+
+    /// <summary>Handle of the nearest non-gate mob/NPC to the bot (null if none in
+    /// view). Out in the field this is a mob; near town it may be an NPC — pass an
+    /// explicit target to <see cref="AttackAsync"/> when that matters.</summary>
+    private static ushort? NearestMob(BotHandle handle)
+    {
+        if (handle.ZoneView is not { } view || handle.Position is not { } pos) return null;
+        ushort? best = null; var bestD = double.MaxValue;
+        foreach (var n in view.NearbyNpcs)
+        {
+            if (n.IsGate) continue;
+            var d = Math.Pow((double)n.X - pos.X, 2) + Math.Pow((double)n.Y - pos.Y, 2);
+            if (d < bestD) { bestD = d; best = n.Handle; }
+        }
+        return best;
+    }
 
     // ── Targeting / follow (zone) ─────────────────────────────────────────────
     // Targeting and follow are zone-side. A party-tab target (F2–F5 in the client)
@@ -350,25 +498,65 @@ public sealed class BotManager : IAsyncDisposable
     // server first sends MULTY_LINK_CMD and the client picks a destination by map
     // name via MULTY_LINK_SELECT_REQ. (Verified C->S in Portals.pcapng, 2026-06-11.)
     private const ushort OpMapMultyLinkSelect = (ushort)(((int)ProtocolCommand.Map << 10) | 31); // 0x181F
+    // SERVERMENU_ACK (Menu dept 0x0F, cmd 2): answers a server menu prompt (0x3C01).
+    // An instance gate (EldPri01) asks "move to Collapsed Prison field?" — option 0 =
+    // Yes (verified C->S in PartyFriendTarget.pcapng).
+    private const ushort OpMenuServerMenuAck = (ushort)((0x0F << 10) | 2); // 0x3C02
+    // MAP_LOGINCOMPLETE (Map dept 6, cmd 3): "finished loading — spawn me in-world".
+    // Sent at initial zone entry (ZoneEntry) and AGAIN after an in-band LINKSAME warp:
+    // the server holds back the new map's entity broadcasts until it sees this, so an
+    // instance (EldPri01) stays silent/empty without it.
+    private const ushort OpMapLoginComplete = (ushort)(((int)ProtocolCommand.Map << 10) | 3); // 0x1803
 
-    /// <summary>Take a field gate by its NPC handle: target → NPC-click, then (if
-    /// <paramref name="destMap"/> is given, for a multi-destination gate) select the
-    /// destination map by name. The bot must be within the gate's range. The zone
-    /// then drives the map transition (see <see cref="ZoneView.MapChanged"/>).</summary>
-    public Task<ActionResult> UseGateAsync(string id, ushort gateHandle, string? destMap = null, CancellationToken ct = default)
-        => ActAsync(id, $"use gate h={gateHandle}{(destMap is null ? "" : $" -> {destMap}")}", async s =>
+    /// <summary>Take a field gate by its NPC handle: target → NPC-click. If the gate
+    /// opens a Yes/No confirm menu (0x3C01, e.g. instance gates like EldPri01), answer
+    /// it with SERVERMENU_ACK option <paramref name="menuOption"/> (0 = Yes). For a
+    /// multi-destination gate, pass <paramref name="destMap"/> to pick the map by name.
+    /// The bot must be within the gate's range; the zone then drives the transition
+    /// (see <see cref="ZoneView.MapChanged"/>).</summary>
+    public async Task<ActionResult> UseGateAsync(string id, ushort gateHandle, string? destMap = null, byte menuOption = 0, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        var hb = new byte[] { (byte)gateHandle, (byte)(gateHandle >> 8) };
+        var view = handle.ZoneView;
+
+        // An instance gate confirms with a menu (0x3C01 "move to <field>?") before it
+        // transitions you; a plain field gate transitions outright with no menu. The
+        // gate also auto-opens that menu when you stand on its trigger — so if we
+        // spawned on the gate the menu may already be open before we click. Answer an
+        // already-open menu directly; otherwise target+click and poll ~3s for one.
+        async Task AnswerMenu()
         {
-            var hb = new byte[] { (byte)gateHandle, (byte)(gateHandle >> 8) };
+            await s.SendAsync(new FiestaPacket(OpMenuServerMenuAck, new[] { menuOption }), ct);
+            view?.ClearServerMenu();
+            handle.Log($"gate confirm menu answered (option {menuOption})");
+        }
+
+        if (view?.ServerMenuOpen == true)
+        {
+            await AnswerMenu();
+        }
+        else
+        {
             await s.SendAsync(new FiestaPacket(OpBatTarget, hb), ct);
             await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
-            if (!string.IsNullOrWhiteSpace(destMap))
+            for (var waited = 0; waited < 3000; waited += 150)
             {
-                var name3 = new byte[12]; // Name3, ASCII, null-padded
-                var bytes = System.Text.Encoding.ASCII.GetBytes(destMap);
-                Array.Copy(bytes, name3, Math.Min(bytes.Length, name3.Length));
-                await s.SendAsync(new FiestaPacket(OpMapMultyLinkSelect, name3), ct);
+                await Task.Delay(150, ct);
+                if (view?.ServerMenuOpen == true) { await AnswerMenu(); break; }
             }
-        });
+        }
+        if (!string.IsNullOrWhiteSpace(destMap))
+        {
+            var name3 = new byte[12]; // Name3, ASCII, null-padded
+            var bytes = System.Text.Encoding.ASCII.GetBytes(destMap);
+            Array.Copy(bytes, name3, Math.Min(bytes.Length, name3.Length));
+            await s.SendAsync(new FiestaPacket(OpMapMultyLinkSelect, name3), ct);
+        }
+        handle.Log($"use gate h={gateHandle}{(destMap is null ? "" : $" -> {destMap}")}");
+        return ActionResult.Sent;
+    }
 
     /// <summary>Snapshot the gates the bot currently sees into the shared
     /// <see cref="Graph"/> (auto-discovery): each in-view gate becomes an edge from
@@ -547,6 +735,16 @@ public sealed class BotManager : IAsyncDisposable
         handle.SetCurrentMap(name);
         log($"[nav] now on {name} (mapId={h.MapId}) at ({h.X},{h.Y})" +
             (h.IsCrossServer ? $" — cross-server handoff to {h.Ip}:{h.Port}, reconnecting" : " (in-band)"));
+
+        // In-band LINKSAME: re-send MAP_LOGINCOMPLETE so the server spawns us into the
+        // new map and starts broadcasting its entities (mobs/NPCs/players). Without it
+        // the bot sits in the destination invisible to the world (no mob packets). The
+        // cross-server path doesn't need this — it does a full re-login (which sends it).
+        if (!h.IsCrossServer && handle.ZoneSession is { } zs)
+        {
+            _ = zs.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), CancellationToken.None);
+            log($"[nav] >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) to spawn into {name}");
+        }
     }
 
     private async Task RunBotAsync(BotHandle handle)
@@ -604,6 +802,7 @@ public sealed class BotManager : IAsyncDisposable
                 var entry = await zoneEntry.EnterAsync(zoneEp, zoneWmHandle, sel.Name, ct);
                 var zoneConn = entry.Conn;
                 if (entry.SpawnX is { } spx && entry.SpawnY is { } spy) handle.SetPosition(spx, spy);
+                if (entry.CharHandle is { } selfH) handle.SetSelfHandle(selfH);
 
                 // Tripped to break THIS zone session when a cross-server handoff lands,
                 // without disturbing the WM loop or the bot's overall cancellation.

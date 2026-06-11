@@ -84,6 +84,14 @@ public sealed class BotHandle
 
     internal void SetPosition(uint x, uint y) { lock (_posGate) _pos = (x, y); }
 
+    private volatile object? _selfHandleBox; // ushort? boxed (volatile needs reference)
+
+    /// <summary>The bot's own in-zone character handle (from the [1802] login ack).
+    /// Needed to self-target — e.g. cast a heal on yourself rather than your current
+    /// (enemy) target. Null until in zone.</summary>
+    public ushort? SelfHandle => _selfHandleBox as ushort?;
+    internal void SetSelfHandle(ushort handle) => _selfHandleBox = handle;
+
     /// <summary>Cancellation for the currently-running <see cref="Manager.BotManager.WalkPath"/>,
     /// if any — cancelled to abort a walk early (e.g. on a server MOVEFAIL so the bot
     /// stops banging into an off-grid obstacle). Set/cleared by the walk task.</summary>
