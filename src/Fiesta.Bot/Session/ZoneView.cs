@@ -11,6 +11,24 @@ public sealed record NearbyPlayer(ushort Handle, string Name, byte Class, byte L
     public DateTime SeenAtUtc { get; init; } = DateTime.UtcNow;
 }
 
+/// <summary>An NPC/mob the bot can see in zone (from the MOB briefinfo the zone
+/// broadcasts on field enter). <see cref="MobId"/> indexes the server mob table —
+/// resolve to a name/role offline (the ServerSource SQL project), or learn it by
+/// play (auto-discovery). Coord is the live world position. Sourcing NPC positions
+/// from this zone packet (not the server <c>NPC.txt</c>) is deliberate: it works
+/// even when we don't have the server files.
+///
+/// <para><see cref="Flag"/> is the per-mob flagstate byte: <b>0 = plain NPC/mob,
+/// 1 = a gate</b> (field link). For a gate, <see cref="LinkMap"/> carries the
+/// destination map name the packet embeds (e.g. RouN's GateRou1 → "RouCos02") —
+/// verified against the server NPC table, 2026-06-11. So gate discovery AND where
+/// each gate leads come straight from the zone, no server files needed.</para></summary>
+public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, uint Y, byte Flag = 0, string? LinkMap = null)
+{
+    public bool IsGate => Flag == 1;
+    public DateTime SeenAtUtc { get; init; } = DateTime.UtcNow;
+}
+
 /// <summary>An in-zone chat line overheard from a nearby speaker.</summary>
 public sealed record ChatMessage(ushort Handle, string? SenderName, string Text)
 {
@@ -30,6 +48,8 @@ public sealed class ZoneView : IDisposable
     private static readonly ushort OpBriefChar = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_CHARACTER_CMD>();
     private static readonly ushort OpBriefLogin = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_LOGINCHARACTER_CMD>();
     private static readonly ushort OpBriefDelete = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_BRIEFINFODELETE_CMD>();
+    private static readonly ushort OpBriefMob = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_MOB_CMD>();
+    private static readonly ushort OpRegenMob = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_REGENMOB_CMD>();
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
@@ -37,6 +57,7 @@ public sealed class ZoneView : IDisposable
     private readonly BotSession _session;
     private readonly Action<string>? _log;
     private readonly ConcurrentDictionary<ushort, NearbyPlayer> _nearby = new();
+    private readonly ConcurrentDictionary<ushort, NearbyNpc> _npcs = new();
     private readonly ConcurrentDictionary<byte, ushort> _inventory = new(); // bag slot -> itemId
     private readonly ConcurrentDictionary<byte, ushort> _equipment = new(); // equip slot -> itemId
 
@@ -58,6 +79,10 @@ public sealed class ZoneView : IDisposable
 
     public IReadOnlyCollection<NearbyPlayer> NearbyPlayers => _nearby.Values.ToArray();
     public int NearbyCount => _nearby.Count;
+
+    /// <summary>NPCs/mobs currently in view (handle → id/coord), from the zone's MOB
+    /// briefinfo. The runtime source for walk-to-NPC and gate location.</summary>
+    public IReadOnlyCollection<NearbyNpc> NearbyNpcs => _npcs.Values.ToArray();
     public ChatMessage? LastChat { get; private set; }
 
     /// <summary>Current bag contents: slot → itemId (built from the login item list
@@ -89,6 +114,25 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] player left: {gone.Name} (h={hnd})");
                 PlayerLeft?.Invoke(hnd);
             }
+            _npcs.TryRemove(hnd, out _); // the same delete also retires NPCs/mobs
+        }
+        else if (op == OpBriefMob)
+        {
+            // A batch of NPC/mob spawns (sent on field enter): [mobnum:1][record × N].
+            // We parse the fixed-stride record by hand instead of via the typed struct
+            // because the struct skips the 99-byte flag blob — which is exactly where a
+            // gate's destination-map string lives.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 1)
+            {
+                int n = p[0];
+                for (int i = 0; i < n; i++)
+                    AddOrUpdateNpc(p, 1 + i * MobRecordLen);
+            }
+        }
+        else if (op == OpRegenMob)
+        {
+            AddOrUpdateNpc(pkt.Payload.Span, 0); // single record, no count prefix
         }
         else if (op == OpClientItem)
         {
@@ -152,6 +196,42 @@ public sealed class ZoneView : IDisposable
             _log?.Invoke($"[ZoneView] player appeared: {name} (h={c.handle} class={c.chrclass} lvl={c.Level})");
             PlayerAppeared?.Invoke(player);
         }
+    }
+
+    // REGENMOB record layout (fixed 149 bytes — verified against Full.pcapng):
+    // handle u16 | mode u8 | mobid u16 | x u32 | y u32 | dir u8 | flagstate u8 |
+    // flag-blob[99] (gate dest-map string when flagstate==1) | sAnimation[32] | 3 tail.
+    private const int MobRecordLen = 149;
+    private const int FlagBlobOffset = 15; // within a record
+
+    private void AddOrUpdateNpc(ReadOnlySpan<byte> p, int off)
+    {
+        if (off < 0 || off + FlagBlobOffset > p.Length) return; // need at least the header
+        var handle = (ushort)(p[off] | (p[off + 1] << 8));
+        var mode = p[off + 2];
+        var mobid = (ushort)(p[off + 3] | (p[off + 4] << 8));
+        var x = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(off + 5, 4));
+        var y = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(off + 9, 4));
+        var flag = p[off + 14];
+        string? linkMap = null;
+        if (flag == 1) // gate: the flag blob begins with the null-terminated dest-map name
+            linkMap = ReadCString(p, off + FlagBlobOffset, 32);
+
+        var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap);
+        var isNew = !_npcs.ContainsKey(handle);
+        _npcs[handle] = npc;
+        if (isNew)
+            _log?.Invoke(flag == 1
+                ? $"[ZoneView] gate appeared: id={mobid} h={handle} @({x},{y}) -> {linkMap}"
+                : $"[ZoneView] npc/mob appeared: id={mobid} h={handle} @({x},{y})");
+    }
+
+    private static string? ReadCString(ReadOnlySpan<byte> p, int off, int max)
+    {
+        int end = off;
+        int limit = Math.Min(p.Length, off + max);
+        while (end < limit && p[end] != 0) end++;
+        return end > off ? System.Text.Encoding.ASCII.GetString(p.Slice(off, end - off)) : null;
     }
 
     public void Dispose() => _session.PacketReceived -= OnPacket;
