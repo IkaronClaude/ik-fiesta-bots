@@ -7,10 +7,12 @@ namespace Fiesta.Bot.Pathfinding;
 /// Format (recovered 2026-06-11): 8-byte header = two LE u32 [bytesPerRow, height];
 /// then <c>height</c> rows of <c>bytesPerRow</c> bytes, **1 bit per tile**. Tiles
 /// are 8 world units wide. The grid is Y-flipped vs world Y, and the bit order
-/// within a byte is LSB-first. **bit 0 = walkable, bit 1 = blocked.**
+/// within a byte is LSB-first. **bit 1 = walkable, bit 0 = blocked** — verified
+/// live (2026-06-11): a character standing in Eld reads bit=1 with a fully-open
+/// neighborhood, and open plazas across maps are the ~92% bit=1 majority.
 ///   tileX = worldX >> 3
 ///   tileY = (height-1) - (worldY >> 3)
-///   blocked = (row[tileX >> 3] >> (tileX &amp; 7)) &amp; 1
+///   walkable = (row[tileX >> 3] >> (tileX &amp; 7)) &amp; 1
 /// </summary>
 public sealed class BlockGrid
 {
@@ -50,7 +52,7 @@ public sealed class BlockGrid
     {
         if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return false;
         var bytePos = 8 + ty * _bytesPerRow + (tx >> 3);
-        return ((_data[bytePos] >> (tx & 7)) & 1) == 0;
+        return ((_data[bytePos] >> (tx & 7)) & 1) == 1;
     }
 
     /// <summary>World coordinate of a tile's centre (for issuing move packets).</summary>

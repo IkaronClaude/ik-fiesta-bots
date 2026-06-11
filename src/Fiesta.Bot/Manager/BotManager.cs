@@ -349,7 +349,10 @@ public sealed class BotManager : IAsyncDisposable
             // they're handled live on the same connection by OnMapChanged.
             var zoneEp = new FiestaEndpoint(opt.Host, zoneAdv.Port);
             var zoneWmHandle = wmResult.WmHandle;
-            var currentMap = opt.StartMap;     // login ack has no map name; seed it
+            // The zone login ack has no map name, but the WM avatar list does
+            // (PROTO_AVATARINFORMATION.loginmap) — that's the authoritative start map.
+            // StartMap is only a fallback (e.g. for a just-created character).
+            var currentMap = string.IsNullOrWhiteSpace(sel.LoginMap) ? opt.StartMap : sel.LoginMap;
             var firstEntry = true;
             while (true)
             {

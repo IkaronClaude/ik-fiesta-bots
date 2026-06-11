@@ -162,9 +162,10 @@ public sealed class LoginChain
                     var ack = pkt.ReadBody<PROTO_NC_USER_LOGINWORLD_ACK>();
                     wmHandle = ack.worldmanager;
                     foreach (var a in ack.avatar)
-                        avatars.Add(new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level));
+                        avatars.Add(new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level,
+                            AsciiZ(a.loginmap.n3_name)));
                     _log($"[WM] << LOGINWORLD_ACK handle={wmHandle} numavatars={avatars.Count}: " +
-                         string.Join(", ", avatars.Select(a => $"'{a.Name}'(slot {a.Slot})")));
+                         string.Join(", ", avatars.Select(a => $"'{a.Name}'(slot {a.Slot}, {a.LoginMap})")));
 
                     selected = selectSlot is { } s
                         ? avatars.FirstOrDefault(a => a.Slot == s)

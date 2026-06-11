@@ -24,8 +24,11 @@ public sealed record LoginPhaseResult(
     FiestaEndpoint WmAdvertised, // ip/port as WORLDSELECT_ACK advertised them
     byte WorldStatus);
 
-/// <summary>One avatar (character) on the account, as LOGINWORLD_ACK reports it.</summary>
-public sealed record AvatarSummary(uint ChrRegNum, string Name, byte Slot, ushort Level);
+/// <summary>One avatar (character) on the account, as LOGINWORLD_ACK reports it.
+/// <paramref name="LoginMap"/> is the short name of the map the character is saved
+/// on (the WM avatar struct's <c>loginmap</c> Name3) — this is how the bot learns
+/// which map it spawns into, since the zone login ack carries only the coord.</summary>
+public sealed record AvatarSummary(uint ChrRegNum, string Name, byte Slot, ushort Level, string LoginMap = "");
 
 /// <summary>Result of the WM phase: the zone endpoint to enter + the live WM handle.</summary>
 public sealed record WmPhaseResult(
