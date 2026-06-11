@@ -908,9 +908,15 @@ heal "lands on me" in the real client is a client-side redirect — we self-targ
 (skill on target/nearest, now faces first). `/use-gate` auto-answers the instance
 confirm menu.
 
-### Next
-- Data-drive `stopFirst`/facing + cooldown from **ActiveSkill** (`IsMovingSkill`,
-  `UsableDegree`, `DlyTime`) instead of the hard-coded heuristic, and gate the cast on
-  `SP` — the clean way to support every class/skill (mages cast ranged, no swing).
-- ZoneView doesn't parse the login item burst → `/inventory` `/equipment` read empty
-  (cosmetic; equip-by-slot still works).
+### Next / deferred
+1. **DEFERRED — data-drive the cast from `ActiveSkill` (replace the hard-coded
+   heuristic).** Today `CastAsync` hard-codes "damage = face+stop, heal = neither".
+   The correct, general design loads per-skill flags from the **ActiveSkill** table and
+   acts on them: **`UsableDegree`** → face the target first (only if it enforces an
+   arc); **`IsMovingSkill`** → whether a STOP is needed at all; **`DlyTime`** → enforce
+   the cooldown (don't spam / report on-cooldown); **`Range`** → reject/approach if out
+   of range; **`SP`** → gate the cast on current mana. This is what makes *every*
+   class/skill work uniformly (mages cast ranged with no swing, melee faces, AoE
+   doesn't run into melee) instead of priest-specific special-casing.
+2. ZoneView doesn't parse the login item burst → `/inventory` `/equipment` read empty
+   (cosmetic; equip-by-slot still works).
