@@ -218,11 +218,19 @@ public sealed class BotManager : IAsyncDisposable
     private static readonly ushort OpMoveRun =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.MoverunCmd);
 
-    /// <summary>Walk a precomputed path: send one MoverunCmd per segment on a
-    /// background task, paced to <paramref name="unitsPerSec"/> so the server
-    /// accepts it as a normal walk. Returns immediately; the walk continues until
-    /// done or the bot is stopped. (Speed is an estimate — tune against the live
-    /// server.)</summary>
+    /// <summary>Max distance (world units) of a single MoverunCmd. The server rejects
+    /// large jumps as teleport/anti-cheat — verified live (2026-06-11): a walk made of
+    /// ~64u steps moved the character, but ~560–2536u straight segments (from
+    /// path-simplification) did not move it server-side at all. So long segments are
+    /// re-chunked into steps no bigger than this, mirroring how the real client streams
+    /// movement.</summary>
+    private const double MaxMoveStep = 140.0;
+
+    /// <summary>Walk a precomputed path: stream MoverunCmd steps on a background task,
+    /// paced to <paramref name="unitsPerSec"/> so the server accepts it as a normal
+    /// walk. Long straight segments are sub-divided into <see cref="MaxMoveStep"/>-sized
+    /// steps (the server won't move the character on an over-long jump). Returns
+    /// immediately; the walk continues until done or the bot is stopped.</summary>
     public ActionResult WalkPath(string id, IReadOnlyList<(uint X, uint Y)> waypoints, double unitsPerSec = 120.0)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -233,21 +241,32 @@ public sealed class BotManager : IAsyncDisposable
         {
             try
             {
+                var steps = 0;
                 for (int i = 0; i < waypoints.Count - 1 && !ct.IsCancellationRequested; i++)
                 {
                     var (fx, fy) = waypoints[i];
                     var (tx, ty) = waypoints[i + 1];
-                    var p = new byte[16];
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), fx);
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), fy);
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), tx);
-                    System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), ty);
-                    await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
-                    handle.SetPosition(tx, ty); // advance tracked position as we walk
-                    var dist = Math.Sqrt(Math.Pow((double)tx - fx, 2) + Math.Pow((double)ty - fy, 2));
-                    await Task.Delay((int)Math.Clamp(dist / unitsPerSec * 1000, 40, 5000), ct);
+                    var segDist = Math.Sqrt(Math.Pow((double)tx - fx, 2) + Math.Pow((double)ty - fy, 2));
+                    var subSteps = Math.Max(1, (int)Math.Ceiling(segDist / MaxMoveStep));
+                    double cx = fx, cy = fy;
+                    for (int k = 1; k <= subSteps && !ct.IsCancellationRequested; k++)
+                    {
+                        // Interpolate the next intermediate point along the segment.
+                        var sx = (uint)Math.Round(fx + (tx - (double)fx) * k / subSteps);
+                        var sy = (uint)Math.Round(fy + (ty - (double)fy) * k / subSteps);
+                        var p = new byte[16];
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), (uint)Math.Round(cx));
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), (uint)Math.Round(cy));
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), sx);
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), sy);
+                        await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
+                        handle.SetPosition(sx, sy); // advance tracked position as we walk
+                        var stepDist = Math.Sqrt(Math.Pow(sx - cx, 2) + Math.Pow(sy - cy, 2));
+                        cx = sx; cy = sy; steps++;
+                        await Task.Delay((int)Math.Clamp(stepDist / unitsPerSec * 1000, 40, 2000), ct);
+                    }
                 }
-                handle.Log($"walk-path done ({waypoints.Count} waypoints)");
+                handle.Log($"walk-path done ({waypoints.Count} waypoints, {steps} move steps)");
             }
             catch (OperationCanceledException) { }
             catch (Exception ex) { handle.Log($"walk-path error: {ex.Message}"); }
