@@ -128,6 +128,25 @@ public sealed class BotManager : IAsyncDisposable
             await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
         });
 
+    // Town multi-select portal (from Portals.pcapng): target the portal NPC, click
+    // it, then select a destination by its TownPortal-table index. Built by opcode —
+    // NPCCLICK (Act cmd 10) and TOWNPORTAL_REQ (Map cmd 26) carry trivial payloads.
+    private const ushort OpActNpcClick = (ushort)(((int)ProtocolCommand.Act << 10) | 10);     // 0x200A
+    private const ushort OpMapTownPortal = (ushort)(((int)ProtocolCommand.Map << 10) | 26);   // 0x181A
+
+    /// <summary>Use a town multi-select portal: target → click the portal NPC →
+    /// select destination <paramref name="dest"/> (its <c>TownPortal</c> table index;
+    /// e.g. in RouN group 0: 0=RouN,1=RouVal01,2=Eld). The bot must already be next
+    /// to the portal NPC. The server then map-transitions the bot.</summary>
+    public Task<ActionResult> TownPortalAsync(string id, ushort npcHandle, byte dest, CancellationToken ct = default)
+        => ActAsync(id, $"town-portal via npc h={npcHandle} -> dest {dest}", async s =>
+        {
+            var hb = new byte[] { (byte)npcHandle, (byte)(npcHandle >> 8) };
+            await s.SendAsync(new FiestaPacket(OpBatTarget, hb), ct);
+            await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
+            await s.SendAsync(new FiestaPacket(OpMapTownPortal, new[] { dest }), ct);
+        });
+
     /// <summary>Use an inventory item by slot (invenType: 0 = normal bag).</summary>
     public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)
         => ActAsync(id, $"use item slot={slot} type={invenType}",

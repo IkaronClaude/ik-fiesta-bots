@@ -669,6 +669,34 @@ cross-map routing on top of what we have:
   packet, TODO capture) → re-acquire on the far side → repeat. This is also exactly
   the machinery "follow player across a map boundary" needs.
 
+### Mount + town-portal protocol (SOLVED from Portals.pcapng, 2026-06-11)
+Operator capture `Z:/Portals.pcapng` (chat-marked each action). Both flows decoded:
+
+**Mount (raccoon, `&makeitem Racoon01_3` = 7-day):**
+- Use = `ITEM_USE_REQ {invenslot, invenType=9}` — the *same* packet as any item use
+  (raccoon was bag slot 4). **The "first use starts the timer" confirmation is a
+  CLIENT-SIDE dialog only — there is NO accept packet.** The bot just sends
+  `ITEM_USE_REQ` and it works; we bypass the dialog entirely (great — nothing to
+  handle).
+- Server reply chain: `ITEM_USE_ACK` → `ACT_CREATECASTBAR` (summon cast, ~1–10 s by
+  mount) → `BRIEFINFO_REGENMOVER` (0x1C1A, the mount entity) → `ACT_CANCELCASTBAR`
+  → **`NC_MOVER_RIDE_ON_CMD` (0xCC02)** = now mounted. Using the item again toggles
+  **`NC_MOVER_RIDE_OFF_CMD` (0xCC06)** / remount.
+- Mover dept = 0x33 (0xCCxx): RIDE_ON 0xCC02 (self), SOMEONE_RIDE_ON 0xCC04 (others),
+  RIDE_OFF 0xCC06, HUNGRY 0xCC0A, MOVESPEED 0xCC0D. `ZoneView` tracks self ride state
+  off 0xCC02/0xCC06.
+
+**Town multi-select portal (the inter-town gate, → Eld in the capture):**
+1. `BAT_TARGETTING_REQ {npcHandle}` (0x2401) — target the portal NPC.
+2. **`NC_ACT_NPCCLICK_CMD {npcHandle}` (0x200A)** — click it (server opens the menu).
+3. **`NC_MAP_TOWNPORTAL_REQ {destIndex:1 byte}` (0x181A)** — select destination.
+   `destIndex` = the **`TownPortal` table Index** within the applicable group; capture
+   sent `02` = Eld (group 0: 0=RouN,1=RouVal01,2=Eld). We know the indices offline, so
+   no need to wait for/parse the menu.
+Then server sends `NC_MAP_LOGOUT_CMD` (0x1805) and the client re-enters on the new
+map (same as a zone change). **TODO live-verify** (drive it from a bot near a portal)
+and confirm the post-teleport re-entry handling. This is the cheapest cross-town edge.
+
 ### Near-future: teleports as route edges (operator note 2026-06-11)
 The route planner shouldn't only walk + take gates — **teleports are cheap edges**
 that skip large walks. Model them as extra edges in the multi-map graph and prefer
