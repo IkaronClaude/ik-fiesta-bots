@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Navigation;
+using Fiesta.Bot.Pathfinding;
 using Fiesta.Bot.Session;
 using Fiesta.Bot.Zone;
 using FiestaLibReloaded.Networking;
@@ -36,6 +37,12 @@ public sealed class BotManager : IAsyncDisposable
     /// <summary>Map id↔short-name resolver, learned from gate links and (optionally)
     /// seeded from a BYO MapInfo dump via <c>MAPINFO_PATH</c>.</summary>
     public MapCatalog Catalog { get; } = new();
+
+    /// <summary>Resolves a map short-name to its walkability grid (BYO, from
+    /// <c>BLOCKINFO_DIR</c>). Set by the host so navigation actions (e.g. <see
+    /// cref="Follow"/>) can pathfind around obstacles; null = no grid available,
+    /// callers fall back to straight-line movement.</summary>
+    public Func<string, BlockGrid?>? GridProvider { get; set; }
 
     public BotManager(byte[] xorTable, Action<string>? globalLog = null)
     {
@@ -183,32 +190,62 @@ public sealed class BotManager : IAsyncDisposable
             {
                 await session.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)h0, (byte)(h0 >> 8) }), ct);
                 handle.Log($"follow: chasing {targetName} (h={h0})");
+                (uint X, uint Y)? lastPlan = null;
                 while (!ct.IsCancellationRequested)
                 {
                     var target = handle.ZoneView?.NearbyPlayers
                         .FirstOrDefault(p => string.Equals(p.Name, targetName, StringComparison.OrdinalIgnoreCase));
                     if (target is null) { handle.Log($"follow: {targetName} left view — stopping"); break; }
-                    if (handle.Position is not { } pos) { await Task.Delay(300, ct); continue; }
-
-                    double dx = (double)target.X - pos.X, dy = (double)target.Y - pos.Y;
-                    var dist = Math.Sqrt(dx * dx + dy * dy);
-                    if (dist > followDist)
+                    if (handle.Position is { } pos)
                     {
-                        // One capped step toward the target, stopping followDist short.
-                        var want = dist - followDist;
-                        var step = Math.Min(want, MaxStepFor(unitsPerSec));
-                        var nx = (uint)Math.Round(pos.X + dx / dist * step);
-                        var ny = (uint)Math.Round(pos.Y + dy / dist * step);
-                        var p = new byte[16];
-                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), pos.X);
-                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), pos.Y);
-                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), nx);
-                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), ny);
-                        await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
-                        handle.SetPosition(nx, ny);
-                        await Task.Delay((int)Math.Clamp(step / unitsPerSec * 1000, 50, 1000), ct);
+                        double dx = (double)target.X - pos.X, dy = (double)target.Y - pos.Y;
+                        var dist = Math.Sqrt(dx * dx + dy * dy);
+                        // Re-plan when out of range and either the target moved enough
+                        // since the last plan, or our last walk finished short (WalkCts
+                        // cleared) — the latter closes the final gap when they stop.
+                        var moved = lastPlan is not { } lp
+                            || Math.Abs((double)target.X - lp.X) + Math.Abs((double)target.Y - lp.Y) > followDist
+                            || handle.WalkCts is null;
+                        if (dist > followDist && moved)
+                        {
+                            var grid = handle.CurrentMap is { } map ? GridProvider?.Invoke(map) : null;
+                            if (grid is not null)
+                            {
+                                // Pathfind around obstacles (a straight chase snags on
+                                // lanterns/walls → MOVEFAIL), then walk it via WalkPath
+                                // (chunked + MOVEFAIL-aware), trimmed to stop short.
+                                var path = PathFinder.FindPath(grid, pos.X, pos.Y, target.X, target.Y);
+                                if (path.Count > 0)
+                                {
+                                    var wp = PathFinder.Simplify(path);
+                                    int keep = wp.Count;
+                                    while (keep > 1)
+                                    {
+                                        var (wx, wy) = wp[keep - 1];
+                                        if (Math.Sqrt(Math.Pow((double)wx - target.X, 2) + Math.Pow((double)wy - target.Y, 2)) < followDist) keep--;
+                                        else break;
+                                    }
+                                    if (keep >= 2) WalkPath(id, wp.Take(keep).ToList(), unitsPerSec);
+                                    lastPlan = (target.X, target.Y);
+                                }
+                            }
+                            else
+                            {
+                                // No grid available — one capped straight-line step.
+                                var step = Math.Min(dist - followDist, MaxStepFor(unitsPerSec));
+                                var nx = (uint)Math.Round(pos.X + dx / dist * step);
+                                var ny = (uint)Math.Round(pos.Y + dy / dist * step);
+                                var p = new byte[16];
+                                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), pos.X);
+                                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), pos.Y);
+                                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), nx);
+                                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), ny);
+                                await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
+                                handle.SetPosition(nx, ny);
+                            }
+                        }
                     }
-                    else await Task.Delay(300, ct); // in range — idle until they move
+                    await Task.Delay(500, ct);
                 }
             }
             catch (OperationCanceledException) { handle.Log("follow: stopped"); }

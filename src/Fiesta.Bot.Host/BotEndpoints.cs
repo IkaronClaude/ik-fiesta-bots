@@ -357,7 +357,7 @@ public static class BotEndpoints
     // Block grids loaded from BLOCKINFO_DIR/<Map>.shbd (BYO), cached per map.
     private static readonly ConcurrentDictionary<string, BlockGrid?> _grids = new(StringComparer.OrdinalIgnoreCase);
 
-    private static BlockGrid? LoadGrid(string map) => _grids.GetOrAdd(map, m =>
+    internal static BlockGrid? LoadGrid(string map) => _grids.GetOrAdd(map, m =>
     {
         var dir = Environment.GetEnvironmentVariable("BLOCKINFO_DIR");
         if (string.IsNullOrWhiteSpace(dir)) return null;
