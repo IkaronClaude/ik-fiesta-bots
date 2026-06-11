@@ -303,7 +303,7 @@ public sealed class BotManager : IAsyncDisposable
         var name = Catalog.NameFor(h.MapId) ?? $"map#{h.MapId}";
         handle.SetCurrentMap(name);
         log($"[nav] now on {name} (mapId={h.MapId}) at ({h.X},{h.Y})" +
-            (h.IsCrossServer ? $" — cross-server handoff to {h.Ip}:{h.Port} (reconnect pending)" : " (in-band)"));
+            (h.IsCrossServer ? $" — cross-server handoff to {h.Ip}:{h.Port}, reconnecting" : " (in-band)"));
     }
 
     private async Task RunBotAsync(BotHandle handle)
@@ -333,43 +333,83 @@ public sealed class BotManager : IAsyncDisposable
                     "account has no character to enter a zone (and no create spec)");
             handle.SetCharName(sel.Name);
 
-            handle.SetPhase(BotPhase.EnteringZone);
             var zoneEntry = ZoneEntry.FromDataDir(_xorTable, Log, opt.DataDir);
-            var zoneEp = new FiestaEndpoint(opt.Host, zoneAdv.Port);
-            var entry = await zoneEntry.EnterAsync(zoneEp, wmResult.WmHandle, sel.Name, ct);
-            var zoneConn = entry.Conn;
-            if (entry.SpawnX is { } spx && entry.SpawnY is { } spy) handle.SetPosition(spx, spy);
 
-            // In zone. Run a session on BOTH links — the WM connection keeps
-            // receiving heartbeats while in zone and must answer them too, and it
-            // has to stay open (the zone validates against a live WM session).
-            await using var zoneSession = new BotSession(zoneConn, sel.Name, wmResult.WmHandle, zoneEp, Log,
-                linkTag: "zone", logInbound: opt.LogInbound);
+            // The WM link stays open for the bot's whole in-zone life and across any
+            // cross-server handoffs (each zone validates against a live WM session),
+            // so its read loop runs once, in the background, for the duration.
             var wmSession = new BotSession(wmConn, sel.Name, wmResult.WmHandle, wmEp, Log,
                 linkTag: "wm", logInbound: opt.LogInbound);
-            handle.ZoneSession = zoneSession;
             handle.WmSession = wmSession;
+            var wmRun = wmSession.RunAsync(ct);
 
-            // Perception model (nearby players + chat) is always on — cheap, and the
-            // status/say surface and any behavior read from it. The buff behavior is
-            // opt-in via spawn options.
-            using var zoneView = new ZoneView(zoneSession, Log);
-            handle.ZoneView = zoneView;
-            handle.SetCurrentMap(opt.StartMap); // login ack has no map name; seed it
-            zoneView.MapChanged += h => OnMapChanged(handle, h, Log);
-            using var buff = opt.Buff is { } buffCfg
-                ? new BuffInTownBehavior(zoneSession, zoneView, buffCfg, Log, ct)
-                : null;
+            // Zone (re-)entry loop. A normal stop/kick breaks out; a cross-server
+            // handoff (NC_MAP_LINKOTHER) re-enters with the new endpoint + WM handle
+            // the handoff carried. In-band changes (NC_MAP_LINKSAME) never reach here —
+            // they're handled live on the same connection by OnMapChanged.
+            var zoneEp = new FiestaEndpoint(opt.Host, zoneAdv.Port);
+            var zoneWmHandle = wmResult.WmHandle;
+            var currentMap = opt.StartMap;     // login ack has no map name; seed it
+            var firstEntry = true;
+            while (true)
+            {
+                handle.SetPhase(BotPhase.EnteringZone);
+                handle.ZoneSession = null; // no live zone link during (re)connect
+                var entry = await zoneEntry.EnterAsync(zoneEp, zoneWmHandle, sel.Name, ct);
+                var zoneConn = entry.Conn;
+                if (entry.SpawnX is { } spx && entry.SpawnY is { } spy) handle.SetPosition(spx, spy);
 
-            handle.SetPhase(BotPhase.InZone);
-            Log($"*** {sel.Name} IN ZONE ({zoneEp}) — running until stopped ***");
+                // Tripped to break THIS zone session when a cross-server handoff lands,
+                // without disturbing the WM loop or the bot's overall cancellation.
+                using var zoneCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                MapHandoff? handoff = null;
 
-            await Task.WhenAll(zoneSession.RunAsync(ct), wmSession.RunAsync(ct));
+                await using var zoneSession = new BotSession(zoneConn, sel.Name, zoneWmHandle, zoneEp, Log,
+                    linkTag: "zone", logInbound: opt.LogInbound);
+                handle.ZoneSession = zoneSession;
 
-            // Both loops returned. Cancellation = a clean stop; anything else
-            // (peer closed) is a kick/drop — still "stopped" from our side.
+                // Perception model (nearby players + chat) is always on — cheap, and the
+                // status/say surface and any behavior read from it. The buff behavior is
+                // opt-in via spawn options.
+                using var zoneView = new ZoneView(zoneSession, Log);
+                handle.ZoneView = zoneView;
+                handle.SetCurrentMap(currentMap);
+                zoneView.MapChanged += h =>
+                {
+                    OnMapChanged(handle, h, Log);
+                    if (h.IsCrossServer) { handoff = h; zoneCts.Cancel(); } // break to reconnect
+                };
+                using var buff = opt.Buff is { } buffCfg
+                    ? new BuffInTownBehavior(zoneSession, zoneView, buffCfg, Log, ct)
+                    : null;
+
+                handle.SetPhase(BotPhase.InZone);
+                Log(firstEntry
+                    ? $"*** {sel.Name} IN ZONE ({zoneEp}) — running until stopped ***"
+                    : $"*** {sel.Name} RE-ENTERED ZONE ({zoneEp}, {currentMap}) after cross-server handoff ***");
+                firstEntry = false;
+
+                await zoneSession.RunAsync(zoneCts.Token);
+
+                // A captured cross-server handoff (and not a real stop) means reconnect
+                // to the carried endpoint with its WM handle and re-enter the zone.
+                if (handoff is { IsCrossServer: true } ho && ho.Ip is { } ip && !ct.IsCancellationRequested)
+                {
+                    zoneEp = new FiestaEndpoint(ip, ho.Port);
+                    zoneWmHandle = ho.WmHandle;
+                    currentMap = handle.CurrentMap ?? currentMap;
+                    Log($"[nav] reconnecting to zone {zoneEp} (wm={zoneWmHandle}) for cross-server handoff");
+                    continue;
+                }
+
+                Log($"zone session ended — {zoneSession.State.DisconnectReason}");
+                break;
+            }
+
+            // The zone loop ended for real (stop/kick). Wind down the WM link too.
+            try { await wmRun; } catch (OperationCanceledException) { }
             handle.SetPhase(BotPhase.Stopped);
-            Log($"sessions ended — zone: {zoneSession.State.DisconnectReason}, wm: {wmSession.State.DisconnectReason}");
+            Log($"sessions ended — wm: {wmSession.State.DisconnectReason}");
         }
         catch (OperationCanceledException)
         {
