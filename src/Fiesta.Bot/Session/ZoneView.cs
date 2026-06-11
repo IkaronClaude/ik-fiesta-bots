@@ -63,6 +63,12 @@ public sealed class ZoneView : IDisposable
     // tells us the position to snap back to. The authoritative source of truth for
     // where we actually are; the client shows "this area is not accessible".
     private const ushort OpActMoveFail = 0x201B;
+    // Other players' movement broadcasts: SOMEONE_MOVEWALK (ACT cmd 24) / MOVERUN
+    // (cmd 26). Layout [handle u16][from xy(8)][to xy(8)][speed u16][attr]. Briefinfo
+    // only gives a player's spawn position; these keep NearbyPlayer.X/Y live as they
+    // move — needed for follow to chase the real position, not the appear-spot.
+    private const ushort OpSomeoneMoveWalk = 0x2018;
+    private const ushort OpSomeoneMoveRun = 0x201A;
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
@@ -188,6 +194,22 @@ public sealed class ZoneView : IDisposable
                 var by = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[4..]);
                 _log?.Invoke($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
                 MoveFailed?.Invoke((bx, by));
+            }
+        }
+        else if (op == OpSomeoneMoveWalk || op == OpSomeoneMoveRun)
+        {
+            // Keep a tracked player's position current as they move (chase the
+            // destination they're heading to). Only update players we already know.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 18)
+            {
+                var hnd = (ushort)(p[0] | (p[1] << 8));
+                if (_nearby.TryGetValue(hnd, out var pl))
+                {
+                    var toX = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(10, 4));
+                    var toY = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(14, 4));
+                    _nearby[hnd] = pl with { X = toX, Y = toY };
+                }
             }
         }
         else if (op == OpMapLinkSame || op == OpMapLinkOther)

@@ -32,7 +32,11 @@ if (xorTable is not null)
     builder.Services.AddSingleton(sp =>
     {
         var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Bots");
-        return new BotManager(xorTable, m => logger.LogInformation("{BotLog}", m));
+        return new BotManager(xorTable, m => logger.LogInformation("{BotLog}", m))
+        {
+            // Let navigation actions (follow) pathfind over the BYO block grids.
+            GridProvider = BotEndpoints.LoadGrid,
+        };
     });
 
 // Optional account provisioning via ik-fiesta-api (master-key path). Enabled only
