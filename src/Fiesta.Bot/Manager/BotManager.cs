@@ -139,6 +139,154 @@ public sealed class BotManager : IAsyncDisposable
             await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
         });
 
+    // ── Targeting / follow (zone) ─────────────────────────────────────────────
+    // Targeting and follow are zone-side. A party-tab target (F2–F5 in the client)
+    // is just a BAT TargettingReq on the member's zone handle; untarget (Esc) is a
+    // bare BAT UntargetReq. "Follow" has no dedicated packet at all — the client
+    // targets the player then streams MoverunCmd toward their moving position, which
+    // is why follow drops at a map change (verified in PartyFriendTarget.pcapng).
+    private static readonly ushort OpBatUntarget =
+        (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.UntargetReq);
+
+    /// <summary>Target a zone handle (e.g. a party member for buffing).</summary>
+    public Task<ActionResult> TargetAsync(string id, ushort target, CancellationToken ct = default)
+        => ActAsync(id, $"target h={target}",
+            s => s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct));
+
+    /// <summary>Clear the current target (Esc).</summary>
+    public Task<ActionResult> UntargetAsync(string id, CancellationToken ct = default)
+        => ActAsync(id, "untarget", s => s.SendAsync(new FiestaPacket(OpBatUntarget, Array.Empty<byte>()), ct));
+
+    /// <summary>Resolve a nearby player by name (case-insensitive) to their zone handle.</summary>
+    private static ushort? HandleForName(BotHandle handle, string name)
+        => handle.ZoneView?.NearbyPlayers
+            .FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))?.Handle;
+
+    /// <summary>Follow a nearby player by name: target them, then chase by streaming
+    /// MoverunCmd toward their live position (stopping <paramref name="followDist"/>
+    /// world-units short), refreshed on a background loop until the target leaves
+    /// view, the bot is stopped, or <see cref="StopFollow"/> is called. This mirrors
+    /// the real client — there is no follow packet, so a map change ends the follow.</summary>
+    public ActionResult Follow(string id, string targetName, double followDist = 60.0, double unitsPerSec = 120.0)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } session) return ActionResult.NotInZone;
+        if (HandleForName(handle, targetName) is not { } h0) return ActionResult.NotFound;
+
+        var followCts = CancellationTokenSource.CreateLinkedTokenSource(handle.Cts.Token);
+        handle.FollowCts?.Cancel();
+        handle.FollowCts = followCts;
+        var ct = followCts.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await session.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)h0, (byte)(h0 >> 8) }), ct);
+                handle.Log($"follow: chasing {targetName} (h={h0})");
+                while (!ct.IsCancellationRequested)
+                {
+                    var target = handle.ZoneView?.NearbyPlayers
+                        .FirstOrDefault(p => string.Equals(p.Name, targetName, StringComparison.OrdinalIgnoreCase));
+                    if (target is null) { handle.Log($"follow: {targetName} left view — stopping"); break; }
+                    if (handle.Position is not { } pos) { await Task.Delay(300, ct); continue; }
+
+                    double dx = (double)target.X - pos.X, dy = (double)target.Y - pos.Y;
+                    var dist = Math.Sqrt(dx * dx + dy * dy);
+                    if (dist > followDist)
+                    {
+                        // One capped step toward the target, stopping followDist short.
+                        var want = dist - followDist;
+                        var step = Math.Min(want, MaxStepFor(unitsPerSec));
+                        var nx = (uint)Math.Round(pos.X + dx / dist * step);
+                        var ny = (uint)Math.Round(pos.Y + dy / dist * step);
+                        var p = new byte[16];
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), pos.X);
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), pos.Y);
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), nx);
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), ny);
+                        await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
+                        handle.SetPosition(nx, ny);
+                        await Task.Delay((int)Math.Clamp(step / unitsPerSec * 1000, 50, 1000), ct);
+                    }
+                    else await Task.Delay(300, ct); // in range — idle until they move
+                }
+            }
+            catch (OperationCanceledException) { handle.Log("follow: stopped"); }
+            catch (Exception ex) { handle.Log($"follow error: {ex.Message}"); }
+            finally { if (ReferenceEquals(handle.FollowCts, followCts)) handle.FollowCts = null; followCts.Dispose(); }
+        }, ct);
+        return ActionResult.Sent;
+    }
+
+    /// <summary>Stop an in-progress <see cref="Follow"/> loop (no-op if not following).</summary>
+    public ActionResult StopFollow(string id)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        handle.FollowCts?.Cancel();
+        return ActionResult.Sent;
+    }
+
+    // ── Party (WorldManager link) ─────────────────────────────────────────────
+    // Party and friend traffic is WM-side, not zone-side (verified in
+    // PartyFriendTarget.pcapng). An invite is NC_PARTY_JOIN_REQ {target Name5}; the
+    // recipient answers a join-propose with ALLOW_ACK / REJECT_ACK carrying the
+    // *inviter's* name (no typed struct for those two — build by opcode). Letting an
+    // invite expire = simply not answering.
+    private const ushort OpPartyAllow = (ushort)(((int)ProtocolCommand.Party << 10) | 4); // 0x3804
+    private const ushort OpPartyReject = (ushort)(((int)ProtocolCommand.Party << 10) | 5); // 0x3805
+
+    /// <summary>Invite <paramref name="targetName"/> to a party (WM link).</summary>
+    public Task<ActionResult> PartyInviteAsync(string id, string targetName, CancellationToken ct = default)
+        => WmActAsync(id, $"party invite {targetName}",
+            s => s.SendAsync(new PROTO_NC_PARTY_JOIN_REQ { target = Name5Of(targetName) }, ct));
+
+    /// <summary>Accept a pending party invite from <paramref name="inviterName"/>.</summary>
+    public Task<ActionResult> PartyAcceptAsync(string id, string inviterName, CancellationToken ct = default)
+        => WmActAsync(id, $"party accept {inviterName}",
+            s => s.SendAsync(new FiestaPacket(OpPartyAllow, Name5Of(inviterName).n5_name), ct));
+
+    /// <summary>Decline a pending party invite from <paramref name="inviterName"/>.</summary>
+    public Task<ActionResult> PartyDeclineAsync(string id, string inviterName, CancellationToken ct = default)
+        => WmActAsync(id, $"party decline {inviterName}",
+            s => s.SendAsync(new FiestaPacket(OpPartyReject, Name5Of(inviterName).n5_name), ct));
+
+    /// <summary>Send a line to party chat (WM link).</summary>
+    public Task<ActionResult> PartyChatAsync(string id, string text, CancellationToken ct = default)
+        => WmActAsync(id, $"party-chat: \"{text}\"", s => s.SendAsync(ChatCodec.BuildPartyChatReq(text), ct));
+
+    // ── Friend list (WorldManager link) ───────────────────────────────────────
+    // All friend structs carry [self charid Name5][other friendid Name5]; the confirm
+    // adds a trailing accept byte (0x01 accept / 0x00 decline). Add and delete are
+    // one-shot requests; responding to an incoming request is the CONFIRM_ACK.
+
+    /// <summary>Send a friend request to <paramref name="targetName"/> (WM link).</summary>
+    public Task<ActionResult> FriendAddAsync(string id, string targetName, CancellationToken ct = default)
+        => WmActAsync(id, $"friend add {targetName}", (s, self) =>
+            s.SendAsync(new PROTO_NC_FRIEND_SET_REQ { charid = Name5Of(self), friendid = Name5Of(targetName) }, ct));
+
+    /// <summary>Answer an incoming friend request from <paramref name="requesterName"/>:
+    /// <paramref name="accept"/> true = add, false = decline (WM link).</summary>
+    public Task<ActionResult> FriendConfirmAsync(string id, string requesterName, bool accept, CancellationToken ct = default)
+        => WmActAsync(id, $"friend {(accept ? "accept" : "decline")} {requesterName}", (s, self) =>
+            s.SendAsync(new PROTO_NC_FRIEND_SET_CONFIRM_ACK
+            {
+                charid = Name5Of(self), friendid = Name5Of(requesterName), accept_friend = (byte)(accept ? 1 : 0)
+            }, ct));
+
+    /// <summary>Remove <paramref name="targetName"/> from the friend list (WM link).</summary>
+    public Task<ActionResult> FriendDeleteAsync(string id, string targetName, CancellationToken ct = default)
+        => WmActAsync(id, $"friend delete {targetName}", (s, self) =>
+            s.SendAsync(new PROTO_NC_FRIEND_DEL_REQ { charid = Name5Of(self), friendid = Name5Of(targetName) }, ct));
+
+    /// <summary>Build a 20-byte Name5 from a character name (ASCII, NUL-padded).</summary>
+    private static Name5 Name5Of(string name)
+    {
+        var n5 = new Name5();
+        var b = FiestaText.Encode(name);
+        Array.Copy(b, n5.n5_name, Math.Min(b.Length, n5.n5_name.Length));
+        return n5;
+    }
+
     // Town multi-select portal (from Portals.pcapng): target the portal NPC, click
     // it, then select a destination by its TownPortal-table index. Built by opcode —
     // NPCCLICK (Act cmd 10) and TOWNPORTAL_REQ (Map cmd 26) carry trivial payloads.
@@ -223,8 +371,10 @@ public sealed class BotManager : IAsyncDisposable
     /// ~64u steps moved the character, but ~560–2536u straight segments (from
     /// path-simplification) did not move it server-side at all. So long segments are
     /// re-chunked into steps no bigger than this, mirroring how the real client streams
-    /// movement.</summary>
-    private const double MaxMoveStep = 140.0;
+    /// movement. 250u matches the real client: MovementTypes.pcapng shows a single
+    /// far mouse-click expand into a stream of ~250u MoverunCmd segments (the client
+    /// pathfinds, the server does not), each accepted by the server.</summary>
+    private const double MaxMoveStep = 250.0;
 
     /// <summary>Walk a precomputed path: stream MoverunCmd steps on a background task,
     /// paced to <paramref name="unitsPerSec"/> so the server accepts it as a normal
@@ -252,7 +402,7 @@ public sealed class BotManager : IAsyncDisposable
                     var (fx, fy) = waypoints[i];
                     var (tx, ty) = waypoints[i + 1];
                     var segDist = Math.Sqrt(Math.Pow((double)tx - fx, 2) + Math.Pow((double)ty - fy, 2));
-                    var subSteps = Math.Max(1, (int)Math.Ceiling(segDist / MaxMoveStep));
+                    var subSteps = Math.Max(1, (int)Math.Ceiling(segDist / MaxStepFor(unitsPerSec)));
                     double cx = fx, cy = fy;
                     for (int k = 1; k <= subSteps && !ct.IsCancellationRequested; k++)
                     {
@@ -318,6 +468,33 @@ public sealed class BotManager : IAsyncDisposable
         handle.Log(logLine);
         return ActionResult.Sent;
     }
+
+    /// <summary>Like <see cref="ActAsync"/> but sends on the bot's <b>WM</b> link
+    /// (party / friend traffic is WorldManager-side). Requires the bot in zone with a
+    /// live WM session.</summary>
+    private async Task<ActionResult> WmActAsync(string id, string logLine, Func<BotSession, Task> send)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.WmSession is not { } wm) return ActionResult.NotInZone;
+        await send(wm);
+        handle.Log(logLine);
+        return ActionResult.Sent;
+    }
+
+    /// <summary>WM action variant that also passes the bot's own character name (the
+    /// <c>charid</c> Name5 the friend structs require).</summary>
+    private Task<ActionResult> WmActAsync(string id, string logLine, Func<BotSession, string, Task> send)
+        => WmActAsync(id, logLine, s =>
+        {
+            var self = _bots.TryGetValue(id, out var h) ? h.CharName ?? "" : "";
+            return send(s, self);
+        });
+
+    /// <summary>Max single-MoverunCmd distance for a given walk speed. Anchored to the
+    /// real client's ~250u segments at the ~120u/s on-foot speed; scales up with speed
+    /// so a mount (higher move speed → larger client segments) gets proportionally
+    /// bigger steps and keeps the per-second packet rate roughly constant.</summary>
+    private static double MaxStepFor(double unitsPerSec) => Math.Max(MaxMoveStep, unitsPerSec * (MaxMoveStep / 120.0));
 
     /// <summary>React to a gate / town-portal transition: advance the tracked
     /// position to the new spawn coord and update the current map name. For an in-band

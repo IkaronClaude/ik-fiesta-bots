@@ -48,6 +48,17 @@ public static class BotEndpoints
             group.MapPost("/{id}/use-gate", (string id) => Unavailable()).WithSummary("Bot use-gate (unavailable)");
             group.MapGet("/{id}/gates", (string id) => Unavailable()).WithSummary("Bot gates (unavailable)");
             group.MapGet("/{id}/route", (string id) => Unavailable()).WithSummary("Bot route plan (unavailable)");
+            group.MapPost("/{id}/target", (string id) => Unavailable()).WithSummary("Bot target (unavailable)");
+            group.MapPost("/{id}/untarget", (string id) => Unavailable()).WithSummary("Bot untarget (unavailable)");
+            group.MapPost("/{id}/follow", (string id) => Unavailable()).WithSummary("Bot follow (unavailable)");
+            group.MapPost("/{id}/unfollow", (string id) => Unavailable()).WithSummary("Bot unfollow (unavailable)");
+            group.MapPost("/{id}/party/invite", (string id) => Unavailable()).WithSummary("Bot party invite (unavailable)");
+            group.MapPost("/{id}/party/accept", (string id) => Unavailable()).WithSummary("Bot party accept (unavailable)");
+            group.MapPost("/{id}/party/decline", (string id) => Unavailable()).WithSummary("Bot party decline (unavailable)");
+            group.MapPost("/{id}/party/chat", (string id) => Unavailable()).WithSummary("Bot party chat (unavailable)");
+            group.MapPost("/{id}/friend/add", (string id) => Unavailable()).WithSummary("Bot friend add (unavailable)");
+            group.MapPost("/{id}/friend/confirm", (string id) => Unavailable()).WithSummary("Bot friend confirm (unavailable)");
+            group.MapPost("/{id}/friend/delete", (string id) => Unavailable()).WithSummary("Bot friend delete (unavailable)");
             return;
         }
 
@@ -259,6 +270,88 @@ public static class BotEndpoints
             return ToResult(await manager.GmAsync(id, cmd), id, new { id, gm = cmd });
         })
         .WithSummary("Issue a GM command (e.g. levelup 46, makeitem SafeProtection01, learnskill 1580, getmoney 1000000)");
+
+        // ── Targeting / follow (zone) ──────────────────────────────────────────
+        group.MapPost("/{id}/target", async (string id, TargetRequest req) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            ushort target;
+            if (req.Target is { } t) target = t;
+            else if (!string.IsNullOrWhiteSpace(req.Name))
+            {
+                var p = bot.ZoneView?.NearbyPlayers
+                    .FirstOrDefault(p => string.Equals(p.Name, req.Name, StringComparison.OrdinalIgnoreCase));
+                if (p is null) return Results.Conflict(new { error = $"no nearby player named '{req.Name}'" });
+                target = p.Handle;
+            }
+            else return Results.ValidationProblem(new Dictionary<string, string[]> { ["target/name"] = ["target handle or name is required"] });
+            return ToResult(await manager.TargetAsync(id, target), id, new { id, target });
+        })
+        .WithSummary("Target a player by handle or name (party-tab targeting)");
+
+        group.MapPost("/{id}/untarget", async (string id) =>
+            ToResult(await manager.UntargetAsync(id), id, new { id, untargeted = true }))
+        .WithSummary("Clear the current target (Esc)");
+
+        group.MapPost("/{id}/follow", (string id, FollowRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.Name))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["name is required"] });
+            var r = manager.Follow(id, req.Name!, req.FollowDist ?? 60.0, req.UnitsPerSec ?? 120.0);
+            return r == BotManager.ActionResult.NotFound
+                ? Results.Conflict(new { error = $"bot or nearby player '{req.Name}' not found" })
+                : ToResult(r, id, new { id, following = req.Name });
+        })
+        .WithSummary("Follow a nearby player by name (target + chase; client-side, drops at map change)");
+
+        group.MapPost("/{id}/unfollow", (string id) =>
+            ToResult(manager.StopFollow(id), id, new { id, following = false }))
+        .WithSummary("Stop following");
+
+        // ── Party (WorldManager link) ──────────────────────────────────────────
+        group.MapPost("/{id}/party/invite", async (string id, NameRequest req) =>
+            string.IsNullOrWhiteSpace(req.Name)
+                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["name is required"] })
+                : ToResult(await manager.PartyInviteAsync(id, req.Name!), id, new { id, invited = req.Name }))
+        .WithSummary("Invite a player to your party");
+
+        group.MapPost("/{id}/party/accept", async (string id, NameRequest req) =>
+            string.IsNullOrWhiteSpace(req.Name)
+                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["inviter name is required"] })
+                : ToResult(await manager.PartyAcceptAsync(id, req.Name!), id, new { id, accepted = req.Name }))
+        .WithSummary("Accept a party invite from the named inviter");
+
+        group.MapPost("/{id}/party/decline", async (string id, NameRequest req) =>
+            string.IsNullOrWhiteSpace(req.Name)
+                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["inviter name is required"] })
+                : ToResult(await manager.PartyDeclineAsync(id, req.Name!), id, new { id, declined = req.Name }))
+        .WithSummary("Decline a party invite from the named inviter");
+
+        group.MapPost("/{id}/party/chat", async (string id, SayRequest req) =>
+            string.IsNullOrEmpty(req.Text)
+                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["text"] = ["text is required"] })
+                : ToResult(await manager.PartyChatAsync(id, req.Text!), id, new { id, partyChat = req.Text }))
+        .WithSummary("Send a line to party chat");
+
+        // ── Friend list (WorldManager link) ────────────────────────────────────
+        group.MapPost("/{id}/friend/add", async (string id, NameRequest req) =>
+            string.IsNullOrWhiteSpace(req.Name)
+                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["name is required"] })
+                : ToResult(await manager.FriendAddAsync(id, req.Name!), id, new { id, friendRequest = req.Name }))
+        .WithSummary("Send a friend request to a player");
+
+        group.MapPost("/{id}/friend/confirm", async (string id, FriendConfirmRequest req) =>
+            string.IsNullOrWhiteSpace(req.Name)
+                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["requester name is required"] })
+                : ToResult(await manager.FriendConfirmAsync(id, req.Name!, req.Accept), id, new { id, requester = req.Name, accepted = req.Accept }))
+        .WithSummary("Answer an incoming friend request (accept=true adds, false declines)");
+
+        group.MapPost("/{id}/friend/delete", async (string id, NameRequest req) =>
+            string.IsNullOrWhiteSpace(req.Name)
+                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["name is required"] })
+                : ToResult(await manager.FriendDeleteAsync(id, req.Name!), id, new { id, removed = req.Name }))
+        .WithSummary("Remove a player from your friend list");
     }
 
     // Block grids loaded from BLOCKINFO_DIR/<Map>.shbd (BYO), cached per map.
@@ -285,6 +378,36 @@ public static class BotEndpoints
 public sealed record SayRequest
 {
     public string? Text { get; init; }
+}
+
+/// <summary>Body for the party/friend name-only endpoints (invite / accept / decline /
+/// friend add / delete). <c>Name</c> is the target or inviter/requester char name.</summary>
+public sealed record NameRequest
+{
+    public string? Name { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/target</c> — give either a zone
+/// <c>Target</c> handle or a player <c>Name</c> to resolve from the bot's view.</summary>
+public sealed record TargetRequest
+{
+    public ushort? Target { get; init; }
+    public string? Name { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/follow</c>.</summary>
+public sealed record FollowRequest
+{
+    public string? Name { get; init; }
+    public double? FollowDist { get; init; }
+    public double? UnitsPerSec { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/friend/confirm</c>.</summary>
+public sealed record FriendConfirmRequest
+{
+    public string? Name { get; init; }
+    public bool Accept { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/cast</c>.</summary>

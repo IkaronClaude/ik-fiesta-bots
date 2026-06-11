@@ -89,6 +89,11 @@ public sealed class BotHandle
     /// stops banging into an off-grid obstacle). Set/cleared by the walk task.</summary>
     internal CancellationTokenSource? WalkCts { get; set; }
 
+    /// <summary>Cancellation for the currently-running follow loop (chase a target
+    /// player), if any. Cancelled to stop following — and replaced when a new follow
+    /// starts. Follow is client-side (target + streamed moves), so it lives here.</summary>
+    internal CancellationTokenSource? FollowCts { get; set; }
+
     internal void SetPhase(BotPhase phase) => _phase = phase;
     internal void SetCharName(string name) => _charName = name;
     internal void SetError(string error) => _error = error;
