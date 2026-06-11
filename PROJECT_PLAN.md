@@ -668,3 +668,47 @@ cross-map routing on top of what we have:
 - So: pick route → for each hop, walk-to-gate (in-map A*) → take gate (transition
   packet, TODO capture) → re-acquire on the far side → repeat. This is also exactly
   the machinery "follow player across a map boundary" needs.
+
+### Near-future: teleports as route edges (operator note 2026-06-11)
+The route planner shouldn't only walk + take gates — **teleports are cheap edges**
+that skip large walks. Model them as extra edges in the multi-map graph and prefer
+them when available:
+Two distinct mechanics (operator-clarified — don't conflate them):
+- **Town multi-select portal** — a physical interactable in each town (NOT a
+  scroll). Stand next to it, click, pick a destination map from a menu. **Free,
+  always available, level-gated.** Data is `TownPortal.shn` (table `TownPortal`:
+  `Index, MinLevel, TP_GroupNo, MapName`):
+  - Group 0 (lvl1): RouN, RouVal01, Eld · Group 1: EldGbl02, Urg, Urg_Alruin(lvl70)
+    · Group 2 (lvl100): Adl, Bera. (TP_GroupNo = the tier/portal set; MinLevel gates
+    which destinations are selectable.)
+  - The portal NPC shows up in `/npcs`; interaction = walk-to-it (in-map A*) →
+    click → select-destination. Needs a capture of the click→menu→select packets.
+    This is the **cheapest cross-town edge** and needs no inventory — likely the
+    default for hub-to-hub routing.
+- **Town-portal scrolls** — common, purchasable *consumable items*, one per major
+  town hub: **Roumen, Elderine, Uruga, Alberstol Ruins, Bera**, etc. (a few rarer
+  ones TP to *enemy* maps e.g. Dark Passage II — lower priority). Each is a one-shot
+  edge to that town's hub; usable anywhere (not just in town), so they shortcut the
+  walk *out* of the field. **Prefer a scroll over a long walk** when in stock and on
+  route.
+  - **Stock management:** track scroll counts per destination in inventory (we
+    already decode the bag in `ZoneView`); resolve scroll-item → destination-town
+    from `ItemInfo` (TODO: identify the scroll item IDs). Find the vendor(s) that
+    sell them (`NPCItemList` ↔ merchant NPCs) so a bot can restock; keep a
+    configurable minimum stock.
+  - **Dashboard warnings:** surface actionable status — "not enough money to
+    restock", "only 2 ports left for Uruga", "no Roumen scroll" — so the operator
+    sees why a bot chose to walk vs port.
+- **GM cheat-teleport (we have GM):** as GM the bot can `&makeitem` scrolls for
+  free *and* likely **cheat-TP to any map directly** (near-future — needs the GM
+  warp command + a capture) and **TP to a player cross-map**. For a GM bot these
+  become near-free edges that dominate the route graph.
+- **Guild academy teleport** — the academy system lets one designated *academy
+  master* TP to any academy member. Great fit for a support/priest bot: park a
+  master in town, summon/reach members on demand. Needs the academy-teleport
+  packet (capture) + guild/academy state. (Structs likely in FiestaLib
+  `GuildAcademy.cs` / `GuildAcademyOpcode.cs`.)
+- Design: each teleport is just a weighted edge the planner already understands —
+  walk = grid-distance cost, scroll = small fixed cost if in stock (else ∞), GM
+  warp = ~0. So "prefer TP to shorten walk" falls out of shortest-path; no special
+  casing.
