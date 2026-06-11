@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
+using Fiesta.Bot.Navigation;
 using Fiesta.Bot.Session;
 using Fiesta.Bot.Zone;
 using FiestaLibReloaded.Networking;
@@ -28,10 +29,20 @@ public sealed class BotManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, BotHandle> _bots = new(StringComparer.OrdinalIgnoreCase);
     private int _seq;
 
+    /// <summary>The world map graph, learned by play (gates seen in each map) and
+    /// shared across all bots — so one bot's exploration helps the rest route.</summary>
+    public MapGraph Graph { get; } = new();
+
+    /// <summary>Map id↔short-name resolver, learned from gate links and (optionally)
+    /// seeded from a BYO MapInfo dump via <c>MAPINFO_PATH</c>.</summary>
+    public MapCatalog Catalog { get; } = new();
+
     public BotManager(byte[] xorTable, Action<string>? globalLog = null)
     {
         _xorTable = xorTable;
         _globalLog = globalLog;
+        var seeded = Catalog.LoadSeedFromEnv();
+        if (seeded > 0) _globalLog?.Invoke($"[nav] MapCatalog seeded {seeded} maps from MAPINFO_PATH");
     }
 
     /// <summary>Start a bot. Non-blocking — the login chain runs in the background;
@@ -147,6 +158,51 @@ public sealed class BotManager : IAsyncDisposable
             await s.SendAsync(new FiestaPacket(OpMapTownPortal, new[] { dest }), ct);
         });
 
+    // Field-gate link: a gate is an NPC (flagstate=1) with a handle. The client takes
+    // it the same way it clicks any NPC — target it then NPCClick — and the zone
+    // replies with the LOGOUT + LINKSAME/LINKOTHER transition; no need to walk onto
+    // the tile (just be within the gate's range). For a multi-destination gate the
+    // server first sends MULTY_LINK_CMD and the client picks a destination by map
+    // name via MULTY_LINK_SELECT_REQ. (Verified C->S in Portals.pcapng, 2026-06-11.)
+    private const ushort OpMapMultyLinkSelect = (ushort)(((int)ProtocolCommand.Map << 10) | 31); // 0x181F
+
+    /// <summary>Take a field gate by its NPC handle: target → NPC-click, then (if
+    /// <paramref name="destMap"/> is given, for a multi-destination gate) select the
+    /// destination map by name. The bot must be within the gate's range. The zone
+    /// then drives the map transition (see <see cref="ZoneView.MapChanged"/>).</summary>
+    public Task<ActionResult> UseGateAsync(string id, ushort gateHandle, string? destMap = null, CancellationToken ct = default)
+        => ActAsync(id, $"use gate h={gateHandle}{(destMap is null ? "" : $" -> {destMap}")}", async s =>
+        {
+            var hb = new byte[] { (byte)gateHandle, (byte)(gateHandle >> 8) };
+            await s.SendAsync(new FiestaPacket(OpBatTarget, hb), ct);
+            await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
+            if (!string.IsNullOrWhiteSpace(destMap))
+            {
+                var name3 = new byte[12]; // Name3, ASCII, null-padded
+                var bytes = System.Text.Encoding.ASCII.GetBytes(destMap);
+                Array.Copy(bytes, name3, Math.Min(bytes.Length, name3.Length));
+                await s.SendAsync(new FiestaPacket(OpMapMultyLinkSelect, name3), ct);
+            }
+        });
+
+    /// <summary>Snapshot the gates the bot currently sees into the shared
+    /// <see cref="Graph"/> (auto-discovery): each in-view gate becomes an edge from
+    /// the bot's current map to the gate's destination. No-op until the bot knows its
+    /// current map and is in zone. Returns the number of gate edges observed.</summary>
+    public int ObserveGates(string id)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return 0;
+        if (handle.CurrentMap is not { } fromMap || handle.ZoneView is not { } view) return 0;
+        var n = 0;
+        foreach (var gate in view.NearbyNpcs)
+        {
+            if (!gate.IsGate || string.IsNullOrWhiteSpace(gate.LinkMap)) continue;
+            Graph.ObserveGate(fromMap, gate.LinkMap!, gate.X, gate.Y, gate.Handle);
+            n++;
+        }
+        return n;
+    }
+
     /// <summary>Use an inventory item by slot (invenType: 0 = normal bag).</summary>
     public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)
         => ActAsync(id, $"use item slot={slot} type={invenType}",
@@ -234,6 +290,22 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
+    /// <summary>React to a gate / town-portal transition: advance the tracked
+    /// position to the new spawn coord and update the current map name. For an in-band
+    /// change that's all the bot needs (it's still on the same connection). A
+    /// cross-server handoff additionally needs a reconnect to the carried endpoint —
+    /// that lives in the travel orchestrator; here we just record it and log.</summary>
+    private void OnMapChanged(BotHandle handle, MapHandoff h, Action<string> log)
+    {
+        handle.SetPosition(h.X, h.Y);
+        // Resolve the destination map name: the catalog learns id↔name as the bot
+        // takes named gates; fall back to a synthetic id label if we've never seen it.
+        var name = Catalog.NameFor(h.MapId) ?? $"map#{h.MapId}";
+        handle.SetCurrentMap(name);
+        log($"[nav] now on {name} (mapId={h.MapId}) at ({h.X},{h.Y})" +
+            (h.IsCrossServer ? $" — cross-server handoff to {h.Ip}:{h.Port} (reconnect pending)" : " (in-band)"));
+    }
+
     private async Task RunBotAsync(BotHandle handle)
     {
         var opt = handle.Options;
@@ -283,6 +355,8 @@ public sealed class BotManager : IAsyncDisposable
             // opt-in via spawn options.
             using var zoneView = new ZoneView(zoneSession, Log);
             handle.ZoneView = zoneView;
+            handle.SetCurrentMap(opt.StartMap); // login ack has no map name; seed it
+            zoneView.MapChanged += h => OnMapChanged(handle, h, Log);
             using var buff = opt.Buff is { } buffCfg
                 ? new BuffInTownBehavior(zoneSession, zoneView, buffCfg, Log, ct)
                 : null;

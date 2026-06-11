@@ -778,3 +778,55 @@ Two distinct mechanics (operator-clarified — don't conflate them):
   walk = grid-distance cost, scroll = small fixed cost if in stock (else ∞), GM
   warp = ~0. So "prefer TP to shorten walk" falls out of shortest-path; no special
   casing.
+
+## Navigation v3 — cross-map transitions DECODED + foundation (2026-06-11)
+
+### Map-transition packets (from Portals.pcapng, all-zone decode)
+Using a gate is **position-OR-click triggered**; the client took the in-band gate by
+**target + NPC-click** (NPCs with flagstate=1 are gates) — `NC_BAT_TARGETTING_REQ`
+(0x2401) then `NC_ACT_NPCCLICK_CMD` (0x200A) on the gate handle. **No need to walk
+onto the tile** — just be within the gate's range. The zone then replies with
+`NC_MAP_LOGOUT_CMD` (0x1805, `[handle u16]`) followed by one of:
+
+- **`NC_MAP_LINKSAME_CMD` (0x1809)** — in-band map change, *same zone process / same
+  TCP connection*. Payload `[mapId u16][x u32][y u32]` (10 b). Bot just re-seeds
+  position + switches block grid. (Capture: Eld(9)→EldPri01(13)→Eld(9).)
+- **`NC_MAP_LINKOTHER_CMD` (0x180A)** — handoff to a *different zone server*. Payload
+  `[mapId u16][x u32][y u32][ip char[16]][port u16][wmHandle u16]` (30 b). Bot must
+  open a NEW connection to ip:port and re-send `MAP_LOGIN_REQ` using the carried
+  **wmHandle** (the trailing u16) — confirmed: the 9019 reconnect's chardata was
+  `[0x7B0C]["BotPriest"]` + the same 49 checksums, and 0x7B0C == LINKOTHER's tail.
+  The WM link (9013) stays open across the handoff. (Capture: RouN→Eld = LINKOTHER
+  to 62.171.171.24:9019, spawn (11802,10466).)
+
+Multi-destination gates: server sends `NC_MAP_MULTY_LINK_CMD` (0x181F,
+`npcHandle, npcPosition, limitRange, num, LinkMapName[5]`) when near; client picks
+with `NC_MAP_MULTY_LINK_SELECT_REQ` (0x181F C→S, `LinkMapName` Name3=12 b).
+Town portals are the separate `TOWNPORTAL_REQ`/`portalindex` path (already done).
+
+**mapId = `MapInfo.ID`** (serversource SQL): 150=RouN (RegenXY 6445,8630 = our spawn),
+9=Eld, 13=EldPri01. `MapInfo.MapName` = the `.shbd` shortname & gate `LinkMap`.
+Parsers verified against the exact capture bytes (dotnet-script).
+
+### Implemented this iteration (commit pending)
+- `Navigation/MapHandoff.cs` — LINKSAME/LINKOTHER record + verified parsers.
+- `Navigation/MapCatalog.cs` — id↔shortname, learning-first (pairs gate LinkMap +
+  handoff mapId); optional `MAPINFO_PATH` CSV bootstrap (BYO).
+- `Navigation/MapGraph.cs` — gate-edge graph, BFS `Route()`, auto-discovered by play.
+- `ZoneView` — parses LINKSAME/LINKOTHER, tracks `CurrentMapId`, clears per-map
+  entities, raises `MapChanged`.
+- `BotHandle.CurrentMap` (seeded from `BotSpawnOptions.StartMap`="RouN", updated on
+  transition) + `Map` in the snapshot.
+- `BotManager` — `UseGateAsync` (target+click+optional dest select), `ObserveGates`,
+  shared `Graph`/`Catalog`, `OnMapChanged` (re-seed + map-name update).
+- Endpoints: `POST /{id}/use-gate`, `GET /{id}/gates` (folds view into graph),
+  `GET /{id}/route?to=<map>` (read-only BFS plan).
+
+### Deferred (next iterations — the actual cross-map "works" gate)
+1. **Cross-server reconnect on LINKOTHER** (the heavy lift): swap the live zone
+   `BotSession` for a fresh `ZoneEntry.EnterAsync(newEp, h.WmHandle, charName)` with
+   the WM link kept open — needs `RunBotAsync`'s single-session await refactored into
+   a re-enterable loop. Adjacent field maps are on *different* zone servers, so this
+   is required for field-to-field travel.
+2. **Autonomous `/travelto <map>`**: Route → per hop pathfind-to-gate → use-gate →
+   await MapChanged → switch grid → repeat (Catalog.Learn each handoff).

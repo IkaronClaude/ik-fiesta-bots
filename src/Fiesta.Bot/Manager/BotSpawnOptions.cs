@@ -44,6 +44,13 @@ public sealed record BotSpawnOptions
     /// <summary>Optional caller-supplied id. When null the manager assigns one.</summary>
     public string? Id { get; init; }
 
+    /// <summary>Short name of the map the character spawns into (e.g. "RouN"), used
+    /// to seed cross-map navigation's "current map" — the login ack carries the spawn
+    /// coord but not the map name, so it's supplied here and then kept current by
+    /// transition packets. Defaults to "RouN" (where the test account spawns);
+    /// override per character.</summary>
+    public string StartMap { get; init; } = "RouN";
+
     /// <summary>Enable the buff-in-town behavior with this config. Null = the bot
     /// just idles in town (a <see cref="Session.ZoneView"/> still tracks nearby
     /// players + chat for status and on-demand <c>/say</c>).</summary>

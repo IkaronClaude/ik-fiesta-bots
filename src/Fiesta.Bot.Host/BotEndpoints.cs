@@ -44,6 +44,9 @@ public static class BotEndpoints
             group.MapPost("/{id}/walkto", (string id) => Unavailable()).WithSummary("Bot walkto (unavailable)");
             group.MapPost("/{id}/gm", (string id) => Unavailable()).WithSummary("Bot GM command (unavailable)");
             group.MapPost("/{id}/townportal", (string id) => Unavailable()).WithSummary("Bot town-portal (unavailable)");
+            group.MapPost("/{id}/use-gate", (string id) => Unavailable()).WithSummary("Bot use-gate (unavailable)");
+            group.MapGet("/{id}/gates", (string id) => Unavailable()).WithSummary("Bot gates (unavailable)");
+            group.MapGet("/{id}/route", (string id) => Unavailable()).WithSummary("Bot route plan (unavailable)");
             return;
         }
 
@@ -197,6 +200,41 @@ public static class BotEndpoints
         })
         .WithSummary("Use a town multi-select portal (target+click portal NPC, select destination index)");
 
+        group.MapPost("/{id}/use-gate", async (string id, UseGateRequest req) =>
+        {
+            if (req.GateHandle is not { } h)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["gateHandle"] = ["gateHandle is required"] });
+            return ToResult(await manager.UseGateAsync(id, h, req.DestMap), id, new { id, gate = h, dest = req.DestMap });
+        })
+        .WithSummary("Take a field gate by NPC handle (target+click; optional destMap for multi-dest gates)");
+
+        group.MapGet("/{id}/gates", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            if (bot.CurrentMap is null || bot.ZoneView is null)
+                return Results.Conflict(new { error = "bot is not in zone yet" });
+            var observed = manager.ObserveGates(id); // fold the bot's view into the shared graph
+            var gates = bot.ZoneView.NearbyNpcs.Where(n => n.IsGate)
+                .Select(n => new { handle = n.Handle, x = n.X, y = n.Y, linkMap = n.LinkMap });
+            return Results.Ok(new { id, map = bot.CurrentMap, observed, gates });
+        })
+        .WithSummary("List gates in view (and fold them into the shared world map graph)");
+
+        group.MapGet("/{id}/route", (string id, string to) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            if (bot.CurrentMap is not { } from)
+                return Results.Conflict(new { error = "bot's current map is unknown" });
+            manager.ObserveGates(id); // make sure in-view gates are in the graph first
+            var route = manager.Graph.Route(from, to);
+            if (route is null) return Results.NotFound(new { error = $"no known route {from} -> {to}", from, to });
+            return Results.Ok(new { id, from, to, hops = route.Count,
+                route = route.Select(e => new { e.FromMap, e.ToMap, gate = new { e.GateHandle, e.GateX, e.GateY } }) });
+        })
+        .WithSummary("Plan a gate route from the bot's current map to ?to=<map> over the learned graph (read-only)");
+
         group.MapPost("/{id}/gm", async (string id, GmRequest req) =>
         {
             if (string.IsNullOrWhiteSpace(req.Command))
@@ -286,6 +324,14 @@ public sealed record WalkToRequest
 public sealed record GmRequest
 {
     public string? Command { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/use-gate</c>. <c>DestMap</c> is only needed
+/// for multi-destination gates (the map short-name to pick).</summary>
+public sealed record UseGateRequest
+{
+    public ushort? GateHandle { get; init; }
+    public string? DestMap { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/townportal</c>. <c>Dest</c> is the
