@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
+using Fiesta.Bot.Navigation;
 using FiestaLibReloaded.Networking;
 using FiestaLibReloaded.Networking.Structs;
 
@@ -53,6 +54,10 @@ public sealed class ZoneView : IDisposable
     // Mover (mount) ride state — self only (0xCC02/0xCC06; 0xCC04 = someone else).
     private const ushort OpMoverRideOn = 0xCC02;
     private const ushort OpMoverRideOff = 0xCC06;
+    // Map transition (gate / town portal): LINKSAME = in-band map change on the same
+    // zone server, LINKOTHER = handoff to a different zone server (reconnect).
+    private const ushort OpMapLinkSame = 0x1809;
+    private const ushort OpMapLinkOther = 0x180A;
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
@@ -79,6 +84,17 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Raised for every overheard nearby chat line.</summary>
     public event Action<ChatMessage>? ChatReceived;
+
+    /// <summary>Raised when the zone moves the bot to another map (gate / town portal).
+    /// In-band (<see cref="MapHandoff.IsCrossServer"/> = false) means just re-seed and
+    /// switch grid; cross-server means reconnect to the carried endpoint. The
+    /// navigation layer subscribes to drive cross-map travel.</summary>
+    public event Action<MapHandoff>? MapChanged;
+
+    /// <summary>The server map id (MapInfo.ID) the bot is currently on, as last
+    /// reported by a transition. Null until the first transition (the starting map
+    /// id isn't in the login ack — the bot tracks the start map by name instead).</summary>
+    public ushort? CurrentMapId { get; private set; }
 
     public IReadOnlyCollection<NearbyPlayer> NearbyPlayers => _nearby.Values.ToArray();
     public int NearbyCount => _nearby.Count;
@@ -150,6 +166,22 @@ public sealed class ZoneView : IDisposable
         {
             IsMounted = false;
             _log?.Invoke("[ZoneView] dismounted (RIDE_OFF)");
+        }
+        else if (op == OpMapLinkSame || op == OpMapLinkOther)
+        {
+            var handoff = op == OpMapLinkSame
+                ? MapHandoff.ParseLinkSame(pkt.Payload.Span)
+                : MapHandoff.ParseLinkOther(pkt.Payload.Span);
+            if (handoff is { } h)
+            {
+                CurrentMapId = h.MapId;
+                _npcs.Clear();   // entities are per-map; the new map will re-broadcast
+                _nearby.Clear();
+                _log?.Invoke(h.IsCrossServer
+                    ? $"[ZoneView] map handoff (cross-server) -> mapId={h.MapId} @({h.X},{h.Y}) via {h.Ip}:{h.Port} wm={h.WmHandle}"
+                    : $"[ZoneView] map change (in-band) -> mapId={h.MapId} @({h.X},{h.Y})");
+                MapChanged?.Invoke(h);
+            }
         }
         else if (op == OpClientItem)
         {

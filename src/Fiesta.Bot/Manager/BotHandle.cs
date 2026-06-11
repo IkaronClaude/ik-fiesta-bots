@@ -64,6 +64,16 @@ public sealed class BotHandle
     internal CancellationTokenSource Cts { get; }
     internal Task? RunTask { get; set; }
 
+    private volatile string? _currentMap;
+
+    /// <summary>The short name of the map the bot is currently on (e.g. "RouN").
+    /// Seeded from <see cref="BotSpawnOptions.StartMap"/> at zone entry and updated on
+    /// every gate / town-portal transition. Drives which block grid cross-map
+    /// navigation pathfinds over; null if the start map wasn't supplied and no
+    /// transition has happened yet.</summary>
+    public string? CurrentMap => _currentMap;
+    internal void SetCurrentMap(string map) => _currentMap = map;
+
     private readonly object _posGate = new();
     private (uint X, uint Y)? _pos;
 
@@ -114,6 +124,7 @@ public sealed class BotHandle
             NearbyPlayers: view?.NearbyCount ?? 0,
             LastChat: view?.LastChat is { } c ? $"<{c.SenderName ?? $"h{c.Handle}"}> {c.Text}" : null,
             Position: Position is { } p ? $"{p.X},{p.Y}" : null,
+            Map: CurrentMap,
             Mounted: view?.IsMounted ?? false,
             CreatedAtUtc: CreatedAtUtc,
             RecentLog: RecentLog());
@@ -137,6 +148,7 @@ public sealed record BotSnapshot(
     int NearbyPlayers,
     string? LastChat,
     string? Position,
+    string? Map,
     bool Mounted,
     DateTime CreatedAtUtc,
     IReadOnlyList<string> RecentLog);
