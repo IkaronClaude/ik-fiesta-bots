@@ -187,6 +187,7 @@ public sealed class BotManager : IAsyncDisposable
                     System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), tx);
                     System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), ty);
                     await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
+                    handle.SetPosition(tx, ty); // advance tracked position as we walk
                     var dist = Math.Sqrt(Math.Pow((double)tx - fx, 2) + Math.Pow((double)ty - fy, 2));
                     await Task.Delay((int)Math.Clamp(dist / unitsPerSec * 1000, 40, 5000), ct);
                 }
@@ -199,8 +200,9 @@ public sealed class BotManager : IAsyncDisposable
     }
 
     /// <summary>Walk from one map coordinate to another (one MoverunCmd step).</summary>
-    public Task<ActionResult> WalkAsync(string id, uint fromX, uint fromY, uint toX, uint toY, CancellationToken ct = default)
-        => ActAsync(id, $"walk ({fromX},{fromY})->({toX},{toY})", s =>
+    public async Task<ActionResult> WalkAsync(string id, uint fromX, uint fromY, uint toX, uint toY, CancellationToken ct = default)
+    {
+        var result = await ActAsync(id, $"walk ({fromX},{fromY})->({toX},{toY})", s =>
         {
             var p = new byte[16];
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), fromX);
@@ -209,6 +211,9 @@ public sealed class BotManager : IAsyncDisposable
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), toY);
             return s.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
         });
+        if (result == ActionResult.Sent && _bots.TryGetValue(id, out var h)) h.SetPosition(toX, toY);
+        return result;
+    }
 
     /// <summary>Issue a GM command (e.g. <c>&amp;levelup 46</c>, <c>&amp;makeitem SafeProtection01</c>).
     /// GM commands are routed through the chat channel — the server processes the
@@ -259,7 +264,9 @@ public sealed class BotManager : IAsyncDisposable
             handle.SetPhase(BotPhase.EnteringZone);
             var zoneEntry = ZoneEntry.FromDataDir(_xorTable, Log, opt.DataDir);
             var zoneEp = new FiestaEndpoint(opt.Host, zoneAdv.Port);
-            var zoneConn = await zoneEntry.EnterAsync(zoneEp, wmResult.WmHandle, sel.Name, ct);
+            var entry = await zoneEntry.EnterAsync(zoneEp, wmResult.WmHandle, sel.Name, ct);
+            var zoneConn = entry.Conn;
+            if (entry.SpawnX is { } spx && entry.SpawnY is { } spy) handle.SetPosition(spx, spy);
 
             // In zone. Run a session on BOTH links — the WM connection keeps
             // receiving heartbeats while in zone and must answer them too, and it

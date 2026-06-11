@@ -67,7 +67,7 @@ public static class LoginTestCli
                     var dataDir = opt.GetValueOrDefault("data-dir", "Z:/ClientProd2/ressystem");
                     var zoneEntry = ZoneEntry.FromDataDir(table, Log, dataDir);
                     var zoneEp = new FiestaEndpoint(host, zoneAdv.Port); // public host, advertised port
-                    var zoneConn = await zoneEntry.EnterAsync(zoneEp, wm.WmHandle, sel.Name, cts.Token);
+                    var zoneConn = (await zoneEntry.EnterAsync(zoneEp, wm.WmHandle, sel.Name, cts.Token)).Conn;
                     Log($"[ok] *** {sel.Name} IS IN ZONE ({zoneEp}) ***");
 
                     // Task 16 — bot session runtime: stay in zone. Run a session on

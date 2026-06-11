@@ -162,9 +162,14 @@ public static class BotEndpoints
 
         group.MapPost("/{id}/walkto", (string id, WalkToRequest req) =>
         {
-            if (req.ToX is not { } tx || req.ToY is not { } ty || req.FromX is not { } fx || req.FromY is not { } fy
-                || string.IsNullOrWhiteSpace(req.Map))
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["req"] = ["fromX, fromY, toX, toY, map are required"] });
+            if (req.ToX is not { } tx || req.ToY is not { } ty || string.IsNullOrWhiteSpace(req.Map))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["req"] = ["toX, toY, map are required"] });
+            // from defaults to the bot's tracked position (seeded from the zone-login
+            // spawn coord, advanced as it walks) — so callers can omit it.
+            uint fx, fy;
+            if (req.FromX is { } rfx && req.FromY is { } rfy) (fx, fy) = (rfx, rfy);
+            else if (manager.Get(id)?.Position is { } pos) (fx, fy) = (pos.X, pos.Y);
+            else return Results.Conflict(new { error = "no from coord given and bot position unknown (not in zone yet)" });
             var grid = LoadGrid(req.Map!);
             if (grid is null)
                 return Results.Problem(title: "Block grid unavailable",
