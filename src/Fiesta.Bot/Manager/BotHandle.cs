@@ -84,6 +84,11 @@ public sealed class BotHandle
 
     internal void SetPosition(uint x, uint y) { lock (_posGate) _pos = (x, y); }
 
+    /// <summary>Cancellation for the currently-running <see cref="Manager.BotManager.WalkPath"/>,
+    /// if any — cancelled to abort a walk early (e.g. on a server MOVEFAIL so the bot
+    /// stops banging into an off-grid obstacle). Set/cleared by the walk task.</summary>
+    internal CancellationTokenSource? WalkCts { get; set; }
+
     internal void SetPhase(BotPhase phase) => _phase = phase;
     internal void SetCharName(string name) => _charName = name;
     internal void SetError(string error) => _error = error;

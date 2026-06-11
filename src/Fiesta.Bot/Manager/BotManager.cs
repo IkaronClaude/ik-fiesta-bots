@@ -236,7 +236,12 @@ public sealed class BotManager : IAsyncDisposable
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } session) return ActionResult.NotInZone;
         if (waypoints.Count < 2) return ActionResult.Sent;
-        var ct = handle.Cts.Token;
+        // Per-walk cancellation (linked to the bot's lifetime) so a MOVEFAIL can abort
+        // just this walk. Replace/cancel any prior walk.
+        var walkCts = CancellationTokenSource.CreateLinkedTokenSource(handle.Cts.Token);
+        handle.WalkCts?.Cancel();
+        handle.WalkCts = walkCts;
+        var ct = walkCts.Token;
         _ = Task.Run(async () =>
         {
             try
@@ -268,8 +273,13 @@ public sealed class BotManager : IAsyncDisposable
                 }
                 handle.Log($"walk-path done ({waypoints.Count} waypoints, {steps} move steps)");
             }
-            catch (OperationCanceledException) { }
+            catch (OperationCanceledException) { handle.Log("walk-path aborted (cancelled / move blocked)"); }
             catch (Exception ex) { handle.Log($"walk-path error: {ex.Message}"); }
+            finally
+            {
+                if (ReferenceEquals(handle.WalkCts, walkCts)) handle.WalkCts = null;
+                walkCts.Dispose();
+            }
         }, ct);
         return ActionResult.Sent;
     }
@@ -400,6 +410,14 @@ public sealed class BotManager : IAsyncDisposable
                 {
                     OnMapChanged(handle, h, Log);
                     if (h.IsCrossServer) { handoff = h; zoneCts.Cancel(); } // break to reconnect
+                };
+                zoneView.MoveFailed += pos =>
+                {
+                    // Server rejected a move into an off-grid obstacle: resync to its
+                    // truth and abort the current walk so we stop pushing into it.
+                    handle.SetPosition(pos.X, pos.Y);
+                    handle.WalkCts?.Cancel();
+                    Log($"[nav] move blocked — resynced to ({pos.X},{pos.Y}), walk aborted");
                 };
                 using var buff = opt.Buff is { } buffCfg
                     ? new BuffInTownBehavior(zoneSession, zoneView, buffCfg, Log, ct)
