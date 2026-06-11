@@ -58,6 +58,11 @@ public sealed class ZoneView : IDisposable
     // zone server, LINKOTHER = handoff to a different zone server (reconnect).
     private const ushort OpMapLinkSame = 0x1809;
     private const ushort OpMapLinkOther = 0x180A;
+    // MOVEFAIL (ACT cmd 27): the server rejected our last move (walked into an
+    // obstacle the static grid doesn't have — a lantern, an NPC, a closed area) and
+    // tells us the position to snap back to. The authoritative source of truth for
+    // where we actually are; the client shows "this area is not accessible".
+    private const ushort OpActMoveFail = 0x201B;
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
@@ -95,6 +100,11 @@ public sealed class ZoneView : IDisposable
     /// reported by a transition. Null until the first transition (the starting map
     /// id isn't in the login ack — the bot tracks the start map by name instead).</summary>
     public ushort? CurrentMapId { get; private set; }
+
+    /// <summary>Raised when the server rejects a move (MOVEFAIL) and snaps us back to
+    /// the carried coord — the bot walked into something not in the static grid. The
+    /// navigation layer resyncs the tracked position and aborts the current walk.</summary>
+    public event Action<(uint X, uint Y)>? MoveFailed;
 
     public IReadOnlyCollection<NearbyPlayer> NearbyPlayers => _nearby.Values.ToArray();
     public int NearbyCount => _nearby.Count;
@@ -166,6 +176,19 @@ public sealed class ZoneView : IDisposable
         {
             IsMounted = false;
             _log?.Invoke("[ZoneView] dismounted (RIDE_OFF)");
+        }
+        else if (op == OpActMoveFail)
+        {
+            // [back: SHINE_XY] — the server's authoritative position after rejecting
+            // our move. Resync to it (we walked into something off-grid).
+            var p = pkt.Payload.Span;
+            if (p.Length >= 8)
+            {
+                var bx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p);
+                var by = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[4..]);
+                _log?.Invoke($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
+                MoveFailed?.Invoke((bx, by));
+            }
         }
         else if (op == OpMapLinkSame || op == OpMapLinkOther)
         {

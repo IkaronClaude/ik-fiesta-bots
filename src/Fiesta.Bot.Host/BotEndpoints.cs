@@ -39,6 +39,7 @@ public static class BotEndpoints
             group.MapGet("/{id}/inventory", (string id) => Unavailable()).WithSummary("Bot inventory (unavailable)");
             group.MapGet("/{id}/equipment", (string id) => Unavailable()).WithSummary("Bot equipment (unavailable)");
             group.MapGet("/{id}/npcs", (string id) => Unavailable()).WithSummary("Bot nearby NPCs (unavailable)");
+            group.MapGet("/{id}/players", (string id) => Unavailable()).WithSummary("Bot nearby players (unavailable)");
             group.MapPost("/{id}/equip", (string id) => Unavailable()).WithSummary("Bot equip (unavailable)");
             group.MapPost("/{id}/walk", (string id) => Unavailable()).WithSummary("Bot walk (unavailable)");
             group.MapPost("/{id}/walkto", (string id) => Unavailable()).WithSummary("Bot walkto (unavailable)");
@@ -154,6 +155,18 @@ public static class BotEndpoints
                     isGate = n.IsGate, linkMap = n.LinkMap }) });
         })
         .WithSummary("List NPCs/mobs the bot can see (handle, mobId, mode, coord, gate→destMap) from zone broadcasts");
+
+        group.MapGet("/{id}/players", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var players = bot.ZoneView?.NearbyPlayers;
+            if (players is null) return Results.Conflict(new { error = "bot is not in zone yet" });
+            return Results.Ok(new { id, count = players.Count, players = players
+                .OrderBy(p => p.Name)
+                .Select(p => new { handle = p.Handle, name = p.Name, cls = p.Class, level = p.Level, x = p.X, y = p.Y }) });
+        })
+        .WithSummary("List players the bot can see (handle, name, class, level, coord) from zone broadcasts");
 
         group.MapPost("/{id}/equip", async (string id, EquipRequest req) =>
         {
