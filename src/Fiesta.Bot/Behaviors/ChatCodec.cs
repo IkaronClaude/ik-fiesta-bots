@@ -28,6 +28,11 @@ public static class ChatCodec
     /// <summary>C→S ACT_WHISPER_REQ opcode.</summary>
     public static readonly ushort WhisperReqOpcode = PacketRegistry.GetOpcode<PROTO_NC_ACT_WHISPER_REQ>();
 
+    /// <summary>C→S ACT_PARTYCHAT_REQ opcode. Same wire layout as CHAT_REQ but the
+    /// server fans it to the party channel; it's sent on the <b>WM</b> link (verified
+    /// in PartyFriendTarget.pcapng — party/friend traffic is WorldManager-side).</summary>
+    public static readonly ushort PartyChatReqOpcode = PacketRegistry.GetOpcode<PROTO_NC_ACT_PARTYCHAT_REQ>();
+
     /// <summary>Build a WHISPER_REQ: [itemLinkDataCount=0][receiver Name5(20)][len][text].</summary>
     public static FiestaPacket BuildWhisperReq(string receiver, string text)
     {
@@ -52,6 +57,19 @@ public static class ChatCodec
         payload[1] = (byte)body.Length;  // len
         body.CopyTo(payload.AsSpan(2));
         return new FiestaPacket(ChatReqOpcode, payload);
+    }
+
+    /// <summary>Build a PARTYCHAT_REQ frame: identical layout to CHAT_REQ
+    /// ([itemLinkDataCount=0][len][text]) on the party-chat opcode.</summary>
+    public static FiestaPacket BuildPartyChatReq(string text)
+    {
+        var body = FiestaText.Encode(text);
+        if (body.Length > 255) body = body[..255];
+        var payload = new byte[2 + body.Length];
+        payload[0] = 0;                  // itemLinkDataCount
+        payload[1] = (byte)body.Length;  // len
+        body.CopyTo(payload.AsSpan(2));
+        return new FiestaPacket(PartyChatReqOpcode, payload);
     }
 
     /// <summary>
