@@ -566,3 +566,88 @@ task). **LIVE-VERIFIED (2026-06-11):** `/walkto (6900,8520)→(6445,8630)` on Ro
   `SOMEONECHAT`) needs a **second account** — only `testuser` creds are held.
 - Cast packet (`SKILLBASH_OBJ_CAST_REQ` vs `SKILLENCHANT_REQ`) confirmed only once
   a priest has Endure learnt.
+
+## Navigation v2 — gates, follow, mounts (operator vision, 2026-06-11)
+The next arc turns the verified walk+pathfind primitives into autonomous travel.
+Operator's stated goals, in build order:
+1. **walk-to-NPC / walk-to-gate** — resolve a named NPC (or a map's gate) to its
+   world coord, then reuse the verified pathfind+walk. NPC coords are ground-truth
+   in the server files (`9Data/Shine/World/NPC.txt`, cols
+   `Name MapServer MapClient Coord-X Coord-Y Direct Party type…`). Gate/portal
+   geometry is in `MapLinkPoint.shn` (16851 rows: `FromID,ToID,Weight,OneWay` — a
+   node *graph*, IDs index a node table; not raw coords) and `TownPortal.shn`.
+2. **Gate → switch maps (link-to)** — walk into a gate region to cross to the
+   linked map. *Needs a capture:* does the client send an explicit map-move req or
+   does walking into the link region trigger a server `MAPMOVE`? (Don't guess —
+   this is the class of thing that's bitten us before: cast kick, use-item type.)
+3. **Follow player** — in-client this is a CLIENT feature (likely **no new server
+   packet**): the bot just tracks a target's live position and re-walks toward it.
+   So follow = a control loop over the EXISTING move packet. Prereqs: (a) track the
+   bot's **own** position; (b) track the **target's live** position (Briefinfo gives
+   the initial coord; live movement needs the **other-player move broadcast** opcode
+   — decode from `Full.pcapng` / a fresh capture). **Crucially: follow across map
+   boundaries** — when the target vanishes (Briefinfo delete) right next to a gate,
+   take that gate and re-acquire on the far side.
+4. **Mounts** — cheat a time-limited mount (e.g. 7-day raccoon) via GM `&makeitem`,
+   `use-item` it, **accept the time-limited-item confirmation** (a dialog that
+   appears only on FIRST use — first use STARTS the timer), wait out the summon
+   cast (1–10 s by mount), then **auto-mount when distance-to-goal > threshold**.
+   *Needs a capture:* the time-limited-item accept packet + the mount summon/seated
+   state opcode.
+
+### Prereq that unblocks 1/3: self-position + live-position tracking
+Every navigate-by-name/follow feature needs the bot to know **where it is** and
+**where the target is**, live. Plan:
+- **Own position:** seed from zone-entry coord (decode the spawn coord in the zone
+  login/`[1802]` flow or carry it from WM char-select), then advance it from the
+  moves WE issue (`WalkPath` already knows each waypoint). Exact, no guessing.
+- **Target position:** `ZoneView` already decodes Briefinfo (initial coord). Add the
+  **move-run broadcast** decode so a tracked handle's coord updates as they walk.
+  This is the one live-capture dependency for follow.
+
+### Future work — AUTO-DISCOVERY (botnet learns the server by playing it)
+For the case where we DON'T have the server files (`9Data`, `.shbd`, `NPC.txt`).
+The botnet bootstraps its own world model from gameplay alone:
+- **World map graph** — walk map→map through link portals, recording each gate's
+  source map+coord and the map it lands on → reconstruct the inter-map graph that
+  `MapLinkPoint.shn` would have given us.
+- **Per-map walkability** — accumulate walked tiles + server "you can't go there"
+  rejections into a learned occupancy grid (a discovered `.shbd` substitute).
+- **NPC/gate catalogue** — log Briefinfo/NPC-spawn broadcasts + their coords as bots
+  roam → a discovered `NPC.txt`.
+- **Combat model** — derive enemy damage/HP/range by getting hit and recording the
+  damage broadcasts; build a bestiary empirically.
+- The two paths converge on the SAME in-memory model (`WorldModel`): server-files
+  path *seeds* it offline; auto-discovery *learns* it online. Build the consumer
+  (nav/follow) against that model so it's source-agnostic.
+
+### Tooling — ServerSource as a SQL-queryable sibling (2026-06-11, operator idea)
+Set up `C:/Projects/serversource-data` as a **fiesta-collab project** over
+`Z:/ServerSource` (server env, importPath `Z:/ServerSource/9Data`). `fiesta import`
+pulls all ~1257 SHN/text tables to JSON; `fiesta query "<SQL>"` then answers data
+questions directly (NPC coords, gate links, item slots, class tables) instead of
+hand-decoding SHN/EUC-KR each time. **Local-only — NOT a git repo / never commit
+(ground-truth game data, BYO ethos).** This replaces the ad-hoc `fiesta shn` +
+PowerShell-CP949 decoding used so far.
+
+### NPC + gate discovery from the zone packet (DONE, live-verified 2026-06-11)
+Implements the "prefer zone packets" steer. On field enter the zone sends
+`NC_BRIEFINFO_MOB` (0x1C09, a `[mobnum][record×N]` list; singles regen via
+`REGENMOB` 0x1C08). Each **149-byte** record (verified against `Full.pcapng`):
+`handle u16 | mode u8 | mobid u16 | x u32 | y u32 | dir u8 | flagstate u8 |
+flag-blob[99] | sAnimation[32] | 3`. The typed FiestaLib struct skips the blob, so
+`ZoneView` parses the record **by hand** to also read the blob.
+- **`flagstate` = 0 → plain NPC/mob, 1 → a gate.** A gate's flag-blob *begins with
+  the destination map name* (null-terminated ASCII).
+- `ZoneView` now tracks `NearbyNpc(handle, mobid, mode, x, y, flag, linkMap)` and
+  exposes `NearbyNpcs`; **`GET /api/bots/{id}/npcs`** lists them (`isGate`,`linkMap`).
+- **LIVE-VERIFIED:** BotPriest in RouN saw 29 entities; every mobid+coord matched
+  the ServerSource SQL oracle exactly (mobid 28=RouSmithJames@5645,8824;
+  30=RouGaianMaria@5769,6787; …) and all **7 gates** decoded with destinations:
+  GateRou1→RouCos02, Rou2→RouCos01, Rou4→RouCos03, +EventF/EventF01/Fbattle01/
+  SD_Vale01. So gate location AND where each leads now come from the zone, no
+  server files at runtime.
+- `mode==2` for every town entity (gates are NPCs with flagstate=1), so **mode is
+  not the NPC-vs-monster discriminator** — that needs a *field* capture (walk a bot
+  through a gate into RouCos and re-dump `/npcs`; the bot can now produce that
+  itself). Gate *transition* packet still un-decoded — next live step.

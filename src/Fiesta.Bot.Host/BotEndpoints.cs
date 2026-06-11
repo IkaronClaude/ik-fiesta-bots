@@ -38,6 +38,7 @@ public static class BotEndpoints
             group.MapPost("/{id}/whisper", (string id) => Unavailable()).WithSummary("Bot whisper (unavailable)");
             group.MapGet("/{id}/inventory", (string id) => Unavailable()).WithSummary("Bot inventory (unavailable)");
             group.MapGet("/{id}/equipment", (string id) => Unavailable()).WithSummary("Bot equipment (unavailable)");
+            group.MapGet("/{id}/npcs", (string id) => Unavailable()).WithSummary("Bot nearby NPCs (unavailable)");
             group.MapPost("/{id}/equip", (string id) => Unavailable()).WithSummary("Bot equip (unavailable)");
             group.MapPost("/{id}/walk", (string id) => Unavailable()).WithSummary("Bot walk (unavailable)");
             group.MapPost("/{id}/walkto", (string id) => Unavailable()).WithSummary("Bot walkto (unavailable)");
@@ -136,6 +137,19 @@ public static class BotEndpoints
             return Results.Ok(new { id, worn = eq.OrderBy(kv => kv.Key).Select(kv => new { equipSlot = kv.Key, itemId = kv.Value }) });
         })
         .WithSummary("List the bot's worn gear (equip slot → itemId)");
+
+        group.MapGet("/{id}/npcs", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var npcs = bot.ZoneView?.NearbyNpcs;
+            if (npcs is null) return Results.Conflict(new { error = "bot is not in zone yet" });
+            return Results.Ok(new { id, count = npcs.Count, npcs = npcs
+                .OrderBy(n => n.MobId)
+                .Select(n => new { handle = n.Handle, mobId = n.MobId, mode = n.Mode, x = n.X, y = n.Y,
+                    isGate = n.IsGate, linkMap = n.LinkMap }) });
+        })
+        .WithSummary("List NPCs/mobs the bot can see (handle, mobId, mode, coord, gate→destMap) from zone broadcasts");
 
         group.MapPost("/{id}/equip", async (string id, EquipRequest req) =>
         {
