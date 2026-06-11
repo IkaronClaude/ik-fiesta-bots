@@ -52,7 +52,7 @@ public sealed class ZoneEntry
     /// Enter the zone. Returns the open zone connection on success (in zone), or
     /// throws ZoneEntryException on MAP_LOGINFAIL / timeout.
     /// </summary>
-    public async Task<FiestaClientConnection> EnterAsync(
+    public async Task<ZoneEntryResult> EnterAsync(
         FiestaEndpoint zoneEp, ushort wmHandle, string charName, CancellationToken ct)
     {
         var conn = await FiestaClientConnection.ConnectAsync(zoneEp.Host, zoneEp.Port, _xorTable, ct);
@@ -102,14 +102,29 @@ public sealed class ZoneEntry
 
                 sawFrame = true;
                 if (pkt.Opcode == OpMapLoginAck) // [1802] — the login ack ending the burst
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", ct);
+                {
+                    // The spawn position is PROTO_NC_CHAR_MAPLOGIN_ACK.logincoord — the
+                    // final SHINE_XY (two u32 LE) of the fixed 242-byte body. Parsing the
+                    // tail is robust to the big param sub-struct in between. Verified vs
+                    // the first MoverunCmd's from-coord (Portals.pcapng).
+                    uint? sx = null, sy = null;
+                    var span = pkt.Payload.Span;
+                    if (span.Length >= 8)
+                    {
+                        var tail = span[^8..];
+                        sx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tail);
+                        sy = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tail[4..]);
+                        _log($"[Zone] spawn position = ({sx},{sy})");
+                    }
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, ct);
+                }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
 
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
-            // Still complete the login so we spawn rather than hang.
+            // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", ct);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, ct);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -121,12 +136,12 @@ public sealed class ZoneEntry
 
     /// <summary>Send MAP_LOGINCOMPLETE [1803] to finish spawning into the world,
     /// then hand back the open connection (now fully in zone).</summary>
-    private async Task<FiestaClientConnection> CompleteLoginAsync(
-        FiestaClientConnection conn, string via, CancellationToken ct)
+    private async Task<ZoneEntryResult> CompleteLoginAsync(
+        FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, CancellationToken ct)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return conn;
+        return new ZoneEntryResult(conn, spawnX, spawnY);
     }
 
     private static void FillBytes(byte[] dst, string s)
@@ -136,6 +151,10 @@ public sealed class ZoneEntry
         Array.Copy(bytes, dst, Math.Min(bytes.Length, dst.Length));
     }
 }
+
+/// <summary>Result of a successful zone entry: the open connection plus the char's
+/// spawn position decoded from the [1802] login ack (null if it wasn't seen).</summary>
+public sealed record ZoneEntryResult(FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY);
 
 public sealed class ZoneEntryException : Exception
 {

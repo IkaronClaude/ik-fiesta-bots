@@ -669,6 +669,44 @@ cross-map routing on top of what we have:
   packet, TODO capture) → re-acquire on the far side → repeat. This is also exactly
   the machinery "follow player across a map boundary" needs.
 
+### Self-position tracking (SOLVED + implemented, 2026-06-11)
+The bot now knows where it is. The spawn coord is the last 8 bytes of the [1802]
+zone-login ack: `PROTO_NC_CHAR_MAPLOGIN_ACK` (sizeof 242) = `charhandle(2) +
+param(CHAR_PARAMETER_DATA) + logincoord(SHINE_XY: x u32, y u32)`. Parsing the tail is
+robust to the big param struct between. **Verified against Portals.pcapng:** [1802]
+tail = (6444,8628) = the first `MoverunCmd`'s from-coord exactly.
+- `ZoneEntry.EnterAsync` now returns `ZoneEntryResult(Conn, SpawnX, SpawnY)`;
+  `BotManager` seeds `BotHandle.Position` from it and **advances it on every move**
+  (`WalkPath` per-waypoint, `WalkAsync` to target). Surfaced in the snapshot
+  (`position`, `mounted`).
+- **`/walkto` no longer needs `from`** — it defaults to the tracked position (still
+  accepts an explicit from). Unblocks walk-to-NPC/gate by name (target coord from
+  `/npcs`, from = tracked pos). TODO: re-seed position after an in-band map change /
+  town-portal (the new map's spawn coord arrives the same way).
+
+### Multi-zone capture + gate transition (Portals.pcapng, all conversations)
+The capture spans 5 TCP conversations — **decode them ALL, not just zone00**:
+login 9010 (×2), WM 9013, **zone00 9016 (RouN, seed 0x4A)**, **zone 9019 (Eld +
+Collapsed Prison + instance area, seed 0x22)**. The RouN→Eld town-portal crossed
+*zone servers* (9016→9019 = a new TCP conn), which is why a single `--port 9016`
+filter hid the second half. One zone server hosts several maps, so Eld→Collapsed
+Prison is an **in-band map change on the same 9019 connection** (no new TCP). Eld-zone
+chat markers tell the story: "In Eld, going to a normal port" → "Now in Collapsed
+Prison" → "Pressing No on a port" (a port with a confirm dialog) → "Going to an
+instance gate" → note: **instances require a party and can offer an easy/hard pick**
+→ "logout". TODO: decode the exact in-band gate-transition frames on 9019 (the
+LOGOUT/new-map-data sequence) and the port confirm-dialog (Yes/No) packet.
+
+### Decoder must trace per-account chains (prep for 2-client party captures)
+Operator will run **2 clients side-by-side** to capture party interactions. Before
+that, `pcap_decode.py` needs to **group the conversations into per-account chains**
+(login→WM→zone(s)) and label which is which — both clients share the source IP, so
+4-tuple alone won't disambiguate. Linking keys to thread through: the account/
+username (login auth/worldselect), the OTP handed login→WM, the WM handle used at
+zone [1801], and the **character name** in `MAP_LOGIN_REQ` (and chat). Plan: tag each
+conversation with {account, charName, phase} and print a per-account chain header so
+two players' streams don't blur together. **Do this before the party captures.**
+
 ### Mount + town-portal protocol (SOLVED from Portals.pcapng, 2026-06-11)
 Operator capture `Z:/Portals.pcapng` (chat-marked each action). Both flows decoded:
 

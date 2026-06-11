@@ -64,6 +64,16 @@ public sealed class BotHandle
     internal CancellationTokenSource Cts { get; }
     internal Task? RunTask { get; set; }
 
+    private readonly object _posGate = new();
+    private (uint X, uint Y)? _pos;
+
+    /// <summary>The bot's best-known world position: seeded from the zone-login spawn
+    /// coord and advanced as it issues move commands. Null until in zone (or if the
+    /// spawn coord wasn't captured). Lets navigation default the "from" point.</summary>
+    public (uint X, uint Y)? Position { get { lock (_posGate) return _pos; } }
+
+    internal void SetPosition(uint x, uint y) { lock (_posGate) _pos = (x, y); }
+
     internal void SetPhase(BotPhase phase) => _phase = phase;
     internal void SetCharName(string name) => _charName = name;
     internal void SetError(string error) => _error = error;
@@ -103,6 +113,8 @@ public sealed class BotHandle
             Error: Error,
             NearbyPlayers: view?.NearbyCount ?? 0,
             LastChat: view?.LastChat is { } c ? $"<{c.SenderName ?? $"h{c.Handle}"}> {c.Text}" : null,
+            Position: Position is { } p ? $"{p.X},{p.Y}" : null,
+            Mounted: view?.IsMounted ?? false,
             CreatedAtUtc: CreatedAtUtc,
             RecentLog: RecentLog());
     }
@@ -124,5 +136,7 @@ public sealed record BotSnapshot(
     string? Error,
     int NearbyPlayers,
     string? LastChat,
+    string? Position,
+    bool Mounted,
     DateTime CreatedAtUtc,
     IReadOnlyList<string> RecentLog);
