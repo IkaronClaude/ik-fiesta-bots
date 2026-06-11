@@ -43,6 +43,7 @@ public static class BotEndpoints
             group.MapPost("/{id}/walk", (string id) => Unavailable()).WithSummary("Bot walk (unavailable)");
             group.MapPost("/{id}/walkto", (string id) => Unavailable()).WithSummary("Bot walkto (unavailable)");
             group.MapPost("/{id}/gm", (string id) => Unavailable()).WithSummary("Bot GM command (unavailable)");
+            group.MapPost("/{id}/townportal", (string id) => Unavailable()).WithSummary("Bot town-portal (unavailable)");
             return;
         }
 
@@ -183,6 +184,14 @@ public static class BotEndpoints
         })
         .WithSummary("Walk from (fromX,fromY) to (toX,toY) — one MoverunCmd step");
 
+        group.MapPost("/{id}/townportal", async (string id, TownPortalRequest req) =>
+        {
+            if (req.NpcHandle is not { } h || req.Dest is not { } d)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["req"] = ["npcHandle and dest are required"] });
+            return ToResult(await manager.TownPortalAsync(id, h, d), id, new { id, npcHandle = h, dest = d });
+        })
+        .WithSummary("Use a town multi-select portal (target+click portal NPC, select destination index)");
+
         group.MapPost("/{id}/gm", async (string id, GmRequest req) =>
         {
             if (string.IsNullOrWhiteSpace(req.Command))
@@ -272,6 +281,14 @@ public sealed record WalkToRequest
 public sealed record GmRequest
 {
     public string? Command { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/townportal</c>. <c>Dest</c> is the
+/// TownPortal-table destination index (e.g. RouN: 0=RouN,1=RouVal01,2=Eld).</summary>
+public sealed record TownPortalRequest
+{
+    public ushort? NpcHandle { get; init; }
+    public byte? Dest { get; init; }
 }
 
 /// <summary>

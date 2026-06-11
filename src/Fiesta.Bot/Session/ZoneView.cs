@@ -50,6 +50,9 @@ public sealed class ZoneView : IDisposable
     private static readonly ushort OpBriefDelete = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_BRIEFINFODELETE_CMD>();
     private static readonly ushort OpBriefMob = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_MOB_CMD>();
     private static readonly ushort OpRegenMob = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_REGENMOB_CMD>();
+    // Mover (mount) ride state — self only (0xCC02/0xCC06; 0xCC04 = someone else).
+    private const ushort OpMoverRideOn = 0xCC02;
+    private const ushort OpMoverRideOff = 0xCC06;
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
@@ -84,6 +87,10 @@ public sealed class ZoneView : IDisposable
     /// briefinfo. The runtime source for walk-to-NPC and gate location.</summary>
     public IReadOnlyCollection<NearbyNpc> NearbyNpcs => _npcs.Values.ToArray();
     public ChatMessage? LastChat { get; private set; }
+
+    /// <summary>True while the bot is riding a mount (tracked from MOVER ride
+    /// on/off, 0xCC02/0xCC06). Drives mount-aware routing (auto-use when far).</summary>
+    public bool IsMounted { get; private set; }
 
     /// <summary>Current bag contents: slot → itemId (built from the login item list
     /// and live cell/equip changes).</summary>
@@ -133,6 +140,16 @@ public sealed class ZoneView : IDisposable
         else if (op == OpRegenMob)
         {
             AddOrUpdateNpc(pkt.Payload.Span, 0); // single record, no count prefix
+        }
+        else if (op == OpMoverRideOn)
+        {
+            IsMounted = true;
+            _log?.Invoke("[ZoneView] mounted (RIDE_ON)");
+        }
+        else if (op == OpMoverRideOff)
+        {
+            IsMounted = false;
+            _log?.Invoke("[ZoneView] dismounted (RIDE_OFF)");
         }
         else if (op == OpClientItem)
         {
