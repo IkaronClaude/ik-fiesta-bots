@@ -44,11 +44,10 @@ public sealed record BotSpawnOptions
     /// <summary>Optional caller-supplied id. When null the manager assigns one.</summary>
     public string? Id { get; init; }
 
-    /// <summary>Short name of the map the character spawns into (e.g. "RouN"), used
-    /// to seed cross-map navigation's "current map" — the login ack carries the spawn
-    /// coord but not the map name, so it's supplied here and then kept current by
-    /// transition packets. Defaults to "RouN" (where the test account spawns);
-    /// override per character.</summary>
+    /// <summary>Fallback start-map short name, used only if the WM avatar list doesn't
+    /// report one (e.g. a freshly created character). Normally the real spawn map comes
+    /// from <see cref="Login.AvatarSummary.LoginMap"/> (the WM avatar's <c>loginmap</c>),
+    /// which the bot then keeps current via transition packets.</summary>
     public string StartMap { get; init; } = "RouN";
 
     /// <summary>Enable the buff-in-town behavior with this config. Null = the bot
