@@ -109,14 +109,17 @@ public sealed class ZoneEntry
                     // the first MoverunCmd's from-coord (Portals.pcapng).
                     uint? sx = null, sy = null;
                     var span = pkt.Payload.Span;
+                    // PROTO_NC_CHAR_MAPLOGIN_ACK.charhandle is the FIRST u16 — the bot's
+                    // own in-zone handle, needed to self-target (e.g. self-heal).
+                    ushort? charHandle = span.Length >= 2 ? (ushort)(span[0] | (span[1] << 8)) : null;
                     if (span.Length >= 8)
                     {
                         var tail = span[^8..];
                         sx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tail);
                         sy = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tail[4..]);
-                        _log($"[Zone] spawn position = ({sx},{sy})");
+                        _log($"[Zone] self handle={charHandle} spawn=({sx},{sy})");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, ct);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, ct);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -124,7 +127,7 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, ct);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, ct);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -137,11 +140,11 @@ public sealed class ZoneEntry
     /// <summary>Send MAP_LOGINCOMPLETE [1803] to finish spawning into the world,
     /// then hand back the open connection (now fully in zone).</summary>
     private async Task<ZoneEntryResult> CompleteLoginAsync(
-        FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, CancellationToken ct)
+        FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, ushort? charHandle, CancellationToken ct)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle);
     }
 
     private static void FillBytes(byte[] dst, string s)
@@ -152,9 +155,10 @@ public sealed class ZoneEntry
     }
 }
 
-/// <summary>Result of a successful zone entry: the open connection plus the char's
-/// spawn position decoded from the [1802] login ack (null if it wasn't seen).</summary>
-public sealed record ZoneEntryResult(FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY);
+/// <summary>Result of a successful zone entry: the open connection, the char's
+/// spawn position, and its in-zone <see cref="CharHandle"/> (self handle) decoded
+/// from the [1802] login ack (null if it wasn't seen).</summary>
+public sealed record ZoneEntryResult(FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY, ushort? CharHandle);
 
 public sealed class ZoneEntryException : Exception
 {

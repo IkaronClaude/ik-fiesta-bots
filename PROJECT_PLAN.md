@@ -830,3 +830,87 @@ Parsers verified against the exact capture bytes (dotnet-script).
    is required for field-to-field travel.
 2. **Autonomous `/travelto <map>`**: Route → per hop pathfind-to-gate → use-gate →
    await MapChanged → switch grid → repeat (Catalog.Learn each handoff).
+
+## Combat — instances, auto-attack, damage skills, self-heal (2026-06-11/12, live-verified)
+Built combat for the lvl-70+ BotPriest in the **EldPri01** (Collapsed Prison)
+instance. Decoded from `Z:/CombatExtensive.pcapng` (chat-annotated) +
+`Z:/PartyFriendTarget.pcapng`; all kills/heals live-verified on `testuser`/BotPriest.
+
+### Instance entry — the LINKSAME populate fix (the big one)
+- The EldPri01 gate is a **walk-on trigger**: standing on it auto-opens a server
+  menu **`0x3C01`** ("move to Collapsed Prison field?"). Answer with
+  **SERVERMENU_ACK `0x3C02` `[00]`** (option 0 = Yes). `UseGateAsync` now answers an
+  already-open menu (we spawn on the trigger when we logged out inside) or polls ~3s
+  for one after target+click.
+- The transition is **in-band LINKSAME `0x1809`** (same zone server 9019, server-driven
+  warp `[mapId u16][x u32][y u32]`), NOT a reconnect. **The client MUST re-send
+  MAP_LOGINCOMPLETE `0x1803` after the warp** or the new map never populates (no mob
+  broadcasts — bot sits in limbo). Verified in `Z:/Portals.pcapng`: per transition the
+  server sends `0x1805 LOGOUT_CMD` → `0x1809 LINKSAME_CMD`, client replies `0x1803`.
+  `OnMapChanged` now fires `0x1803` on in-band changes. (The cross-server LINKOTHER
+  path already re-logs in, so it sent `0x1803` implicitly — that's why town↔town
+  worked but field-instance didn't.)
+- A character that logs out inside an instance **logs back in directly inside it**
+  (WM `loginmap` = "EldPri01"), so the map name resolves and the grid loads normally.
+
+### The cast sequence + the FACING root cause
+Every offensive cast that the server REJECTED came back as **`0x2434`
+NC_BAT_SKILLBASH_CAST_FAIL_ACK** (2-byte reason, varies — not load-bearing). Heal
+(self-target) always worked; enemy-target damage always failed. Root cause, after
+ruling out weapon, range, stop, windup, and skill tier: **facing.** ActiveSkill has
+**`UsableDegree`** (front arc, 180°) — the target must be in front of you. There is
+**no rotate packet**; the client turns via **MOVERUN** (its from→to vector sets
+facing). The accepted sequence (CombatExtensive.pcapng):
+```
+TARGET 0x2401 [handle] → CHANGEMODE 0x2008 [02] → MOVERUN 0x2019 (toward target = FACE)
+  → STOP 0x2012 [x,y] → SKILLBASH_OBJ_CAST_REQ 0x2440 [skill u16][target u16]
+```
+Server success → `SKILLBASH_HIT_OBJ_START`/`SKILLBASH_CAST_SUC_ACK`/`HIT_DAMAGE`
+(`0x244E` carries skill+target+cast-id) and `REALLYKILL 0x244A [mob,self]` on kill.
+`CastAsync(stopFirst)`: damage casts send a **tiny MOVERUN toward the target** (≤16u,
+capped so a ranged caster never closes into melee) + STOP before the cast to set
+facing; heal passes `stopFirst:false` (self-cast needs no facing, castable while
+moving). **Don't couple auto-attack to skills** — a mage casts without ever swinging.
+
+### Auto-attack (melee swings)
+Separate `/autoattack` (and `/stopattack`) endpoint: TARGET → CHANGEMODE → MOVERUN
+into melee + STOP → **BASHSTART `0x242B`** (empty). Server then streams continuous
+**`0x2447` SWING_START / `0x2448` SWING_DAMAGE** until the mob dies (`0x244A`) or
+**BASHSTOP `0x2432`**. "Click once, many swings." Kills mobs on its own (used the
+operator's hammer; ~150/swing). Optional — layer skills on top or not.
+
+### Self-heal
+`/heal` casts a Heal on **SelfHandle** (the first u16 of the `[1802]` MAP_LOGIN_ACK,
+captured in `ZoneEntry`/`BotHandle`). Live: HP 2220→2495 (full) after a mob hit us.
+Heal is IsMovingSkill + self-target → no facing/stop. (Casting on an enemy while a
+heal "lands on me" in the real client is a client-side redirect — we self-target.)
+
+### Skill data facts (ActiveSkill table in serversource-data; ItemInfo for scrolls)
+- **`UsableDegree`** = facing arc (must face target). **`IsMovingSkill`** = castable
+  while moving (all the combat skills tested = 1, so movement isn't the gate; facing
+  is). **`DemandType`** = weapon-class requirement. **`Range`** (0 = melee; live melee
+  range is generous, ~100–200u). **`DlyTime`** = cooldown ms (Wield 6s, PsychicChop
+  10s, Heal 3s). **`SP`** = mana cost.
+- **Display name ≠ InxName.** "Bash" = **Wield** series (1500–1514, 1500=Wield01 cheap,
+  **any weapon**); "Bleed" = **PsychicChop** (1640–1649, **mace-only**); Heal =
+  1540–1559 (1549=Heal10). A priest can't use BashStrike (240–250, Fighter) or
+  Wield15's UseClass-12 tier — `&learnskill 1500` for the basic mace attack.
+- **Skill scrolls** live in **ItemInfo**: `Name` contains `[01]` for first-in-series,
+  `UseClass` = class (Heal[01] scroll = UseClass **8** = priest/cleric),
+  `ItemUseSkill` links scroll→skill.
+- **Equipped gear** = `tItem.nStorageType=8`, `nStorage` = equip slot (**12 = weapon**);
+  `nStorageType=9` = bag, `12` = quickbar. `/equip {slot}` equips a bag slot →
+  weapon slot. BotPriest (charNo 1006) shipped with the **hammer (942)** equipped;
+  swapped to **mace (750)** to satisfy PsychicChop's mace requirement.
+
+### New endpoints
+`/autoattack`, `/stopattack` (bashstart/bashstop), plus `/heal` (self) and `/attack`
+(skill on target/nearest, now faces first). `/use-gate` auto-answers the instance
+confirm menu.
+
+### Next
+- Data-drive `stopFirst`/facing + cooldown from **ActiveSkill** (`IsMovingSkill`,
+  `UsableDegree`, `DlyTime`) instead of the hard-coded heuristic, and gate the cast on
+  `SP` — the clean way to support every class/skill (mages cast ranged, no swing).
+- ZoneView doesn't parse the login item burst → `/inventory` `/equipment` read empty
+  (cosmetic; equip-by-slot still works).

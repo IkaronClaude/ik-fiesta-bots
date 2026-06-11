@@ -69,6 +69,11 @@ public sealed class ZoneView : IDisposable
     // move — needed for follow to chase the real position, not the appear-spot.
     private const ushort OpSomeoneMoveWalk = 0x2018;
     private const ushort OpSomeoneMoveRun = 0x201A;
+    // Server menu (0x3C01): a Yes/No or list prompt an NPC/gate opens (e.g. an
+    // instance gate like EldPri01 asks "move to Collapsed Prison field?"). The client
+    // answers with SERVERMENU_ACK (0x3C02) selecting an option. Track that one is open
+    // so gate-taking can auto-confirm it.
+    private const ushort OpMenuServerMenu = 0x3C01;
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
@@ -123,6 +128,21 @@ public sealed class ZoneView : IDisposable
     /// <summary>True while the bot is riding a mount (tracked from MOVER ride
     /// on/off, 0xCC02/0xCC06). Drives mount-aware routing (auto-use when far).</summary>
     public bool IsMounted { get; private set; }
+
+    /// <summary>When the server last opened a menu prompt (0x3C01) — e.g. an instance
+    /// gate's Yes/No confirm. Gate-taking checks this to auto-answer with a
+    /// SERVERMENU_ACK. Null if no menu has opened.</summary>
+    public DateTime? LastMenuAtUtc { get; private set; }
+
+    /// <summary>Whether a server menu prompt (0x3C01) is currently open and unanswered.
+    /// Set when one arrives, cleared once we send a SERVERMENU_ACK. An instance gate
+    /// auto-opens its confirm menu when you stand on the trigger (e.g. on zone entry if
+    /// you spawn on it), so gate-taking must answer an already-open menu, not just one
+    /// that opens after the click.</summary>
+    public bool ServerMenuOpen { get; private set; }
+
+    /// <summary>Mark the open server menu as answered (called after sending the ack).</summary>
+    public void ClearServerMenu() => ServerMenuOpen = false;
 
     /// <summary>Current bag contents: slot → itemId (built from the login item list
     /// and live cell/equip changes).</summary>
@@ -195,6 +215,12 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
                 MoveFailed?.Invoke((bx, by));
             }
+        }
+        else if (op == OpMenuServerMenu)
+        {
+            LastMenuAtUtc = DateTime.UtcNow;
+            ServerMenuOpen = true;
+            _log?.Invoke($"[ZoneView] server menu opened (0x3C01, {pkt.Payload.Length}b) — awaiting select");
         }
         else if (op == OpSomeoneMoveWalk || op == OpSomeoneMoveRun)
         {

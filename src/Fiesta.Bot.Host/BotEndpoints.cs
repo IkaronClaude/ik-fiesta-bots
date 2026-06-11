@@ -34,6 +34,10 @@ public static class BotEndpoints
             group.MapPost("/{id}/stop", (string id) => Unavailable()).WithSummary("Stop a bot (unavailable)");
             group.MapPost("/{id}/say", (string id) => Unavailable()).WithSummary("Bot chat (unavailable)");
             group.MapPost("/{id}/cast", (string id) => Unavailable()).WithSummary("Bot cast (unavailable)");
+            group.MapPost("/{id}/heal", (string id) => Unavailable()).WithSummary("Bot heal (unavailable)");
+            group.MapPost("/{id}/attack", (string id) => Unavailable()).WithSummary("Bot attack (unavailable)");
+            group.MapPost("/{id}/autoattack", (string id) => Unavailable()).WithSummary("Bot auto-attack (unavailable)");
+            group.MapPost("/{id}/stopattack", (string id) => Unavailable()).WithSummary("Bot stop-attack (unavailable)");
             group.MapPost("/{id}/use-item", (string id) => Unavailable()).WithSummary("Bot use-item (unavailable)");
             group.MapPost("/{id}/whisper", (string id) => Unavailable()).WithSummary("Bot whisper (unavailable)");
             group.MapGet("/{id}/inventory", (string id) => Unavailable()).WithSummary("Bot inventory (unavailable)");
@@ -115,6 +119,41 @@ public static class BotEndpoints
             return ToResult(await manager.CastAsync(id, skill, target), id, new { id, cast = skill, target });
         })
         .WithSummary("Cast a skill on a target handle (replays client target+mode+cast sequence)");
+
+        group.MapPost("/{id}/heal", async (string id, CastRequest req) =>
+        {
+            if (req.Skill is not { } skill)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["skill"] = ["heal skill id is required"] });
+            var r = await manager.HealSelfAsync(id, skill);
+            return r == BotManager.ActionResult.NotInZone && manager.Get(id)?.SelfHandle is null
+                ? Results.Conflict(new { error = "self handle unknown (not fully in zone yet)" })
+                : ToResult(r, id, new { id, healed = "self", skill });
+        })
+        .WithSummary("Cast a heal skill on yourself (self-targeted)");
+
+        group.MapPost("/{id}/attack", async (string id, AttackRequest req) =>
+        {
+            if (req.Skill is not { } skill)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["skill"] = ["skill id is required"] });
+            var r = await manager.AttackAsync(id, skill, req.Target ?? 0);
+            return r == BotManager.ActionResult.NotFound && manager.Get(id) is not null
+                ? Results.Conflict(new { error = "no target given and no mob in view" })
+                : ToResult(r, id, new { id, attack = skill, target = req.Target });
+        })
+        .WithSummary("Attack: cast a damage skill on a target handle, or the nearest mob in view");
+
+        group.MapPost("/{id}/autoattack", async (string id, AttackRequest req) =>
+        {
+            var r = await manager.AutoAttackAsync(id, req.Target ?? 0);
+            return r == BotManager.ActionResult.NotFound && manager.Get(id) is not null
+                ? Results.Conflict(new { error = "no target given and no mob in view" })
+                : ToResult(r, id, new { id, autoAttack = req.Target ?? 0 });
+        })
+        .WithSummary("Begin melee auto-attack (BASHSTART) on a target handle, or the nearest mob in view");
+
+        group.MapPost("/{id}/stopattack", async (string id) =>
+            ToResult(await manager.StopAttackAsync(id), id, new { id, stoppedAttack = true }))
+        .WithSummary("Stop melee auto-attack (BASHSTOP)");
 
         group.MapPost("/{id}/use-item", async (string id, UseItemRequest req) =>
         {
@@ -410,8 +449,16 @@ public sealed record FriendConfirmRequest
     public bool Accept { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/cast</c>.</summary>
+/// <summary>Body for <c>POST /api/bots/{id}/cast</c> and <c>/heal</c>.</summary>
 public sealed record CastRequest
+{
+    public ushort? Skill { get; init; }
+    public ushort? Target { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/attack</c>. Omit <c>Target</c> to hit the
+/// nearest mob in view.</summary>
+public sealed record AttackRequest
 {
     public ushort? Skill { get; init; }
     public ushort? Target { get; init; }
