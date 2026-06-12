@@ -605,6 +605,32 @@ Every navigate-by-name/follow feature needs the bot to know **where it is** and
   **move-run broadcast** decode so a tracked handle's coord updates as they walk.
   This is the one live-capture dependency for follow.
 
+### ⚠️ Data-source boundary — what the bot may read (operator-clarified 2026-06-12)
+**This is a correctness/legitimacy rule, separate from the BYO "don't *commit* data"
+ethos.** A bot is a synthetic *client*, so it may read **anything a real client can
+see** — but nothing a client can't.
+
+- **ALLOWED: client SHNs** (the `ressystem` tree, `Z:/ClientProd2|ClientSource/ressystem`).
+  A client ships these and reads them, so the bot may too — item/skill/class/map tables,
+  the `[1801]` checksums, etc. Reading client SHNs is *fine*, always.
+- **OFF-LIMITS when we lack the server's source: server-only data.** All server
+  `9Data/Shine/World/*.txt` / shine text tables **and all `*Server.shn`** (e.g.
+  `NPC.txt`, mob/spawn tables, `MapInfo`-server views). These exist only on the server;
+  a real client never has them, so a legitimate bot can't assume them either. Using them
+  is only OK when the operator actually *has* that server's source (our dev convenience,
+  via `serversource-data` — NOT something to bake into bot runtime behavior).
+- **Server-authoritative state arrives over the wire, not from files:**
+  - **NPC positions** are server-side until the server *sends* them — which it does, in
+    the zone field-enter **briefinfo** broadcast. So `ZoneView` reading NPC/gate coords
+    from packets (not `NPC.txt`) is the *correct* design, not a workaround. ✅ already done.
+  - **Mob spawn groups are entirely server-side.** The client never receives the spawn-
+    group definitions — only the **derived** output: the mob *positions* (briefinfo /
+    `REGENMOB`) and **respawn packets** as they fire. To know spawn groups without server
+    files we must **reconstruct them empirically** from those packets (observe where/when
+    mobs appear over time → infer the groups). **NOT implementing this now** (irrelevant
+    until something needs it) — captured here so the approach is on record. When it's
+    needed it belongs in the AUTO-DISCOVERY `WorldModel` below.
+
 ### Future work — AUTO-DISCOVERY (botnet learns the server by playing it)
 For the case where we DON'T have the server files (`9Data`, `.shbd`, `NPC.txt`).
 The botnet bootstraps its own world model from gameplay alone:
