@@ -50,6 +50,8 @@ public static class BotEndpoints
             group.MapPost("/{id}/gm", (string id) => Unavailable()).WithSummary("Bot GM command (unavailable)");
             group.MapPost("/{id}/townportal", (string id) => Unavailable()).WithSummary("Bot town-portal (unavailable)");
             group.MapPost("/{id}/use-gate", (string id) => Unavailable()).WithSummary("Bot use-gate (unavailable)");
+            group.MapPost("/{id}/travelto", (string id) => Unavailable()).WithSummary("Bot travelto (unavailable)");
+            group.MapPost("/{id}/stoptravel", (string id) => Unavailable()).WithSummary("Bot stoptravel (unavailable)");
             group.MapGet("/{id}/gates", (string id) => Unavailable()).WithSummary("Bot gates (unavailable)");
             group.MapGet("/{id}/route", (string id) => Unavailable()).WithSummary("Bot route plan (unavailable)");
             group.MapPost("/{id}/target", (string id) => Unavailable()).WithSummary("Bot target (unavailable)");
@@ -228,24 +230,29 @@ public static class BotEndpoints
 
         group.MapPost("/{id}/walkto", (string id, WalkToRequest req) =>
         {
-            if (req.ToX is not { } tx || req.ToY is not { } ty || string.IsNullOrWhiteSpace(req.Map))
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["req"] = ["toX, toY, map are required"] });
-            // from defaults to the bot's tracked position (seeded from the zone-login
-            // spawn coord, advanced as it walks) — so callers can omit it.
+            if (req.ToX is not { } tx || req.ToY is not { } ty)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["req"] = ["toX, toY are required"] });
+            var bot = manager.Get(id);
+            // map defaults to the bot's current map (tracked across transitions); from
+            // defaults to the bot's tracked position (seeded from the zone-login spawn
+            // coord, advanced as it walks) — so callers can pass just toX/toY.
+            var map = !string.IsNullOrWhiteSpace(req.Map) ? req.Map! : bot?.CurrentMap;
+            if (string.IsNullOrWhiteSpace(map))
+                return Results.Conflict(new { error = "no map given and bot's current map is unknown (not in zone yet)" });
             uint fx, fy;
             if (req.FromX is { } rfx && req.FromY is { } rfy) (fx, fy) = (rfx, rfy);
-            else if (manager.Get(id)?.Position is { } pos) (fx, fy) = (pos.X, pos.Y);
+            else if (bot?.Position is { } pos) (fx, fy) = (pos.X, pos.Y);
             else return Results.Conflict(new { error = "no from coord given and bot position unknown (not in zone yet)" });
-            var grid = LoadGrid(req.Map!);
+            var grid = LoadGrid(map);
             if (grid is null)
                 return Results.Problem(title: "Block grid unavailable",
-                    detail: $"Set BLOCKINFO_DIR and ensure {req.Map}.shbd exists.", statusCode: StatusCodes.Status503ServiceUnavailable);
+                    detail: $"Set BLOCKINFO_DIR and ensure {map}.shbd exists.", statusCode: StatusCodes.Status503ServiceUnavailable);
             var path = PathFinder.FindPath(grid, fx, fy, tx, ty);
             if (path.Count == 0) return Results.Conflict(new { error = "no path to target (start/goal blocked or unreachable)" });
             var wp = PathFinder.Simplify(path);
-            return ToResult(manager.WalkPath(id, wp), id, new { id, map = req.Map, waypoints = wp.Count, tiles = path.Count });
+            return ToResult(manager.WalkPath(id, wp), id, new { id, map, waypoints = wp.Count, tiles = path.Count });
         })
-        .WithSummary("Pathfind across the map's block grid and walk there (background)");
+        .WithSummary("Pathfind across a map's block grid and walk there (map + coords; map/from default to the bot's current map/position)");
 
         group.MapPost("/{id}/walk", async (string id, WalkRequest req) =>
         {
@@ -270,6 +277,30 @@ public static class BotEndpoints
             return ToResult(await manager.UseGateAsync(id, h, req.DestMap), id, new { id, gate = h, dest = req.DestMap });
         })
         .WithSummary("Take a field gate by NPC handle (target+click; optional destMap for multi-dest gates)");
+
+        group.MapPost("/{id}/travelto", (string id, TravelToRequest req) =>
+        {
+            if (string.IsNullOrWhiteSpace(req.To))
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["to"] = ["destination map is required"] });
+            var (result, route) = manager.TravelTo(id, req.To!, req.UnitsPerSec ?? 120.0);
+            return result switch
+            {
+                BotManager.TravelResult.Started => Results.Accepted($"/api/bots/{id}", new
+                {
+                    id, to = req.To, hops = route!.Count,
+                    route = route.Select(e => new { e.FromMap, e.ToMap })
+                }),
+                BotManager.TravelResult.AlreadyThere => Results.Ok(new { id, to = req.To, alreadyThere = true }),
+                BotManager.TravelResult.NoRoute => Results.NotFound(new { error = $"no known gate route to '{req.To}' from here — explore via /gates first", to = req.To }),
+                BotManager.TravelResult.NotInZone => Results.Conflict(new { error = "bot is not in zone yet (or current map unknown)" }),
+                _ => Results.NotFound(),
+            };
+        })
+        .WithSummary("Autonomously travel to a map: BFS the learned gate graph, then walk-to-gate + take-gate per hop (background)");
+
+        group.MapPost("/{id}/stoptravel", (string id) =>
+            ToResult(manager.StopTravel(id), id, new { id, travelling = false }))
+        .WithSummary("Stop an in-progress travelto (halts the bot where it is)");
 
         group.MapGet("/{id}/gates", (string id) =>
         {
@@ -515,6 +546,14 @@ public sealed record UseGateRequest
 {
     public ushort? GateHandle { get; init; }
     public string? DestMap { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/travelto</c>. <c>To</c> is the destination
+/// map short-name; <c>UnitsPerSec</c> optionally overrides the walk speed (default 120).</summary>
+public sealed record TravelToRequest
+{
+    public string? To { get; init; }
+    public double? UnitsPerSec { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/townportal</c>. <c>Dest</c> is the

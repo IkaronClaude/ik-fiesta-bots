@@ -822,14 +822,42 @@ Parsers verified against the exact capture bytes (dotnet-script).
 - Endpoints: `POST /{id}/use-gate`, `GET /{id}/gates` (folds view into graph),
   `GET /{id}/route?to=<map>` (read-only BFS plan).
 
-### Deferred (next iterations — the actual cross-map "works" gate)
-1. **Cross-server reconnect on LINKOTHER** (the heavy lift): swap the live zone
-   `BotSession` for a fresh `ZoneEntry.EnterAsync(newEp, h.WmHandle, charName)` with
-   the WM link kept open — needs `RunBotAsync`'s single-session await refactored into
-   a re-enterable loop. Adjacent field maps are on *different* zone servers, so this
-   is required for field-to-field travel.
-2. **Autonomous `/travelto <map>`**: Route → per hop pathfind-to-gate → use-gate →
-   await MapChanged → switch grid → repeat (Catalog.Learn each handoff).
+### Cross-map travel — BOTH pieces DONE (live-verified 2026-06-12)
+1. **Cross-server reconnect on LINKOTHER (DONE).** `RunBotAsync` is a re-enterable
+   zone loop: the WM link stays open for the bot's whole life; a `ZoneView.MapChanged`
+   with `IsCrossServer` trips a per-session `zoneCts`, the `RunAsync` await returns, and
+   the loop reconnects via `ZoneEntry.EnterAsync(newEp, ho.WmHandle, charName)` to the
+   carried ip:port. In-band LINKSAME never reaches the loop — it's handled live on the
+   same connection by `OnMapChanged` (re-send `0x1803`). Field-to-field travel works.
+2. **Autonomous `/travelto <map>` (DONE).** `BotManager.TravelTo` → `RunTravelAsync`
+   background loop: `Graph.Route(from,to)` (BFS) → per hop `GateTo(dest)` (resolve the
+   live in-view gate by `LinkMap`) → `ApproachAsync` (in-map A* to the gate coord, stop
+   ~60u short) → `UseGateAsync` (auto-answers an instance confirm menu) → wait on a
+   `BotHandle.MapChangeSeq` bump (transition-agnostic; survives the cross-server ZoneView
+   swap) → for a cross-server hop wait until `Phase==InZone` again → `ObserveGates` the
+   new map → next hop. Retries once onto the exact gate tile if a from-range click
+   doesn't fire. Endpoints: `POST /{id}/travelto {to,unitsPerSec?}` (202 + plan, or 404
+   no-route / 409 not-in-zone), `POST /{id}/stoptravel`.
+   - **Map-name learning (the one subtlety):** the handoff carries only the map *id*.
+     The travel loop sets `BotHandle.PendingDestMap` (the gate's `LinkMap`) *before*
+     taking the gate; `OnMapChanged` then resolves `Catalog.NameFor(id) ?? PendingDestMap`
+     and `Catalog.Learn(id, name)` — deterministically, *before* the cross-server
+     reconnect re-reads `CurrentMap`. (First attempt corrected the name in the travel
+     loop and lost a race with the reconnect → it stuck as `map#3`; moving the resolution
+     into `OnMapChanged` fixed it.)
+   - **Live runs (testuser/BotPriest):** in-band `EldPri01→Eld` (pathfound 126 waypoints
+     to the exit gate, LINKSAME, re-sent `0x1803`, arrived); cross-server `Eld→RouCos03`
+     and `RouCos03→Eld` (LINKOTHER reconnect 9019↔9016, re-entered zone, name resolved to
+     the real short-name). No kicks.
+   - **Also (operator ask):** `/walkto` now defaults `map` to the bot's `CurrentMap` (and
+     `from` to its tracked position) — so a full-pathfinding walk needs only `{toX,toY}`.
+
+### Deferred (next iterations)
+- **Multi-destination gates in travel:** `TravelTo` clicks single-dest/menu gates
+  (verified). A gate that sends `MULTY_LINK_CMD` needs the `destMap` select passed to
+  `UseGateAsync` — wire it when one is on a route.
+- **Teleport edges (town portal / scroll / GM warp)** as cheaper graph edges — the
+  planner already treats every hop as an edge, so these slot in as weighted edges.
 
 ## Combat — instances, auto-attack, damage skills, self-heal (2026-06-11/12, live-verified)
 Built combat for the lvl-70+ BotPriest in the **EldPri01** (Collapsed Prison)
