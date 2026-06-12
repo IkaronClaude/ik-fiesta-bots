@@ -631,6 +631,31 @@ see** — but nothing a client can't.
     until something needs it) — captured here so the approach is on record. When it's
     needed it belongs in the AUTO-DISCOVERY `WorldModel` below.
 
+### Client SHN reader — BYO client game-data (DONE, live-verified 2026-06-12)
+The bot can now read **client-side SHN tables** (the ALLOWED side of the boundary above)
+so feature code resolves game data instead of hard-coding it.
+- **`FiestaLibReloaded.Shn` (new submodule project, dependency-free).** `ShnTable.Load(path)`
+  → `{ Name, Columns (name/type/len/typeCode), Rows (col→value) }`. Decodes the 32-byte
+  crypt header + `u32` length + body XOR'd with the symmetric Fiesta data cipher (same
+  routine as the bot's `Zone/Encryption.Apply` and the [1801] checksum's
+  `CDataReader::Encription`), then `[header][recordCount][defaultRecordLength][columnCount]`
+  + column defs + `u16`-prefixed rows; strings EUC-KR (cp949). A read-only port of the
+  proven `ik-fiesta-collab` SHN reader — put it in **FiestaLib** (not a cross-repo
+  ProjectReference to collab) because the bot consumes FiestaLib as a **submodule**, so it
+  deploys via git / the Dockerfile; a path-ref to collab would break the container build.
+- **`Fiesta.Bot.GameData.ClientData`** — loads tables by name from the BYO `ressystem`
+  dir (`CLIENT_DATA_DIR`, default `Z:/ClientProd2/ressystem` = same data the [1801]
+  checksums use), cached. Typed `Skill(id)` → `SkillInfo(UsableDegree, IsMovingSkill,
+  DlyTime, Range, SP)` from `ActiveSkill` — exactly the inputs the **deferred data-driven
+  cast** needs (replaces the hard-coded "damage=face+stop, heal=neither" heuristic). Set
+  on `BotManager.ClientData` by the host (alongside `GridProvider`).
+- **Endpoints:** `GET /api/gamedata/{table}` (row count + columns — confirms a BYO file
+  loads) and `GET /api/gamedata/skill/{id}` (the projected combat fields).
+- **Live-verified** against `Z:/ClientProd2/ressystem`: ActiveSkill 2791 rows/96 cols
+  (Wield01 1500 → UsableDegree 180, IsMovingSkill 1, DlyTime 6000, Range 0, SP 9; Heal10
+  1549 → Range 600, DlyTime 3000; Bleed10 1649 → DlyTime 10000) — all matching the combat
+  facts; ItemInfo 14999 rows/57 cols; ClassName 28 rows. 404 for a missing table.
+
 ### Future work — AUTO-DISCOVERY (botnet learns the server by playing it)
 For the case where we DON'T have the server files (`9Data`, `.shbd`, `NPC.txt`).
 The botnet bootstraps its own world model from gameplay alone:

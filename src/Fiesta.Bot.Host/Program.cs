@@ -32,10 +32,17 @@ if (xorTable is not null)
     builder.Services.AddSingleton(sp =>
     {
         var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Bots");
+        // BYO client data dir for SHN game-data reads (skill/item/class tables). Same
+        // default as a bot's --data-dir; override with CLIENT_DATA_DIR. A real client
+        // reads these files, so the bot may too (client SHNs only — see the PROJECT_PLAN
+        // data-source boundary).
+        var clientDataDir = Environment.GetEnvironmentVariable("CLIENT_DATA_DIR");
+        if (string.IsNullOrWhiteSpace(clientDataDir)) clientDataDir = "Z:/ClientProd2/ressystem";
         return new BotManager(xorTable, m => logger.LogInformation("{BotLog}", m))
         {
             // Let navigation actions (follow) pathfind over the BYO block grids.
             GridProvider = BotEndpoints.LoadGrid,
+            ClientData = new Fiesta.Bot.GameData.ClientData(clientDataDir),
         };
     });
 
@@ -74,6 +81,38 @@ app.MapGet("/health", () => Results.Ok(new
 
 app.MapBotEndpoints(app.Services.GetService<BotManager>(), xorError);
 app.MapAccountEndpoints(app.Services.GetService<ApiAccountProvisioner>(), provisionerError);
+
+// BYO client game-data inspection (read-only). Confirms an operator-supplied client
+// SHN loads and surfaces the data feature code reads (e.g. ActiveSkill fields the cast
+// keys off). 503 if no client data dir / bot manager; 404 if the table/skill is absent.
+var gameData = app.MapGroup("/api/gamedata").WithTags("GameData");
+IResult NoClientData() => Results.Problem(
+    title: "Client game-data unavailable",
+    detail: xorError ?? "No client data dir configured (set CLIENT_DATA_DIR; BYO ressystem).",
+    statusCode: StatusCodes.Status503ServiceUnavailable);
+
+gameData.MapGet("/{table}", (string table) =>
+{
+    var cd = app.Services.GetService<BotManager>()?.ClientData;
+    if (cd is null) return NoClientData();
+    var t = cd.Table(table);
+    return t is null
+        ? Results.NotFound(new { error = $"client table '{table}.shn' not found in {cd.DataDir}" })
+        : Results.Ok(new { table = t.Name, rows = t.Rows.Count,
+            columns = t.Columns.Select(c => new { c.Name, type = c.Type.ToString() }) });
+})
+.WithSummary("Inspect a BYO client SHN table (row count + columns) — confirms it loads");
+
+gameData.MapGet("/skill/{skillId:int}", (int skillId) =>
+{
+    var cd = app.Services.GetService<BotManager>()?.ClientData;
+    if (cd is null) return NoClientData();
+    var s = cd.Skill(skillId);
+    return s is null
+        ? Results.NotFound(new { error = $"skill {skillId} not in ActiveSkill (or table missing)" })
+        : Results.Ok(s);
+})
+.WithSummary("Read an ActiveSkill row's combat fields (facing/cooldown/range/mana) from BYO client data");
 
 app.Run();
 return 0;

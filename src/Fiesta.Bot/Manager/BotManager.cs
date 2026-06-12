@@ -44,6 +44,12 @@ public sealed class BotManager : IAsyncDisposable
     /// callers fall back to straight-line movement.</summary>
     public Func<string, BlockGrid?>? GridProvider { get; set; }
 
+    /// <summary>BYO client game-data reader (SHN tables from the operator's
+    /// <c>ressystem</c>). Lets feature code resolve client-visible data — e.g. a skill's
+    /// facing arc / cooldown / mana from <c>ActiveSkill</c> — instead of hard-coding it.
+    /// Set by the host; null = no client data dir configured (callers fall back).</summary>
+    public GameData.ClientData? ClientData { get; set; }
+
     public BotManager(byte[] xorTable, Action<string>? globalLog = null)
     {
         _xorTable = xorTable;

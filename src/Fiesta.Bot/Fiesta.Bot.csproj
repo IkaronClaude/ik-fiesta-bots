@@ -10,6 +10,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\lib\FiestaLib-Reloaded\src\FiestaLibReloaded.Networking\FiestaLibReloaded.Networking.csproj" />
     <ProjectReference Include="..\..\lib\FiestaLib-Reloaded\src\FiestaLibReloaded.Config\FiestaLibReloaded.Config.csproj" />
+    <ProjectReference Include="..\..\lib\FiestaLib-Reloaded\src\FiestaLibReloaded.Shn\FiestaLibReloaded.Shn.csproj" />
   </ItemGroup>
 
 </Project>
