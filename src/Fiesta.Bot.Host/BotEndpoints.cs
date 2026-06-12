@@ -34,10 +34,13 @@ public static class BotEndpoints
             group.MapPost("/{id}/stop", (string id) => Unavailable()).WithSummary("Stop a bot (unavailable)");
             group.MapPost("/{id}/say", (string id) => Unavailable()).WithSummary("Bot chat (unavailable)");
             group.MapPost("/{id}/cast", (string id) => Unavailable()).WithSummary("Bot cast (unavailable)");
+            group.MapPost("/{id}/castground", (string id) => Unavailable()).WithSummary("Bot ground-cast (unavailable)");
             group.MapPost("/{id}/heal", (string id) => Unavailable()).WithSummary("Bot heal (unavailable)");
             group.MapPost("/{id}/attack", (string id) => Unavailable()).WithSummary("Bot attack (unavailable)");
             group.MapPost("/{id}/autoattack", (string id) => Unavailable()).WithSummary("Bot auto-attack (unavailable)");
             group.MapPost("/{id}/stopattack", (string id) => Unavailable()).WithSummary("Bot stop-attack (unavailable)");
+            group.MapPost("/{id}/soulstone-sp", (string id) => Unavailable()).WithSummary("Bot soul-stone SP (unavailable)");
+            group.MapPost("/{id}/soulstone-hp", (string id) => Unavailable()).WithSummary("Bot soul-stone HP (unavailable)");
             group.MapPost("/{id}/use-item", (string id) => Unavailable()).WithSummary("Bot use-item (unavailable)");
             group.MapPost("/{id}/whisper", (string id) => Unavailable()).WithSummary("Bot whisper (unavailable)");
             group.MapGet("/{id}/inventory", (string id) => Unavailable()).WithSummary("Bot inventory (unavailable)");
@@ -122,6 +125,14 @@ public static class BotEndpoints
         })
         .WithSummary("Cast a skill on a target handle (replays client target+mode+cast sequence)");
 
+        group.MapPost("/{id}/castground", async (string id, CastGroundRequest req) =>
+        {
+            if (req.Skill is not { } skill || req.X is not { } x || req.Y is not { } y)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["req"] = ["skill, x, y are required"] });
+            return ToResult(await manager.CastGroundAsync(id, skill, x, y), id, new { id, castGround = skill, x, y });
+        })
+        .WithSummary("Cast a location-targeted (ground/AoE) skill at a coordinate, e.g. Frost Nova (no target unit)");
+
         group.MapPost("/{id}/heal", async (string id, CastRequest req) =>
         {
             if (req.Skill is not { } skill)
@@ -156,6 +167,14 @@ public static class BotEndpoints
         group.MapPost("/{id}/stopattack", async (string id) =>
             ToResult(await manager.StopAttackAsync(id), id, new { id, stoppedAttack = true }))
         .WithSummary("Stop melee auto-attack (BASHSTOP)");
+
+        group.MapPost("/{id}/soulstone-sp", async (string id) =>
+            ToResult(await manager.UseSoulStoneSpAsync(id), id, new { id, soulStoneSp = true }))
+        .WithSummary("Recharge SP from the soul-stone reserve (in-game 'use an SP stone', 0x5009)");
+
+        group.MapPost("/{id}/soulstone-hp", async (string id) =>
+            ToResult(await manager.UseSoulStoneHpAsync(id), id, new { id, soulStoneHp = true }))
+        .WithSummary("Recharge HP from the soul-stone reserve (in-game 'use an HP stone', 0x5007)");
 
         group.MapPost("/{id}/use-item", async (string id, UseItemRequest req) =>
         {
@@ -485,6 +504,15 @@ public sealed record CastRequest
 {
     public ushort? Skill { get; init; }
     public ushort? Target { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/castground</c> — a location-targeted skill
+/// (e.g. Frost Nova) cast at world coordinate (<c>X</c>,<c>Y</c>), no target unit.</summary>
+public sealed record CastGroundRequest
+{
+    public ushort? Skill { get; init; }
+    public uint? X { get; init; }
+    public uint? Y { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/attack</c>. Omit <c>Target</c> to hit the

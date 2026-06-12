@@ -158,37 +158,62 @@ public sealed class BotManager : IAsyncDisposable
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
         // Offensive skills enforce UsableDegree — the target must be within our facing
         // arc — so we must FACE it before casting (else NC_BAT_SKILLBASH_CAST_FAIL_ACK).
-        // There's no rotate packet; the client turns via MOVERUN, whose from->to vector
-        // sets facing. Send a tiny MOVERUN toward the target (just enough to turn, capped
-        // so a ranged caster never closes into melee), then STOP, then cast. Verified in
-        // CombatExtensive.pcapng: every accepted cast is preceded by MOVERUN→target. Heal
-        // passes stopFirst:false (self-cast needs no facing and can be cast while moving).
-        if (stopFirst && handle.Position is { } pos && NpcPos(handle, target) is { } tp)
-        {
-            var dx = (double)tp.X - pos.X; var dy = (double)tp.Y - pos.Y;
-            var dist = Math.Sqrt(dx * dx + dy * dy);
-            uint faceX = pos.X, faceY = pos.Y;
-            if (dist > 1)
-            {
-                var step = Math.Min(16.0, dist - 1); // enough to set facing; never overshoot
-                faceX = (uint)Math.Round(pos.X + dx / dist * step);
-                faceY = (uint)Math.Round(pos.Y + dy / dist * step);
-            }
-            var mv = new byte[16];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(0), pos.X);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(4), pos.Y);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(8), faceX);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(12), faceY);
-            await s.SendAsync(new FiestaPacket(OpMoveRun, mv), ct);
-            var stop = new byte[8];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), faceX);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), faceY);
-            await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
-            handle.SetPosition(faceX, faceY);
-        }
+        // Heal passes stopFirst:false (self-cast needs no facing, castable while moving).
+        if (stopFirst && NpcPos(handle, target) is { } tp)
+            await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
         handle.Log($"cast skill {skill} on h={target} ({(stopFirst ? "target+mode+face+cast" : "target+mode+cast")})");
         return ActionResult.Sent;
+    }
+
+    /// <summary>Cast a <b>location-targeted</b> (ground / AoE) skill at a world coordinate —
+    /// e.g. Frost Nova, which has a cast time and takes a target <i>point</i>, not a unit.
+    /// Sends CHANGEMODE, faces+stops toward the cast point (these skills enforce a facing
+    /// arc and aren't moving-skills, so the caster must stand + face), then
+    /// <c>NC_BAT_SKILLBASH_FLD_CAST_REQ {skill, locate}</c> — no target handle. The caster
+    /// stays put and drops the AoE at (<paramref name="x"/>,<paramref name="y"/>), which
+    /// may be up to the skill's Range away. Pass <paramref name="stopFirst"/> = false for a
+    /// moving-castable ground skill.</summary>
+    public async Task<ActionResult> CastGroundAsync(string id, ushort skill, uint x, uint y, bool stopFirst = true, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
+        if (stopFirst) await FaceAndStopAsync(handle, s, x, y, ct);
+        await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_FLD_CAST_REQ { skill = skill, locate = new SHINE_XY_TYPE { x = x, y = y } }, ct);
+        handle.Log($"ground-cast skill {skill} at ({x},{y})");
+        return ActionResult.Sent;
+    }
+
+    /// <summary>Turn to face (<paramref name="tx"/>,<paramref name="ty"/>) and STOP there.
+    /// There's no rotate packet — the client turns via MOVERUN, whose from→to vector sets
+    /// facing — so this sends a tiny capped MOVERUN toward the point (just enough to turn,
+    /// never closing a ranged caster into melee) then a STOP committing the position.
+    /// Used before a cast that enforces UsableDegree and/or isn't a moving-skill. Advances
+    /// the tracked position. No-op if the bot's position is unknown.</summary>
+    private static async Task FaceAndStopAsync(BotHandle handle, BotSession s, uint tx, uint ty, CancellationToken ct)
+    {
+        if (handle.Position is not { } pos) return;
+        var dx = (double)tx - pos.X; var dy = (double)ty - pos.Y;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+        uint faceX = pos.X, faceY = pos.Y;
+        if (dist > 1)
+        {
+            var step = Math.Min(16.0, dist - 1); // enough to set facing; never overshoot
+            faceX = (uint)Math.Round(pos.X + dx / dist * step);
+            faceY = (uint)Math.Round(pos.Y + dy / dist * step);
+        }
+        var mv = new byte[16];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(0), pos.X);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(4), pos.Y);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(8), faceX);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(12), faceY);
+        await s.SendAsync(new FiestaPacket(OpMoveRun, mv), ct);
+        var stop = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), faceX);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), faceY);
+        await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
+        handle.SetPosition(faceX, faceY);
     }
 
     /// <summary>Cast a heal skill on yourself (cast target = own handle). The client's
@@ -749,6 +774,29 @@ public sealed class BotManager : IAsyncDisposable
         }
         return cond();
     }
+
+    // Soul-stone HP/SP recharge (SOULSTONE dept 20: HP_USE_REQ cmd 7 = 0x5007, SP_USE_REQ
+    // cmd 9 = 0x5009; both empty payload). The in-game "use an HP/SP stone" — draws HP/SP
+    // from the character's soul-stone reserve into the current pool. Its OWN packet, NOT an
+    // item use. Verified C->S in CombatExtensive.pcapng (chat "I will use an SP stone" →
+    // 0x5009). Server replies USESUC_ACK (0x5008/0x500A) on success or USEFAIL_ACK (0x5006).
+    private const ushort OpSoulStoneHpUse = 0x5007;
+    private const ushort OpSoulStoneSpUse = 0x5009;
+
+    /// <summary>Recharge current SP from the character's SP soul-stone reserve
+    /// (NC_SOULSTONE_SP_USE_REQ) — the in-game "use an SP stone". Needed before a costly
+    /// cast when current SP is low (the reserve must be charged).</summary>
+    public Task<ActionResult> UseSoulStoneSpAsync(string id, CancellationToken ct = default)
+        => ActAsync(id, "soul-stone SP recharge (0x5009)",
+            s => s.SendAsync(new FiestaPacket(OpSoulStoneSpUse, ReadOnlyMemory<byte>.Empty), ct));
+
+    /// <summary>Recharge current HP from the character's HP soul-stone reserve
+    /// (NC_SOULSTONE_HP_USE_REQ) — the in-game "use an HP stone". The combat-survival
+    /// analogue of <see cref="UseSoulStoneSpAsync"/>; an instant out-of-combat-free heal
+    /// from the reserve.</summary>
+    public Task<ActionResult> UseSoulStoneHpAsync(string id, CancellationToken ct = default)
+        => ActAsync(id, "soul-stone HP recharge (0x5007)",
+            s => s.SendAsync(new FiestaPacket(OpSoulStoneHpUse, ReadOnlyMemory<byte>.Empty), ct));
 
     /// <summary>Use an inventory item by slot (invenType: 0 = normal bag).</summary>
     public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)

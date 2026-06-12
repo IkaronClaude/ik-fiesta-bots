@@ -999,3 +999,75 @@ confirm menu.
    doesn't run into melee) instead of priest-specific special-casing.
 2. ZoneView doesn't parse the login item burst → `/inventory` `/equipment` read empty
    (cosmetic; equip-by-slot still works).
+
+## Mage Frost Nova — location/AoE cast, cast-time, soul stones, error codes (2026-06-12, live-verified)
+Demonstrated a mage casting **Frost Nova** (a cast-time, location-targeted AoE) end to
+end. Several distinct mechanics fell out, all BotMage/`botmage1`-verified.
+
+### Location-targeted (ground) cast — `/castground`
+A skill that **takes a coordinate, not a target unit** (Frost Nova) uses
+**`NC_BAT_SKILLBASH_FLD_CAST_REQ` (0x2441)** `{skill u16, locate SHINE_XY}` — the FLD
+(field) analogue of the OBJ cast. `BotManager.CastGroundAsync` → `POST /{id}/castground
+{skill,x,y}`: CHANGEMODE → face+stop toward the point (extracted the shared
+`FaceAndStopAsync` helper) → FLD_CAST. **Cast-time skills are still the SKILLBASH family**
+(NOT the separate SKILLCAST 24–30 opcodes — those have no generated struct and aren't used
+here): the capture shows cast-time casts as `OBJ_CAST` + an abortable castbar
+(`0x2444 CASTABORT`). Success chain: `0x2435 SKILLBASH_CAST_SUC_ACK` → (after `CastTime`)
+`0x2457` HIT_FLD_START (carries num-targets + caster + skill) → `0x243C` HIT_DAMAGE per
+target → `0x244A REALLYKILL` on kill. **Live: Frost Nova hit 2 mobs, killed one.**
+- `ActiveSkill.CastTime` (ms) is the cast duration — Frost Nova **1950**; every priest
+  skill that worked was `CastTime=0` (instant). `IsMovingSkill=0` for Frost Nova (must
+  stand), `Range=300` (ranged), `TargetNumber=10` (AoE cap). The face+stop sequence the
+  priest used is fine for cast-time too (the capture does MOVERUN→STOP→cast).
+
+### "Use an SP/HP stone" — soul-stone recharge (its own packet, NOT an item)
+The in-game "SP stone" is **`NC_SOULSTONE_SP_USE_REQ` (0x5009)**, empty payload — a
+dedicated SOULSTONE-dept (20) packet, decoded from CombatExtensive.pcapng (chat "I will
+use an SP stone" → 0x5009). It draws SP from the character's soul-stone **reserve** into
+current SP; server replies `0x500A SP_USESUC_ACK` (or `0x5006 USEFAIL`). The **HP**
+analogue is **`NC_SOULSTONE_HP_USE_REQ` (0x5007)** → `0x5008 HP_USESUC_ACK` (important for
+combat survival). There are also `_BUY_REQ` (HP=0x5001/SP=0x5002) to recharge the reserve.
+Endpoints `/{id}/soulstone-sp` + `/{id}/soulstone-hp`. **A fresh char already has a
+charged reserve** (the use succeeded on a just-made BotMage — no buy/equip needed). The
+reserve isn't in an obvious `World00_Character` column (server-internal).
+
+### Cast-fail error codes (`0x2434 SKILLBASH_CAST_FAIL_ACK`, 2-byte reason) — learned empirically
+The reason codes are **server-side** (not in FiestaLib enums), so they were captured by
+triggering each failure. They live in an **`0x0Fxx`** range:
+- **`0x0FC9` (bytes `C9 0F`) = NOT ENOUGH SP** — confirmed: a Frost Nova that failed with
+  this succeeded after a soul-stone SP recharge, nothing else changed.
+- **`0x0FCA` (bytes `CA 0F`) = OUT OF RANGE** — confirmed: same cast at 1050u (> Range
+  300) failed with this; in range it succeeded. (This also retro-explains the priest's
+  old `CA` fails = out-of-range.)
+- `0x0FC4`/`0x0FC6` seen earlier (priest) = other reasons, not yet pinned (facing /
+  cooldown / weapon — TODO trigger + record). **Next:** decode this reason in `ZoneView`
+  and react (recharge SP on `0x0FC9`, approach on `0x0FCA`).
+
+### Provisioning a GM mage via the API key (one-call GM account)
+- **API key (minted this session):** `POST {base}/api/accounts` with `X-Api-Key` accepts
+  **`IngameGmLevel:9`** (operator's account-API addition) → creates a `nAuthID=9` account
+  in one call (it also set per-char `nAdminLevel=100`). Keys hash as SHA-256-hex in
+  `Account.tApiKey` (irrecoverable from DB) → the minted plaintext is stored gitignored
+  (CLAUDE.md) + memory, never committed. `botmage1` (nUserNo 105) created this way.
+- **Class = Enchanter (`ClassName` nClass 18), level 60.** Frost Nova [01] = ActiveSkill
+  **6440**; its **scroll** (ItemInfo **7340**) gates learning at `UseClass 22` / `DemandLv
+  60` = the lvl-60 2nd mage promotion = **Enchanter**. Created a Mage, then SQL
+  `nClass=18, nLevel=60, nAdminLevel=100`, relog, `&learnskill 6440`. **Stats/max-SP are
+  automatic from level** (no stat columns to set) — but a raw SQL `nLevel` bump leaves
+  **current** SP at the old value, hence the soul-stone recharge before a costly cast.
+
+### Two parallel class enums (operator-RE'd, validated) — origin = future work
+There are **two** class numberings (full table in memory `fiesta-useclass-enum`):
+- **`ClassName.shn` ClassID** — the *visual* class on the character sheet (renames at lvl
+  80); `tCharacterShape.nClass` uses it. Mage=16, WizMage=17, Enchanter=18, …, Chaser=22.
+- **`ItemInfo`/scroll `UseClass`** — what actually **gates** equipping items / learning
+  skills, a *different* enum: Mage=20, WizMage=21, **Enchanter=22**, Lvl80Mage=23,
+  Warlock=24, Wizard=25; Joker line 27–32 (UseClass 26 = an SP-extender consumable slot,
+  not a class); 33/34 = Sentinel/Savior special line (no lvl-80 tier). Validated against
+  per-`UseClass` DemandLv bands. **FUTURE WORK (not now):** find *where the UseClass enum
+  is defined* (server class table / a client mapping) rather than relying on the RE'd
+  list — so item/skill class-gating is sourced, not inferred.
+
+### New endpoints (this cycle)
+`/castground` (location/AoE cast), `/soulstone-sp`, `/soulstone-hp`. `CastAsync`'s facing
+logic was refactored into the shared `FaceAndStopAsync` (used by OBJ and FLD casts).
