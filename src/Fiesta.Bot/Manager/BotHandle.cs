@@ -102,6 +102,28 @@ public sealed class BotHandle
     /// starts. Follow is client-side (target + streamed moves), so it lives here.</summary>
     internal CancellationTokenSource? FollowCts { get; set; }
 
+    /// <summary>Cancellation for the currently-running autonomous travel (multi-map
+    /// <see cref="Manager.BotManager.TravelTo"/>) loop, if any. Cancelled to abort the
+    /// journey; replaced when a new travel starts.</summary>
+    internal CancellationTokenSource? TravelCts { get; set; }
+
+    /// <summary>The map name the bot is *intentionally* travelling into (set by the
+    /// travel loop right before it takes a gate). The handoff packet carries only the
+    /// destination map *id*, so on the first visit the catalog can't name it — this lets
+    /// <see cref="Manager.BotManager.OnMapChanged"/> resolve the real short-name (and
+    /// learn id↔name) instead of falling back to a synthetic "map#&lt;id&gt;" label.
+    /// Null when not travelling (a manual gate / town portal just uses the fallback).</summary>
+    internal volatile string? PendingDestMap;
+
+    private int _mapChangeSeq;
+
+    /// <summary>Monotonic counter bumped once per map transition (gate / town portal,
+    /// in-band or cross-server). The travel loop snapshots it before taking a gate and
+    /// waits for it to advance — a transition-agnostic "did the warp land?" signal that
+    /// survives the cross-server reconnect (which swaps the ZoneView out).</summary>
+    public int MapChangeSeq => Volatile.Read(ref _mapChangeSeq);
+    internal void BumpMapChange() => Interlocked.Increment(ref _mapChangeSeq);
+
     internal void SetPhase(BotPhase phase) => _phase = phase;
     internal void SetCharName(string name) => _charName = name;
     internal void SetError(string error) => _error = error;

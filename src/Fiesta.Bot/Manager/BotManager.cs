@@ -576,6 +576,174 @@ public sealed class BotManager : IAsyncDisposable
         return n;
     }
 
+    // ── Autonomous multi-map travel ───────────────────────────────────────────
+    // Stop this far (world units) short of a gate before clicking it — a gate takes
+    // effect within its range, no need to stand on the tile (verified Portals.pcapng).
+    // If a click from range doesn't transition, we close to the exact coord and retry.
+    private const double GateApproachDist = 60.0;
+
+    /// <summary>Outcome of kicking off an autonomous <see cref="TravelTo"/>.</summary>
+    public enum TravelResult { Started, NotFound, NotInZone, AlreadyThere, NoRoute }
+
+    /// <summary>Plan and begin autonomous travel to <paramref name="destMap"/>: route
+    /// over the learned gate graph (BFS), then for each hop pathfind to the gate, take
+    /// it, wait for the map transition (in-band LINKSAME or cross-server LINKOTHER), and
+    /// repeat — learning each map's id↔name and gates as it goes. Returns immediately
+    /// with the planned route; the journey runs on a background task (watch the bot log
+    /// and <see cref="BotHandle.CurrentMap"/>). Cancel with <see cref="StopTravel"/>.</summary>
+    public (TravelResult Result, IReadOnlyList<GateEdge>? Route) TravelTo(string id, string destMap, double unitsPerSec = 120.0)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return (TravelResult.NotFound, null);
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is null) return (TravelResult.NotInZone, null);
+        if (handle.CurrentMap is not { } from) return (TravelResult.NotInZone, null);
+        if (string.Equals(from, destMap, StringComparison.OrdinalIgnoreCase))
+            return (TravelResult.AlreadyThere, Array.Empty<GateEdge>());
+
+        ObserveGates(id); // fold the bot's in-view gates into the graph before planning
+        var route = Graph.Route(from, destMap);
+        if (route is null || route.Count == 0) return (TravelResult.NoRoute, null);
+
+        var travelCts = CancellationTokenSource.CreateLinkedTokenSource(handle.Cts.Token);
+        handle.TravelCts?.Cancel();
+        handle.TravelCts = travelCts;
+        _ = Task.Run(() => RunTravelAsync(handle, route, unitsPerSec, travelCts), travelCts.Token);
+        return (TravelResult.Started, route);
+    }
+
+    /// <summary>Stop an in-progress <see cref="TravelTo"/> (no-op if not travelling).
+    /// Also aborts the current walk so the bot halts where it is.</summary>
+    public ActionResult StopTravel(string id)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        handle.TravelCts?.Cancel();
+        handle.WalkCts?.Cancel();
+        return ActionResult.Sent;
+    }
+
+    private async Task RunTravelAsync(BotHandle handle, IReadOnlyList<GateEdge> route, double unitsPerSec, CancellationTokenSource travelCts)
+    {
+        var id = handle.Id;
+        var ct = travelCts.Token;
+        try
+        {
+            handle.Log($"[travel] start -> {route[^1].ToMap} via {route.Count} hop(s): " +
+                       string.Join(" -> ", route.Select(e => e.ToMap)));
+            for (int hop = 0; hop < route.Count; hop++)
+            {
+                if (ct.IsCancellationRequested) break;
+                var edge = route[hop];
+                var expected = edge.ToMap;
+
+                // Resolve the live gate to this destination from the current view. Gates
+                // arrive in the field-enter MOB briefinfo, so one should be present soon
+                // after the map loads — wait briefly for it.
+                if (!await WaitUntilAsync(() => GateTo(handle, expected) is not null, 8000, ct)
+                    || GateTo(handle, expected) is not { } gate)
+                {
+                    handle.Log($"[travel] hop {hop + 1}/{route.Count}: no gate to '{expected}' in view — aborting");
+                    return;
+                }
+                handle.Log($"[travel] hop {hop + 1}/{route.Count}: -> {expected} via gate h={gate.Handle} @({gate.X},{gate.Y})");
+
+                // Walk to within range of the gate (pathfind around obstacles if a grid
+                // is available; else a best-effort straight approach via WalkPath).
+                await ApproachAsync(id, handle, gate.X, gate.Y, GateApproachDist, unitsPerSec, ct);
+
+                // Take the gate and wait for the transition. Tell OnMapChanged the
+                // destination we're heading into (PendingDestMap) so it resolves + learns
+                // the real map name from the handoff's id deterministically — before the
+                // cross-server reconnect re-reads it. If clicking from range doesn't fire
+                // the gate, close onto the exact tile and retry once.
+                handle.PendingDestMap = expected;
+                var seqBefore = handle.MapChangeSeq;
+                await UseGateAsync(id, gate.Handle, ct: ct);
+                if (!await WaitUntilAsync(() => handle.MapChangeSeq > seqBefore, 6000, ct))
+                {
+                    handle.Log($"[travel] hop {hop + 1}: gate didn't fire from range — closing in and retrying");
+                    await ApproachAsync(id, handle, gate.X, gate.Y, 0, unitsPerSec, ct);
+                    await UseGateAsync(id, gate.Handle, ct: ct);
+                    if (!await WaitUntilAsync(() => handle.MapChangeSeq > seqBefore, 8000, ct))
+                    {
+                        handle.Log($"[travel] hop {hop + 1}: no transition after retry — aborting");
+                        handle.PendingDestMap = null;
+                        return;
+                    }
+                }
+                handle.PendingDestMap = null; // consumed by OnMapChanged
+
+                // A cross-server hop re-logs in on a fresh connection — wait until we're
+                // back in zone before the next hop. In-band LINKSAME stays InZone throughout.
+                if (!await WaitUntilAsync(
+                        () => handle.Phase == BotPhase.InZone && handle.ZoneSession is not null, 20000, ct))
+                {
+                    handle.Log($"[travel] hop {hop + 1}: didn't re-enter zone after handoff — aborting");
+                    return;
+                }
+                handle.SetCurrentMap(expected); // belt-and-suspenders for the next hop's grid
+                ObserveGates(id); // learn the new map's gates (next hop + future routing)
+                handle.Log($"[travel] hop {hop + 1}/{route.Count}: arrived on {expected}");
+            }
+            handle.Log(ct.IsCancellationRequested ? "[travel] cancelled" : $"[travel] done — arrived on {route[^1].ToMap}");
+        }
+        catch (OperationCanceledException) { handle.Log("[travel] cancelled"); }
+        catch (Exception ex) { handle.Log($"[travel] error: {ex.Message}"); }
+        finally { if (ReferenceEquals(handle.TravelCts, travelCts)) handle.TravelCts = null; travelCts.Dispose(); }
+    }
+
+    /// <summary>The live in-view gate whose link destination is <paramref name="map"/>
+    /// (case-insensitive), or null if none is currently visible.</summary>
+    private static NearbyNpc? GateTo(BotHandle handle, string map)
+        => handle.ZoneView?.NearbyNpcs.FirstOrDefault(
+            n => n.IsGate && string.Equals(n.LinkMap, map, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Walk the bot to within <paramref name="stopShort"/> world-units of
+    /// (<paramref name="tx"/>,<paramref name="ty"/>), pathfinding over the current map's
+    /// grid when one is available (a straight WalkPath segment otherwise), then wait
+    /// until it arrives, the walk ends, or a 30 s cap. Used to reach a gate before
+    /// taking it; shared by the travel loop.</summary>
+    private async Task ApproachAsync(string id, BotHandle handle, uint tx, uint ty, double stopShort, double unitsPerSec, CancellationToken ct)
+    {
+        if (handle.Position is not { } pos) return;
+        var grid = handle.CurrentMap is { } map ? GridProvider?.Invoke(map) : null;
+        IReadOnlyList<(uint X, uint Y)> wp;
+        if (grid is not null)
+        {
+            var path = PathFinder.FindPath(grid, pos.X, pos.Y, tx, ty);
+            wp = path.Count == 0
+                ? new[] { (pos.X, pos.Y), (tx, ty) } // unreachable on the grid — try direct
+                : PathFinder.Simplify(path);
+        }
+        else wp = new[] { (pos.X, pos.Y), (tx, ty) };
+
+        // Trim trailing waypoints inside stopShort of the target so we halt short of the gate.
+        if (stopShort > 0 && wp.Count > 2)
+        {
+            var keep = wp.Count;
+            while (keep > 2 && Dist(wp[keep - 1], tx, ty) < stopShort) keep--;
+            wp = wp.Take(keep).ToList();
+        }
+        WalkPath(id, wp, unitsPerSec);
+        await WaitUntilAsync(
+            () => (handle.Position is { } p && Dist((p.X, p.Y), tx, ty) <= Math.Max(stopShort, 24)) || handle.WalkCts is null,
+            30000, ct);
+    }
+
+    private static double Dist((uint X, uint Y) a, uint x, uint y)
+        => Math.Sqrt(Math.Pow((double)a.X - x, 2) + Math.Pow((double)a.Y - y, 2));
+
+    /// <summary>Poll <paramref name="cond"/> until it's true or <paramref name="timeoutMs"/>
+    /// elapses; returns the final state. Throws if <paramref name="ct"/> is cancelled.</summary>
+    private static async Task<bool> WaitUntilAsync(Func<bool> cond, int timeoutMs, CancellationToken ct, int pollMs = 150)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            if (cond()) return true;
+            await Task.Delay(pollMs, ct);
+        }
+        return cond();
+    }
+
     /// <summary>Use an inventory item by slot (invenType: 0 = normal bag).</summary>
     public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)
         => ActAsync(id, $"use item slot={slot} type={invenType}",
@@ -729,10 +897,20 @@ public sealed class BotManager : IAsyncDisposable
     private void OnMapChanged(BotHandle handle, MapHandoff h, Action<string> log)
     {
         handle.SetPosition(h.X, h.Y);
-        // Resolve the destination map name: the catalog learns id↔name as the bot
-        // takes named gates; fall back to a synthetic id label if we've never seen it.
-        var name = Catalog.NameFor(h.MapId) ?? $"map#{h.MapId}";
-        handle.SetCurrentMap(name);
+        handle.BumpMapChange(); // wake any travel loop waiting on a transition
+        // Resolve the destination map name. The handoff carries only the map id, so:
+        // prefer what the catalog already knows; else, if a travel hop told us the
+        // destination it's heading into (PendingDestMap), use that AND learn id↔name so
+        // future routing/grids resolve it; else fall back to a synthetic id label. Doing
+        // this here (not in the travel loop) makes the name deterministic before the
+        // cross-server reconnect re-reads it — no race over the synthetic label.
+        var name = Catalog.NameFor(h.MapId);
+        if (name is null && handle.PendingDestMap is { } pending)
+        {
+            name = pending;
+            Catalog.Learn(h.MapId, pending);
+        }
+        handle.SetCurrentMap(name ?? $"map#{h.MapId}");
         log($"[nav] now on {name} (mapId={h.MapId}) at ({h.X},{h.Y})" +
             (h.IsCrossServer ? $" — cross-server handoff to {h.Ip}:{h.Port}, reconnecting" : " (in-band)"));
 
