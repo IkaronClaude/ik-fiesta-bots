@@ -1071,3 +1071,22 @@ There are **two** class numberings (full table in memory `fiesta-useclass-enum`)
 ### New endpoints (this cycle)
 `/castground` (location/AoE cast), `/soulstone-sp`, `/soulstone-hp`. `CastAsync`'s facing
 logic was refactored into the shared `FaceAndStopAsync` (used by OBJ and FLD casts).
+
+### TODO — real-time event/log stream (needed; flagged 2026-06-12)
+We're flying blind during combat: the only feedback is polling `GET /{id}` for the log
+ring-buffer **after** the fact. We need a **streaming endpoint — WebSocket or NDJSON/SSE**
+— that pushes bot events live (inbound combat frames decoded: HIT_DAMAGE, our HP/SP
+changes, SWING/cast results, REALLYKILL, deaths, chat, map changes). Then we can watch a
+fight unfold in real time instead of reconstructing it from a stale log. Concretely: a
+`GET /{id}/events` that upgrades to WS (or streams `application/x-ndjson`), fed from the
+same `BotSession.PacketReceived` / `ZoneView` events the perception layer already raises.
+- **Why it bit us:** Frost Nova "hit 2 mobs, killed 1" means the **other mob aggroed and
+  was hitting BotMage** — the bot likely **died** while we couldn't see its HP dropping.
+  This is exactly what the HP soul-stone (`/soulstone-hp`) + a live HP feed are for
+  (auto-recharge HP when it drops). Combat needs live perception, not post-hoc polling.
+
+### Cast-fail codes — more to learn (esp. cast-into-wall/blocked)
+Beyond `0x0FC9` (not enough SP) and `0x0FCA` (out of range), expect a distinct code for
+**casting a ground/AoE skill onto a blocked/wall tile** (off the walkable grid). TODO:
+trigger it (cast Frost Nova at a `.shbd`-blocked tile within range) and record the
+`0x0Fxx` value, alongside `0x0FC4`/`0x0FC6` (priest, unpinned).
