@@ -53,8 +53,17 @@ public sealed class ZoneView : IDisposable
     private static readonly ushort OpBriefMob = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_MOB_CMD>();
     private static readonly ushort OpRegenMob = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_REGENMOB_CMD>();
     // Mover (mount) ride state — self only (0xCC02/0xCC06; 0xCC04 = someone else).
+    // MOVESPEED (0xCC0D): the server broadcasts a mover's current walk/run speed
+    // (nMoverHandle, nWalk u16, nRun u16). The client uses this to pace movement
+    // packets — walking, riding, or under a speed-altering abstate.
+    // ACT_MOVESPEED (0x203E): self-only speed (walkspeed u16, runspeed u16) sent
+    // at zone login and periodically thereafter. Both arrive; 0x203E is always-self
+    // (no handle) while 0xCC0D covers any mover and needs SelfHandle filtering.
+    // Conversion: field_value * (120.0 / 33.0) ≈ u/s (33 = base walk from capture).
+    private const ushort OpActMoveSpeed = 0x203E;
     private const ushort OpMoverRideOn = 0xCC02;
     private const ushort OpMoverRideOff = 0xCC06;
+    private const ushort OpMoveSpeed = 0xCC0D;
     // Map transition (gate / town portal): LINKSAME = in-band map change on the same
     // zone server, LINKOTHER = handoff to a different zone server (reconnect).
     private const ushort OpMapLinkSame = 0x1809;
@@ -102,6 +111,7 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<ushort, NearbyNpc> _npcs = new();
     private readonly ConcurrentDictionary<byte, ushort> _inventory = new(); // bag slot -> itemId
     private readonly ConcurrentDictionary<byte, ushort> _equipment = new(); // equip slot -> itemId
+    private ushort? _mountHandle; // last known mount mover handle (from RIDE_ON 0xCC02 payload)
 
     public ZoneView(BotSession session, Action<string>? log = null)
     {
@@ -155,6 +165,18 @@ public sealed class ZoneView : IDisposable
     /// on/off, 0xCC02/0xCC06). Drives mount-aware routing (auto-use when far).</summary>
     public bool IsMounted { get; private set; }
 
+    /// <summary>The bot's current walk speed in world-units per second, as last
+    /// reported by the server's <c>MOVESPEED</c> broadcast (0xCC0D). Defaults to
+    /// 120.0 if no broadcast has been received. The navigation layer reads this to
+    /// pace movement packets — a mount or speed buff updates this live so the bot
+    /// never sends steps too fast for its current speed.</summary>
+    public double WalkSpeed { get; private set; } = 120.0;
+
+    /// <summary>Raised when the server broadcasts a MOVESPEED (0xCC0D) for the
+    /// bot itself — fires with the new walk speed in world-units per second so
+    /// the navigation layer can re-pace movement.</summary>
+    public event Action<double>? WalkSpeedChanged;
+
     /// <summary>When the server last opened a menu prompt (0x3C01) — e.g. an instance
     /// gate's Yes/No confirm. Gate-taking checks this to auto-answer with a
     /// SERVERMENU_ACK. Null if no menu has opened.</summary>
@@ -178,6 +200,10 @@ public sealed class ZoneView : IDisposable
     public IReadOnlyDictionary<byte, ushort> Equipment => _equipment;
 
     public bool TryGetPlayer(ushort handle, out NearbyPlayer player) => _nearby.TryGetValue(handle, out player!);
+
+    /// <summary>The bot's own zone handle (from the [1802] MAP_LOGIN_ACK). Set once
+    /// zone entry completes; used to filter MOVESPEED broadcasts to self only.</summary>
+    public ushort? SelfHandle { get; set; }
 
     private void OnPacket(FiestaPacket pkt)
     {
@@ -221,13 +247,53 @@ public sealed class ZoneView : IDisposable
         }
         else if (op == OpMoverRideOn)
         {
+            // 0xCC02 payload = [mountHandle u16][zero...]. The mount is a separate
+            // mover entity; its MOVESPEED (0xCC0D) uses this handle, not the player's.
             IsMounted = true;
-            _log?.Invoke("[ZoneView] mounted (RIDE_ON)");
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2) _mountHandle = (ushort)(p[0] | (p[1] << 8));
+            _log?.Invoke($"[ZoneView] mounted (RIDE_ON, mountH={_mountHandle})");
         }
         else if (op == OpMoverRideOff)
         {
             IsMounted = false;
+            _mountHandle = null;
+            // Reset speed to default running pace (120 u/s). The server will send
+            // a 0x203E / 0xCC0D shortly after to confirm or adjust, but this
+            // prevents a stale mount speed from pacing movement in the gap.
+            if (Math.Abs(WalkSpeed - 120.0) > 0.5)
+            {
+                _log?.Invoke($"[ZoneView] move speed: {WalkSpeed:F0} -> 120 u/s (dismounted)");
+                WalkSpeed = 120.0;
+                WalkSpeedChanged?.Invoke(120.0);
+            }
             _log?.Invoke("[ZoneView] dismounted (RIDE_OFF)");
+        }
+        else if (op == OpMoveSpeed)
+        {
+            // Mover-broadcast speed (0xCC0D): any mover's current walk/run speed.
+            // Filter to self OR our active mount (the mount is a separate mover
+            // entity, and its speed = our speed while riding). Values change on
+            // mounting, dismounting, and speed-abstate changes.
+            try
+            {
+                var spd = pkt.ReadBody<PROTO_NC_MOVER_MOVESPEED_CMD>();
+                var ok = (SelfHandle is { } sh && spd.nMoverHandle == sh)
+                      || (_mountHandle is { } mh && spd.nMoverHandle == mh);
+                if (ok) ApplySpeed(spd.nWalk, spd.nRun, "CC0D");
+            }
+            catch { }
+        }
+        else if (op == OpActMoveSpeed)
+        {
+            // Self-only ACT_MOVESPEED (0x203E): always-self base walk/run speed.
+            // No handle field — applies directly.
+            try
+            {
+                var spd = pkt.ReadBody<PROTO_NC_ACT_MOVESPEED_CMD>();
+                ApplySpeed((double)spd.walkspeed, (double)spd.runspeed, "203E");
+            }
+            catch { }
         }
         else if (op == OpActMoveFail)
         {
@@ -387,6 +453,22 @@ public sealed class ZoneView : IDisposable
             _log?.Invoke(flag == 1
                 ? $"[ZoneView] gate appeared: id={mobid} h={handle} @({x},{y}) -> {linkMap}"
                 : $"[ZoneView] npc/mob appeared: id={mobid} h={handle} @({x},{y})");
+    }
+
+    // Conversion: 127 raw units (human runspeed from 0x203E capture) ≈ 120 u/s.
+    // The char always runs by default; walkspeed (33) is a slow toggle.
+    // Mounted runspeed (254 in 0xCC0D) ≈ 240 u/s.
+    private const double SpeedRawToUPerSec = 120.0 / 127.0;
+
+    private void ApplySpeed(double rawWalk, double rawRun, string source)
+    {
+        var newSpeed = rawRun * SpeedRawToUPerSec;
+        if (Math.Abs(newSpeed - WalkSpeed) > 0.5)
+        {
+            _log?.Invoke($"[ZoneView] move speed: {WalkSpeed:F0} -> {newSpeed:F0} u/s (raw: walk={rawWalk} run={rawRun}, {source})");
+            WalkSpeed = newSpeed;
+            WalkSpeedChanged?.Invoke(newSpeed);
+        }
     }
 
     private static string? ReadCString(ReadOnlySpan<byte> p, int off, int max)
