@@ -1135,3 +1135,53 @@ handler fire correctly on the live server:
 - **Edge case noted:** in walled dungeons (EldPri01) the straight-line approach
   hits a MOVEFAIL snapback, creating a cast-fail → approach → MOVEFAIL → retry
   loop. Mitigated by using proper pathfinding during approach (future work).
+
+## MOVESPEED tracking — dynamic WalkPath pacing (DONE, live-verified 2026-06-13)
+
+The bot now paces its movement packets against the server-authoritative movement
+speed, not a hard-coded 120 u/s. This lets a mount (or speed abstate) double the
+pace without MOVEFAILing.
+
+### Protocol discovery (from captures)
+Two opcodes carry movement speed. The character always **runs** by default
+(runspeed); walkspeed (33) is a slow toggle.
+
+| Opcode | Dept | Fields | When |
+|---|---|---|---|
+| `0x203E` NC_ACT_MOVESPEED_CMD | Act (8) | `walkspeed u16, runspeed u16` | Self-only, periodic (base speed) |
+| `0xCC0D` NC_MOVER_MOVESPEED_CMD | Mover (51) | `nMoverHandle u16, nWalk u16, nRun u16` | Any mover, sent on speed change (mount/abstate) |
+
+Speed encoding: raw runspeed × (120 / 127) ≈ u/s. Base human running: 127 → 120
+u/s. Mounted running (Racoon01_3): 254 → 240 u/s (doubled).
+
+### Implementation
+- **`ZoneView.cs`** — parses both 0x203E (always self, no handle filter) and
+  0xCC0D (filtered by self handle OR active mount handle). Conversion via
+  `SpeedRawToUPerSec = 120.0 / 127.0`. Fires `WalkSpeedChanged(double)` event.
+  Tracks `WalkSpeed` property (default 120.0).
+- **Mount handle tracking** — 0xCC0D broadcasts the *mount's* handle, not the
+  player's. RIDE_ON (0xCC02) payload is `[mountHandle u16]` — captured as
+  `_mountHandle` and used alongside `SelfHandle` in the 0xCC0D filter.
+- **Speed reset on dismount** — RIDE_OFF resets WalkSpeed to 120 u/s so a stale
+  mount speed doesn't pace post-dismount movement.
+- **`BotHandle.WalkSpeed`** — set by the ZoneView event subscriber; read by
+  WalkPath each step for the pacing delay.
+- **`WalkPath`** — delay calculation changed from `unitsPerSec` (param) to
+  `handle.WalkSpeed ?? unitsPerSec`, so the pace live-tracks the current speed.
+
+### Live-verified (2026-06-13, Eld, testuser/BotPriest)
+```
+17:21:58 [ZoneView] move speed: 120 -> 240 u/s (raw: walk=36 run=254, CC0D)
+17:22:04 walk-path done (47 waypoints, 48 move steps)  ← mounted, 0 MOVEFAILs
+17:22:44 [ZoneView] move speed: 240 -> 120 u/s (raw: walk=33 run=127, 203E)
+17:23:34 walk-path done (51 waypoints, 50 move steps)  ← dismounted, 0 MOVEFAILs
+```
+**Zero MOVEFAILs** on both walks (48 vs 50 steps). Speed change correctly
+detected from 0xCC0D (mount handle), reverted via 0x203E after dismount.
+
+### Speed data (SHN reference)
+- **Riding table**: Donkey RunSpeed=1300 FootSpeed=1100, Claude RunSpeed=3300
+  FootSpeed=1100 — these use different encoding than the wire protocol.
+- **SubAbState**: Type/SubType/ActionIndex/ActionArg system drives speed-altering
+  abstates. Could be decoded if needed for prediction, but the wire broadcast
+  (0xCC0D/0x203E) is authoritative and simpler.
