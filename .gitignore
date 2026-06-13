@@ -28,3 +28,6 @@ appsettings.*.Local.json
 # Loadout templates that are operator-local (the schema + samples are tracked,
 # operator instances are not)
 templates/local/
+
+# Local session handover (orientation notes, references creds indirectly)
+handover.md
