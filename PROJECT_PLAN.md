@@ -1185,3 +1185,96 @@ detected from 0xCC0D (mount handle), reverted via 0x203E after dismount.
 - **SubAbState**: Type/SubType/ActionIndex/ActionArg system drives speed-altering
   abstates. Could be decoded if needed for prediction, but the wire broadcast
   (0xCC0D/0x203E) is authoritative and simpler.
+
+## Scriptable behaviours (Lua) + state machines — THE NEXT BIG ARC (planned 2026-06-13)
+
+### Vision (operator)
+Keep the HTTP control surface, but make every bot **scriptable**. Upload a Lua
+**behaviour script**, apply it to a bot, and the bot **loops it** — handling
+low-latency reactions the HTTP round-trip can't (process every hit, listen to chat
+for commands, "HP-stone when low", "skill when X"). Build/upload scripts on the fly;
+a new upload replaces the running one. Then **compose** scripts into **state
+machines** (behaviour trees) for bigger logic — an "Explore" tree, a "Fighter
+level-in-group" tree, a "buff guild" tree (wait for "buff pls" in chat → academy
+teleport → buff). **End goal: cross-tree transitions**, and likely a different
+tree per class.
+
+### Engine decision: MoonSharp (locked)
+| Decision | Choice | Why |
+|---|---|---|
+| Lua engine | **MoonSharp 2.0.0** (pure-managed C#) | No native deps → works under Wine/Linux/Docker like the rest of the stack (NLua's native KeraLua bindings would break the container/Wine story). Sandboxes cleanly (drop `io`/`os`/`require`). |
+| Concurrency | **One Lua VM per bot, single-threaded** | MoonSharp VMs aren't thread-safe and the game raises events from the session read loop. A dedicated per-bot script thread drains an event queue → no locking / re-entrancy. Standard game-scripting pattern. |
+| Event source | **Stable per-bot event hub on `BotHandle`** | `ZoneView`/`ZoneSession` are *swapped* on a cross-server reconnect; a script must not lose its subscriptions. So events route through `BotHandle.Emit` (survives swaps). Doubles as the seam the deferred WS `/events` stream will use. |
+| Script storage | **In-memory library** (`ScriptStore`) first | "Build + upload on the fly." Disk/Git persistence is an easy follow-up; not needed to prove the loop. |
+
+### Architecture (layers — each builds on the last, same runtime)
+```
+Layer 0  manual HTTP actions on BotManager           [DONE — exists today]
+Layer 1  one Lua script loop per bot                 [FIRST GOAL — this arc]
+Layer 2  state machine = named scripts + transitions [next]
+Layer 3  cross-tree transitions + per-class trees    [end goal]
+```
+A state (Layer 2) is *just a behaviour script* with `on_enter`/`tick`/`on_exit` +
+a transition check; the SM engine swaps the active script on a transition. Layer 3
+is the same engine with a transition table that can target states in **other**
+trees. So Layers 2–3 reuse Layer 1's runtime wholesale — no new execution model.
+
+### Script contract (Lua)
+A script defines any subset of these globals; the runner calls the ones present:
+```lua
+function on_start()        end   -- once when applied
+function tick()            end   -- looped every tickMs (default 250)
+function on_chat(msg)      end   -- {handle, name, text}
+function on_hit(ev)        end   -- {attacker, defender, damage, restHp}
+function on_cast_fail(r)   end   -- reason code (0x0FC9 sp, 0x0FCA range, ...)
+function on_hp(hp, max)    end   -- self HP changed
+function on_player(p)      end   -- nearby player appeared {handle,name,class,level,x,y}
+function on_map(map)       end   -- map changed
+function on_stop()         end   -- once when stopped/replaced
+```
+Injected globals: `bot` (the action+perception facade) and `log(msg)`.
+`bot` actions (sync wrappers over `BotManager`, fast packet sends):
+`say/whisper/cast/castGround/attack/autoAttack/stopAttack/heal/useItem/equip/gm/
+soulstoneHp/soulstoneSp/target/untarget/walkTo/walk/travelTo/stopTravel/follow/
+stopFollow/useGate/townPortal/party*/friend*`.
+`bot` state/perception getters: `hp/sp/maxHp/maxSp/hpPct/spPct/x/y/map/selfHandle/
+mounted/walkSpeed/phase/inZone/now`, `nearestMob/nearbyMobs/nearbyPlayers/npcs/
+gates/inventory/equipment/playerByName`.
+
+### First-goal deliverable (THIS iteration — upload → apply → loop)
+1. **Self HP/SP tracking (prereq for "HP-stone when low" + on_hit).** Was missing.
+   - `[1802]` param block carries **MaxHp @ off 146, MaxSp @ off 150** (body =
+     `charhandle(2)+CHAR_PARAMETER_DATA(232)+logincoord(8)`, sizeof 242). `ZoneEntry`
+     parses them into `ZoneEntryResult`.
+   - Current HP/SP arrive as typed CMDs: **`PROTO_NC_BAT_HPCHANGE_CMD` 0x240E
+     `{hp u32, hpchangeorder u16}`** and **`PROTO_NC_BAT_SPCHANGE_CMD` 0x240F
+     `{sp u32}`**. `ZoneView` tracks `Hp/Sp/MaxHp/MaxSp`, fires `HpChanged/SpChanged`.
+   - Hit events for `on_hit`: `SWING_DAMAGE_CMD`/`DOTDAMAGE_CMD`/`SOMEONESWING_DAMAGE`
+     carry `attacker,defender,damage,resthp` → `ZoneView.Damaged`.
+   - Surfaced on `BotHandle` + `Snapshot` (`hp/sp/maxHp/maxSp`).
+2. **Stable event hub:** `BotHandle.Emit(BotEvent)` + `event Events`; `BotManager`
+   (where it already subscribes ZoneView events in `RunBotAsync`) also emits.
+3. **`Scripting/` (in `Fiesta.Bot`):** `BotApi` (facade), `BotScriptRunner`
+   (single-thread executor + event queue + tick), `ScriptStore` (library), wired
+   into `BotManager.ApplyScript/StopScript/ScriptStatus` (and `StopAsync` tears the
+   runner down). MoonSharp added to `Fiesta.Bot.csproj`.
+4. **Endpoints (`ScriptEndpoints.cs`):**
+   - `POST /api/scripts {name, source}` (compile-check; 400 w/ Lua error), `GET
+     /api/scripts`, `GET /api/scripts/{name}`, `DELETE /api/scripts/{name}`.
+   - `POST /api/bots/{id}/script {name|source}` — apply + loop (replaces running).
+   - `POST /api/bots/{id}/script/stop`, `GET /api/bots/{id}/script` (debug: running,
+     tickCount, lastError, last Lua state).
+5. **Tracked sample scripts** (`scripts/`): `auto_grind.lua` (attack nearest;
+   soulstone-HP when low), `town_buff.lua` (on_chat "buff pls" → cast buffs on sender).
+
+### Verification (first goal)
+`dotnet build`, then live (testuser/BotPriest or BotMage on 62.171.171.24): upload a
+script → `POST /{id}/script` → watch `GET /{id}/script` + the bot log loop it; confirm
+a new upload swaps cleanly and `/script/stop` halts it. HP/SP via `GET /{id}` snapshot.
+
+### Deferred (after the loop is proven)
+- Layer 2 state-machine engine (`StateMachine` + transitions; `POST /{id}/statemachine`).
+- Layer 3 cross-tree transitions + per-class tree presets.
+- WS/NDJSON `/events` stream (the long-flagged live feed) — reuses the event hub.
+- Script persistence (disk/Git), hot-reload, per-script resource/time limits.
+- Pin unknown cast-fail codes (0x0FC4/0x0FC6) so scripts can react to facing/cooldown.

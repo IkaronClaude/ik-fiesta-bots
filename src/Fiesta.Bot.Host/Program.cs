@@ -5,6 +5,7 @@ using Fiesta.Bot.Accounts;
 using Fiesta.Bot.Host;
 using Fiesta.Bot.Manager;
 using Fiesta.Bot.Net;
+using Fiesta.Bot.Scripting;
 
 // Subcommand: `login-test` drives the typed login chain against a live server.
 if (args.Length > 0 && args[0] == "login-test")
@@ -62,6 +63,10 @@ if (provisionerError is null)
     builder.Services.AddSingleton(_ => new ApiAccountProvisioner(
         new HttpClient { BaseAddress = new Uri(apiBaseUrl!) }, apiKey!));
 
+// The behaviour-script library (uploaded Lua, applied to bots). Always available —
+// it's just storage; applying to a bot needs the manager (else those endpoints 503).
+builder.Services.AddSingleton<ScriptStore>();
+
 var app = builder.Build();
 
 app.MapOpenApi();
@@ -81,6 +86,8 @@ app.MapGet("/health", () => Results.Ok(new
 
 app.MapBotEndpoints(app.Services.GetService<BotManager>(), xorError);
 app.MapAccountEndpoints(app.Services.GetService<ApiAccountProvisioner>(), provisionerError);
+app.MapScriptEndpoints(app.Services.GetService<BotManager>(),
+    app.Services.GetRequiredService<ScriptStore>(), xorError);
 
 // BYO client game-data inspection (read-only). Confirms an operator-supplied client
 // SHN loads and surfaces the data feature code reads (e.g. ActiveSkill fields the cast

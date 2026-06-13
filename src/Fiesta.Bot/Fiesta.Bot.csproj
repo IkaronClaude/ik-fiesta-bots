@@ -8,6 +8,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Pure-managed Lua interpreter (no native deps) for scriptable bot behaviours —
+         works under Wine/Linux/Docker like the rest of the stack and sandboxes cleanly. -->
+    <PackageReference Include="MoonSharp" Version="2.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\lib\FiestaLib-Reloaded\src\FiestaLibReloaded.Networking\FiestaLibReloaded.Networking.csproj" />
     <ProjectReference Include="..\..\lib\FiestaLib-Reloaded\src\FiestaLibReloaded.Config\FiestaLibReloaded.Config.csproj" />
     <ProjectReference Include="..\..\lib\FiestaLib-Reloaded\src\FiestaLibReloaded.Shn\FiestaLibReloaded.Shn.csproj" />

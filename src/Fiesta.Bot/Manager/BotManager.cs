@@ -3,6 +3,7 @@ using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Navigation;
 using Fiesta.Bot.Pathfinding;
+using Fiesta.Bot.Scripting;
 using Fiesta.Bot.Session;
 using Fiesta.Bot.Zone;
 using FiestaLibReloaded.Networking;
@@ -82,6 +83,9 @@ public sealed class BotManager : IAsyncDisposable
     {
         if (!_bots.TryGetValue(id, out var handle)) return false;
         handle.Log("stop requested");
+        // Tear down any looping behaviour script first so it stops issuing actions.
+        handle.ScriptRunner?.Dispose();
+        handle.ScriptRunner = null;
         var inZone = handle.Phase == BotPhase.InZone && handle.ZoneSession is { } zs0 && handle.WmSession is not null;
         if (handle.Phase is not (BotPhase.Stopped or BotPhase.Failed))
             handle.SetPhase(BotPhase.Stopping);
@@ -120,6 +124,41 @@ public sealed class BotManager : IAsyncDisposable
         handle.Cts.Dispose();
         return true;
     }
+
+    // ── Behaviour scripting (Lua) ─────────────────────────────────────────────
+    /// <summary>Apply a Lua behaviour script to a bot and start looping it. A new apply
+    /// replaces any script already running ("new upload &gt; new script"). Returns the
+    /// runner, or null if the bot id is unknown. The runner subscribes to the bot's
+    /// stable event hub, runs <c>on_start</c>, then ticks + dispatches events on its own
+    /// thread until <see cref="StopScript"/> / <see cref="StopAsync"/>.</summary>
+    public BotScriptRunner? ApplyScript(string id, string name, string source, int tickMs = 250)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return null;
+        handle.ScriptRunner?.Dispose();               // replace any running script
+        void ScriptLog(string m) { handle.Log(m); _globalLog?.Invoke($"[{id}] {m}"); }
+        var runner = new BotScriptRunner(handle, new BotApi(this, handle), name, source, ScriptLog, handle.Cts.Token, tickMs);
+        handle.ScriptRunner = runner;
+        handle.Log($"script '{name}' applied ({source.Length} chars, tick={tickMs}ms)");
+        runner.Start();
+        return runner;
+    }
+
+    /// <summary>Stop a bot's looping script (no-op if none). The bot stays in zone.</summary>
+    public bool StopScript(string id)
+    {
+        if (_bots.TryGetValue(id, out var handle) && handle.ScriptRunner is { } r)
+        {
+            r.Dispose();
+            handle.ScriptRunner = null;
+            handle.Log("script stopped");
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Debug status of a bot's running script (null if no bot / no script).</summary>
+    public ScriptStatus? ScriptStatus(string id)
+        => _bots.TryGetValue(id, out var handle) ? handle.ScriptRunner?.Status() : null;
 
     /// <summary>Outcome of a manual in-zone action.</summary>
     public enum ActionResult { Sent, NotFound, NotInZone }
@@ -1062,9 +1101,11 @@ public sealed class BotManager : IAsyncDisposable
                 using var zoneView = new ZoneView(zoneSession, Log);
                 handle.ZoneView = zoneView;
                 if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
+                zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);
                 handle.SetCurrentMap(currentMap);
                 zoneView.MapChanged += h =>
                 {
+                    handle.Emit(new BotEvent(BotEventKind.MapChanged, h));
                     OnMapChanged(handle, h, Log);
                     if (h.IsCrossServer) { handoff = h; zoneCts.Cancel(); } // break to reconnect
                 };
@@ -1074,12 +1115,22 @@ public sealed class BotManager : IAsyncDisposable
                     // truth and abort the current walk so we stop pushing into it.
                     handle.SetPosition(pos.X, pos.Y);
                     handle.WalkCts?.Cancel();
+                    handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                     Log($"[nav] move blocked — resynced to ({pos.X},{pos.Y}), walk aborted");
                 };
                 zoneView.WalkSpeedChanged += speed => { handle.WalkSpeed = speed; };
+                // Forward the perception events onto the stable per-bot hub so a looping
+                // script keeps its subscriptions across a cross-server ZoneView swap.
+                zoneView.ChatReceived += msg => handle.Emit(new BotEvent(BotEventKind.Chat, msg));
+                zoneView.PlayerAppeared += p => handle.Emit(new BotEvent(BotEventKind.PlayerAppeared, p));
+                zoneView.PlayerLeft += h => handle.Emit(new BotEvent(BotEventKind.PlayerLeft, h));
+                zoneView.HpChanged += hp => handle.Emit(new BotEvent(BotEventKind.Hp, hp));
+                zoneView.SpChanged += sp => handle.Emit(new BotEvent(BotEventKind.Sp, sp));
+                zoneView.Damaged += hit => handle.Emit(new BotEvent(BotEventKind.Hit, hit));
                 var botId = handle.Id; // capture for the lambda
                 zoneView.CastFailed += reason =>
                 {
+                    handle.Emit(new BotEvent(BotEventKind.CastFail, reason));
                     // Reactive cast-fail handling — lightweight, fire-and-forget.
                     // Runs on the session read loop so must not block; all actions
                     // go through SendAsync which serializes on the connection.

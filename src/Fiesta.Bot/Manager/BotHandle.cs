@@ -141,6 +141,25 @@ public sealed class BotHandle
     public int MapChangeSeq => Volatile.Read(ref _mapChangeSeq);
     internal void BumpMapChange() => Interlocked.Increment(ref _mapChangeSeq);
 
+    /// <summary>The Lua behaviour script currently looping on this bot, if any. Set by
+    /// <see cref="Manager.BotManager.ApplyScript"/>; torn down on stop / replace. The
+    /// runner subscribes to <see cref="Events"/> so it survives ZoneView swaps.</summary>
+    internal Scripting.BotScriptRunner? ScriptRunner { get; set; }
+
+    /// <summary>Stable per-bot event stream. Unlike <see cref="ZoneView"/> (swapped out
+    /// on a cross-server reconnect), this hub lives for the bot's whole life, so a
+    /// script's subscriptions don't drop across map handoffs. The manager forwards the
+    /// ZoneView/session events here; a future WS <c>/events</c> endpoint reuses it.
+    /// Handlers MUST NOT block — enqueue and return (raised on the session read loop).</summary>
+    public event Action<BotEvent>? Events;
+
+    /// <summary>Forward an event to the hub. Swallows handler exceptions so a bad
+    /// subscriber can never kill the read loop that raised it.</summary>
+    internal void Emit(BotEvent e)
+    {
+        try { Events?.Invoke(e); } catch { /* a subscriber threw — never break the loop */ }
+    }
+
     internal void SetPhase(BotPhase phase) => _phase = phase;
     internal void SetCharName(string name) => _charName = name;
     internal void SetError(string error) => _error = error;
@@ -183,6 +202,11 @@ public sealed class BotHandle
             Position: Position is { } p ? $"{p.X},{p.Y}" : null,
             Map: CurrentMap,
             Mounted: view?.IsMounted ?? false,
+            Hp: view?.Hp,
+            Sp: view?.Sp,
+            MaxHp: view is { MaxHp: > 0 } ? view.MaxHp : null,
+            MaxSp: view is { MaxSp: > 0 } ? view.MaxSp : null,
+            Script: ScriptRunner?.StatusLine,
             CreatedAtUtc: CreatedAtUtc,
             RecentLog: RecentLog());
     }
@@ -207,5 +231,10 @@ public sealed record BotSnapshot(
     string? Position,
     string? Map,
     bool Mounted,
+    uint? Hp,
+    uint? Sp,
+    uint? MaxHp,
+    uint? MaxSp,
+    string? Script,
     DateTime CreatedAtUtc,
     IReadOnlyList<string> RecentLog);

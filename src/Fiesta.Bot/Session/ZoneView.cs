@@ -37,6 +37,16 @@ public sealed record ChatMessage(ushort Handle, string? SenderName, string Text)
     public DateTime AtUtc { get; init; } = DateTime.UtcNow;
 }
 
+/// <summary>A combat hit broadcast: <paramref name="Attacker"/> hit
+/// <paramref name="Defender"/> for <paramref name="Damage"/>, leaving the defender at
+/// <paramref name="RestHp"/>. Decoded from SWING_DAMAGE (our swing) and
+/// SOMEONESWING_DAMAGE (others'); the latter carries no damage value (0). Compare the
+/// handles against the bot's self handle to tell "I hit / I got hit".</summary>
+public sealed record HitInfo(ushort Attacker, ushort Defender, ushort Damage, uint RestHp)
+{
+    public DateTime AtUtc { get; init; } = DateTime.UtcNow;
+}
+
 /// <summary>
 /// A live, read-only model of what one bot perceives in its zone, built by
 /// decoding the inbound frames a <see cref="BotSession"/> fans out. Tracks nearby
@@ -104,6 +114,15 @@ public sealed class ZoneView : IDisposable
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
+    // Self HP/SP change (BAT 0x240E/0x240F): the server's authoritative current HP/SP
+    // after any change (combat damage, heal, regen, soul-stone). MaxHp/MaxSp come from
+    // the [1802] login param block (seeded by the manager). These drive "HP-stone when
+    // low" / "heal when low" scripts. Damage broadcasts (own swing 0x2448 + others'
+    // 0x2449) carry attacker/defender/damage/resthp for the on_hit script hook.
+    private static readonly ushort OpHpChange = PacketRegistry.GetOpcode<PROTO_NC_BAT_HPCHANGE_CMD>();
+    private static readonly ushort OpSpChange = PacketRegistry.GetOpcode<PROTO_NC_BAT_SPCHANGE_CMD>();
+    private static readonly ushort OpSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SWING_DAMAGE_CMD>();
+    private static readonly ushort OpSomeoneSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SOMEONESWING_DAMAGE_CMD>();
 
     private readonly BotSession _session;
     private readonly Action<string>? _log;
@@ -176,6 +195,40 @@ public sealed class ZoneView : IDisposable
     /// bot itself — fires with the new walk speed in world-units per second so
     /// the navigation layer can re-pace movement.</summary>
     public event Action<double>? WalkSpeedChanged;
+
+    /// <summary>The bot's current HP, as last reported by the server (HPCHANGE 0x240E).
+    /// Null until the first update after zone entry. Pair with <see cref="MaxHp"/> for
+    /// a fraction (the "HP-stone / heal when low" gate).</summary>
+    public uint? Hp { get; private set; }
+
+    /// <summary>The bot's current SP (SPCHANGE 0x240F). Null until the first update.</summary>
+    public uint? Sp { get; private set; }
+
+    /// <summary>The bot's maximum HP, from the [1802] login param block (seeded by the
+    /// manager via <see cref="SeedMaxVitals"/>). 0 until seeded.</summary>
+    public uint MaxHp { get; private set; }
+
+    /// <summary>The bot's maximum SP, from the [1802] login param block. 0 until seeded.</summary>
+    public uint MaxSp { get; private set; }
+
+    /// <summary>Seed MaxHp/MaxSp from the zone-entry param block. Current HP/SP arrive
+    /// later as HPCHANGE/SPCHANGE; this just sets the denominators for the fraction.</summary>
+    public void SeedMaxVitals(uint? maxHp, uint? maxSp)
+    {
+        if (maxHp is { } h && h > 0) MaxHp = h;
+        if (maxSp is { } s && s > 0) MaxSp = s;
+    }
+
+    /// <summary>Raised when the bot's own HP changes (HPCHANGE 0x240E), with the new
+    /// current HP. The combat/script layer reacts (heal / HP soul-stone when low).</summary>
+    public event Action<uint>? HpChanged;
+
+    /// <summary>Raised when the bot's own SP changes (SPCHANGE 0x240F).</summary>
+    public event Action<uint>? SpChanged;
+
+    /// <summary>Raised for every combat hit broadcast in view (own swing + others').
+    /// The "process every hit" seam — scripts filter by attacker/defender vs self.</summary>
+    public event Action<HitInfo>? Damaged;
 
     /// <summary>When the server last opened a menu prompt (0x3C01) — e.g. an instance
     /// gate's Yes/No confirm. Gate-taking checks this to auto-answer with a
@@ -324,6 +377,44 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] cast FAILED — unknown reason 0x{reason:X4} ({pkt.Payload.Length}b payload)" +
                              (pkt.Payload.Length > 2 ? $" raw={Convert.ToHexString(pkt.Payload.Span)}" : ""));
             CastFailed?.Invoke(reason);
+        }
+        else if (op == OpHpChange)
+        {
+            try
+            {
+                var hp = pkt.ReadBody<PROTO_NC_BAT_HPCHANGE_CMD>().hp;
+                Hp = hp;
+                HpChanged?.Invoke(hp);
+            }
+            catch { }
+        }
+        else if (op == OpSpChange)
+        {
+            try
+            {
+                var sp = pkt.ReadBody<PROTO_NC_BAT_SPCHANGE_CMD>().sp;
+                Sp = sp;
+                SpChanged?.Invoke(sp);
+            }
+            catch { }
+        }
+        else if (op == OpSwingDamage)
+        {
+            try
+            {
+                var d = pkt.ReadBody<PROTO_NC_BAT_SWING_DAMAGE_CMD>();
+                Damaged?.Invoke(new HitInfo(d.attacker, d.defender, d.damage, d.resthp));
+            }
+            catch { }
+        }
+        else if (op == OpSomeoneSwingDamage)
+        {
+            try
+            {
+                var d = pkt.ReadBody<PROTO_NC_BAT_SOMEONESWING_DAMAGE_CMD>();
+                Damaged?.Invoke(new HitInfo(d.attacker, d.defender, 0, d.resthp));
+            }
+            catch { }
         }
         else if (op == OpMenuServerMenu)
         {
