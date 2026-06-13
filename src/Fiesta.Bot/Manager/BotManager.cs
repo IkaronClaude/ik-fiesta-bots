@@ -154,6 +154,10 @@ public sealed class BotManager : IAsyncDisposable
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        // Record the cast attempt so the cast-fail reactive layer (CastFailed
+        // subscriber) can retry the same skill+target.
+        handle.LastCastSkill = skill;
+        handle.LastCastTarget = target;
         await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
         // Offensive skills enforce UsableDegree — the target must be within our facing
@@ -178,6 +182,8 @@ public sealed class BotManager : IAsyncDisposable
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        handle.LastCastSkill = skill;
+        handle.LastCastTarget = 0; // ground cast = no target handle
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
         if (stopFirst) await FaceAndStopAsync(handle, s, x, y, ct);
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_FLD_CAST_REQ { skill = skill, locate = new SHINE_XY_TYPE { x = x, y = y } }, ct);
@@ -1063,6 +1069,58 @@ public sealed class BotManager : IAsyncDisposable
                     handle.SetPosition(pos.X, pos.Y);
                     handle.WalkCts?.Cancel();
                     Log($"[nav] move blocked — resynced to ({pos.X},{pos.Y}), walk aborted");
+                };
+                var botId = handle.Id; // capture for the lambda
+                zoneView.CastFailed += reason =>
+                {
+                    // Reactive cast-fail handling — lightweight, fire-and-forget.
+                    // Runs on the session read loop so must not block; all actions
+                    // go through SendAsync which serializes on the connection.
+                    if (reason == ZoneView.CastFailReason.NotEnoughSp)
+                    {
+                        Log($"[combat] cast FAILED — not enough SP (0x{reason:X4}), recharging soul-stone");
+                        _ = Task.Run(async () =>
+                        {
+                            try { await UseSoulStoneSpAsync(botId); }
+                            catch (Exception ex) { Log($"[combat] soul-stone recharge error: {ex.Message}"); }
+                        }, ct);
+                    }
+                    else if (reason == ZoneView.CastFailReason.OutOfRange)
+                    {
+                        Log($"[combat] cast FAILED — out of range (0x{reason:X4}), approaching target");
+                        var tgt = handle.LastCastTarget;
+                        var npcPos = tgt != 0 ? NpcPos(handle, tgt) : null;
+                        if (npcPos is { } tp && handle.Position is { } pos)
+                        {
+                            // Use doubles for direction math to avoid uint underflow
+                            // when tp.X < pos.X or tp.Y < pos.Y.
+                            double dx = (double)tp.X - pos.X;
+                            double dy = (double)tp.Y - pos.Y;
+                            var dist = Math.Sqrt(dx * dx + dy * dy);
+                            var step = Math.Min(dist - 1, MaxStepFor(120.0));
+                            if (step > 0)
+                            {
+                                var nx = (uint)Math.Round(pos.X + dx / dist * step);
+                                var ny = (uint)Math.Round(pos.Y + dy / dist * step);
+                                _ = Task.Run(async () =>
+                                {
+                                    try
+                                    {
+                                        await WalkAsync(botId, pos.X, pos.Y, nx, ny, ct);
+                                        var sk = handle.LastCastSkill;
+                                        if (sk != 0)
+                                        {
+                                            if (handle.LastCastTarget == 0)
+                                                await CastGroundAsync(botId, sk, tp.X, tp.Y, ct: ct);
+                                            else
+                                                await CastAsync(botId, sk, tgt, ct: ct);
+                                        }
+                                    }
+                                    catch (Exception ex) { Log($"[combat] out-of-range retry error: {ex.Message}"); }
+                                }, ct);
+                            }
+                        }
+                    }
                 };
                 using var buff = opt.Buff is { } buffCfg
                     ? new BuffInTownBehavior(zoneSession, zoneView, buffCfg, Log, ct)

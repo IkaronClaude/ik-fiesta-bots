@@ -92,6 +92,17 @@ public sealed class BotHandle
     public ushort? SelfHandle => _selfHandleBox as ushort?;
     internal void SetSelfHandle(ushort handle) => _selfHandleBox = handle;
 
+    /// <summary>The skill id of the bot's most recent cast attempt. Set by
+    /// <see cref="Manager.BotManager.CastAsync"/> and
+    /// <see cref="Manager.BotManager.CastGroundAsync"/> before sending, so the
+    /// cast-fail reactive layer (subscribed to <see cref="ZoneView.CastFailed"/>)
+    /// can retry with the same skill after approaching or recharging. 0 = none.</summary>
+    internal volatile ushort LastCastSkill;
+
+    /// <summary>The target handle (or 0 for ground-cast) of the bot's most recent cast
+    /// attempt. Updated alongside <see cref="LastCastSkill"/>.</summary>
+    internal volatile ushort LastCastTarget;
+
     /// <summary>Cancellation for the currently-running <see cref="Manager.BotManager.WalkPath"/>,
     /// if any — cancelled to abort a walk early (e.g. on a server MOVEFAIL so the bot
     /// stops banging into an off-grid obstacle). Set/cleared by the walk task.</summary>
