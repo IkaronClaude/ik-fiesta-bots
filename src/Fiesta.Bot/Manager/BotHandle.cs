@@ -118,6 +118,12 @@ public sealed class BotHandle
     /// journey; replaced when a new travel starts.</summary>
     internal CancellationTokenSource? TravelCts { get; set; }
 
+    /// <summary>The bot's current walk speed in world-units per second, driven by
+    /// MOVESPEED broadcasts (0x203E / 0xCC0D). Defaults to 120.0. The navigation
+    /// layer paces movement packets against this — a mount or speed buff updates it
+    /// live so the bot never sends steps too fast for its current speed.</summary>
+    public double WalkSpeed { get; set; } = 120.0;
+
     /// <summary>The map name the bot is *intentionally* travelling into (set by the
     /// travel loop right before it takes a gate). The handoff packet carries only the
     /// destination map *id*, so on the first visit the catalog can't name it — this lets

@@ -830,10 +830,12 @@ public sealed class BotManager : IAsyncDisposable
     private const double MaxMoveStep = 250.0;
 
     /// <summary>Walk a precomputed path: stream MoverunCmd steps on a background task,
-    /// paced to <paramref name="unitsPerSec"/> so the server accepts it as a normal
-    /// walk. Long straight segments are sub-divided into <see cref="MaxMoveStep"/>-sized
-    /// steps (the server won't move the character on an over-long jump). Returns
-    /// immediately; the walk continues until done or the bot is stopped.</summary>
+    /// paced to the bot's current <see cref="BotHandle.WalkSpeed"/> (updated live from
+    /// MOVESPEED broadcasts) so the server accepts it as a normal walk at any speed.
+    /// <paramref name="unitsPerSec"/> is a fallback when the handle has no WalkSpeed
+    /// yet (shouldn't happen after zone entry). Long straight segments are sub-divided
+    /// into <see cref="MaxMoveStep"/>-sized steps. Returns immediately; the walk
+    /// continues until done or the bot is stopped.</summary>
     public ActionResult WalkPath(string id, IReadOnlyList<(uint X, uint Y)> waypoints, double unitsPerSec = 120.0)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -871,7 +873,10 @@ public sealed class BotManager : IAsyncDisposable
                         handle.SetPosition(sx, sy); // advance tracked position as we walk
                         var stepDist = Math.Sqrt(Math.Pow(sx - cx, 2) + Math.Pow(sy - cy, 2));
                         cx = sx; cy = sy; steps++;
-                        await Task.Delay((int)Math.Clamp(stepDist / unitsPerSec * 1000, 40, 2000), ct);
+                        // Pace using the bot's live MOVESPEED-tracked walk speed.
+                        // Falls back to the passed unitsPerSec if no broadcast yet.
+                        var paceSpeed = handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec;
+                        await Task.Delay((int)Math.Clamp(stepDist / paceSpeed * 1000, 40, 2000), ct);
                     }
                 }
                 handle.Log($"walk-path done ({waypoints.Count} waypoints, {steps} move steps)");
@@ -1056,6 +1061,7 @@ public sealed class BotManager : IAsyncDisposable
                 // opt-in via spawn options.
                 using var zoneView = new ZoneView(zoneSession, Log);
                 handle.ZoneView = zoneView;
+                if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
                 handle.SetCurrentMap(currentMap);
                 zoneView.MapChanged += h =>
                 {
@@ -1070,6 +1076,7 @@ public sealed class BotManager : IAsyncDisposable
                     handle.WalkCts?.Cancel();
                     Log($"[nav] move blocked — resynced to ({pos.X},{pos.Y}), walk aborted");
                 };
+                zoneView.WalkSpeedChanged += speed => { handle.WalkSpeed = speed; };
                 var botId = handle.Id; // capture for the lambda
                 zoneView.CastFailed += reason =>
                 {

@@ -31,3 +31,9 @@ templates/local/
 
 # Local session handover (orientation notes, references creds indirectly)
 handover.md
+
+# Dev helper scripts (local conveniences, not part of the build)
+start-host.ps1
+host.log
+host-out.log
+host-err.log
