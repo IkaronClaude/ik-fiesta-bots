@@ -43,15 +43,17 @@ public sealed class ApiAccountProvisioner
     /// <summary>
     /// Create a game account. The in-game password is what the bot logs in with;
     /// the web password defaults to the in-game one when not given (the bot never
-    /// uses the web login). Returns the new account + ready-to-use credentials.
-    /// Throws <see cref="AccountExistsException"/> on 409, <see cref="AccountProvisionException"/>
-    /// otherwise.
+    /// uses the web login). <paramref name="ingameGmLevel"/> (tUser.nAuthID) is
+    /// honoured because the API key marks us a trusted caller — null leaves the
+    /// default (1 = normal), 9 = admin/GM. Returns the new account + ready-to-use
+    /// credentials. Throws <see cref="AccountExistsException"/> on 409,
+    /// <see cref="AccountProvisionException"/> otherwise.
     /// </summary>
     public async Task<ProvisionedAccount> CreateAccountAsync(
         string username, string ingamePassword, string? webPassword = null,
-        string? email = null, CancellationToken ct = default)
+        string? email = null, int? ingameGmLevel = null, CancellationToken ct = default)
     {
-        var body = new CreateAccountBody(username, webPassword ?? ingamePassword, ingamePassword, email);
+        var body = new CreateAccountBody(username, webPassword ?? ingamePassword, ingamePassword, email, ingameGmLevel);
 
         using var req = new HttpRequestMessage(HttpMethod.Post, "api/accounts")
         {
@@ -81,12 +83,13 @@ public sealed class ApiAccountProvisioner
     private static string Trim(string s) => s.Length <= 300 ? s : s[..300] + "…";
 
     // Wire shapes (mirror ik-fiesta-api's AccountModels; only the fields we use).
-    private sealed record CreateAccountBody(string Username, string WebPassword, string IngamePassword, string? Email);
+    private sealed record CreateAccountBody(
+        string Username, string WebPassword, string IngamePassword, string? Email, int? IngameGmLevel);
     private sealed record AccountBody(int UserNo, string Username, string? Email, DateTime Created);
 
-    /// <summary>Requested in-game GM level (tUser.nAuthID). Not yet honoured by the
-    /// API — kept here to mark the contract the task-18 API addition will fill.</summary>
-    public const string GmLevel = "not-yet-supported: needs the master-key-gated nAuthID addition in ik-fiesta-api";
+    /// <summary>tUser.nAuthID for a full in-game GM/admin account (what the API's
+    /// admin role keys off). Pass as <c>ingameGmLevel</c> to self-gear via GM commands.</summary>
+    public const int GmAuthLevel = 9;
 }
 
 /// <summary>A freshly provisioned account and the credentials to log it in.</summary>

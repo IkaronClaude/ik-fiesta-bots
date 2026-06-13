@@ -37,7 +37,7 @@ public static class AccountEndpoints
             try
             {
                 var acct = await provisioner.CreateAccountAsync(
-                    req.Username!, req.IngamePassword!, req.WebPassword, req.Email, ct);
+                    req.Username!, req.IngamePassword!, req.WebPassword, req.Email, req.IngameGmLevel, ct);
                 return Results.Created($"/api/accounts/{acct.UserNo}", new ProvisionAccountResponse(
                     acct.UserNo, acct.Username, acct.Credentials.Username, acct.Credentials.PasswordMd5));
             }
@@ -59,6 +59,10 @@ public sealed record ProvisionAccountRequest
     public string? IngamePassword { get; init; }
     public string? WebPassword { get; init; }
     public string? Email { get; init; }
+
+    /// <summary>In-game GM/auth level (tUser.nAuthID) to provision with: null =
+    /// normal player, 9 = GM/admin (see <see cref="ApiAccountProvisioner.GmAuthLevel"/>).</summary>
+    public int? IngameGmLevel { get; init; }
 }
 
 /// <summary>The new account plus credentials to feed straight into <c>POST /api/bots</c>.</summary>

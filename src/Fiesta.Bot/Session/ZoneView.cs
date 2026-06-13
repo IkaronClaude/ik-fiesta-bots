@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Navigation;
 using FiestaLibReloaded.Networking;
+using FiestaLibReloaded.Networking.Enums;
 using FiestaLibReloaded.Networking.Structs;
 
 namespace Fiesta.Bot.Session;
@@ -58,6 +59,16 @@ public sealed class ZoneView : IDisposable
     // zone server, LINKOTHER = handoff to a different zone server (reconnect).
     private const ushort OpMapLinkSame = 0x1809;
     private const ushort OpMapLinkOther = 0x180A;
+    /// <summary>Known NC_BAT_SKILLBASH_CAST_FAIL_ACK reason codes (empirically
+    /// captured, not in FiestaLib enums). The <c>0x0F</c>-prefix is consistent across
+    /// all codes seen so far — treat as a server-side subsystem, not a random constant.</summary>
+    public static class CastFailReason
+    {
+        public const ushort NotEnoughSp = 0x0FC9;
+        public const ushort OutOfRange = 0x0FCA;
+        // 0x0FC4, 0x0FC6 — unpinned (facing / cooldown / weapon type)
+    }
+
     // MOVEFAIL (ACT cmd 27): the server rejected our last move (walked into an
     // obstacle the static grid doesn't have — a lantern, an NPC, a closed area) and
     // tells us the position to snap back to. The authoritative source of truth for
@@ -74,6 +85,13 @@ public sealed class ZoneView : IDisposable
     // answers with SERVERMENU_ACK (0x3C02) selecting an option. Track that one is open
     // so gate-taking can auto-confirm it.
     private const ushort OpMenuServerMenu = 0x3C01;
+    // NC_BAT_SKILLBASH_CAST_FAIL_ACK (Bat cmd 52 = 0x2434): the server rejected a
+    // skill cast. Payload is a 2-byte LE u16 reason code. Known codes (empirically
+    // captured):
+    //   0x0FC9 = not enough SP
+    //   0x0FCA = out of range
+    //   0x0FC4, 0x0FC6 = unpinned (facing / cooldown / weapon — TODO)
+    private const ushort OpBatCastFail = (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.SkillbashCastFailAck);
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
@@ -116,6 +134,14 @@ public sealed class ZoneView : IDisposable
     /// the carried coord — the bot walked into something not in the static grid. The
     /// navigation layer resyncs the tracked position and aborts the current walk.</summary>
     public event Action<(uint X, uint Y)>? MoveFailed;
+
+    /// <summary>Raised when a skill cast is rejected by the server
+    /// (NC_BAT_SKILLBASH_CAST_FAIL_ACK). The 2-byte reason code identifies the failure:
+    /// <see cref="CastFailReason.NotEnoughSp"/> (0x0FC9) = insufficient SP (recharge
+    /// from soul-stone); <see cref="CastFailReason.OutOfRange"/> (0x0FCA) = target too
+    /// far (move closer and retry); other codes are unpinned (facing, cooldown, weapon —
+    /// log them to help reverse-engineering).</summary>
+    public event Action<ushort>? CastFailed;
 
     public IReadOnlyCollection<NearbyPlayer> NearbyPlayers => _nearby.Values.ToArray();
     public int NearbyCount => _nearby.Count;
@@ -215,6 +241,23 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
                 MoveFailed?.Invoke((bx, by));
             }
+        }
+        else if (op == OpBatCastFail)
+        {
+            // Payload = 2-byte LE u16 reason code (e.g. 0x0FC9 = not enough SP,
+            // 0x0FCA = out of range). Log and fire the event so the combat layer
+            // can react (recharge SP, re-approach, etc.).
+            var reason = pkt.Payload.Length >= 2
+                ? System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(pkt.Payload.Span)
+                : (ushort)0;
+            if (reason == CastFailReason.NotEnoughSp)
+                _log?.Invoke($"[ZoneView] cast FAILED — not enough SP (0x{reason:X4})");
+            else if (reason == CastFailReason.OutOfRange)
+                _log?.Invoke($"[ZoneView] cast FAILED — out of range (0x{reason:X4})");
+            else
+                _log?.Invoke($"[ZoneView] cast FAILED — unknown reason 0x{reason:X4} ({pkt.Payload.Length}b payload)" +
+                             (pkt.Payload.Length > 2 ? $" raw={Convert.ToHexString(pkt.Payload.Span)}" : ""));
+            CastFailed?.Invoke(reason);
         }
         else if (op == OpMenuServerMenu)
         {

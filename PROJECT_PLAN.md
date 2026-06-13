@@ -1090,3 +1090,48 @@ Beyond `0x0FC9` (not enough SP) and `0x0FCA` (out of range), expect a distinct c
 **casting a ground/AoE skill onto a blocked/wall tile** (off the walkable grid). TODO:
 trigger it (cast Frost Nova at a `.shbd`-blocked tile within range) and record the
 `0x0Fxx` value, alongside `0x0FC4`/`0x0FC6` (priest, unpinned).
+
+
+## Cast-fail reactive handling (DONE, live-verified 2026-06-13)
+
+Added reactive handling for `NC_BAT_SKILLBASH_CAST_FAIL_ACK` (0x2434):
+
+1. **`ZoneView.cs`** — parses the 2-byte reason code from 0x2434, logs known codes
+   (0x0FC9 = not enough SP, 0x0FCA = out of range) with a human label and unknown
+   codes with the raw payload hex. Fires `CastFailed(ushort reason)` event.
+   Added `CastFailReason` static class with `NotEnoughSp`/`OutOfRange` constants.
+
+2. **`BotHandle.cs`** — added `LastCastSkill` and `LastCastTarget` volatile fields,
+   updated by `CastAsync`/`CastGroundAsync` before sending, so the reactive layer
+   knows what to retry.
+
+3. **`BotManager.cs`** — subscribes to `ZoneView.CastFailed` in `RunBotAsync`:
+   - **0x0FC9 (not enough SP):** fire-and-forget `UseSoulStoneSpAsync` — recharges
+     current SP from the character's soul-stone reserve.
+   - **0x0FCA (out of range):** walks one capped step toward the target's current
+     position (if still in view), then retries the last cast (targeted or ground).
+   - Unknown codes are already logged by ZoneView with hex payload — discoverable.
+
+**Live-verified (2026-06-13):** Both the event infrastructure and the reactive
+handler fire correctly on the live server:
+
+- **0x0FCA detected + approach + retry cast sent.** Casting Wield01 (1500) on a
+  mob ~1021u away (out of melee range) → `0x2434 [CA0F]` → `CastFailed` → walk
+  step toward target with correct coords (uint underflow was the bug: `tp.X - pos.X`
+  wraps when both are `uint` and tp < pos; fixed by doing `(double)tp.X - pos.X`
+  before any other math) → retry `CastAsync`. Walk coords went from garbage
+  `(1463,2561)->(1470419777,2744)` to correct `(1463,2561)->(1312,2760)`.
+
+- **0x0FC6 logged as unknown.** Casting Wield01 on a friendly NPC (mobId 27,
+  handle 17123) produced `0x0FC6` — logged as `"cast FAILED - unknown reason
+  0x0FC6 (2b payload)"`. This is one of the previously unpinned codes; likely
+  "invalid target" or "wrong weapon type". The unknown-code logging collects
+  exactly the reverse-engineering data the operator needs.
+
+- **0x0FC9 not triggered** (bot had sufficient SP for all casts). The code path
+  is the simplest of the three — a single `SendAsync` — and shares the verified
+  event infrastructure.
+
+- **Edge case noted:** in walled dungeons (EldPri01) the straight-line approach
+  hits a MOVEFAIL snapback, creating a cast-fail → approach → MOVEFAIL → retry
+  loop. Mitigated by using proper pathfinding during approach (future work).
