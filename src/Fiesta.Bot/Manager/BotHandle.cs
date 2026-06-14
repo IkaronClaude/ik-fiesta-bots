@@ -164,6 +164,11 @@ public sealed class BotHandle
     internal void SetCharName(string name) => _charName = name;
     internal void SetError(string error) => _error = error;
 
+    /// <summary>Raised once per appended log line (the same timestamped text the ring
+    /// buffer holds). The live log-stream endpoint subscribes to tail a bot in real
+    /// time. Raised from whatever thread logged — handlers must not block.</summary>
+    public event Action<string>? LogLine;
+
     internal void Log(string message)
     {
         var line = $"{DateTime.UtcNow:HH:mm:ss.fff} {message}";
@@ -172,11 +177,24 @@ public sealed class BotHandle
             _log.Add(line);
             if (_log.Count > MaxLogLines) _log.RemoveRange(0, _log.Count - MaxLogLines);
         }
+        // Fan out to live tailers outside the lock; never let a subscriber break logging.
+        try { LogLine?.Invoke(line); } catch { }
     }
 
     private IReadOnlyList<string> RecentLog()
     {
         lock (_logGate) return _log.ToArray();
+    }
+
+    /// <summary>The most recent <paramref name="max"/> log lines (all if max ≤ 0 or
+    /// exceeds the buffer) — the backfill a fresh log-stream connection replays first.</summary>
+    public IReadOnlyList<string> RecentLines(int max)
+    {
+        lock (_logGate)
+        {
+            if (max <= 0 || max >= _log.Count) return _log.ToArray();
+            return _log.GetRange(_log.Count - max, max).ToArray();
+        }
     }
 
     /// <summary>A consistent, serializable point-in-time view for the API.</summary>

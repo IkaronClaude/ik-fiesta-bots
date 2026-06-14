@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Threading.Channels;
 using Fiesta.Bot.Manager;
 using Fiesta.Bot.Scripting;
 
@@ -57,6 +59,7 @@ public static class ScriptEndpoints
             bots.MapPost("/{id}/script", (string id) => Unavailable()).WithSummary("Apply a script (unavailable)");
             bots.MapPost("/{id}/script/stop", (string id) => Unavailable()).WithSummary("Stop a script (unavailable)");
             bots.MapGet("/{id}/script", (string id) => Unavailable()).WithSummary("Script status (unavailable)");
+            bots.MapGet("/{id}/logstream", (string id) => Unavailable()).WithSummary("Live log stream (unavailable)");
             return;
         }
 
@@ -83,12 +86,12 @@ public static class ScriptEndpoints
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["name/source"] = ["give a stored 'name' or inline 'source'"] });
             }
 
-            var runner = manager.ApplyScript(id, name, source, req.TickMs ?? 250);
+            var runner = manager.ApplyScript(id, name, source, req.TickMs ?? 250, req.Trace ?? false);
             return runner is null
                 ? Results.NotFound()
-                : Results.Ok(new { id, applied = name, status = runner.Status() });
+                : Results.Ok(new { id, applied = name, trace = req.Trace ?? false, status = runner.Status() });
         })
-        .WithSummary("Apply a behaviour script to a bot and loop it (by stored name or inline source; replaces any running script)");
+        .WithSummary("Apply a behaviour script to a bot and loop it (by stored name or inline source; replaces any running script; trace=true logs every bot.* call)");
 
         bots.MapPost("/{id}/script/stop", (string id) =>
         {
@@ -106,6 +109,39 @@ public static class ScriptEndpoints
                 : Results.Ok(new { id, running = true, script = st });
         })
         .WithSummary("Debug a bot's running script (state, ticks, events handled, last error, globals)");
+
+        bots.MapGet("/{id}/logstream", async (string id, HttpContext ctx, int? tail) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) { ctx.Response.StatusCode = StatusCodes.Status404NotFound; return; }
+
+            ctx.Response.ContentType = "application/x-ndjson";
+            ctx.Response.Headers.CacheControl = "no-cache";
+            ctx.Response.Headers["X-Accel-Buffering"] = "no"; // disable proxy buffering
+
+            // Bounded so a slow/abandoned reader can't grow memory: drop oldest on overflow.
+            var ch = Channel.CreateBounded<string>(
+                new BoundedChannelOptions(2000) { FullMode = BoundedChannelFullMode.DropOldest });
+            void OnLine(string l) => ch.Writer.TryWrite(l);
+
+            // Backfill the recent buffer first (so a fresh connection has context), then
+            // subscribe for live lines. Subscribe before reading the buffer would risk a
+            // gap; this order can at worst duplicate a line, which is harmless for a tail.
+            foreach (var l in bot.RecentLines(tail ?? 50)) ch.Writer.TryWrite(l);
+            bot.LogLine += OnLine;
+            var ct = ctx.RequestAborted;
+            try
+            {
+                await foreach (var line in ch.Reader.ReadAllAsync(ct))
+                {
+                    await ctx.Response.WriteAsync(JsonSerializer.Serialize(new { line }) + "\n", ct);
+                    await ctx.Response.Body.FlushAsync(ct);
+                }
+            }
+            catch (OperationCanceledException) { /* client disconnected */ }
+            finally { bot.LogLine -= OnLine; }
+        })
+        .WithSummary("Live-tail a bot's log as NDJSON (script + engine lines; ?tail=N backfills the last N). curl -N to watch Lua run.");
     }
 }
 
@@ -125,4 +161,8 @@ public sealed record ApplyScriptRequest
     public string? Source { get; init; }
     public string? NameAs { get; init; }
     public int? TickMs { get; init; }
+
+    /// <summary>Log every <c>bot.*</c> call (with args) — tail it via <c>GET
+    /// /api/bots/{id}/logstream</c>. Noisy; opt-in for debugging.</summary>
+    public bool? Trace { get; init; }
 }

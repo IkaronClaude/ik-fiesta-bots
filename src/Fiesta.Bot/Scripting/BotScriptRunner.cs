@@ -39,6 +39,7 @@ public sealed class BotScriptRunner : IDisposable
     private readonly string _source;
     private readonly Action<string> _log;
     private readonly int _tickMs;
+    private readonly bool _trace;
     private readonly BlockingCollection<BotEvent> _events = new(new ConcurrentQueue<BotEvent>());
     private readonly CancellationTokenSource _cts;
     private readonly Thread _thread;
@@ -52,7 +53,7 @@ public sealed class BotScriptRunner : IDisposable
     private int _disposed;
 
     internal BotScriptRunner(BotHandle handle, BotApi api, string name, string source,
-        Action<string> log, CancellationToken botCt, int tickMs = 250)
+        Action<string> log, CancellationToken botCt, int tickMs = 250, bool trace = false)
     {
         _handle = handle;
         _api = api;
@@ -60,6 +61,7 @@ public sealed class BotScriptRunner : IDisposable
         _source = source;
         _log = log;
         _tickMs = Math.Clamp(tickMs, 20, 60_000);
+        _trace = trace;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(botCt);
         _thread = new Thread(RunLoop) { IsBackground = true, Name = $"lua-{handle.Id}" };
     }
@@ -149,9 +151,38 @@ public sealed class BotScriptRunner : IDisposable
         }
         _api.AttachScript(_lua);
         _lua.Globals["bot"] = _api;
+        // Both an explicit log() and Lua's built-in print(...) reach the bot log (and
+        // thus the console + the live log-stream). DebugPrint catches print/io.write.
         _lua.Globals["log"] = (Action<string>)(m => _log($"[script:{_name}] {m}"));
+        _lua.Options.DebugPrint = m => _log($"[script:{_name}] {m}");
+        // Trace mode: wrap `bot` in a proxy that logs every call before forwarding, so
+        // the log stream shows each bot.* invocation (and its args). Opt-in — it's noisy.
+        if (_trace) _lua.DoString(TraceShim, codeFriendlyName: "trace-shim");
         _lua.DoString(_source, codeFriendlyName: _name);
     }
+
+    // Replaces `bot` with a metatable proxy whose __index returns, for each function
+    // member, a closure that logs `call bot.<name>(<args>)` then tail-calls the real method
+    // (preserving all return values). Indexing the userdata returns a bound callback, so
+    // forwarding with the same args works without a self argument.
+    private const string TraceShim = @"
+do
+  local real = bot
+  local function argstr(...)
+    local n = select('#', ...)
+    local t = {}
+    for i = 1, n do t[i] = tostring((select(i, ...))) end
+    return table.concat(t, ', ')
+  end
+  bot = setmetatable({}, { __index = function(_, k)
+    local v = real[k]
+    if type(v) == 'function' then
+      return function(...) log('call bot.' .. k .. '(' .. argstr(...) .. ')'); return v(...) end
+    end
+    return v
+  end })
+end
+";
 
     private void Dispatch(BotEvent ev)
     {

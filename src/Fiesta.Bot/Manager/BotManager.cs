@@ -131,14 +131,14 @@ public sealed class BotManager : IAsyncDisposable
     /// runner, or null if the bot id is unknown. The runner subscribes to the bot's
     /// stable event hub, runs <c>on_start</c>, then ticks + dispatches events on its own
     /// thread until <see cref="StopScript"/> / <see cref="StopAsync"/>.</summary>
-    public BotScriptRunner? ApplyScript(string id, string name, string source, int tickMs = 250)
+    public BotScriptRunner? ApplyScript(string id, string name, string source, int tickMs = 250, bool trace = false)
     {
         if (!_bots.TryGetValue(id, out var handle)) return null;
         handle.ScriptRunner?.Dispose();               // replace any running script
         void ScriptLog(string m) { handle.Log(m); _globalLog?.Invoke($"[{id}] {m}"); }
-        var runner = new BotScriptRunner(handle, new BotApi(this, handle), name, source, ScriptLog, handle.Cts.Token, tickMs);
+        var runner = new BotScriptRunner(handle, new BotApi(this, handle), name, source, ScriptLog, handle.Cts.Token, tickMs, trace);
         handle.ScriptRunner = runner;
-        handle.Log($"script '{name}' applied ({source.Length} chars, tick={tickMs}ms)");
+        handle.Log($"script '{name}' applied ({source.Length} chars, tick={tickMs}ms{(trace ? ", trace" : "")})");
         runner.Start();
         return runner;
     }

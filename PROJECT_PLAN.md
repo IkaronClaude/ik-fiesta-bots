@@ -1272,9 +1272,23 @@ gates/inventory/equipment/playerByName`.
 script → `POST /{id}/script` → watch `GET /{id}/script` + the bot log loop it; confirm
 a new upload swaps cleanly and `/script/stop` halts it. HP/SP via `GET /{id}` snapshot.
 
+### Live log stream + console + call-trace (DONE 2026-06-14, live-verified)
+- **`log(msg)` AND Lua `print(...)`** both route to the bot log → host console → the live
+  stream (`Script.Options.DebugPrint` catches `print`/`io.write`).
+- **`GET /api/bots/{id}/logstream`** — NDJSON (`{"line":...}` per line), `?tail=N` backfills
+  the last N then streams live off `BotHandle.LogLine`; bounded channel (drop-oldest) so a
+  slow reader can't grow memory; ends on client disconnect. `curl -N` to watch a bot.
+- **`trace:true`** on apply wraps `bot` in a metatable proxy that logs `call bot.<fn>(args)`
+  before forwarding (return values pass through) — every action/getter is visible on the
+  stream. Opt-in (noisy).
+- Live-verified (testuser/Anna @ RouCos01): tailed `/logstream` while applying a traced
+  script — saw `print()` output, `on_start`, and `call bot.map/hp/nearestMob(...)` lines
+  stream in real time with the real return values (`tick 8 hp=91 nearest=675`).
+
 ### Deferred (after the loop is proven)
 - Layer 2 state-machine engine (`StateMachine` + transitions; `POST /{id}/statemachine`).
 - Layer 3 cross-tree transitions + per-class tree presets.
-- WS/NDJSON `/events` stream (the long-flagged live feed) — reuses the event hub.
+- WS/NDJSON `/events` **structured** stream (typed events, not just log lines) — reuses the
+  same event hub the log stream and scripts already consume.
 - Script persistence (disk/Git), hot-reload, per-script resource/time limits.
 - Pin unknown cast-fail codes (0x0FC4/0x0FC6) so scripts can react to facing/cooldown.

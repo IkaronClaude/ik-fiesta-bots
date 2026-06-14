@@ -18,10 +18,20 @@ curl -X POST :5097/api/bots/b1/script -d '{"name":"auto_grind"}'
 # 3. watch it
 curl :5097/api/bots/b1/script            # state, ticks, events handled, last error
 curl :5097/api/bots/b1                    # snapshot incl. hp/sp/script
+curl -N :5097/api/bots/b1/logstream      # LIVE tail (NDJSON {"line":...}); ?tail=N backfills
 # 4. stop / replace
 curl -X POST :5097/api/bots/b1/script/stop
 ```
-Apply also accepts inline `{"source":"..."}` for build-on-the-fly iteration.
+Apply also accepts inline `{"source":"..."}` for build-on-the-fly iteration, plus
+`"tickMs":N` (loop interval, default 250) and `"trace":true` (log every `bot.*` call —
+noisy, watch it on `/logstream`).
+
+## Logging & watching it run
+- `log(msg)` and Lua's built-in `print(...)` both go to the bot log → the host console
+  → the live `/logstream`. So `curl -N :5097/api/bots/b1/logstream` tails everything the
+  script (and the engine) emits, in real time.
+- `trace:true` on apply logs `call bot.<fn>(args)` before every action/getter — tail it
+  on `/logstream` to see exactly what the script is doing.
 
 ## Script contract
 Define any subset of these globals — the runner calls the ones present:
