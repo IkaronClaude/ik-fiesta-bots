@@ -601,10 +601,13 @@ public sealed class ZoneView : IDisposable
                     // before it's in hit range. Mark it an aggressor + flag InCombat (threatened).
                     var oldD = SelfDist(npc.X, npc.Y);
                     _npcs[hnd] = npc with { X = toX, Y = toY };
-                    if (op == OpSomeoneMoveRun)
+                    // A mob RUNS (0x201A) when aggro'd and WALKS (0x2018) when idle/patrolling,
+                    // so a mob RUNNING toward us = aggro. Aggro RANGE varies per mob — do NOT
+                    // gate on a hardcoded distance; the run-vs-walk + getting-closer is the tell.
+                    if (op == OpSomeoneMoveRun && oldD < double.MaxValue)
                     {
                         var newD = SelfDist(toX, toY);
-                        if (newD < oldD && newD < 700)   // running closer, within aggro range
+                        if (newD < oldD - 4)   // running toward us (getting closer)
                         {
                             _aggressors[hnd] = DateTime.UtcNow;
                             LastHitAtUtc = DateTime.UtcNow;   // treat "charging at me" as in-combat
