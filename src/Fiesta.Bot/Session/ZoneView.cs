@@ -265,6 +265,34 @@ public sealed class ZoneView : IDisposable
     /// The "process every hit" seam — scripts filter by attacker/defender vs self.</summary>
     public event Action<HitInfo>? Damaged;
 
+    private readonly ConcurrentDictionary<ushort, DateTime> _aggressors = new(); // handle -> last hit us
+    private static readonly TimeSpan CombatWindow = TimeSpan.FromSeconds(8);
+
+    /// <summary>Handles that have hit the bot within the combat window (who's aggroing us —
+    /// there's no "mob targeted you" packet; this is derived from incoming SWING_DAMAGE where
+    /// the defender is our self handle).</summary>
+    public IReadOnlyCollection<ushort> Aggressors =>
+        _aggressors.Where(kv => DateTime.UtcNow - kv.Value < CombatWindow).Select(kv => kv.Key).ToArray();
+
+    /// <summary>True if the bot has been hit in the last few seconds — i.e. it's taking
+    /// damage. IMPORTANT: a clean logout will NOT complete while in combat (the server's
+    /// logout countdown resets on damage) — flee out of enemy range first. Used to gate
+    /// safe-logout and to know when to disengage/heal.</summary>
+    public bool InCombat => DateTime.UtcNow - LastHitAtUtc < CombatWindow;
+
+    /// <summary>When the bot was last hit (UtcMinValue if never).</summary>
+    public DateTime LastHitAtUtc { get; private set; } = DateTime.MinValue;
+
+    private void NoteHit(HitInfo h)
+    {
+        if (SelfHandle is { } self && h.Defender == self)
+        {
+            _aggressors[h.Attacker] = DateTime.UtcNow;
+            LastHitAtUtc = DateTime.UtcNow;
+        }
+        Damaged?.Invoke(h);
+    }
+
     /// <summary>When the server last opened a menu prompt (0x3C01) — e.g. an instance
     /// gate's Yes/No confirm. Gate-taking checks this to auto-answer with a
     /// SERVERMENU_ACK. Null if no menu has opened.</summary>
@@ -459,7 +487,7 @@ public sealed class ZoneView : IDisposable
             try
             {
                 var d = pkt.ReadBody<PROTO_NC_BAT_SWING_DAMAGE_CMD>();
-                Damaged?.Invoke(new HitInfo(d.attacker, d.defender, d.damage, d.resthp));
+                NoteHit(new HitInfo(d.attacker, d.defender, d.damage, d.resthp));
             }
             catch { }
         }
@@ -468,7 +496,7 @@ public sealed class ZoneView : IDisposable
             try
             {
                 var d = pkt.ReadBody<PROTO_NC_BAT_SOMEONESWING_DAMAGE_CMD>();
-                Damaged?.Invoke(new HitInfo(d.attacker, d.defender, 0, d.resthp));
+                NoteHit(new HitInfo(d.attacker, d.defender, 0, d.resthp));
             }
             catch { }
         }

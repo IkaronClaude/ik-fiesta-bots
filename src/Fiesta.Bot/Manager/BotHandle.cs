@@ -235,6 +235,7 @@ public sealed class BotHandle
             MaxSp: view is { MaxSp: > 0 } ? view.MaxSp : null,
             HpStones: view?.HpStones,
             SpStones: view?.SpStones,
+            InCombat: view?.InCombat ?? false,
             Script: ScriptRunner?.StatusLine,
             CreatedAtUtc: CreatedAtUtc,
             RecentLog: RecentLog());
@@ -267,6 +268,7 @@ public sealed record BotSnapshot(
     uint? MaxSp,
     int? HpStones,
     int? SpStones,
+    bool InCombat,
     string? Script,
     DateTime CreatedAtUtc,
     IReadOnlyList<string> RecentLog);
