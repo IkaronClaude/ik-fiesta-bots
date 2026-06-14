@@ -182,14 +182,19 @@ public sealed class BotManager : IAsyncDisposable
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.ChangemodeReq);
 
     /// <summary>Cast a skill on a target zone handle, replaying the client's
-    /// target → battle-mode → (stop) → cast sequence so the zone accepts it.
-    /// <paramref name="stopFirst"/> sends a STOP_REQ committing our current position
-    /// right before the cast: an offensive SKILLBASH is rejected
-    /// (NC_BAT_SKILLBASH_CAST_FAIL_ACK) if the server considers us moving, so a damage
-    /// skill must STOP first — verified in CombatExtensive.pcapng (every accepted cast
-    /// is preceded by STOP_REQ). A heal is exempt; it can be cast while walking, so it
-    /// passes <c>stopFirst:false</c> to avoid halting a moving bot.</summary>
-    public async Task<ActionResult> CastAsync(string id, ushort skill, ushort target, bool stopFirst = true, CancellationToken ct = default)
+    /// target → battle-mode → (face/stop) → cast sequence so the zone accepts it.
+    /// <paramref name="stopFirst"/> chooses whether to face+STOP before the cast:
+    /// <list type="bullet">
+    /// <item><c>true</c> → always face+STOP; <c>false</c> → never (cast while moving)</item>
+    /// <item><c>null</c> (default) → <b>data-driven</b> from the skill's <c>ActiveSkill</c>
+    /// row: face when <c>UsableDegree &gt; 0</c> (facing arc enforced) and/or STOP when it
+    /// isn't a moving-skill. With no client data / unknown skill, falls back to the proven
+    /// default (face+STOP) so a damage cast is never silently rejected.</item>
+    /// </list>
+    /// An offensive SKILLBASH is rejected (NC_BAT_SKILLBASH_CAST_FAIL_ACK) if the server
+    /// considers us moving or out of the facing arc — verified in CombatExtensive.pcapng.
+    /// A heal is castable while moving (IsMovingSkill), so the data path skips the STOP.</summary>
+    public async Task<ActionResult> CastAsync(string id, ushort skill, ushort target, bool? stopFirst = null, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
@@ -197,34 +202,47 @@ public sealed class BotManager : IAsyncDisposable
         // subscriber) can retry the same skill+target.
         handle.LastCastSkill = skill;
         handle.LastCastTarget = target;
+        var (needFace, needStop) = ResolveFaceStop(skill, stopFirst);
         await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
-        // Offensive skills enforce UsableDegree — the target must be within our facing
-        // arc — so we must FACE it before casting (else NC_BAT_SKILLBASH_CAST_FAIL_ACK).
-        // Heal passes stopFirst:false (self-cast needs no facing, castable while moving).
-        if (stopFirst && NpcPos(handle, target) is { } tp)
+        if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
-        handle.Log($"cast skill {skill} on h={target} ({(stopFirst ? "target+mode+face+cast" : "target+mode+cast")})");
+        handle.Log($"cast skill {skill} on h={target} ({(needFace || needStop ? "target+mode+face+stop+cast" : "target+mode+cast")})");
         return ActionResult.Sent;
+    }
+
+    /// <summary>Decide whether a cast must face the target and/or STOP first. An explicit
+    /// <paramref name="stopFirst"/> forces both on (<c>true</c>) or off (<c>false</c>);
+    /// <c>null</c> reads the skill's <c>ActiveSkill</c> data (face if it enforces a facing
+    /// arc, STOP if it isn't castable while moving), falling back to the proven face+STOP
+    /// default when no client data is available so a damage cast is never silently rejected.
+    /// FaceAndStopAsync turns + commits position in one step, so the two flags both just
+    /// gate that call.</summary>
+    private (bool NeedFace, bool NeedStop) ResolveFaceStop(ushort skill, bool? stopFirst)
+    {
+        if (stopFirst is { } force) return (force, force);
+        if (ClientData?.Skill(skill) is { } si) return (si.UsableDegree > 0, !si.IsMovingSkill);
+        return (true, true); // no data → proven default
     }
 
     /// <summary>Cast a <b>location-targeted</b> (ground / AoE) skill at a world coordinate —
     /// e.g. Frost Nova, which has a cast time and takes a target <i>point</i>, not a unit.
-    /// Sends CHANGEMODE, faces+stops toward the cast point (these skills enforce a facing
-    /// arc and aren't moving-skills, so the caster must stand + face), then
+    /// Sends CHANGEMODE, then faces+STOPs toward the cast point when the skill needs it
+    /// (data-driven from <c>ActiveSkill</c> by default — facing arc / moving-skill — same
+    /// rules as <see cref="CastAsync"/>; <paramref name="stopFirst"/> overrides), then
     /// <c>NC_BAT_SKILLBASH_FLD_CAST_REQ {skill, locate}</c> — no target handle. The caster
     /// stays put and drops the AoE at (<paramref name="x"/>,<paramref name="y"/>), which
-    /// may be up to the skill's Range away. Pass <paramref name="stopFirst"/> = false for a
-    /// moving-castable ground skill.</summary>
-    public async Task<ActionResult> CastGroundAsync(string id, ushort skill, uint x, uint y, bool stopFirst = true, CancellationToken ct = default)
+    /// may be up to the skill's Range away.</summary>
+    public async Task<ActionResult> CastGroundAsync(string id, ushort skill, uint x, uint y, bool? stopFirst = null, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
         handle.LastCastSkill = skill;
         handle.LastCastTarget = 0; // ground cast = no target handle
+        var (needFace, needStop) = ResolveFaceStop(skill, stopFirst);
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
-        if (stopFirst) await FaceAndStopAsync(handle, s, x, y, ct);
+        if (needFace || needStop) await FaceAndStopAsync(handle, s, x, y, ct);
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_FLD_CAST_REQ { skill = skill, locate = new SHINE_XY_TYPE { x = x, y = y } }, ct);
         handle.Log($"ground-cast skill {skill} at ({x},{y})");
         return ActionResult.Sent;
@@ -269,7 +287,7 @@ public sealed class BotManager : IAsyncDisposable
     {
         if (!_bots.TryGetValue(id, out var handle)) return Task.FromResult(ActionResult.NotFound);
         if (handle.SelfHandle is not { } self) return Task.FromResult(ActionResult.NotInZone);
-        return CastAsync(id, skill, self, stopFirst: false, ct: ct); // heal castable while moving
+        return CastAsync(id, skill, self, stopFirst: null, ct: ct); // data-driven: heal is a moving-skill
     }
 
     /// <summary>Attack: cast a (damage) skill on <paramref name="target"/>, or the
@@ -281,7 +299,7 @@ public sealed class BotManager : IAsyncDisposable
     {
         if (target == 0 && _bots.TryGetValue(id, out var h) && NearestMob(h) is { } m) target = m;
         if (target == 0) return Task.FromResult(ActionResult.NotFound);
-        return CastAsync(id, skill, target, ct: ct); // damage: STOP-then-cast (default)
+        return CastAsync(id, skill, target, ct: ct); // data-driven face/stop from ActiveSkill
     }
 
     // STOP (ACT StopReq 0x2012): 8 bytes [x u32][y u32] — the position the char halts at.

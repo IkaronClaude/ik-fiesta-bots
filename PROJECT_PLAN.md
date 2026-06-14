@@ -988,15 +988,16 @@ heal "lands on me" in the real client is a client-side redirect — we self-targ
 confirm menu.
 
 ### Next / deferred
-1. **DEFERRED — data-drive the cast from `ActiveSkill` (replace the hard-coded
-   heuristic).** Today `CastAsync` hard-codes "damage = face+stop, heal = neither".
-   The correct, general design loads per-skill flags from the **ActiveSkill** table and
-   acts on them: **`UsableDegree`** → face the target first (only if it enforces an
-   arc); **`IsMovingSkill`** → whether a STOP is needed at all; **`DlyTime`** → enforce
-   the cooldown (don't spam / report on-cooldown); **`Range`** → reject/approach if out
-   of range; **`SP`** → gate the cast on current mana. This is what makes *every*
-   class/skill work uniformly (mages cast ranged with no swing, melee faces, AoE
-   doesn't run into melee) instead of priest-specific special-casing.
+1. **DONE (2026-06-14) — data-driven cast from `ActiveSkill`** (integrated from the
+   `ProjectsOpenCode` checkout). `CastAsync`/`CastGroundAsync` now take `bool? stopFirst`
+   (default `null` = auto): a shared `ResolveFaceStop` reads the skill row and faces when
+   **`UsableDegree > 0`** and/or STOPs when **`IsMovingSkill == false`**; an explicit
+   `true`/`false` overrides. **Fallback added on integration** (their copy omitted it):
+   no client data / unknown skill → face+STOP, the proven default, so a damage cast is
+   never silently rejected. `HealSelfAsync` now passes `null` (heal is a moving-skill →
+   no STOP via the data path). Still TODO on top of this seam: **`DlyTime`** cooldown
+   enforcement, **`Range`** reject/approach, **`SP`** mana-gating (the SkillInfo fields
+   are already projected — `ClientData.Skill`).
 2. ZoneView doesn't parse the login item burst → `/inventory` `/equipment` read empty
    (cosmetic; equip-by-slot still works).
 
