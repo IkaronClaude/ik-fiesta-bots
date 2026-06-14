@@ -1372,6 +1372,25 @@ back → grind`. Composes the primitives: grind_sm + travelTo(nearest town) + wa
 detect "stones low" (track reserve charges, or react to soul-stone **USEFAIL 0x5006**) and
 "nearest town/healer" routing. Build incrementally on the Lua SM engine.
 
+### Threat / aggro-awareness model (DESIGNED — do NOT implement yet)
+Extend the current self-aggro heuristic (mob run-heading angle vs direction-to-self;
+`Aggressors`/`MaybeAggressors`/`InCombat`) into a full per-zone threat model:
+- **Track every nearby player's position over time** (we already update `_nearby` from
+  SOMEONE_MOVEWALK/MOVERUN). With a short trajectory history you can **resolve the aggro
+  uncertainty**: after a mob runs for a bit, check whether it keeps converging on *our* coord
+  vs a *player's* — if it's clearly pathing to a player (and away from us), it's impossible
+  it's on us → drop it from `MaybeAggressors`; if it converges on us, promote to confident.
+- **Track who-is-aggro'd-on-whom for ALL nearby entities**, not just self — a `mob → target`
+  threat map. A support cleric needs this to: pick **who to heal** (and prioritise), estimate
+  **incoming damage** per ally (mob count × per-hit from the bestiary), and **forecast when a
+  mob wave will impact** an ally (distance ÷ run speed) so it can pre-heal / pre-buff.
+- **Active 2-way spot-check:** target any mob (`BAT_TARGETTING_REQ`) → the server replies
+  `TARGETINFO_CMD` (0x2402) with **who that mob is targeting** — an authoritative check that
+  resolves a `MaybeAggressor` (its target == us / a specific ally). Combine the passive
+  movement-angle inference with this active query when certainty matters.
+- Consumers: the restock/flee SM (am I actually threatened?), a **party-support tree** (heal
+  the most-threatened ally, brace for the wave), and safe-logout (no real aggro → safe to log).
+
 ### Craft Elrue (decoded, NOT wired — Production.pcapng)
 Production = NPC + skill: target+click production NPC → menu-ack → `NC_SKILL_PRODUCTFIELD_REQ`
 (0x4822, {2 B select recipe/field}) → `NC_ACT_PRODUCE_CAST_REQ` (0x2035, {2 B}, repeated once
