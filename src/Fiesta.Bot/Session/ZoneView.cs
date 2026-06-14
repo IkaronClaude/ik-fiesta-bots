@@ -358,6 +358,10 @@ public sealed class ZoneView : IDisposable
     /// zone entry completes; used to filter MOVESPEED broadcasts to self only.</summary>
     public ushort? SelfHandle { get; set; }
 
+    /// <summary>Supplies the bot's current world position (set by the manager to the live
+    /// tracked position). Lets aggro detection tell whether a mob is running toward us.</summary>
+    public Func<(uint X, uint Y)?>? SelfPositionProvider { get; set; }
+
     private void OnPacket(FiestaPacket pkt)
     {
         var op = pkt.Opcode;
@@ -584,11 +588,29 @@ public sealed class ZoneView : IDisposable
             if (p.Length >= 18)
             {
                 var hnd = (ushort)(p[0] | (p[1] << 8));
+                var toX = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(10, 4));
+                var toY = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(14, 4));
                 if (_nearby.TryGetValue(hnd, out var pl))
                 {
-                    var toX = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(10, 4));
-                    var toY = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(14, 4));
                     _nearby[hnd] = pl with { X = toX, Y = toY };
+                }
+                else if (_npcs.TryGetValue(hnd, out var npc))
+                {
+                    // Keep mob positions live as they move. A mob RUNNING (0x201A, not the
+                    // idle walk 0x2018) TOWARD us = it aggro'd — the earliest aggro signal,
+                    // before it's in hit range. Mark it an aggressor + flag InCombat (threatened).
+                    var oldD = SelfDist(npc.X, npc.Y);
+                    _npcs[hnd] = npc with { X = toX, Y = toY };
+                    if (op == OpSomeoneMoveRun)
+                    {
+                        var newD = SelfDist(toX, toY);
+                        if (newD < oldD && newD < 700)   // running closer, within aggro range
+                        {
+                            _aggressors[hnd] = DateTime.UtcNow;
+                            LastHitAtUtc = DateTime.UtcNow;   // treat "charging at me" as in-combat
+                            _log?.Invoke($"[ZoneView] mob {npc.MobId} (h={hnd}) running at us ({newD:F0}u) — AGGRO");
+                        }
+                    }
                 }
             }
         }
@@ -714,6 +736,15 @@ public sealed class ZoneView : IDisposable
             WalkSpeed = newSpeed;
             WalkSpeedChanged?.Invoke(newSpeed);
         }
+    }
+
+    /// <summary>Distance from the bot's current position to (x,y); double.MaxValue if the
+    /// self position isn't known yet (so "approaching" comparisons safely fail closed).</summary>
+    private double SelfDist(uint x, uint y)
+    {
+        if (SelfPositionProvider?.Invoke() is not { } me) return double.MaxValue;
+        double dx = (double)x - me.X, dy = (double)y - me.Y;
+        return Math.Sqrt(dx * dx + dy * dy);
     }
 
     private static string? ReadCString(ReadOnlySpan<byte> p, int off, int max)

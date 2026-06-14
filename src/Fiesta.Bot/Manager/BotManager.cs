@@ -1214,6 +1214,7 @@ public sealed class BotManager : IAsyncDisposable
                 using var zoneView = new ZoneView(zoneSession, Log);
                 handle.ZoneView = zoneView;
                 if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
+                zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
                 zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);
                 handle.SetCurrentMap(currentMap);
                 zoneView.MapChanged += h =>
