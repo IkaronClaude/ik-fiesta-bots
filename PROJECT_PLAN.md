@@ -1391,6 +1391,24 @@ Extend the current self-aggro heuristic (mob run-heading angle vs direction-to-s
 - Consumers: the restock/flee SM (am I actually threatened?), a **party-support tree** (heal
   the most-threatened ally, brace for the wave), and safe-logout (no real aggro → safe to log).
 
+### Auto-learn skills: visit the scroll merchant by level + learn in order (DESIGNED — not impl)
+**Trigger:** on level-up (decode `NC_BAT_LEVELUP_CMD` 0x240C → new level) or a manual call.
+**1. Route to the ability-scroll merchant for the level tier** (travel + walk-to-NPC):
+- RouN: levels **< 20** · Elderine: **< 60** · Uruga: **< 100** · Alberstol Ruins: **< ~115–120?**
+  · Bera: **120+** (exact Alber/Bera cutoffs TBC).
+- **Elderine has 5 scroll merchants, one per class** (e.g. *Paladin Master Keast* for Clerics) —
+  resolve the right NPC by class. Resolve merchant NPCs by name/role from client `MobInfo`
+  (same as Blacksmith Hans), confirm against the bot's class.
+**2. Buy all affordable skill scrolls** at that merchant: open shop → for each scroll the bot's
+class/level can use that it doesn't already know, buy it while money lasts (needs the shop sell-
+list + **character-money tracking**, both still TODO; buy via the wired `ITEM_BUY_REQ`). Skill
+scrolls are `ItemInfo` rows with `ItemUseSkill` → the learned skill; named `<Skill> [NN]`.
+**3. Learn from inventory IN ORDER:** each tier depends on the same-name next-lower skill
+([05] needs [04] needs [03]…), so sort scrolls by tier ascending and `use-item` (ITEM_USE_REQ,
+already wired) each to learn it; a learn confirms with `SkillLearnsucCmd`. (Per the wire-the-
+result rule, also track the learn success/fail ack.)
+**Prereqs:** char-money tracking, shop sell-list resolution, level-up decode, merchant-by-name.
+
 ### Craft Elrue (decoded, NOT wired — Production.pcapng)
 Production = NPC + skill: target+click production NPC → menu-ack → `NC_SKILL_PRODUCTFIELD_REQ`
 (0x4822, {2 B select recipe/field}) → `NC_ACT_PRODUCE_CAST_REQ` (0x2035, {2 B}, repeated once
