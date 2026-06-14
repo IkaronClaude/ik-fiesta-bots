@@ -272,14 +272,20 @@ public sealed class ZoneView : IDisposable
     /// The "process every hit" seam — scripts filter by attacker/defender vs self.</summary>
     public event Action<HitInfo>? Damaged;
 
-    private readonly ConcurrentDictionary<ushort, DateTime> _aggressors = new(); // handle -> last hit us
+    private readonly ConcurrentDictionary<ushort, DateTime> _aggressors = new();      // confident: hit us / clearly running at us
+    private readonly ConcurrentDictionary<ushort, DateTime> _maybeAggressors = new();  // running our way, but a player shares the angle
     private static readonly TimeSpan CombatWindow = TimeSpan.FromSeconds(8);
 
-    /// <summary>Handles that have hit the bot within the combat window (who's aggroing us —
-    /// there's no "mob targeted you" packet; this is derived from incoming SWING_DAMAGE where
-    /// the defender is our self handle).</summary>
+    /// <summary>Mobs we're confident are aggroing us within the combat window — hit us
+    /// (incoming SWING_DAMAGE, defender==self) or ran unambiguously at us.</summary>
     public IReadOnlyCollection<ushort> Aggressors =>
         _aggressors.Where(kv => DateTime.UtcNow - kv.Value < CombatWindow).Select(kv => kv.Key).ToArray();
+
+    /// <summary>Mobs running roughly toward us but where a nearby player shares the heading,
+    /// so the target is uncertain — "maybe aggro'd me". Promote to <see cref="Aggressors"/>
+    /// if one then hits us.</summary>
+    public IReadOnlyCollection<ushort> MaybeAggressors =>
+        _maybeAggressors.Where(kv => DateTime.UtcNow - kv.Value < CombatWindow).Select(kv => kv.Key).ToArray();
 
     /// <summary>True if the bot has been hit in the last few seconds — i.e. it's taking
     /// damage. IMPORTANT: a clean logout will NOT complete while in combat (the server's
@@ -596,22 +602,32 @@ public sealed class ZoneView : IDisposable
                 }
                 else if (_npcs.TryGetValue(hnd, out var npc))
                 {
-                    // Keep mob positions live as they move. A mob RUNNING (0x201A, not the
-                    // idle walk 0x2018) TOWARD us = it aggro'd — the earliest aggro signal,
-                    // before it's in hit range. Mark it an aggressor + flag InCombat (threatened).
-                    var oldD = SelfDist(npc.X, npc.Y);
+                    // Keep mob positions live as they move. A mob RUNS (0x201A) when aggro'd vs
+                    // WALKS (0x2018) when idle — and an aggro'd mob runs ALONG THE VECTOR AT its
+                    // target. So compare the run heading to the direction to us (angle), not a
+                    // hardcoded distance (aggro range varies per mob). If another nearby player
+                    // sits at a similar angle the target is ambiguous -> "maybe aggro'd" (track
+                    // the uncertainty) rather than a confident aggro.
+                    var (ox, oy) = (npc.X, npc.Y);
                     _npcs[hnd] = npc with { X = toX, Y = toY };
-                    // A mob RUNS (0x201A) when aggro'd and WALKS (0x2018) when idle/patrolling,
-                    // so a mob RUNNING toward us = aggro. Aggro RANGE varies per mob — do NOT
-                    // gate on a hardcoded distance; the run-vs-walk + getting-closer is the tell.
-                    if (op == OpSomeoneMoveRun && oldD < double.MaxValue)
+                    if (op == OpSomeoneMoveRun && SelfPositionProvider?.Invoke() is { } me)
                     {
-                        var newD = SelfDist(toX, toY);
-                        if (newD < oldD - 4)   // running toward us (getting closer)
+                        double hx = (double)toX - ox, hy = (double)toY - oy;          // run heading
+                        if (Cos(hx, hy, (double)me.X - ox, (double)me.Y - oy) > 0.94)  // running ~at us
                         {
-                            _aggressors[hnd] = DateTime.UtcNow;
-                            LastHitAtUtc = DateTime.UtcNow;   // treat "charging at me" as in-combat
-                            _log?.Invoke($"[ZoneView] mob {npc.MobId} (h={hnd}) running at us ({newD:F0}u) — AGGRO");
+                            var ambiguous = _nearby.Values.Any(pl =>
+                                pl.Handle != SelfHandle && Cos(hx, hy, (double)pl.X - ox, (double)pl.Y - oy) > 0.94);
+                            if (ambiguous)
+                            {
+                                _maybeAggressors[hnd] = DateTime.UtcNow;
+                                _log?.Invoke($"[ZoneView] mob {npc.MobId} (h={hnd}) running our way — MAYBE aggro (a player shares the angle)");
+                            }
+                            else
+                            {
+                                _aggressors[hnd] = DateTime.UtcNow;
+                                LastHitAtUtc = DateTime.UtcNow;   // charging at me -> in combat
+                                _log?.Invoke($"[ZoneView] mob {npc.MobId} (h={hnd}) running at us — AGGRO");
+                            }
                         }
                     }
                 }
@@ -741,13 +757,14 @@ public sealed class ZoneView : IDisposable
         }
     }
 
-    /// <summary>Distance from the bot's current position to (x,y); double.MaxValue if the
-    /// self position isn't known yet (so "approaching" comparisons safely fail closed).</summary>
-    private double SelfDist(uint x, uint y)
+    /// <summary>Cosine of the angle between vectors (ax,ay) and (bx,by) — 1 = same direction.
+    /// Used to tell if a mob's run heading points along the direction to a target. 0 if either
+    /// vector is zero-length.</summary>
+    private static double Cos(double ax, double ay, double bx, double by)
     {
-        if (SelfPositionProvider?.Invoke() is not { } me) return double.MaxValue;
-        double dx = (double)x - me.X, dy = (double)y - me.Y;
-        return Math.Sqrt(dx * dx + dy * dy);
+        var ma = Math.Sqrt(ax * ax + ay * ay);
+        var mb = Math.Sqrt(bx * bx + by * by);
+        return ma < 1e-6 || mb < 1e-6 ? 0 : (ax * bx + ay * by) / (ma * mb);
     }
 
     private static string? ReadCString(ReadOnlySpan<byte> p, int off, int max)
