@@ -104,6 +104,13 @@ public sealed class ZoneView : IDisposable
     // answers with SERVERMENU_ACK (0x3C02) selecting an option. Track that one is open
     // so gate-taking can auto-confirm it.
     private const ushort OpMenuServerMenu = 0x3C01;
+    // Shop open (Menu dept 0x0F): the server sends the merchant's sell list when you
+    // click it. Variants by shop type — weapon(3)/item(6) and their table(9/11) forms —
+    // all wire as [itemnum u16][npc u16][MENUITEM × itemnum]. We read each MENUITEM's
+    // leading u16 as the item id (stride computed from the frame, robust to the element
+    // size we don't have a struct for). buy with NC_ITEM_BUY_REQ {itemid, lot}.
+    private static readonly ushort[] OpShopOpen =
+        { 0x3C03, 0x3C06, 0x3C09, 0x3C0B };
     // NC_BAT_SKILLBASH_CAST_FAIL_ACK (Bat cmd 52 = 0x2434): the server rejected a
     // skill cast. Payload is a 2-byte LE u16 reason code. Known codes (empirically
     // captured):
@@ -244,6 +251,19 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Mark the open server menu as answered (called after sending the ack).</summary>
     public void ClearServerMenu() => ServerMenuOpen = false;
+
+    private volatile ushort[] _shopItems = Array.Empty<ushort>();
+
+    /// <summary>The item ids the last-opened merchant sells (from SHOPOPEN). Empty until
+    /// a shop is opened (click a merchant). <see cref="Manager.BotManager.BuyAsync"/> buys
+    /// any of these by id.</summary>
+    public IReadOnlyList<ushort> ShopItems => _shopItems;
+
+    /// <summary>The npc handle of the last-opened shop (0 if none).</summary>
+    public ushort ShopNpc { get; private set; }
+
+    /// <summary>Raised when a merchant's shop opens, with the sell-list item ids.</summary>
+    public event Action<IReadOnlyList<ushort>>? ShopOpened;
 
     /// <summary>Current bag contents: slot → itemId (built from the login item list
     /// and live cell/equip changes).</summary>
@@ -421,6 +441,33 @@ public sealed class ZoneView : IDisposable
             LastMenuAtUtc = DateTime.UtcNow;
             ServerMenuOpen = true;
             _log?.Invoke($"[ZoneView] server menu opened (0x3C01, {pkt.Payload.Length}b) — awaiting select");
+        }
+        else if (Array.IndexOf(OpShopOpen, op) >= 0)
+        {
+            // [itemnum u16][npc u16][MENUITEM × itemnum]. Read each MENUITEM's leading u16
+            // as the item id; stride = remaining bytes / itemnum (we have no MENUITEM
+            // struct, so derive it — robust to whatever the element size is).
+            var p = pkt.Payload.Span;
+            if (p.Length >= 4)
+            {
+                int itemnum = p[0] | (p[1] << 8);
+                ShopNpc = (ushort)(p[2] | (p[3] << 8));
+                var rest = p.Length - 4;
+                var items = new List<ushort>(itemnum);
+                if (itemnum > 0 && rest > 0)
+                {
+                    var stride = rest / itemnum;
+                    for (int i = 0; i < itemnum; i++)
+                    {
+                        var off = 4 + i * stride;
+                        if (off + 2 > p.Length) break;
+                        items.Add((ushort)(p[off] | (p[off + 1] << 8)));
+                    }
+                    _log?.Invoke($"[ZoneView] shop opened (0x{op:X4}) npc={ShopNpc} items={itemnum} stride={stride}");
+                }
+                _shopItems = items.ToArray();
+                ShopOpened?.Invoke(_shopItems);
+            }
         }
         else if (op == OpSomeoneMoveWalk || op == OpSomeoneMoveRun)
         {

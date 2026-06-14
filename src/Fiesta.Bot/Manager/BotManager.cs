@@ -861,6 +861,28 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, "soul-stone HP recharge (0x5007)",
             s => s.SendAsync(new FiestaPacket(OpSoulStoneHpUse, ReadOnlyMemory<byte>.Empty), ct));
 
+    // Shop / buy. Clicking a merchant (target → NPCClick) makes the server send the
+    // SHOPOPEN list (decoded by ZoneView). NC_ITEM_BUY_REQ {itemid, lot} then buys an
+    // item the open shop sells; the server deducts money (cheat it with GM &getmoney).
+    private static readonly ushort OpItemBuy = PacketRegistry.GetOpcode<PROTO_NC_ITEM_BUY_REQ>();
+
+    /// <summary>Open a merchant's shop (target + NPC-click) so the server sends its sell
+    /// list — read it from <see cref="ZoneView.ShopItems"/> shortly after.</summary>
+    public Task<ActionResult> OpenShopAsync(string id, ushort npcHandle, CancellationToken ct = default)
+        => ActAsync(id, $"open shop npc h={npcHandle}", async s =>
+        {
+            var hb = new byte[] { (byte)npcHandle, (byte)(npcHandle >> 8) };
+            await s.SendAsync(new FiestaPacket(OpBatTarget, hb), ct);
+            await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
+        });
+
+    /// <summary>Buy <paramref name="lot"/> of item <paramref name="itemId"/> from the
+    /// currently-open shop (NC_ITEM_BUY_REQ). The shop must be open (call
+    /// <see cref="OpenShopAsync"/> first) and must sell the item; needs enough money.</summary>
+    public Task<ActionResult> BuyAsync(string id, ushort itemId, uint lot, CancellationToken ct = default)
+        => ActAsync(id, $"buy item {itemId} x{lot}",
+            s => s.SendAsync(new PROTO_NC_ITEM_BUY_REQ { itemid = itemId, lot = lot }, ct));
+
     /// <summary>Use an inventory item by slot (invenType: 0 = normal bag).</summary>
     public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)
         => ActAsync(id, $"use item slot={slot} type={invenType}",
@@ -1031,6 +1053,15 @@ public sealed class BotManager : IAsyncDisposable
         {
             name = pending;
             Catalog.Learn(h.MapId, pending);
+        }
+        // Resolve the real short-name from the client MapInfo table (the wire only carries
+        // the map id; the client looks the name up the same way). Fixes "map#<id>" labels
+        // for transitions with no gate-LinkMap (town portals) — and lets navigation load
+        // the right <name>.shbd grid.
+        if (name is null && ClientData?.MapName(h.MapId) is { } clientName)
+        {
+            name = clientName;
+            Catalog.Learn(h.MapId, clientName);
         }
         handle.SetCurrentMap(name ?? $"map#{h.MapId}");
         log($"[nav] now on {name} (mapId={h.MapId}) at ({h.X},{h.Y})" +

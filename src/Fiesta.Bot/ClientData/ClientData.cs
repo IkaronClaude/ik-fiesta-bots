@@ -78,6 +78,28 @@ public sealed class ClientData
             IsNpc: GetInt(row, "IsNPC") != 0);
     }
 
+    /// <summary>Resolve a map id to its short name (e.g. 17 → "Urg") from the client
+    /// <c>MapInfo</c> table. A transition packet carries only the map <b>id</b>; the
+    /// client (and so the bot) resolves the name here — never from the wire. Null if the
+    /// table/id is missing.</summary>
+    public string? MapName(int mapId)
+    {
+        var t = Table("MapInfo");
+        var row = t?.FindByLong("ID", mapId) ?? t?.FindByLong("id", mapId);
+        if (row is null) return null;
+        var n = GetStr(row, "MapName");
+        return string.IsNullOrEmpty(n) ? null : n;
+    }
+
+    /// <summary>The display name of an item id (e.g. for a shop list) from client
+    /// <c>ItemInfo</c>. Empty if missing.</summary>
+    public string ItemName(int itemId)
+    {
+        var t = Table("ItemInfo");
+        var row = t?.FindByLong("ID", itemId) ?? t?.FindByLong("id", itemId);
+        return row is null ? "" : GetStr(row, "Name");
+    }
+
     private static int GetInt(IReadOnlyDictionary<string, object?> row, string col)
         => row.TryGetValue(col, out var v) && ShnTable.TryToLong(v, out var l) ? (int)l : 0;
 

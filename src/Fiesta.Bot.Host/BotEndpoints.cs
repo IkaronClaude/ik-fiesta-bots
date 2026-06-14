@@ -42,6 +42,9 @@ public static class BotEndpoints
             group.MapPost("/{id}/soulstone-sp", (string id) => Unavailable()).WithSummary("Bot soul-stone SP (unavailable)");
             group.MapPost("/{id}/soulstone-hp", (string id) => Unavailable()).WithSummary("Bot soul-stone HP (unavailable)");
             group.MapPost("/{id}/use-item", (string id) => Unavailable()).WithSummary("Bot use-item (unavailable)");
+            group.MapPost("/{id}/shop-open", (string id) => Unavailable()).WithSummary("Bot open-shop (unavailable)");
+            group.MapGet("/{id}/shop", (string id) => Unavailable()).WithSummary("Bot shop list (unavailable)");
+            group.MapPost("/{id}/buy", (string id) => Unavailable()).WithSummary("Bot buy (unavailable)");
             group.MapPost("/{id}/whisper", (string id) => Unavailable()).WithSummary("Bot whisper (unavailable)");
             group.MapGet("/{id}/inventory", (string id) => Unavailable()).WithSummary("Bot inventory (unavailable)");
             group.MapGet("/{id}/equipment", (string id) => Unavailable()).WithSummary("Bot equipment (unavailable)");
@@ -185,6 +188,34 @@ public static class BotEndpoints
             return ToResult(await manager.UseItemAsync(id, slot, req.InvenType ?? 9), id, new { id, usedSlot = slot });
         })
         .WithSummary("Use an inventory item by slot");
+
+        group.MapPost("/{id}/shop-open", async (string id, ShopOpenRequest req) =>
+        {
+            if (req.NpcHandle is not { } h)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["npcHandle"] = ["npcHandle is required"] });
+            return ToResult(await manager.OpenShopAsync(id, h), id, new { id, openedShop = h });
+        })
+        .WithSummary("Open a merchant's shop (target+click) so the server sends its sell list — then GET /shop");
+
+        group.MapGet("/{id}/shop", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var view = bot.ZoneView;
+            if (view is null) return Results.Conflict(new { error = "bot is not in zone yet" });
+            var cd = manager.ClientData;
+            return Results.Ok(new { id, npc = view.ShopNpc, count = view.ShopItems.Count,
+                items = view.ShopItems.Select(it => new { itemId = it, name = cd?.ItemName(it) }) });
+        })
+        .WithSummary("List what the currently-open shop sells (itemId + name from client ItemInfo)");
+
+        group.MapPost("/{id}/buy", async (string id, BuyRequest req) =>
+        {
+            if (req.ItemId is not { } itemId)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["itemId"] = ["itemId is required"] });
+            return ToResult(await manager.BuyAsync(id, itemId, req.Lot ?? 1), id, new { id, bought = itemId, lot = req.Lot ?? 1 });
+        })
+        .WithSummary("Buy an item by id from the open shop (NC_ITEM_BUY_REQ; needs money — cheat with /gm getmoney)");
 
         group.MapPost("/{id}/whisper", async (string id, WhisperRequest req) =>
         {
@@ -540,6 +571,19 @@ public sealed record UseItemRequest
 public sealed record EquipRequest
 {
     public byte? Slot { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/shop-open</c> — the merchant NPC handle.</summary>
+public sealed record ShopOpenRequest
+{
+    public ushort? NpcHandle { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/buy</c>. <c>Lot</c> defaults to 1.</summary>
+public sealed record BuyRequest
+{
+    public ushort? ItemId { get; init; }
+    public uint? Lot { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/whisper</c>.</summary>
