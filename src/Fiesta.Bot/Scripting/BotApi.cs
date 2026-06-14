@@ -61,6 +61,9 @@ public sealed class BotApi
     public bool equip(int slot) => Ok(Wait(_mgr.EquipAsync(Id, (byte)slot)));
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
+    public bool dead() => View?.Dead ?? false;
+    public bool inCombat() => View?.InCombat ?? false;
+    public bool respawn() => Ok(Wait(_mgr.RespawnAsync(Id)));
     public bool buyHpStone(int number = 1) => Ok(Wait(_mgr.BuyHpStoneAsync(Id, (ushort)number)));
     public bool buySpStone(int number = 1) => Ok(Wait(_mgr.BuySpStoneAsync(Id, (ushort)number)));
     public bool openShop(int npcHandle, int menuOption = 1) => Ok(Wait(_mgr.OpenShopAsync(Id, (ushort)npcHandle, (byte)menuOption)));

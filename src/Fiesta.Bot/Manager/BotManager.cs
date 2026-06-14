@@ -926,6 +926,19 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, $"buy SP soul-stone x{number}",
             s => s.SendAsync(new PROTO_NC_SOULSTONE_SP_BUY_REQ { number = number }, ct));
 
+    // NC_CHAR_REVIVE_REQ (Char cmd 78 = 0x104E): "move to respawn point" -> nearest town,
+    // answered after death (DEADMENU 0x104D). The server then map-transitions to town.
+    private const ushort OpCharReviveReq = 0x104E;
+
+    /// <summary>Respawn after death — "move to respawn point" (NC_CHAR_REVIVE_REQ), which
+    /// returns the char to the nearest town (a map transition the nav layer handles). Only
+    /// meaningful while <see cref="ZoneView.Dead"/>. NOTE: a nearby cleric can revive in
+    /// place (REVIVESAME) — a behaviour may prefer to wait for that before respawning to a
+    /// possibly-far town; the server auto-respawns after ~2 min dead regardless.</summary>
+    public Task<ActionResult> RespawnAsync(string id, CancellationToken ct = default)
+        => ActAsync(id, "respawn (move to respawn point -> nearest town)",
+            s => s.SendAsync(new FiestaPacket(OpCharReviveReq, ReadOnlyMemory<byte>.Empty), ct));
+
     /// <summary>Buy <paramref name="lot"/> of item <paramref name="itemId"/> from the
     /// currently-open shop (NC_ITEM_BUY_REQ). The shop must be open (call
     /// <see cref="OpenShopAsync"/> first) and must sell the item; needs enough money.</summary>

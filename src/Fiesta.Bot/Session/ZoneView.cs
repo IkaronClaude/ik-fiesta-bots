@@ -122,6 +122,13 @@ public sealed class ZoneView : IDisposable
     // so a missing ack = the buy didn't take. (USE draws from this reserve: 0x5007/0x5009.)
     private const ushort OpSoulStoneHpBuyAck = 0x5003;
     private const ushort OpSoulStoneSpBuyAck = 0x5004;
+    // Death/revive (Char dept): DEADMENU 0x104D = server opens the death menu (you died);
+    // REVIVE_REQ 0x104E (C->S) = "move to respawn point" (-> nearest town); REVIVESAME 0x104F
+    // = revived in place (e.g. a cleric's resurrection — no town trip). Auto-respawn caps at
+    // ~2 min dead. Track Dead so behaviours can wait for an in-place revive vs respawn.
+    private const ushort OpCharDeadMenu = 0x104D;
+    private const ushort OpCharReviveSame = 0x104F;
+    private const ushort OpCharReviveOther = 0x1050;
     // NC_BAT_SKILLBASH_CAST_FAIL_ACK (Bat cmd 52 = 0x2434): the server rejected a
     // skill cast. Payload is a 2-byte LE u16 reason code. Known codes (empirically
     // captured):
@@ -282,6 +289,15 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>When the bot was last hit (UtcMinValue if never).</summary>
     public DateTime LastHitAtUtc { get; private set; } = DateTime.MinValue;
+
+    /// <summary>True while the bot is dead (DEADMENU opened, not yet revived). Behaviours
+    /// can wait for an in-place revive (cleric) before respawning to town, or respawn via
+    /// <see cref="Manager.BotManager.RespawnAsync"/>; the server auto-respawns after ~2 min.</summary>
+    public bool Dead { get; private set; }
+
+    /// <summary>When the bot died (DEADMENU), for the ~2-min auto-respawn timeout / "wait
+    /// for a cleric" window. UtcMinValue if alive.</summary>
+    public DateTime DeadAtUtc { get; private set; } = DateTime.MinValue;
 
     private void NoteHit(HitInfo h)
     {
@@ -505,6 +521,16 @@ public sealed class ZoneView : IDisposable
             LastMenuAtUtc = DateTime.UtcNow;
             ServerMenuOpen = true;
             _log?.Invoke($"[ZoneView] server menu opened (0x3C01, {pkt.Payload.Length}b) — awaiting select");
+        }
+        else if (op == OpCharDeadMenu)
+        {
+            Dead = true; DeadAtUtc = DateTime.UtcNow;
+            _log?.Invoke("[ZoneView] DIED (death menu) — revive in place or respawn to town");
+        }
+        else if (op == OpCharReviveSame || op == OpCharReviveOther)
+        {
+            if (Dead) _log?.Invoke("[ZoneView] revived in place");
+            Dead = false; DeadAtUtc = DateTime.MinValue;
         }
         else if (op == OpActNpcMenuOpen)
         {
