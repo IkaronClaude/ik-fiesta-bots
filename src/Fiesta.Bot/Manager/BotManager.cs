@@ -899,6 +899,33 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, $"sell slot {slot} x{lot}",
             s => s.SendAsync(new PROTO_NC_ITEM_SELL_REQ { slot = slot, lot = lot }, ct));
 
+    /// <summary>Enchant (upgrade) the gear in equip slot <paramref name="equip"/> using the
+    /// enhancement stones at the given inventory slots (NC_ITEM_UPGRADE_REQ, GearEnchantment.pcapng).
+    /// <paramref name="raw"/> = the primary stone (Elrue/Lixir/Xir by + range); the optional
+    /// <paramref name="rawLeft"/>/<paramref name="rawMiddle"/>/<paramref name="rawRight"/> are
+    /// the safety/bonus stones (red = prevent destroy, blue = prevent -1, gold = better chance);
+    /// 0xFF = none. Outcomes: success (+N), no-change, downgrade, or destroy — read the result
+    /// off the inventory / item-update broadcasts.</summary>
+    public Task<ActionResult> EnchantAsync(string id, byte equip, byte raw,
+        byte rawLeft = 0xFF, byte rawMiddle = 0xFF, byte rawRight = 0xFF, uint money = 0, CancellationToken ct = default)
+        => ActAsync(id, $"enchant equip {equip} (raw={raw} l={rawLeft} m={rawMiddle} r={rawRight})",
+            s => s.SendAsync(new PROTO_NC_ITEM_UPGRADE_REQ
+            {
+                equip = equip, raw = raw, raw_left = rawLeft, raw_middle = rawMiddle, raw_right = rawRight, gift_money = money
+            }, ct));
+
+    /// <summary>Buy <paramref name="number"/> HP soul-stone charges (NC_SOULSTONE_HP_BUY_REQ
+    /// 0x5001) into the reserve that <see cref="UseSoulStoneHpAsync"/> draws from. Bought at a
+    /// healer/soul-stone vendor; needs money. SP analogue: <see cref="BuySpStoneAsync"/>.</summary>
+    public Task<ActionResult> BuyHpStoneAsync(string id, ushort number, CancellationToken ct = default)
+        => ActAsync(id, $"buy HP soul-stone x{number}",
+            s => s.SendAsync(new PROTO_NC_SOULSTONE_HP_BUY_REQ { number = number }, ct));
+
+    /// <summary>Buy <paramref name="number"/> SP soul-stone charges (NC_SOULSTONE_SP_BUY_REQ 0x5002).</summary>
+    public Task<ActionResult> BuySpStoneAsync(string id, ushort number, CancellationToken ct = default)
+        => ActAsync(id, $"buy SP soul-stone x{number}",
+            s => s.SendAsync(new PROTO_NC_SOULSTONE_SP_BUY_REQ { number = number }, ct));
+
     /// <summary>Buy <paramref name="lot"/> of item <paramref name="itemId"/> from the
     /// currently-open shop (NC_ITEM_BUY_REQ). The shop must be open (call
     /// <see cref="OpenShopAsync"/> first) and must sell the item; needs enough money.</summary>

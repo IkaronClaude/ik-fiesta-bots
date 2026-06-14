@@ -116,6 +116,12 @@ public sealed class ZoneView : IDisposable
     // before it sends the shop list. Verified in PurchaseSell.pcapng: NPCCLICK ->
     // NPCMENUOPEN_REQ -> NPCMENUOPEN_ACK{1} -> SHOPOPEN.
     private const ushort OpActNpcMenuOpen = 0x201C;
+    // Soul-stone reserve BUY ack (HP 0x5003 / SP 0x5004): the server confirms a charge
+    // purchase and reports the new reserve total ({totalnumber u16}). This is BOTH the
+    // buy-success packet AND the stone-count source — a buy only succeeds near the healer,
+    // so a missing ack = the buy didn't take. (USE draws from this reserve: 0x5007/0x5009.)
+    private const ushort OpSoulStoneHpBuyAck = 0x5003;
+    private const ushort OpSoulStoneSpBuyAck = 0x5004;
     // NC_BAT_SKILLBASH_CAST_FAIL_ACK (Bat cmd 52 = 0x2434): the server rejected a
     // skill cast. Payload is a 2-byte LE u16 reason code. Known codes (empirically
     // captured):
@@ -229,6 +235,23 @@ public sealed class ZoneView : IDisposable
     {
         if (maxHp is { } h && h > 0) MaxHp = h;
         if (maxSp is { } s && s > 0) MaxSp = s;
+    }
+
+    /// <summary>Max soul-stone reserve charges (HP/SP), from the [1802] param block
+    /// (MaxHPStone/MaxSPStone). 0 until seeded.</summary>
+    public uint MaxHpStones { get; private set; }
+    public uint MaxSpStones { get; private set; }
+
+    /// <summary>Current soul-stone reserve charges (HP/SP), as last reported by a BUY_ACK
+    /// (0x5003/0x5004, <c>totalnumber</c>). Null until a buy ack is seen (the initial count
+    /// from the login char-info isn't decoded yet — TODO). The restock SM gates on this.</summary>
+    public int? HpStones { get; private set; }
+    public int? SpStones { get; private set; }
+
+    public void SeedMaxStones(uint? maxHpStones, uint? maxSpStones)
+    {
+        if (maxHpStones is { } h && h > 0) MaxHpStones = h;
+        if (maxSpStones is { } s && s > 0) MaxSpStones = s;
     }
 
     /// <summary>Raised when the bot's own HP changes (HPCHANGE 0x240E), with the new
@@ -459,6 +482,18 @@ public sealed class ZoneView : IDisposable
         {
             NpcMenuOpen = true;
             _log?.Invoke($"[ZoneView] NPC menu opened (0x201C) — awaiting NPCMENUOPEN_ACK");
+        }
+        else if (op == OpSoulStoneHpBuyAck || op == OpSoulStoneSpBuyAck)
+        {
+            // BUY_ACK {totalnumber u16} = new reserve count + proof the buy took (only
+            // succeeds near a healer). Missing ack after a buy = it didn't work.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2)
+            {
+                int total = p[0] | (p[1] << 8);
+                if (op == OpSoulStoneHpBuyAck) HpStones = total; else SpStones = total;
+                _log?.Invoke($"[ZoneView] soul-stone {(op == OpSoulStoneHpBuyAck ? "HP" : "SP")} BUY ok — reserve now {total}");
+            }
         }
         else if (Array.IndexOf(OpShopOpen, op) >= 0)
         {

@@ -61,6 +61,13 @@ public sealed class BotApi
     public bool equip(int slot) => Ok(Wait(_mgr.EquipAsync(Id, (byte)slot)));
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
+    public bool buyHpStone(int number = 1) => Ok(Wait(_mgr.BuyHpStoneAsync(Id, (ushort)number)));
+    public bool buySpStone(int number = 1) => Ok(Wait(_mgr.BuySpStoneAsync(Id, (ushort)number)));
+    public bool openShop(int npcHandle, int menuOption = 1) => Ok(Wait(_mgr.OpenShopAsync(Id, (ushort)npcHandle, (byte)menuOption)));
+    public bool buy(int itemId, int lot = 1) => Ok(Wait(_mgr.BuyAsync(Id, (ushort)itemId, (uint)lot)));
+    public bool sell(int slot, int lot = 1) => Ok(Wait(_mgr.SellAsync(Id, (byte)slot, (uint)lot)));
+    public bool enchant(int equip, int raw, int rawLeft = 255, int rawMiddle = 255, int rawRight = 255, int money = 0)
+        => Ok(Wait(_mgr.EnchantAsync(Id, (byte)equip, (byte)raw, (byte)rawLeft, (byte)rawMiddle, (byte)rawRight, (uint)money)));
     public bool target(int handle) => Ok(Wait(_mgr.TargetAsync(Id, (ushort)handle)));
     public bool untarget() => Ok(Wait(_mgr.UntargetAsync(Id)));
     public bool walk(double fx, double fy, double tx, double ty) => Ok(Wait(_mgr.WalkAsync(Id, (uint)fx, (uint)fy, (uint)tx, (uint)ty)));

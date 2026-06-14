@@ -46,6 +46,9 @@ public static class BotEndpoints
             group.MapGet("/{id}/shop", (string id) => Unavailable()).WithSummary("Bot shop list (unavailable)");
             group.MapPost("/{id}/buy", (string id) => Unavailable()).WithSummary("Bot buy (unavailable)");
             group.MapPost("/{id}/sell", (string id) => Unavailable()).WithSummary("Bot sell (unavailable)");
+            group.MapPost("/{id}/enchant", (string id) => Unavailable()).WithSummary("Bot enchant (unavailable)");
+            group.MapPost("/{id}/soulstone-hp-buy", (string id) => Unavailable()).WithSummary("Bot buy HP stone (unavailable)");
+            group.MapPost("/{id}/soulstone-sp-buy", (string id) => Unavailable()).WithSummary("Bot buy SP stone (unavailable)");
             group.MapPost("/{id}/whisper", (string id) => Unavailable()).WithSummary("Bot whisper (unavailable)");
             group.MapGet("/{id}/inventory", (string id) => Unavailable()).WithSummary("Bot inventory (unavailable)");
             group.MapGet("/{id}/equipment", (string id) => Unavailable()).WithSummary("Bot equipment (unavailable)");
@@ -225,6 +228,24 @@ public static class BotEndpoints
             return ToResult(await manager.SellAsync(id, slot, req.Lot ?? 1), id, new { id, soldSlot = slot, lot = req.Lot ?? 1 });
         })
         .WithSummary("Sell a bag item by slot to the open shop (NC_ITEM_SELL_REQ)");
+
+        group.MapPost("/{id}/enchant", async (string id, EnchantRequest req) =>
+        {
+            if (req.Equip is not { } equip || req.Raw is not { } raw)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["req"] = ["equip (slot) and raw (stone slot) are required"] });
+            return ToResult(await manager.EnchantAsync(id, equip, raw,
+                req.RawLeft ?? 0xFF, req.RawMiddle ?? 0xFF, req.RawRight ?? 0xFF, req.Money ?? 0),
+                id, new { id, enchant = equip, raw });
+        })
+        .WithSummary("Enchant gear (NC_ITEM_UPGRADE_REQ): equip slot + stone inventory slots (raw=primary Elrue/Lixir/Xir; left/middle/right=safety/bonus, 0xFF=none)");
+
+        group.MapPost("/{id}/soulstone-hp-buy", async (string id, StoneBuyRequest req) =>
+            ToResult(await manager.BuyHpStoneAsync(id, req.Number ?? 1), id, new { id, boughtHpStones = req.Number ?? 1 }))
+        .WithSummary("Buy HP soul-stone charges into the reserve (NC_SOULSTONE_HP_BUY_REQ; needs money)");
+
+        group.MapPost("/{id}/soulstone-sp-buy", async (string id, StoneBuyRequest req) =>
+            ToResult(await manager.BuySpStoneAsync(id, req.Number ?? 1), id, new { id, boughtSpStones = req.Number ?? 1 }))
+        .WithSummary("Buy SP soul-stone charges into the reserve (NC_SOULSTONE_SP_BUY_REQ; needs money)");
 
         group.MapPost("/{id}/whisper", async (string id, WhisperRequest req) =>
         {
@@ -602,6 +623,25 @@ public sealed record SellRequest
 {
     public byte? Slot { get; init; }
     public uint? Lot { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/enchant</c>. <c>Equip</c> = gear's equip slot,
+/// <c>Raw</c> = primary enhance-stone inventory slot; <c>RawLeft/Middle/Right</c> = optional
+/// safety/bonus stones (omit for 0xFF = none).</summary>
+public sealed record EnchantRequest
+{
+    public byte? Equip { get; init; }
+    public byte? Raw { get; init; }
+    public byte? RawLeft { get; init; }
+    public byte? RawMiddle { get; init; }
+    public byte? RawRight { get; init; }
+    public uint? Money { get; init; }
+}
+
+/// <summary>Body for the soul-stone buy endpoints. <c>Number</c> of charges (default 1).</summary>
+public sealed record StoneBuyRequest
+{
+    public ushort? Number { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/whisper</c>.</summary>
