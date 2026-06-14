@@ -1409,6 +1409,30 @@ already wired) each to learn it; a learn confirms with `SkillLearnsucCmd`. (Per 
 result rule, also track the learn success/fail ack.)
 **Prereqs:** char-money tracking, shop sell-list resolution, level-up decode, merchant-by-name.
 
+### Item pickup + gathering (packets identified; byte-level TBC)
+- **Pickup = `NC_ITEM_PICK_REQ`** (→ `ITEM_PICK_ACK`; others' = `ITEM_SOMEONEPICK_CMD`). **This is
+  the SAME packet for herb/gather drops AND mob loot** — wire it once, both reuse it. Plus
+  `NC_CHAR_CLIENT_AUTO_PICK_REQ` (auto-grab nearby drops) and `NC_ITEMDB_PICKMONEY_REQ` (gold).
+  Need to track dropped items on the ground (a drop broadcast) to know what/where to pick.
+- **Gathering = `NC_ACT_GATHERSTART_REQ`** → `GATHERSTART_ACK` → a **timing minigame** ("press a
+  bar at the right time", from AggroAndHerbs chat) → `GATHERCOMPLETE_ACK`, which drops an item you
+  then pick up. The minigame input packet + the ground-drop broadcast still need a clean
+  byte-level decode (they didn't surface in the AggroAndHerbs grep — likely a conversation whose
+  handshake wasn't captured; re-decode per-port or grab a focused gather capture).
+
+### Quests — NEXT after auto-learn-skills (DESIGNED — not impl)
+Quest accept/turn-in (from Full.pcapng facts): remote = `Quest StartReq` (0x4414) after a
+`ReadReq` (0x4416) browse; local at-NPC = `Quest ScriptCmdAck` (0x4402) dialogue. Need: read the
+quest list, accept, track objectives (kill N / gather / talk), turn in for XP/rewards. Decode the
+full accept→progress→complete chain from a quest capture (chat-annotated).
+
+### 🎯 MILESTONE: autonomous to level 20
+Once these compose — **Lua/state-machines (done)** + **quests** + **buy items/scrolls** +
+**enchant** + **pickup (gather + mob loot)** — a bot can **level itself to 20 on its own** in the
+RouN tier: take quests, grind/gather to complete them, loot drops, buy + enchant gear, learn
+skills on level-up, restock at the healer, flee/respawn on danger. This is the first true
+end-to-end autonomy goal; everything above is a building block toward it.
+
 ### Craft Elrue (decoded, NOT wired — Production.pcapng)
 Production = NPC + skill: target+click production NPC → menu-ack → `NC_SKILL_PRODUCTFIELD_REQ`
 (0x4822, {2 B select recipe/field}) → `NC_ACT_PRODUCE_CAST_REQ` (0x2035, {2 B}, repeated once
