@@ -50,6 +50,14 @@ public sealed class BotHandle
     public string? CharName => _charName;
     public string? Error => _error;
 
+    private volatile uint _level;
+
+    /// <summary>The character's level, as the bot received it over the wire in the WM
+    /// avatar list (<c>LOGINWORLD_ACK</c>) at char-select — the authoritative source, not
+    /// inferred from HP. 0 until selected.</summary>
+    public uint Level => _level;
+    internal void SetLevel(ushort level) => _level = level;
+
     /// <summary>The in-zone session once entered (null until <see cref="BotPhase.InZone"/>).
     /// The WM session is held open alongside it but isn't the status surface.</summary>
     public BotSession? ZoneSession { get; internal set; }
@@ -208,6 +216,7 @@ public sealed class BotHandle
             Host: Options.Host,
             Username: Options.Credentials.Username,
             Character: CharName,
+            Level: _level == 0 ? null : _level,
             Connected: state?.Connected ?? false,
             InboundFrames: state?.InboundCount ?? 0,
             Heartbeats: state?.HeartbeatCount ?? 0,
@@ -237,6 +246,7 @@ public sealed record BotSnapshot(
     string Host,
     string Username,
     string? Character,
+    uint? Level,
     bool Connected,
     long InboundFrames,
     long Heartbeats,

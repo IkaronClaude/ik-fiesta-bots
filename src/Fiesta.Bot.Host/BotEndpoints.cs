@@ -220,12 +220,18 @@ public static class BotEndpoints
             if (bot is null) return Results.NotFound();
             var npcs = bot.ZoneView?.NearbyNpcs;
             if (npcs is null) return Results.Conflict(new { error = "bot is not in zone yet" });
+            // Resolve each numeric mobId to its client-side name/level (MobInfo) so the
+            // list is human-readable (e.g. "Teleport Gate") — null if no client data.
+            var cd = manager.ClientData;
             return Results.Ok(new { id, count = npcs.Count, npcs = npcs
                 .OrderBy(n => n.MobId)
-                .Select(n => new { handle = n.Handle, mobId = n.MobId, mode = n.Mode, x = n.X, y = n.Y,
-                    isGate = n.IsGate, linkMap = n.LinkMap }) });
+                .Select(n => {
+                    var m = cd?.Mob(n.MobId);
+                    return new { handle = n.Handle, mobId = n.MobId, name = m?.Name, level = m?.Level,
+                        isNpc = m?.IsNpc, mode = n.Mode, x = n.X, y = n.Y, isGate = n.IsGate, linkMap = n.LinkMap };
+                }) });
         })
-        .WithSummary("List NPCs/mobs the bot can see (handle, mobId, mode, coord, gate→destMap) from zone broadcasts");
+        .WithSummary("List NPCs/mobs the bot can see (handle, mobId, name, level, coord, gate→destMap) from zone broadcasts + client MobInfo");
 
         group.MapGet("/{id}/players", (string id) =>
         {

@@ -57,6 +57,7 @@ public static class ScriptEndpoints
                 detail: unavailableReason ?? "The bot manager is not configured.",
                 statusCode: StatusCodes.Status503ServiceUnavailable);
             bots.MapPost("/{id}/script", (string id) => Unavailable()).WithSummary("Apply a script (unavailable)");
+            bots.MapPost("/{id}/statemachine", (string id) => Unavailable()).WithSummary("Apply a state machine (unavailable)");
             bots.MapPost("/{id}/script/stop", (string id) => Unavailable()).WithSummary("Stop a script (unavailable)");
             bots.MapGet("/{id}/script", (string id) => Unavailable()).WithSummary("Script status (unavailable)");
             bots.MapGet("/{id}/logstream", (string id) => Unavailable()).WithSummary("Live log stream (unavailable)");
@@ -66,32 +67,26 @@ public static class ScriptEndpoints
         bots.MapPost("/{id}/script", (string id, ApplyScriptRequest req) =>
         {
             if (manager.Get(id) is null) return Results.NotFound();
-
-            // Resolve the Lua source: a stored library `name`, or inline `source`.
-            string name, source;
-            if (!string.IsNullOrWhiteSpace(req.Name))
-            {
-                var stored = store.Get(req.Name!);
-                if (stored is null) return Results.NotFound(new { error = $"no stored script '{req.Name}'" });
-                (name, source) = (stored.Name, stored.Source);
-            }
-            else if (!string.IsNullOrEmpty(req.Source))
-            {
-                if (ScriptStore.Compile(req.Source!) is { } err)
-                    return Results.ValidationProblem(new Dictionary<string, string[]> { ["source"] = [err] });
-                (name, source) = (req.NameAs ?? "inline", req.Source!);
-            }
-            else
-            {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["name/source"] = ["give a stored 'name' or inline 'source'"] });
-            }
-
-            var runner = manager.ApplyScript(id, name, source, req.TickMs ?? 250, req.Trace ?? false);
+            var (name, source, err) = Resolve(store, req);
+            if (err is not null) return err;
+            var runner = manager.ApplyScript(id, name!, source!, req.TickMs ?? 250, req.Trace ?? false);
             return runner is null
                 ? Results.NotFound()
                 : Results.Ok(new { id, applied = name, trace = req.Trace ?? false, status = runner.Status() });
         })
         .WithSummary("Apply a behaviour script to a bot and loop it (by stored name or inline source; replaces any running script; trace=true logs every bot.* call)");
+
+        bots.MapPost("/{id}/statemachine", (string id, ApplyScriptRequest req) =>
+        {
+            if (manager.Get(id) is null) return Results.NotFound();
+            var (name, source, err) = Resolve(store, req);
+            if (err is not null) return err;
+            var runner = manager.ApplyScript(id, name!, source!, req.TickMs ?? 250, req.Trace ?? false);
+            return runner is null
+                ? Results.NotFound()
+                : Results.Ok(new { id, stateMachine = name, status = runner.Status() });
+        })
+        .WithSummary("Apply a state-machine behaviour to a bot (a script that calls statemachine(states, initial); same runtime as /script, with a current-state in the status)");
 
         bots.MapPost("/{id}/script/stop", (string id) =>
         {
@@ -142,6 +137,29 @@ public static class ScriptEndpoints
             finally { bot.LogLine -= OnLine; }
         })
         .WithSummary("Live-tail a bot's log as NDJSON (script + engine lines; ?tail=N backfills the last N). curl -N to watch Lua run.");
+    }
+
+    /// <summary>Resolve an apply request to (name, source): a stored library <c>Name</c>,
+    /// or inline <c>Source</c> (compile-checked, labelled by <c>NameAs</c>). Returns an
+    /// <see cref="IResult"/> error to return directly when neither is valid; otherwise the
+    /// error is null and name/source are set.</summary>
+    private static (string? Name, string? Source, IResult? Error) Resolve(ScriptStore store, ApplyScriptRequest req)
+    {
+        if (!string.IsNullOrWhiteSpace(req.Name))
+        {
+            var stored = store.Get(req.Name!);
+            return stored is null
+                ? (null, null, Results.NotFound(new { error = $"no stored script '{req.Name}'" }))
+                : (stored.Name, stored.Source, null);
+        }
+        if (!string.IsNullOrEmpty(req.Source))
+        {
+            return ScriptStore.Compile(req.Source!) is { } err
+                ? (null, null, Results.ValidationProblem(new Dictionary<string, string[]> { ["source"] = [err] }))
+                : (req.NameAs ?? "inline", req.Source, null);
+        }
+        return (null, null, Results.ValidationProblem(
+            new Dictionary<string, string[]> { ["name/source"] = ["give a stored 'name' or inline 'source'"] }));
     }
 }
 

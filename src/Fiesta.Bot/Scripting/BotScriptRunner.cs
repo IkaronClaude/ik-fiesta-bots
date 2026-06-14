@@ -6,10 +6,12 @@ using MoonSharp.Interpreter;
 
 namespace Fiesta.Bot.Scripting;
 
-/// <summary>Debug view of a running script, returned by the status endpoint.</summary>
+/// <summary>Debug view of a running script, returned by the status endpoint.
+/// <see cref="SmState"/> is the current state-machine state (null for a plain script
+/// that doesn't call <c>statemachine(...)</c>).</summary>
 public sealed record ScriptStatus(
     string Name, string State, long Ticks, long EventsHandled, string? LastError,
-    double UptimeSeconds, IReadOnlyList<string> Globals);
+    double UptimeSeconds, IReadOnlyList<string> Globals, string? SmState);
 
 /// <summary>
 /// Runs ONE Lua behaviour script for ONE bot on a dedicated thread. The thread owns
@@ -50,6 +52,7 @@ public sealed class BotScriptRunner : IDisposable
     private long _eventsHandled;
     private volatile string _state = "starting";
     private volatile string? _lastError;
+    private volatile string? _smState; // current state-machine state (null for a plain script)
     private int _disposed;
 
     internal BotScriptRunner(BotHandle handle, BotApi api, string name, string source,
@@ -88,7 +91,7 @@ public sealed class BotScriptRunner : IDisposable
         catch { globals = []; }
         return new ScriptStatus(
             _name, _state, Interlocked.Read(ref _ticks), Interlocked.Read(ref _eventsHandled),
-            _lastError, Math.Round((DateTime.UtcNow - _startedUtc).TotalSeconds, 1), globals);
+            _lastError, Math.Round((DateTime.UtcNow - _startedUtc).TotalSeconds, 1), globals, _smState);
     }
 
     private void OnEvent(BotEvent e)
@@ -150,16 +153,80 @@ public sealed class BotScriptRunner : IDisposable
             if (!_typesRegistered) { UserData.RegisterType<BotApi>(); _typesRegistered = true; }
         }
         _api.AttachScript(_lua);
+        _api.StateReporter = s => _smState = s; // state-machine current state -> status
         _lua.Globals["bot"] = _api;
         // Both an explicit log() and Lua's built-in print(...) reach the bot log (and
         // thus the console + the live log-stream). DebugPrint catches print/io.write.
         _lua.Globals["log"] = (Action<string>)(m => _log($"[script:{_name}] {m}"));
         _lua.Options.DebugPrint = m => _log($"[script:{_name}] {m}");
+        // Layer 2: the state-machine harness. Defines a global statemachine(states,
+        // initial) that, when a script calls it, wires the top-level on_*/tick to
+        // dispatch to the current state + run next()-based transitions. A plain script
+        // that never calls it is unaffected (the harness only defines one function).
+        _lua.DoString(StateMachineHarness, codeFriendlyName: "sm-harness");
         // Trace mode: wrap `bot` in a proxy that logs every call before forwarding, so
         // the log stream shows each bot.* invocation (and its args). Opt-in — it's noisy.
         if (_trace) _lua.DoString(TraceShim, codeFriendlyName: "trace-shim");
         _lua.DoString(_source, codeFriendlyName: _name);
     }
+
+    // A behaviour tree / state machine, in pure Lua on the existing runtime. A script
+    // calls statemachine({ stateName = { on_enter, tick, next, on_exit, on_chat, ... }, … },
+    // "initial"); this defines the top-level on_*/tick the runner calls and routes each to
+    // the CURRENT state, switching when a state's next() returns another state's name
+    // (running on_exit/on_enter). "Cross-tree transitions" and per-class trees fall out:
+    // compose several state tables into one and next() may target any state name. The
+    // current state is reported to C# via bot.__state for the debug endpoint.
+    private const string StateMachineHarness = @"
+function statemachine(states, initial)
+  assert(type(states) == 'table', 'statemachine: states must be a table')
+  assert(states[initial] ~= nil, 'statemachine: no initial state ' .. tostring(initial))
+  local current = nil
+
+  local function enter(name)
+    current = name
+    if bot and bot.__state then bot.__state(name) end
+    log('[sm] -> ' .. name)
+    local st = states[name]
+    if st.on_enter then st.on_enter() end
+  end
+
+  local function switch(to)
+    if to == nil or to == current then return end
+    if states[to] == nil then log('[sm] WARN unknown state ' .. tostring(to)); return end
+    local st = states[current]
+    if st and st.on_exit then st.on_exit() end
+    enter(to)
+  end
+
+  local function dispatch(ev, ...)
+    local st = states[current]
+    if st and st[ev] then st[ev](...) end
+  end
+
+  function on_start() enter(initial) end
+  function tick()
+    local st = states[current]
+    if st == nil then return end
+    if st.tick then st.tick() end
+    if st.next then switch(st.next()) end
+  end
+  function on_chat(m) dispatch('on_chat', m) end
+  function on_hit(e) dispatch('on_hit', e) end
+  function on_cast_fail(r) dispatch('on_cast_fail', r) end
+  function on_hp(h, m) dispatch('on_hp', h, m) end
+  function on_sp(s, m) dispatch('on_sp', s, m) end
+  function on_player(p) dispatch('on_player', p) end
+  function on_player_left(h) dispatch('on_player_left', h) end
+  function on_map(m) dispatch('on_map', m) end
+  function on_move_fail(x, y) dispatch('on_move_fail', x, y) end
+  function on_stop()
+    local st = states[current]
+    if st and st.on_exit then st.on_exit() end
+    dispatch('on_stop')
+  end
+end
+";
 
     // Replaces `bot` with a metatable proxy whose __index returns, for each function
     // member, a closure that logs `call bot.<name>(<args>)` then tail-calls the real method

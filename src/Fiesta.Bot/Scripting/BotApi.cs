@@ -35,6 +35,14 @@ public sealed class BotApi
     /// the runner on the script thread before any script code runs.</summary>
     internal void AttachScript(Script lua) => _lua = lua;
 
+    /// <summary>Set by the runner to receive the current state-machine state name as the
+    /// Lua harness transitions, so the runner/debug endpoint can report it.</summary>
+    internal Action<string>? StateReporter;
+
+    /// <summary>Called by the state-machine harness on each transition to report the new
+    /// state to C# (surfaced in the script status). Not normally called by hand.</summary>
+    public void __state(string name) => StateReporter?.Invoke(name);
+
     private string Id => _handle.Id;
     private Session.ZoneView? View => _handle.ZoneView;
     private static bool Ok(BotManager.ActionResult r) => r == BotManager.ActionResult.Sent;

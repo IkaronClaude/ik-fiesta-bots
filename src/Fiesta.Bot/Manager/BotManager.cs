@@ -1073,6 +1073,7 @@ public sealed class BotManager : IAsyncDisposable
                 throw new InvalidOperationException(
                     "account has no character to enter a zone (and no create spec)");
             handle.SetCharName(sel.Name);
+            handle.SetLevel(sel.Level); // authoritative level from the WM avatar list (not inferred)
 
             var zoneEntry = ZoneEntry.FromDataDir(_xorTable, Log, opt.DataDir);
 

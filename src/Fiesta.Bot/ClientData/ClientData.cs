@@ -59,9 +59,37 @@ public sealed class ClientData
             Sp: GetInt(row, "SP"));
     }
 
+    /// <summary>Look up a mob/NPC by its id in the client <c>MobInfo</c> table and project
+    /// the display fields — the bot reports only numeric <c>mobId</c>s from briefinfo, so
+    /// this is how a name ("Teleport Gate"), level, and max-HP get attached. Null if the
+    /// table is unavailable or the id isn't found. Client data, so always legitimate.</summary>
+    public MobData? Mob(int mobId)
+    {
+        var t = Table("MobInfo");
+        if (t is null) return null;
+        var row = t.FindByLong("ID", mobId) ?? t.FindByLong("id", mobId);
+        if (row is null) return null;
+        return new MobData(
+            Id: mobId,
+            Name: GetStr(row, "Name"),
+            InxName: GetStr(row, "InxName"),
+            Level: GetInt(row, "Level"),
+            MaxHp: GetInt(row, "MaxHP"),
+            IsNpc: GetInt(row, "IsNPC") != 0);
+    }
+
     private static int GetInt(IReadOnlyDictionary<string, object?> row, string col)
         => row.TryGetValue(col, out var v) && ShnTable.TryToLong(v, out var l) ? (int)l : 0;
+
+    private static string GetStr(IReadOnlyDictionary<string, object?> row, string col)
+        => row.TryGetValue(col, out var v) ? v?.ToString() ?? "" : "";
 }
+
+/// <summary>Display fields of a <c>MobInfo</c> row: the human-readable <see cref="Name"/>
+/// (e.g. "Teleport Gate", "Uruga"), the <see cref="InxName"/> (internal id like
+/// "Gate_Town"), plus <see cref="Level"/>/<see cref="MaxHp"/> and whether it's an
+/// <see cref="IsNpc"/> (vs a monster) — enough to label/triage what the bot sees.</summary>
+public sealed record MobData(int Id, string Name, string InxName, int Level, int MaxHp, bool IsNpc);
 
 /// <summary>Combat-relevant fields of an <c>ActiveSkill</c> row, projected from the client
 /// table. <see cref="UsableDegree"/> = the facing arc the target must be within (the cast

@@ -60,3 +60,26 @@ selfHandle() mounted() walkSpeed() phase() inZone() now()` and
 playerByName(name)`.
 
 See `auto_grind.lua` and `town_buff.lua` for working examples.
+
+## State machines (compose behaviours)
+A state machine is just a script that calls the built-in `statemachine(states, initial)`.
+Each state is a table of callbacks; the engine runs the current state's `tick`/`on_*`
+and switches when its `next()` returns another state's name (running `on_exit`/`on_enter`):
+
+```lua
+statemachine({
+  roam   = { next = function() if bot.nearestMob() then return "fight" end end },
+  fight  = { tick = function() bot.attack(1500, bot.nearestMob()) end,
+             next = function() if not bot.nearestMob() then return "roam" end end },
+}, "roam")
+```
+Apply it (same runtime as a plain script; the status shows the live state):
+```bash
+curl -X POST :5097/api/bots/b1/statemachine -d '{"name":"grind_sm"}'
+curl :5097/api/bots/b1/script        # -> status.smState = "fight"
+```
+Per-state callbacks: `on_enter, tick, next, on_exit` plus any event handler
+(`on_chat`, `on_hit`, `on_hp`, …) — events dispatch to the current state.
+**Cross-tree transitions / per-class trees** fall out: compose several state tables into
+one and a `next()` may return *any* state's name. Examples: `grind_sm.lua` (roam→fight→
+recover), `guild_buff_sm.lua` (idle→buff, chat-driven).

@@ -1286,9 +1286,24 @@ a new upload swaps cleanly and `/script/stop` halts it. HP/SP via `GET /{id}` sn
   script — saw `print()` output, `on_start`, and `call bot.map/hp/nearestMob(...)` lines
   stream in real time with the real return values (`tick 8 hp=91 nearest=675`).
 
-### Deferred (after the loop is proven)
-- Layer 2 state-machine engine (`StateMachine` + transitions; `POST /{id}/statemachine`).
-- Layer 3 cross-tree transitions + per-class tree presets.
+### Layer 2 — state machines (DONE 2026-06-14)
+A state machine is **pure Lua on the existing runtime** (no new execution model, exactly
+as planned). The runner injects a `statemachine(states, initial)` harness: each state is a
+table of callbacks; the harness wires the top-level `on_*`/`tick` to dispatch to the
+**current** state and switch when its `next()` returns another state's name (running
+`on_exit`/`on_enter`). A plain script that never calls it is unaffected.
+- **Current state → C#** via `bot.__state(name)` (the harness reports each transition) →
+  `BotScriptRunner.CurrentState` → `ScriptStatus.SmState`, so the debug endpoint shows it.
+- **`POST /api/bots/{id}/statemachine`** (name or inline source; same `ApplyScript` runtime
+  as `/script`); `GET /api/bots/{id}/script` now carries `smState`.
+- **Cross-tree transitions / per-class trees fall out for free**: compose multiple state
+  tables into one `states` table and a `next()` may target any state's name.
+- Samples: `scripts/grind_sm.lua` (roam→fight→recover), `scripts/guild_buff_sm.lua`
+  (idle→buff, chat-driven). Harness unit-tested (explore→fight→explore by perception).
+
+### Deferred
+- Layer 3 polish: first-class multi-tree composition + per-class tree presets (the
+  mechanism exists; this is ergonomics/presets on top).
 - WS/NDJSON `/events` **structured** stream (typed events, not just log lines) — reuses the
   same event hub the log stream and scripts already consume.
 - Script persistence (disk/Git), hot-reload, per-script resource/time limits.
