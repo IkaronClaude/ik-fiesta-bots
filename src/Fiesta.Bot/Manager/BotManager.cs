@@ -864,17 +864,40 @@ public sealed class BotManager : IAsyncDisposable
     // Shop / buy. Clicking a merchant (target → NPCClick) makes the server send the
     // SHOPOPEN list (decoded by ZoneView). NC_ITEM_BUY_REQ {itemid, lot} then buys an
     // item the open shop sells; the server deducts money (cheat it with GM &getmoney).
-    private static readonly ushort OpItemBuy = PacketRegistry.GetOpcode<PROTO_NC_ITEM_BUY_REQ>();
+    // NPCMENUOPEN_ACK (Act cmd 29 = 0x201D): answers the menu a merchant/script NPC opens
+    // after a click, selecting an option (1 = shop, from PurchaseSell.pcapng) — the server
+    // then sends the SHOPOPEN sell list.
+    private const ushort OpActNpcMenuAck = (ushort)(((int)ProtocolCommand.Act << 10) | 29); // 0x201D
 
-    /// <summary>Open a merchant's shop (target + NPC-click) so the server sends its sell
-    /// list — read it from <see cref="ZoneView.ShopItems"/> shortly after.</summary>
-    public Task<ActionResult> OpenShopAsync(string id, ushort npcHandle, CancellationToken ct = default)
-        => ActAsync(id, $"open shop npc h={npcHandle}", async s =>
+    /// <summary>Open a merchant's shop and wait for its sell list. Mirrors the real client
+    /// (PurchaseSell.pcapng): NPC-click → the server opens the NPC menu (NPCMENUOPEN_REQ) →
+    /// reply NPCMENUOPEN_ACK with <paramref name="menuOption"/> (1 = shop) → the server sends
+    /// the SHOPOPEN list (decoded into <see cref="ZoneView.ShopItems"/>). A plain click alone
+    /// does NOT open the shop — the menu-ack is required.</summary>
+    public async Task<ActionResult> OpenShopAsync(string id, ushort npcHandle, byte menuOption = 1, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        var view = handle.ZoneView;
+        var hb = new byte[] { (byte)npcHandle, (byte)(npcHandle >> 8) };
+        await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
+        // Wait briefly for the server to open the NPC menu, then select the option.
+        for (var waited = 0; waited < 3000; waited += 100)
         {
-            var hb = new byte[] { (byte)npcHandle, (byte)(npcHandle >> 8) };
-            await s.SendAsync(new FiestaPacket(OpBatTarget, hb), ct);
-            await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
-        });
+            if (view?.NpcMenuOpen == true) break;
+            await Task.Delay(100, ct);
+        }
+        await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = menuOption }, ct);
+        view?.ClearNpcMenu();
+        handle.Log($"open shop npc h={npcHandle} (click + menu-ack {menuOption})");
+        return ActionResult.Sent;
+    }
+
+    /// <summary>Sell <paramref name="lot"/> of the bag item at <paramref name="slot"/> to
+    /// the open shop (NC_ITEM_SELL_REQ {slot, lot}). Verified in PurchaseSell.pcapng.</summary>
+    public Task<ActionResult> SellAsync(string id, byte slot, uint lot, CancellationToken ct = default)
+        => ActAsync(id, $"sell slot {slot} x{lot}",
+            s => s.SendAsync(new PROTO_NC_ITEM_SELL_REQ { slot = slot, lot = lot }, ct));
 
     /// <summary>Buy <paramref name="lot"/> of item <paramref name="itemId"/> from the
     /// currently-open shop (NC_ITEM_BUY_REQ). The shop must be open (call

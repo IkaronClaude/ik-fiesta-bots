@@ -111,6 +111,11 @@ public sealed class ZoneView : IDisposable
     // size we don't have a struct for). buy with NC_ITEM_BUY_REQ {itemid, lot}.
     private static readonly ushort[] OpShopOpen =
         { 0x3C03, 0x3C06, 0x3C09, 0x3C0B };
+    // NPC menu (Act cmd 28 = 0x201C): clicking a merchant/script NPC makes the server
+    // open its menu and wait for the client to pick an option (NPCMENUOPEN_ACK 0x201D)
+    // before it sends the shop list. Verified in PurchaseSell.pcapng: NPCCLICK ->
+    // NPCMENUOPEN_REQ -> NPCMENUOPEN_ACK{1} -> SHOPOPEN.
+    private const ushort OpActNpcMenuOpen = 0x201C;
     // NC_BAT_SKILLBASH_CAST_FAIL_ACK (Bat cmd 52 = 0x2434): the server rejected a
     // skill cast. Payload is a 2-byte LE u16 reason code. Known codes (empirically
     // captured):
@@ -261,6 +266,14 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>The npc handle of the last-opened shop (0 if none).</summary>
     public ushort ShopNpc { get; private set; }
+
+    /// <summary>True while an NPC menu prompt is open and unanswered (server sent
+    /// NPCMENUOPEN_REQ after we clicked a merchant/script NPC). The shop-open flow replies
+    /// with NPCMENUOPEN_ACK to advance to the sell list.</summary>
+    public bool NpcMenuOpen { get; private set; }
+
+    /// <summary>Mark the NPC menu answered (after sending NPCMENUOPEN_ACK).</summary>
+    public void ClearNpcMenu() => NpcMenuOpen = false;
 
     /// <summary>Raised when a merchant's shop opens, with the sell-list item ids.</summary>
     public event Action<IReadOnlyList<ushort>>? ShopOpened;
@@ -441,6 +454,11 @@ public sealed class ZoneView : IDisposable
             LastMenuAtUtc = DateTime.UtcNow;
             ServerMenuOpen = true;
             _log?.Invoke($"[ZoneView] server menu opened (0x3C01, {pkt.Payload.Length}b) — awaiting select");
+        }
+        else if (op == OpActNpcMenuOpen)
+        {
+            NpcMenuOpen = true;
+            _log?.Invoke($"[ZoneView] NPC menu opened (0x201C) — awaiting NPCMENUOPEN_ACK");
         }
         else if (Array.IndexOf(OpShopOpen, op) >= 0)
         {

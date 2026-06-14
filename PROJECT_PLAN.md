@@ -1301,9 +1301,48 @@ table of callbacks; the harness wires the top-level `on_*`/`tick` to dispatch to
 - Samples: `scripts/grind_sm.lua` (roam→fight→recover), `scripts/guild_buff_sm.lua`
   (idle→buff, chat-driven). Harness unit-tested (explore→fight→explore by perception).
 
+## Merchant / enchant / craft protocol (decoded from captures 2026-06-14)
+
+### Shop buy/sell (DONE — open-handshake live-verified, PurchaseSell.pcapng)
+Opening a merchant's shop is a **menu handshake**, not a bare click (this was the missing
+piece):
+```
+C→ 0x200A NPCCLICK_CMD {npchandle}      → click the merchant
+S← 0x201C NPCMENUOPEN_REQ {mobid}       → server opens the NPC menu, waits
+C→ 0x201D NPCMENUOPEN_ACK {ack=1}       → pick option 1 (shop)   ← REQUIRED
+S← 0x3C03/06/09/0B SHOPOPEN*_CMD        → the sell list = [itemnum u16][npc u16][MENUITEM×n]
+C→ 0x3003 ITEM_BUY_REQ {itemid u16, lot u32}   → buy by ITEM ID (server validates vs shop)
+C→ 0x3006 ITEM_SELL_REQ {slot u8, lot u32}     → sell a bag slot
+C→ 0x200B ENDOFTRADE_CMD                → close
+```
+- `BotManager.OpenShopAsync` (click → poll `ZoneView.NpcMenuOpen` → `NPCMENUOPEN_ACK`),
+  `BuyAsync`, `SellAsync`. Endpoints `/shop-open`, `/shop`, `/buy`, `/sell`. Shop-open +
+  list arrival **live-verified** at Blacksmith Hans (Uruga): 121 items.
+- **CAVEAT — table shops (0x3C09/0x3C0B):** the `MENUITEM` list is a **tab/index reference**
+  structure, NOT flat item ids. The current `/shop` decode (leading-u16-per-stride) only
+  reads real ids for non-table shops; for table shops it's garbage. Buying works regardless
+  (you send a real item id from `ItemInfo`). Resolving the real sell-list for table shops
+  needs the shop-table cross-ref (NPCItemList / client shop tables) — deferred.
+
+### Enchant gear (decoded, not yet wired — GearEnchantment.pcapng)
+**`NC_ITEM_UPGRADE_REQ` (0x3017)**, 9 B: `equip u8` (gear's equip slot), `raw u8`,
+`raw_left u8`, `raw_right u8`, `gift_money u32`, `raw_middle u8` — the `raw*` fields are
+the **inventory slots of the Elrue stones** (`0xFF` = empty; capture used slots 7/6/10 on
+equip slot 2). Elrue = the upgrade stone, InxName `El1..El5` (tier by level: El4=lvl80);
+`Bless*`/`Lucky*` variants. `&makeitem El4 -l<n>` to cheat them.
+
+### Craft Elrue / production (decoded, not yet wired — Production.pcapng)
+Production is NPC + skill driven: target+click the production NPC → menu-ack →
+**`NC_SKILL_PRODUCTFIELD_REQ` (0x4822)** {2 B, selects the recipe/field} →
+**`NC_ACT_PRODUCE_CAST_REQ` (0x2035)** {2 B, the produce cast — repeated once per item}.
+Materials bought via `ITEM_BUY_REQ`; consumed per craft.
+
 ### Deferred
-- Layer 3 polish: first-class multi-tree composition + per-class tree presets (the
-  mechanism exists; this is ergonomics/presets on top).
+- Wire `/enchant` (0x3017) + `/craft` (0x4822+0x2035) endpoints + a Lua `bot.enchant/craft`
+  (structs decoded above; needs a live VM to test).
+- Layer 3 polish: first-class multi-tree composition + per-class tree presets.
+- Self money/inventory exposure on the bot (for autonomous gear/restock decisions).
+- ActAsync: return NotInZone (not 500) when the zone connection is gone (e.g. VM slept).
 - WS/NDJSON `/events` **structured** stream (typed events, not just log lines) — reuses the
   same event hub the log stream and scripts already consume.
 - Script persistence (disk/Git), hot-reload, per-script resource/time limits.
