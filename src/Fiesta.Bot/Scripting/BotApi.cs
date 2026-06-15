@@ -152,6 +152,48 @@ public sealed class BotApi
 
     /// <summary>Resolve a quest dialog/title id to its text (QuestDialog.shn). Empty if unknown.</summary>
     public string questDialog(int id) => _mgr.ClientData?.QuestDialog(id) ?? "";
+
+    /// <summary>True if the character has completed this quest (from the login QUEST_DONE state).</summary>
+    public bool questDone(int id) => View?.IsQuestDone(id) ?? false;
+    /// <summary>True if the quest is currently in progress (accepted, not yet turned in).</summary>
+    public bool questActive(int id) => View?.IsQuestActive(id) ?? false;
+
+    /// <summary>Ids of quests currently in progress (accepted, awaiting objective/turn-in) —
+    /// the driver resumes these before accepting new ones.</summary>
+    public DynValue activeQuests()
+    {
+        var t = NewTable(); var v = View;
+        if (v is null) return DynValue.NewTable(t);
+        int i = 1; foreach (var id in v.ActiveQuests.Keys) t[i++] = id;
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Quest ids the character can accept RIGHT NOW from NPCs currently in view:
+    /// not done, not active, level/class gate satisfied, and the start NPC is spawned nearby.
+    /// This is how the driver picks the next quest (the data-driven equivalent of the client's
+    /// orange-! marker). Returned as an array of {id, startNpc, turnInNpc, title}.</summary>
+    public DynValue availableQuests()
+    {
+        var t = NewTable();
+        var v = View; var cd = _mgr.ClientData;
+        if (v is null || cd is null) return DynValue.NewTable(t);
+        int lvl = (int)_handle.Level;
+        var npcsInView = new HashSet<int>();
+        foreach (var n in v.NearbyNpcs) npcsInView.Add(n.MobId);
+        int i = 1;
+        foreach (var q in cd.Quests.Values)
+        {
+            if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
+            if (q.IsNeedLevel && q.MinLevel > 0 && lvl < q.MinLevel) continue;
+            if (q.MaxLevel > 0 && lvl > q.MaxLevel) continue;
+            if (!npcsInView.Contains(q.StartNpc)) continue;     // giver must be reachable here
+            var e = NewTable();
+            e["id"] = q.Id; e["startNpc"] = q.StartNpc; e["turnInNpc"] = q.TurnInNpc;
+            e["title"] = cd.QuestDialog(q.Title); e["minLevel"] = q.MinLevel;
+            t[i++] = DynValue.NewTable(e);
+        }
+        return DynValue.NewTable(t);
+    }
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     public bool dead() => View?.Dead ?? false;

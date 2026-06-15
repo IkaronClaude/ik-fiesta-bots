@@ -42,6 +42,20 @@ public sealed class ZoneEntry
     // container during the login burst — also drained here, so the bag AND equipment are
     // empty until a live CELL/EQUIP change. We capture every frame and seed ZoneView.
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
+    // NC_CHAR_CLIENT_QUEST_DONE_CMD (0x103B) / QUEST_DOING (0x103A): the character's quest
+    // completion + in-progress state, sent in the login burst. DONE = header(chrregnum u32,
+    // nTotalDoneQuest u16, nTotalDoneQuestSize u16, nDoneQuestCount u16, nIndex u16) then
+    // nDoneQuestCount × PLAYER_QUEST_DONE_INFO(10: id u16, tEndTime i64). DOING = header
+    // (chrregnum u32, bNeedClear u8, nNumOfDoingQuest u8) then n × PLAYER_QUEST_INFO(32:
+    // id u16, status u8, ...). Captured here and seeded into ZoneView so the quest driver can
+    // diff against QuestData.shn to know what's available (the client computes the orange-! the
+    // same way). Verified vs QuestsLowLevel.pcapng (done {1,2,3}, doing {8,956}).
+    // No CLIENT_QUEST struct exists, so build the opcode from the Char dept + CharOpcode enum
+    // (same pattern as OpMapLoginComplete): ClientQuestDoneCmd=59 → 0x103B, Doing=58 → 0x103A.
+    private static readonly ushort OpQuestDone =
+        (ushort)(((int)ProtocolCommand.Char << 10) | (int)CharOpcode.ClientQuestDoneCmd);
+    private static readonly ushort OpQuestDoing =
+        (ushort)(((int)ProtocolCommand.Char << 10) | (int)CharOpcode.ClientQuestDoingCmd);
 
     private readonly byte[] _xorTable;
     private readonly Action<string> _log;
@@ -94,6 +108,8 @@ public sealed class ZoneEntry
             var sawFrame = false;
             List<ushort>? skills = null;
             List<(byte box, ushort inven, ushort itemId)>? items = null;
+            List<ushort>? doneQuests = null;
+            List<(ushort id, byte status)>? activeQuests = null;
             while (DateTime.UtcNow < deadline)
             {
                 var remaining = deadline - DateTime.UtcNow;
@@ -145,6 +161,38 @@ public sealed class ZoneEntry
                     }
                     continue;
                 }
+                if (pkt.Opcode == OpQuestDone) // completed-quest list (id u16 + tEndTime i64 per entry)
+                {
+                    var p = pkt.Payload.Span;
+                    if (p.Length >= 12)
+                    {
+                        int n = p[8] | (p[9] << 8); // nDoneQuestCount
+                        doneQuests ??= new();
+                        for (int i = 0; i < n && 12 + i * 10 + 2 <= p.Length; i++)
+                        {
+                            int o = 12 + i * 10;
+                            doneQuests.Add((ushort)(p[o] | (p[o + 1] << 8)));
+                        }
+                        _log($"[Zone] quests done ({doneQuests.Count}): {string.Join(",", doneQuests)}");
+                    }
+                    continue;
+                }
+                if (pkt.Opcode == OpQuestDoing) // in-progress quests (PLAYER_QUEST_INFO 32B: id u16, status u8)
+                {
+                    var p = pkt.Payload.Span;
+                    if (p.Length >= 6)
+                    {
+                        int n = p[5]; // nNumOfDoingQuest
+                        activeQuests ??= new();
+                        for (int i = 0; i < n && 6 + i * 32 + 3 <= p.Length; i++)
+                        {
+                            int o = 6 + i * 32;
+                            activeQuests.Add(((ushort)(p[o] | (p[o + 1] << 8)), p[o + 2]));
+                        }
+                        _log($"[Zone] quests active ({activeQuests.Count}): {string.Join(",", activeQuests.Select(q => $"{q.id}(s{q.status})"))}");
+                    }
+                    continue;
+                }
                 if (pkt.Opcode == OpMapLoginAck) // [1802] — the login ack ending the burst
                 {
                     // The spawn position is PROTO_NC_CHAR_MAPLOGIN_ACK.logincoord — the
@@ -185,7 +233,7 @@ public sealed class ZoneEntry
                         var maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
                         _log($"[Zone] maxHPStone={maxHpStone} maxSPStone={maxSpStone}");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, ct);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, ct);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -193,7 +241,7 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, ct);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, doneQuests, activeQuests, ct);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -208,11 +256,13 @@ public sealed class ZoneEntry
     private async Task<ZoneEntryResult> CompleteLoginAsync(
         FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, ushort? charHandle,
         uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills,
-        IReadOnlyList<(byte box, ushort inven, ushort itemId)>? items, CancellationToken ct)
+        IReadOnlyList<(byte box, ushort inven, ushort itemId)>? items,
+        IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status)>? activeQuests,
+        CancellationToken ct)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests);
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
@@ -247,7 +297,9 @@ public sealed class ZoneEntry
 public sealed record ZoneEntryResult(
     FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY, ushort? CharHandle, uint? MaxHp = null, uint? MaxSp = null,
     IReadOnlyList<ushort>? Skills = null,
-    IReadOnlyList<(byte box, ushort inven, ushort itemId)>? Items = null);
+    IReadOnlyList<(byte box, ushort inven, ushort itemId)>? Items = null,
+    IReadOnlyList<ushort>? DoneQuests = null,
+    IReadOnlyList<(ushort id, byte status)>? ActiveQuests = null);
 
 public sealed class ZoneEntryException : Exception
 {

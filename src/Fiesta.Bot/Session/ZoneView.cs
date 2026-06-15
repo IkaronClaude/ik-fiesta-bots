@@ -522,6 +522,35 @@ public sealed class ZoneView : IDisposable
     /// <summary>Raised when the learned-skill list is (re)populated at zone login.</summary>
     public event Action? SkillsChanged;
 
+    private readonly HashSet<int> _doneQuests = new();
+    private readonly ConcurrentDictionary<int, byte> _activeQuests = new();
+
+    /// <summary>Quest ids the character has completed (from the login QUEST_DONE burst). The
+    /// quest driver diffs this against QuestData.shn to know what's still available.</summary>
+    public IReadOnlyCollection<int> DoneQuests => _doneQuests;
+
+    /// <summary>Quest ids currently in progress → their Status byte (from the login QUEST_DOING
+    /// burst). An active quest needs resuming (do objective + turn in), not re-accepting.</summary>
+    public IReadOnlyDictionary<int, byte> ActiveQuests => _activeQuests;
+
+    public bool IsQuestDone(int id) => _doneQuests.Contains(id);
+    public bool IsQuestActive(int id) => _activeQuests.ContainsKey(id);
+
+    /// <summary>Seed completed + in-progress quest ids from the zone-login burst
+    /// (NC_CHAR_QUEST_DONE_CMD / QUEST_DOING, captured by <see cref="Zone.ZoneEntry"/>).</summary>
+    public void SeedQuests(IEnumerable<ushort>? done, IEnumerable<(ushort id, byte status)>? active)
+    {
+        if (done is not null) foreach (var d in done) _doneQuests.Add(d);
+        if (active is not null) foreach (var (id, st) in active) _activeQuests[id] = st;
+        if (_doneQuests.Count > 0 || _activeQuests.Count > 0)
+            _log?.Invoke($"[ZoneView] seeded quests: done={_doneQuests.Count} active={_activeQuests.Count}");
+    }
+
+    /// <summary>Mark a quest active (just accepted) / done (just turned in) so the driver's
+    /// view stays current within the session without waiting for a relog.</summary>
+    public void MarkQuestActive(int id, byte status = 1) => _activeQuests[id] = status;
+    public void MarkQuestDone(int id) { _activeQuests.TryRemove(id, out _); _doneQuests.Add(id); }
+
     /// <summary>The quest-dialogue step the server is currently prompting (last
     /// NC_QUEST_SCRIPT_CMD_REQ), or null if none pending. The quest driver answers it with
     /// QUEST_SCRIPT_CMD_ACK ("proceed"); cleared after a few seconds of no new prompt.</summary>
@@ -952,6 +981,11 @@ public sealed class ZoneView : IDisposable
                 int dialogId = p.Length >= 11 ? (p[7] | (p[8] << 8) | (p[9] << 16) | (p[10] << 24)) : 0;
                 var step = new QuestStep(questId, qsc, dialogId);
                 PendingQuest = step;
+                // Keep the active/done view current as the script runs: Cmd 0x06 = ACCEPT
+                // (quest becomes active), Cmd 0x0A = DONE (completed). Lets the driver re-derive
+                // availability mid-session without waiting for a relog's QUEST_DONE burst.
+                if (qsc == 0x06) MarkQuestActive(questId);
+                else if (qsc == 0x0A) MarkQuestDone(questId);
                 _log?.Invoke($"[ZoneView] quest dialogue: quest {questId} qsc=0x{qsc:X2} dialog={dialogId} (answer to proceed)");
                 QuestPrompt?.Invoke(step);
             }
