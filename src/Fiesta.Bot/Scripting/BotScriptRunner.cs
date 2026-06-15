@@ -213,7 +213,7 @@ function statemachine(states, initial)
   end
   function on_chat(m) dispatch('on_chat', m) end
   function on_hit(e) dispatch('on_hit', e) end
-  function on_cast_fail(r) dispatch('on_cast_fail', r) end
+  function on_cast_fail(r, reason) dispatch('on_cast_fail', r, reason) end
   function on_hp(h, m) dispatch('on_hp', h, m) end
   function on_sp(s, m) dispatch('on_sp', s, m) end
   function on_player(p) dispatch('on_player', p) end
@@ -259,7 +259,9 @@ end
             case BotEventKind.Chat when ev.Data is ChatMessage m:
                 SafeCall("on_chat", ChatTable(m)); break;
             case BotEventKind.CastFail when ev.Data is ushort r:
-                SafeCall("on_cast_fail", DynValue.NewNumber(r)); break;
+                var reason = Session.ZoneView.CastFailReason.Describe(r);
+                _log($"[script:{_name}] cast failed: {reason} (0x{r:X4})");
+                SafeCall("on_cast_fail", DynValue.NewNumber(r), DynValue.NewString(reason)); break;
             case BotEventKind.PlayerAppeared when ev.Data is NearbyPlayer p:
                 SafeCall("on_player", PlayerTable(p)); break;
             case BotEventKind.PlayerLeft when ev.Data is ushort h:

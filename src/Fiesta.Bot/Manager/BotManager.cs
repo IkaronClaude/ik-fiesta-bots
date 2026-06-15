@@ -83,9 +83,11 @@ public sealed class BotManager : IAsyncDisposable
     {
         if (!_bots.TryGetValue(id, out var handle)) return false;
         handle.Log("stop requested");
-        // Tear down any looping behaviour script first so it stops issuing actions.
+        // Tear down any looping behaviour script/graph first so it stops issuing actions.
         handle.ScriptRunner?.Dispose();
         handle.ScriptRunner = null;
+        foreach (var g in handle.GraphRunners.Values) g.Dispose();
+        handle.GraphRunners.Clear();
         var inZone = handle.Phase == BotPhase.InZone && handle.ZoneSession is { } zs0 && handle.WmSession is not null;
         if (handle.Phase is not (BotPhase.Stopped or BotPhase.Failed))
             handle.SetPhase(BotPhase.Stopping);
@@ -159,6 +161,61 @@ public sealed class BotManager : IAsyncDisposable
     /// <summary>Debug status of a bot's running script (null if no bot / no script).</summary>
     public ScriptStatus? ScriptStatus(string id)
         => _bots.TryGetValue(id, out var handle) ? handle.ScriptRunner?.Status() : null;
+
+    // ── Behaviour graph (state machine) ───────────────────────────────────────
+    /// <summary>Disk-persisted behaviour-graph library (states + transitions + scripts).
+    /// The host may point this at a chosen directory; defaults under the working dir.</summary>
+    public Scripting.GraphStore Graphs { get; set; } = new("behavior-graphs");
+
+    /// <summary>Apply a behaviour graph to a bot and start it (replaces any running
+    /// script/graph). <paramref name="startState"/> overrides the graph's initial state
+    /// (e.g. resume the persisted current state). Returns the runner, or null if unknown bot.</summary>
+    public Scripting.BehaviorGraphRunner? ApplyGraph(string id, Scripting.BehaviorGraph graph, string? startState = null, int tickMs = 250)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return null;
+        if (handle.GraphRunners.TryRemove(graph.Name, out var old)) old.Dispose(); // replace same-named only
+        void GLog(string m) { handle.Log(m); _globalLog?.Invoke($"[{id}] {m}"); }
+        var runner = new Scripting.BehaviorGraphRunner(handle, new BotApi(this, handle), graph, GLog,
+            handle.Cts.Token, tickMs, startState, st => Graphs.SaveState(graph.Name, id, st));
+        handle.GraphRunners[graph.Name] = runner;
+        handle.Log($"graph '{graph.Name}' applied (states={graph.States.Count}, start={startState ?? graph.Initial}); {handle.GraphRunners.Count} graph(s) running");
+        runner.Start();
+        return runner;
+    }
+
+    /// <summary>Stop a bot's behaviour graph by <paramref name="graphName"/>, or ALL graphs if
+    /// null. The bot stays in zone. Returns the number stopped.</summary>
+    public int StopGraph(string id, string? graphName = null)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return 0;
+        if (graphName is not null)
+        {
+            if (handle.GraphRunners.TryRemove(graphName, out var r)) { r.Dispose(); handle.Log($"graph '{graphName}' stopped"); return 1; }
+            return 0;
+        }
+        var n = handle.GraphRunners.Count;
+        foreach (var key in handle.GraphRunners.Keys.ToArray())
+            if (handle.GraphRunners.TryRemove(key, out var r)) r.Dispose();
+        if (n > 0) handle.Log($"stopped {n} graph(s)");
+        return n;
+    }
+
+    /// <summary>Request a transition to <paramref name="state"/> in graph <paramref name="graphName"/>
+    /// (or the only running graph if null). Operator flip / external request.</summary>
+    public bool RequestState(string id, string state, string? graphName = null)
+    {
+        if (!_bots.TryGetValue(id, out var handle) || handle.GraphRunners.IsEmpty) return false;
+        Scripting.BehaviorGraphRunner? r;
+        if (graphName is not null) { if (!handle.GraphRunners.TryGetValue(graphName, out r)) return false; }
+        else if (handle.GraphRunners.Count == 1) r = handle.GraphRunners.Values.First();
+        else return false; // ambiguous: must name the graph when several run
+        r.RequestState(state);
+        return true;
+    }
+
+    /// <summary>Status of all behaviour graphs running on a bot (empty if none).</summary>
+    public IReadOnlyList<ScriptStatus> GraphStatus(string id)
+        => _bots.TryGetValue(id, out var handle) ? handle.GraphRunners.Values.Select(g => g.Status()).ToArray() : [];
 
     /// <summary>Outcome of a manual in-zone action.</summary>
     public enum ActionResult { Sent, NotFound, NotInZone }
@@ -391,6 +448,41 @@ public sealed class BotManager : IAsyncDisposable
         return best;
     }
 
+    /// <summary>Number of mobs currently aggroing the bot (within the combat window) — the
+    /// "am I overwhelmed?" signal a survival script flees on.</summary>
+    public int AggressorCount(string id)
+        => _bots.TryGetValue(id, out var h) && h.ZoneView is { } v ? v.Aggressors.Count : 0;
+
+    /// <summary>Flee: walk directly away from the threat (centroid of current aggressors, or
+    /// the nearest mob) by <paramref name="dist"/> world-units. NON-BLOCKING — it just issues
+    /// the walk and returns, so a survival script can keep healing every tick while fleeing.
+    /// Pathfinds over the map grid when available, else a straight retreat.</summary>
+    public ActionResult Flee(string id, double dist = 500, double unitsPerSec = 0)
+    {
+        if (!_bots.TryGetValue(id, out var h)) return ActionResult.NotFound;
+        if (h.Phase != BotPhase.InZone || h.ZoneSession is null) return ActionResult.NotInZone;
+        if (h.ZoneView is not { } v || h.Position is not { } pos) return ActionResult.NotInZone;
+
+        double cx = 0, cy = 0; int n = 0;
+        foreach (var ag in v.Aggressors) if (NpcPos(h, ag) is { } p) { cx += p.X; cy += p.Y; n++; }
+        if (n == 0 && NearestMob(h) is { } m && NpcPos(h, m) is { } mp) { cx = mp.X; cy = mp.Y; n = 1; }
+        if (n == 0) return ActionResult.NotFound; // nothing to flee from
+        cx /= n; cy /= n;
+
+        double dx = pos.X - cx, dy = pos.Y - cy;
+        var len = Math.Sqrt(dx * dx + dy * dy);
+        if (len < 1) { dx = 1; dy = 0; len = 1; }
+        var tx = (uint)Math.Max(0, pos.X + dx / len * dist);
+        var ty = (uint)Math.Max(0, pos.Y + dy / len * dist);
+
+        var grid = h.CurrentMap is { } map ? GridProvider?.Invoke(map) : null;
+        IReadOnlyList<(uint X, uint Y)> wp;
+        if (grid is not null && PathFinder.FindPath(grid, pos.X, pos.Y, tx, ty) is { Count: > 0 } path)
+            wp = PathFinder.Simplify(path);
+        else wp = new[] { (pos.X, pos.Y), (tx, ty) };
+        return WalkPath(id, wp, unitsPerSec > 0 ? unitsPerSec : 120.0);
+    }
+
     // ── Targeting / follow (zone) ─────────────────────────────────────────────
     // Targeting and follow are zone-side. A party-tab target (F2–F5 in the client)
     // is just a BAT TargettingReq on the member's zone handle; untarget (Esc) is a
@@ -516,21 +608,64 @@ public sealed class BotManager : IAsyncDisposable
     // invite expire = simply not answering.
     private const ushort OpPartyAllow = (ushort)(((int)ProtocolCommand.Party << 10) | 4); // 0x3804
     private const ushort OpPartyReject = (ushort)(((int)ProtocolCommand.Party << 10) | 5); // 0x3805
+    // Incoming invite: the server asks the invitee with NC_PARTY_JOINPROPOSE_REQ (cmd 3,
+    // 0x3803) carrying the inviter's name. We track it so accept/decline don't need the
+    // name passed in (and so an invite doesn't sit unanswered, wedging the party state).
+    private const ushort OpPartyJoinPropose = (ushort)(((int)ProtocolCommand.Party << 10) | 3); // 0x3803
+    private const ushort OpPartyJoinCmd = (ushort)(((int)ProtocolCommand.Party << 10) | 8); // 0x3808 (joined)
+
+    /// <summary>Subscribe a BotHandle's WM link to track pending party invites (and clear
+    /// on join). Called when the WM session is created.</summary>
+    private void TrackPartyInvites(BotHandle handle, BotSession wm)
+        => wm.PacketReceived += pkt =>
+        {
+            try
+            {
+                if (pkt.Opcode == OpPartyJoinPropose)
+                {
+                    var inviter = FiestaText.Decode(pkt.ReadBody<PROTO_NC_PARTY_JOINPROPOSE_REQ>().mastername.n5_name);
+                    handle.PendingPartyInviter = inviter;
+                    handle.Log($"party invite from '{inviter}' pending — acceptParty/declineParty to answer");
+                }
+                else if (pkt.Opcode == OpPartyJoinCmd) handle.PendingPartyInviter = null; // joined; invite resolved
+            }
+            catch { /* ignore an unparseable party frame */ }
+        };
 
     /// <summary>Invite <paramref name="targetName"/> to a party (WM link).</summary>
     public Task<ActionResult> PartyInviteAsync(string id, string targetName, CancellationToken ct = default)
         => WmActAsync(id, $"party invite {targetName}",
             s => s.SendAsync(new PROTO_NC_PARTY_JOIN_REQ { target = Name5Of(targetName) }, ct));
 
-    /// <summary>Accept a pending party invite from <paramref name="inviterName"/>.</summary>
-    public Task<ActionResult> PartyAcceptAsync(string id, string inviterName, CancellationToken ct = default)
-        => WmActAsync(id, $"party accept {inviterName}",
-            s => s.SendAsync(new FiestaPacket(OpPartyAllow, Name5Of(inviterName).n5_name), ct));
+    /// <summary>Accept a pending party invite. Pass <paramref name="inviterName"/> explicitly,
+    /// or leave it null to answer the tracked <see cref="BotHandle.PendingPartyInviter"/>.</summary>
+    public Task<ActionResult> PartyAcceptAsync(string id, string? inviterName = null, CancellationToken ct = default)
+    {
+        var name = ResolveInviter(id, inviterName);
+        if (name is null) return Task.FromResult(ActionResult.NotFound);
+        return WmActAsync(id, $"party accept {name}",
+            s => s.SendAsync(new FiestaPacket(OpPartyAllow, Name5Of(name).n5_name), ct))
+            .ContinueWith(t => { if (_bots.TryGetValue(id, out var h)) h.PendingPartyInviter = null; return t.Result; });
+    }
 
-    /// <summary>Decline a pending party invite from <paramref name="inviterName"/>.</summary>
-    public Task<ActionResult> PartyDeclineAsync(string id, string inviterName, CancellationToken ct = default)
-        => WmActAsync(id, $"party decline {inviterName}",
-            s => s.SendAsync(new FiestaPacket(OpPartyReject, Name5Of(inviterName).n5_name), ct));
+    /// <summary>Decline a pending party invite (tracked inviter if <paramref name="inviterName"/>
+    /// is null) — clears the stuck pending state.</summary>
+    public Task<ActionResult> PartyDeclineAsync(string id, string? inviterName = null, CancellationToken ct = default)
+    {
+        var name = ResolveInviter(id, inviterName);
+        if (name is null) return Task.FromResult(ActionResult.NotFound);
+        return WmActAsync(id, $"party decline {name}",
+            s => s.SendAsync(new FiestaPacket(OpPartyReject, Name5Of(name).n5_name), ct))
+            .ContinueWith(t => { if (_bots.TryGetValue(id, out var h)) h.PendingPartyInviter = null; return t.Result; });
+    }
+
+    /// <summary>The explicit inviter name, or the tracked pending one if none was given.</summary>
+    private string? ResolveInviter(string id, string? inviterName)
+    {
+        if (!string.IsNullOrWhiteSpace(inviterName)) return inviterName;
+        return _bots.TryGetValue(id, out var h) && !string.IsNullOrWhiteSpace(h.PendingPartyInviter)
+            ? h.PendingPartyInviter : null;
+    }
 
     /// <summary>Send a line to party chat (WM link).</summary>
     public Task<ActionResult> PartyChatAsync(string id, string text, CancellationToken ct = default)
@@ -1219,6 +1354,7 @@ public sealed class BotManager : IAsyncDisposable
             var wmSession = new BotSession(wmConn, sel.Name, wmResult.WmHandle, wmEp, Log,
                 linkTag: "wm", logInbound: opt.LogInbound);
             handle.WmSession = wmSession;
+            TrackPartyInvites(handle, wmSession); // capture incoming party invites (the inviter)
             var wmRun = wmSession.RunAsync(ct);
 
             // Zone (re-)entry loop. A normal stop/kick breaks out; a cross-server

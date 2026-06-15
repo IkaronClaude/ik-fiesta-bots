@@ -113,6 +113,19 @@ public sealed class ZoneView : IDisposable
         public const ushort NotEnoughSp = 0x0FC9;
         public const ushort OutOfRange = 0x0FCA;
         // 0x0FC4, 0x0FC6 — unpinned (facing / cooldown / weapon type)
+
+        /// <summary>Human-readable description of a cast-fail code, for logs and the
+        /// <c>on_cast_fail</c> script hook (so failures like "not enough SP" are obvious
+        /// instead of a bare hex code).</summary>
+        public static string Describe(ushort code) => code switch
+        {
+            NotEnoughSp => "not enough SP",
+            OutOfRange  => "target out of range",
+            0x0FC0      => "cannot cast (dead / invalid state)",
+            0x0FC4      => "cooldown/facing/weapon (0x0FC4)",
+            0x0FC6      => "cooldown/facing/weapon (0x0FC6)",
+            _           => $"cast failed (0x{code:X4})",
+        };
     }
 
     // MOVEFAIL (ACT cmd 27): the server rejected our last move (walked into an

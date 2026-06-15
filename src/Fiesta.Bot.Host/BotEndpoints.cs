@@ -516,17 +516,13 @@ public static class BotEndpoints
                 : ToResult(await manager.PartyInviteAsync(id, req.Name!), id, new { id, invited = req.Name }))
         .WithSummary("Invite a player to your party");
 
-        group.MapPost("/{id}/party/accept", async (string id, NameRequest req) =>
-            string.IsNullOrWhiteSpace(req.Name)
-                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["inviter name is required"] })
-                : ToResult(await manager.PartyAcceptAsync(id, req.Name!), id, new { id, accepted = req.Name }))
-        .WithSummary("Accept a party invite from the named inviter");
+        group.MapPost("/{id}/party/accept", async (string id, NameRequest? req) =>
+            ToResult(await manager.PartyAcceptAsync(id, req?.Name), id, new { id, accepted = req?.Name ?? "(pending invite)" }))
+        .WithSummary("Accept a party invite (named inviter, or the tracked pending one if omitted)");
 
-        group.MapPost("/{id}/party/decline", async (string id, NameRequest req) =>
-            string.IsNullOrWhiteSpace(req.Name)
-                ? Results.ValidationProblem(new Dictionary<string, string[]> { ["name"] = ["inviter name is required"] })
-                : ToResult(await manager.PartyDeclineAsync(id, req.Name!), id, new { id, declined = req.Name }))
-        .WithSummary("Decline a party invite from the named inviter");
+        group.MapPost("/{id}/party/decline", async (string id, NameRequest? req) =>
+            ToResult(await manager.PartyDeclineAsync(id, req?.Name), id, new { id, declined = req?.Name ?? "(pending invite)" }))
+        .WithSummary("Decline a party invite (named inviter, or the tracked pending one if omitted)");
 
         group.MapPost("/{id}/party/chat", async (string id, SayRequest req) =>
             string.IsNullOrEmpty(req.Text)

@@ -69,6 +69,12 @@ public sealed class BotHandle
     /// send the WM-side quit on a clean logout.</summary>
     public BotSession? WmSession { get; internal set; }
 
+    /// <summary>Name of the player whose party invite (NC_PARTY_JOINPROPOSE_REQ, 0x3803)
+    /// is currently pending and unanswered, or null if none. Tracked off the WM link so
+    /// the bot can accept without being told the inviter's name (an unanswered invite
+    /// leaves the party state stuck — accept or decline clears it). Cleared on join/leave.</summary>
+    public string? PendingPartyInviter { get; set; }
+
     internal CancellationTokenSource Cts { get; }
     internal Task? RunTask { get; set; }
 
@@ -154,6 +160,13 @@ public sealed class BotHandle
     /// runner subscribes to <see cref="Events"/> so it survives ZoneView swaps.</summary>
     internal Scripting.BotScriptRunner? ScriptRunner { get; set; }
 
+    /// <summary>Behaviour graphs (state machines) running CONCURRENTLY on this bot, keyed by
+    /// graph name. Each is independent (own thread/VM/state), so e.g. a "join_requests" WM
+    /// graph runs alongside a "gameplay" graph without interfering. Applying a graph replaces
+    /// only the same-named one.</summary>
+    internal System.Collections.Concurrent.ConcurrentDictionary<string, Scripting.BehaviorGraphRunner> GraphRunners { get; }
+        = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Stable per-bot event stream. Unlike <see cref="ZoneView"/> (swapped out
     /// on a cross-server reconnect), this hub lives for the bot's whole life, so a
     /// script's subscriptions don't drop across map handoffs. The manager forwards the
@@ -238,7 +251,9 @@ public sealed class BotHandle
             InCombat: view?.InCombat ?? false,
             Dead: view?.Dead ?? false,
             Drops: view?.Drops.Count ?? 0,
-            Script: ScriptRunner?.StatusLine,
+            Script: GraphRunners.IsEmpty
+                ? ScriptRunner?.StatusLine
+                : string.Join(" | ", GraphRunners.Values.Select(g => g.StatusLine)),
             CreatedAtUtc: CreatedAtUtc,
             RecentLog: RecentLog());
     }

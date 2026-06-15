@@ -43,6 +43,57 @@ public sealed class BotApi
     /// state to C# (surfaced in the script status). Not normally called by hand.</summary>
     public void __state(string name) => StateReporter?.Invoke(name);
 
+    /// <summary>Set by the behaviour-graph runner so a state script can request a graph
+    /// transition (<c>bot.requestState("stay_alive")</c>).</summary>
+    internal Action<string>? RequestStateHandler;
+
+    /// <summary>Request a behaviour-graph transition to <paramref name="state"/> next tick.
+    /// Returns false if not running under a graph (no handler).</summary>
+    public bool requestState(string state)
+    {
+        if (RequestStateHandler is null) return false;
+        RequestStateHandler(state); return true;
+    }
+
+    /// <summary>Skill info from client <c>ActiveSkill</c> (cooldown ms, SP cost, range, facing
+    /// arc) so scripts can track cooldowns / costs without hardcoding. nil if unknown.</summary>
+    public DynValue skillInfo(int id)
+    {
+        var si = _mgr.ClientData?.Skill(id);
+        if (si is null) return DynValue.Nil;
+        var t = NewTable();
+        t["id"] = id; t["name"] = _mgr.ClientData?.SkillName(id) ?? "";
+        t["cooldownMs"] = si.DelayTimeMs; t["sp"] = si.Sp; t["range"] = si.Range;
+        t["usableDegree"] = si.UsableDegree; t["moving"] = si.IsMovingSkill;
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>The learned skill id of the highest rank whose name starts with
+    /// <paramref name="prefix"/> (e.g. <c>"Heal"</c> → the best heal you've learned), or 0 if
+    /// none. Rank parsed from the <c>"[NN]"</c> in the skill name. Lets a script pick a skill
+    /// by role without hardcoding the id/rank.</summary>
+    public int highestSkill(string prefix)
+    {
+        var v = View; var cd = _mgr.ClientData;
+        if (v is null || cd is null) return 0;
+        int best = 0, bestRank = int.MinValue;
+        foreach (var s in v.LearnedSkills)
+        {
+            var nm = cd.SkillName(s);
+            if (string.IsNullOrEmpty(nm) || !nm.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) continue;
+            var rank = ParseRank(nm);
+            if (rank > bestRank) { bestRank = rank; best = s; }
+        }
+        return best;
+    }
+
+    private static int ParseRank(string name)
+    {
+        var i = name.IndexOf('[');
+        var j = i >= 0 ? name.IndexOf(']', i) : -1;
+        return i >= 0 && j > i && int.TryParse(name.AsSpan(i + 1, j - i - 1).Trim(), out var r) ? r : 0;
+    }
+
     private string Id => _handle.Id;
     private Session.ZoneView? View => _handle.ZoneView;
     private static bool Ok(BotManager.ActionResult r) => r == BotManager.ActionResult.Sent;
@@ -105,8 +156,9 @@ public sealed class BotApi
     }
 
     public bool partyInvite(string name) => Ok(Wait(_mgr.PartyInviteAsync(Id, name)));
-    public bool partyAccept(string name) => Ok(Wait(_mgr.PartyAcceptAsync(Id, name)));
-    public bool partyDecline(string name) => Ok(Wait(_mgr.PartyDeclineAsync(Id, name)));
+    public bool partyAccept(string name = null) => Ok(Wait(_mgr.PartyAcceptAsync(Id, name)));
+    public bool partyDecline(string name = null) => Ok(Wait(_mgr.PartyDeclineAsync(Id, name)));
+    public string pendingInvite() => _handle.PendingPartyInviter ?? "";
     public bool partyChat(string text) => Ok(Wait(_mgr.PartyChatAsync(Id, text)));
     public bool friendAdd(string name) => Ok(Wait(_mgr.FriendAddAsync(Id, name)));
     public bool friendConfirm(string name, bool accept) => Ok(Wait(_mgr.FriendConfirmAsync(Id, name, accept)));
@@ -133,6 +185,14 @@ public sealed class BotApi
         if (v is null || v.MaxSp == 0 || v.Sp is not { } s) return -1;
         return 100.0 * s / v.MaxSp;
     }
+
+    /// <summary>How many mobs are currently aggroing the bot (combat window) — the
+    /// "am I overwhelmed?" signal for a flee transition.</summary>
+    public int aggressors() => _mgr.AggressorCount(Id);
+
+    /// <summary>Flee: walk away from the threat by <paramref name="dist"/> units. NON-BLOCKING
+    /// (returns immediately), so a survival tick can keep healing while retreating.</summary>
+    public bool flee(double dist = 500) => Ok(_mgr.Flee(Id, dist));
 
     public double? x() => _handle.Position?.X;
     public double? y() => _handle.Position?.Y;

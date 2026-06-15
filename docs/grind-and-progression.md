@@ -125,6 +125,39 @@ So anything sent only at login must be **captured in `ZoneEntry` and seeded into
 - **Skill-master shop** multi-tab/page not parsed (§3).
 - **Current soul-stone count** not read from login (§5).
 
+## Behaviour graph (design — operator-specified, building now)
+A first-class **graph state machine** replacing the single-script SM:
+- **State** = a node with its own script: `on_enter()` / `tick()` / `on_exit()` (+ event hooks).
+  Each state is its own file (e.g. `mob_grind.lua`, `stay_alive.lua`).
+- **Transition** = a first-class edge `{name, from, to, check}`; `check()` returns true to fire.
+- **Tick:** fire any pending *requested* transition; else `current.tick()`, then run every
+  outgoing transition's `check()` in order — first truthy fires it (`from.on_exit()` →
+  `to.on_enter()` → switch current).
+- **Transition triggers:** a `check()` returns true (autonomous) OR an explicit request —
+  `POST /{id}/state {name}` (operator flips it) or `bot.requestState("...")` from a state script.
+- **Persistence:** the whole graph (states + transitions + scripts + initial) + the bot's
+  current state saved as JSON on disk, reloaded on host start (also fixes scripts vanishing
+  on restart).
+- **Composition:** a shared helper (e.g. `survive()`) is importable by every state, so
+  `mob_grind` runs the survival cycle first, then layers combat/aggro on top.
+- **`stay_alive`**: heal-first → soul-stone when heal on cooldown → and **flee while healing**
+  when incoming DPS outpaces heals+stones. Runs safely 24/7; flip to it anytime for "90% control".
+- Solves the concurrency problem: survival never stops while the operator does manual things.
+
+## Next steps (TODO — tracked)
+- **CAPTURE empower points + skill empower points** ⟵ *operator reminder.* Get a chat-annotated
+  capture of gaining/spending empower points and skill-empower points (the empower system), so
+  the bot can read + use them. Not yet decoded.
+- **Revive bug** — `RespawnAsync` (NC_CHAR_REVIVE_REQ 0x104E) doesn't revive; only a relog does.
+- **Close the shop window after buying** (operator note) — an open shop can block future NPC
+  dialogs. Wire a SHOPCLOSE after buy/sell (currently only the map-change/teleport closes it).
+- **Confirm grind end-to-end**: survival + SP management now work at Burning Rock (Fire Nix lv80);
+  still need a confirmed KILL → DROPEDITEM → loot to prove the pickup path live (priest DPS vs
+  lv80 is slow — may need a higher-DPS target or more attack power).
+- **Live skill-add tracking** — ZoneView only learns skills from the login list, so a freshly
+  learned scroll (e.g. Heal[12]) doesn't show in `/skills` until relog. Decode the live skill-add.
+- **Commit** the party-invite tracking + readable cast-fail logging + grind script once verified.
+
 ## 8. Misc live facts
 - **Zone port varies per map** — Uruga = **9022** (RouN zone 9016, WM 9013). Decode with
   `pcap_decode.py --port <N>`.

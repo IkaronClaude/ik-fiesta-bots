@@ -37,3 +37,7 @@ start-host.ps1
 host.log
 host-out.log
 host-err.log
+
+# Runtime behaviour-graph store (generated from scripts/graph via build_graph.py)
+behavior-graphs/
+**/behavior-graphs/
