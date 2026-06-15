@@ -358,6 +358,58 @@ public static class BotEndpoints
             ToResult(await manager.LootAsync(id, req.Handle ?? 0), id, new { id, looted = req.Handle ?? 0 }))
         .WithSummary("Walk to a ground drop and pick it up (nearest if no handle given)");
 
+        group.MapPost("/{id}/click-npc", async (string id, PickupRequest req) =>
+        {
+            if (req.Handle is not { } h)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["handle"] = ["npc handle is required"] });
+            return ToResult(await manager.ClickNpcAsync(id, h), id, new { id, clickedNpc = h });
+        })
+        .WithSummary("Click an NPC (starts its quest dialogue / menu)");
+
+        group.MapGet("/{id}/quest", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var q = bot.ZoneView?.PendingQuest;
+            return Results.Ok(new { id, pending = q is null ? null : new { questId = q.QuestId, qsc = q.Qsc, dialogId = q.DialogId } });
+        })
+        .WithSummary("The pending quest-dialogue step the server is prompting (null if none)");
+
+        group.MapPost("/{id}/quest/do", async (string id, PickupRequest req) =>
+        {
+            if (req.Handle is not { } h)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["handle"] = ["npc handle is required"] });
+            return ToResult(await manager.DriveQuestDialogueAsync(id, h), id, new { id, npc = h });
+        })
+        .WithSummary("Drive a full quest dialogue with an NPC (click + ACK every page; accept or turn-in)");
+
+        group.MapGet("/{id}/quest-info/{questId:int}", (string id, int questId) =>
+        {
+            var cd = manager.ClientData;
+            var q = cd?.Quest(questId);
+            if (q is null) return Results.NotFound();
+            return Results.Ok(new
+            {
+                q.Id, q.StartNpc, q.TurnInNpc, q.MinLevel, q.MaxLevel, q.Class, q.LinkedQuest,
+                title = cd!.QuestDialog(q.Title),
+                mobs = q.Mobs, items = q.Items, rewards = q.Rewards,
+                q.StartScript, q.ActionScript, q.FinishScript
+            });
+        })
+        .WithSummary("Decoded QuestData.shn for a quest id (StartNPC, objectives, rewards, scripts)");
+
+        group.MapPost("/{id}/quest/answer", async (string id, QuestAnswerRequest? req) =>
+            ToResult(await manager.ProceedQuestAsync(id, req?.Result ?? 1), id, new { id, answered = req?.Result ?? 1 }))
+        .WithSummary("Answer the pending quest-dialogue step (result=1 proceeds/accepts)");
+
+        group.MapPost("/{id}/quest/reward", async (string id, QuestRewardRequest req) =>
+        {
+            if (req.QuestId is not { } qid || req.Index is not { } idx)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["reward"] = ["questId and index are required"] });
+            return ToResult(await manager.SelectQuestRewardAsync(id, qid, idx), id, new { id, quest = qid, rewardIndex = idx });
+        })
+        .WithSummary("Select a quest reward item by index (e.g. the class-appropriate reward)");
+
         group.MapPost("/{id}/walkto", (string id, WalkToRequest req) =>
         {
             if (req.ToX is not { } tx || req.ToY is not { } ty)
@@ -655,6 +707,20 @@ public sealed record PickupRequest
 public sealed record LootRequest
 {
     public ushort? Handle { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/quest/answer</c>. <c>Result</c> defaults to 1
+/// (proceed/accept).</summary>
+public sealed record QuestAnswerRequest
+{
+    public uint? Result { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/quest/reward</c>.</summary>
+public sealed record QuestRewardRequest
+{
+    public ushort? QuestId { get; init; }
+    public uint? Index { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/shop-open</c> — the merchant NPC handle.

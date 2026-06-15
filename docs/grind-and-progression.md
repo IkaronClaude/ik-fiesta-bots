@@ -144,6 +144,48 @@ A first-class **graph state machine** replacing the single-script SM:
   when incoming DPS outpaces heals+stones. Runs safely 24/7; flip to it anytime for "90% control".
 - Solves the concurrency problem: survival never stops while the operator does manual things.
 
+## Fighter-to-20 run (the milestone)
+- **Deployment rule (operator):** the goal is **1 account per character** so multiple bots can
+  be logged in at once (multi-login). Multiple chars on ONE account can NEVER be online
+  simultaneously — so provision a fresh account per bot.
+- **Provisioned:** account `fighter1` (userNo 107, GM level 1 = no GM) → char `Bot1208`
+  (slot 0, Fighter, level 1, starter zone Roumen/9016). Fresh Fighter has **no combat skills**
+  (only 29xxx event skills) — must buy Bash etc. from **Ruby**; gear from **Smith**; mount from
+  **Pey** (feed it). Credentials in local memory (never committed).
+- **Quests (required to 20):** wire accept → progress → turn-in. Low-level quests have a
+  **remote-accept / remote-handin flag**; later ones need the start/end NPC. Some need a
+  **special item drop** picked up → keep ≥1 free bag slot. **Bonus:** the client can show where
+  mob clusters are per quest — find that packet to locate mobs WITHOUT server SHN tables.
+  Plan: do the first 1-2 quests by hand (API), then wire into a Lua quest graph/state.
+
+## Quest protocol (decoded from QuestsLowLevel.pcapng — non-remote flow)
+Accept / progress / turn-in is an **NPC dialogue exchange**, not a one-shot accept:
+- Click the quest NPC: `NC_ACT_NPCCLICK_CMD` (0x200A).
+- Server drives the dialogue: `NC_QUEST_SCRIPT_CMD_REQ` (0x4401) `{ nQuestID u16, Command
+  STRUCT_QSC(101b) }` — each step; the QSC command code is `STRUCT_QSC[0]` (seen 0x02 = prompt/
+  accept, 0x06 = complete/reward).
+- Client answers each step: `NC_QUEST_SCRIPT_CMD_ACK` (0x4402) `{ nQuestID u16, nQSC u8 (echo the
+  command code), nResult u32 (the choice; 1 = proceed/accept) }`.
+- Reward selection: `NC_QUEST_REWARD_SELECT_ITEM_INDEX_CMD` (0x4411) `{ nQuestID u16,
+  nSelectedItemIndex u32 }` — pick the class-appropriate reward (e.g. quest 8 → index 5 = fighter
+  boots).
+- Quest state seeds at login: `QUEST_DOING (0x103A) / DONE (0x103B) / READ (0x10CE) / REPEAT
+  (0x10D7)` — decode these for "what quests am I on / done".
+- **"Location" button = client-side** (no packet) — the client maps quest→target-mob and shows
+  the cluster from its own map/mob data. So locate quest mobs from CLIENT data, not server SHN.
+- This capture is the **non-remote** flow (accept at NPC, hand in at NPC). Remote accept/handin
+  is a separate (later) capture.
+- **To wire:** drive NPCClick → answer each 0x4401 with a 0x4402 (echo nQSC, nResult=1) →
+  0x4411 for the reward. Replicate the first 1-2 quests by hand on Bot1208, then a Lua quest graph.
+- **Quest-giver discovery (operator):** an NPC with a quest shows an **orange `!` mark** — likely a
+  per-NPC flag in the briefinfo (`NearbyNpc`). Some starter NPCs' quests don't even appear in the
+  quest list, so this flag is the reliable way to find quest givers. TODO: pin the exact byte
+  (flagstate / mode / a flag-blob bit) by diffing a known quest NPC vs a non-quest NPC live, then
+  expose it on `NearbyNpc` (e.g. `HasQuest`) so the bot can scan for quest givers.
+- Quest plumbing wired (compiles): `ZoneView.PendingQuest` + `QuestStep`; `BotManager.ClickNpcAsync
+  / AnswerQuestAsync / ProceedQuestAsync / SelectQuestRewardAsync`; endpoints `/click-npc`,
+  `/quest`, `/quest/answer`, `/quest/reward`; Lua `clickNpc/answerQuest/selectReward/pendingQuest`.
+
 ## Next steps (TODO — tracked)
 - **CAPTURE empower points + skill empower points** ⟵ *operator reminder.* Get a chat-annotated
   capture of gaining/spending empower points and skill-empower points (the empower system), so
@@ -158,6 +200,21 @@ A first-class **graph state machine** replacing the single-script SM:
   learned scroll (e.g. Heal[12]) doesn't show in `/skills` until relog. Decode the live skill-add.
 - **Commit** the party-invite tracking + readable cast-fail logging + grind script once verified.
 
+## Empower: stat points + skill empower (decoded from Empower.pcapng)
+- **Stat points** — `NC_CHAR_STAT_INCPOINT_REQ` (0x105C) `{ stat: u8 }`, one send per point.
+  Stat index: **0=STR, 1=END, 2=DEX, 3=INT, 4=SPR** (mapped from the annotated STR+2/DEX+1/
+  END+3/INT+5/SPR+4 run). Free + applied counts are in the login packet (TODO: decode them).
+- **Skill empower** — `NC_SKILL_EMPOWALLOC_REQ` (0x4811) `{ skill u16, plus SKILL_EMPOWER(u16),
+  minus SKILL_EMPOWER(u16) }`. `plus` adds, `minus` removes (re-spec). **`SKILL_EMPOWER` = packed
+  u16 nibbles: damage(bits 0-3), sp(4-7), keeptime(8-11), cooltime(12-15).** So empower a skill's
+  damage by N → `plus = N`; sp by N → `plus = N<<4`; etc. (verified: 0x0001=dmg+1, 0x0020=sp+2,
+  0x3000=cool+3, 0x0400=keep+4). **Each category caps at 5** (damage/sp/keeptime/cooltime ≤ 5).
+- **Fighter stat builds (operator):** Glad (axe melee DD) ≈ 25 SPR / 33 DEX / rest STR; low-level
+  order: STR→10, then SPR→25, then STR→30, then DEX→33, then rest STR. Tank = full END.
+- **No-GM economy (operator):** buy skills from **Ruby**, weapons/armor from **Smith**, a mount from
+  **Pey** (mounts need **feeding**). Play like a real player — no makeitem/sethp/linkto for the
+  Fighter-to-20 run. **Quests are REQUIRED to reach 20** (the quest system still needs wiring).
+
 ## 8. Misc live facts
 - **Zone port varies per map** — Uruga = **9022** (RouN zone 9016, WM 9013). Decode with
   `pcap_decode.py --port <N>`.
@@ -168,3 +225,31 @@ A first-class **graph state machine** replacing the single-script SM:
 - `CHAR_PARAMETER_DATA` (in `[1802]`, body = +2 vs param off): MaxHp@146, MaxSp@150, MaxLp@154,
   MaxAp@158, **MaxHPStone@162, MaxSPStone@166**, PwrStone(16)@170, GrdStone(16)@186; `logincoord`
   (spawn x/y u32) = last 8 bytes.
+
+## 9. Quest system — DECODED + driver wired (Fighter leveled 1→2 live)
+- **QuestData.shn is a bespoke format** (NOT standard SHN, not encrypted, EUC-KR). Fully
+  reverse-engineered + validated vs all 2304 live quests; see memory `questdata-shn-format.md`
+  and ik-fiesta-collab's QuestDataProvider (decodes StartNPC/mobs/items/rewards/scripts).
+  Fixed 680B record region then Start/Action/Finish scripts. The serversource `Quest_Header`
+  tables are a DIFFERENT/older quest set — IDs do NOT match the wire; QuestData.shn IS the
+  live source. **QuestDialog.shn** (standard SHN, English) maps dialog/title ids → text.
+- **Wire protocol (proven live):** click NPC (`0x200A NPCCLICK {npchandle}`) → the quest
+  script runs SERVER-side and pushes each page as `0x4401 NC_QUEST_SCRIPT_CMD_REQ`; client
+  ACKs each with `0x4402 {questId u16, qsc u8, result u32}`, result=1 = proceed/accept. The
+  `qsc` is the QSC command (Cmd@payload+2): **2 = SAY** (dialog id = u32 @payload+7), **6 =
+  ACCEPT**, **0x0A = DONE/complete**. Reward grant on DONE: `0x240B [exp]` + `0x1033 [money]`
+  (matched the decoded rewards exactly: q1 EXP7/Money52).
+- **Bot wiring:** `ClientData.Quest(id)`/`QuestDialog(id)` (QuestData.cs parser); `ZoneView`
+  `QuestStep` now carries `DialogId`; `BotManager.DriveQuestDialogueAsync(npcHandle)` clicks +
+  ACKs every page to completion; Lua: `bot.quest(id)`, `bot.questDialog(id)`, `bot.doQuest(h)`,
+  `bot.npcByMob(id)`, `bot.level()`; endpoints `/quest/do`, `/quest-info/{id}`. First-cut
+  driver `scripts/quest_chain.lua`.
+- **Proven loop (Bot1208, fighter1):** q1 "Baby Steps" (accept Remi 111 → turn in Julia 29),
+  q2 "More Baby Steps" (instant accept+done at Julia, LINK→q3), q3 "The Chief of Roumen"
+  (accept Julia → walk → turn in Town Chief 92). **Leveled 1→2.**
+- **OPEN — autonomy gap:** quests are largely independent (PrevQuest@46 mostly 0, few LINKs),
+  offered by various NPCs gated by level. Strict id-chaining breaks (q4 startNpc=27 isn't a
+  town NPC in the chain). NEXT: decode the **orange-! available-quest flag** (NPC briefinfo) to
+  know which NPC currently has a quest — the right "which quest next" signal. Then handle
+  hunting-quest mob locations (client enemy-cluster packets or wander+combat-graph) + buy
+  skills(Ruby)/gear(Smith)/mount(Pey).

@@ -112,6 +112,46 @@ public sealed class BotApi
     public bool equip(int slot) => Ok(Wait(_mgr.EquipAsync(Id, (byte)slot)));
     public bool pickup(int itemHandle) => Ok(Wait(_mgr.PickupAsync(Id, (ushort)itemHandle)));
     public bool loot(int itemHandle = 0) => Ok(Wait(_mgr.LootAsync(Id, (ushort)itemHandle)));
+    public bool clickNpc(int handle) => Ok(Wait(_mgr.ClickNpcAsync(Id, (ushort)handle)));
+    public bool answerQuest(int result = 1) => Ok(Wait(_mgr.ProceedQuestAsync(Id, (uint)result)));
+    /// <summary>Drive a whole quest dialogue with one NPC (accept or turn-in): click it and
+    /// ACK every server-pushed script page until the dialogue ends. <c>result</c>=1 accepts.</summary>
+    public bool doQuest(int npcHandle, int result = 1) => Ok(Wait(_mgr.DriveQuestDialogueAsync(Id, (ushort)npcHandle, (uint)result)));
+    public bool selectReward(int questId, int index) => Ok(Wait(_mgr.SelectQuestRewardAsync(Id, (ushort)questId, (uint)index)));
+    public DynValue pendingQuest()
+    {
+        var q = View?.PendingQuest;
+        if (q is null) return DynValue.Nil;
+        var t = NewTable(); t["questId"] = q.QuestId; t["qsc"] = q.Qsc; t["dialogId"] = q.DialogId;
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Quest definition from QuestData.shn (nil if unknown): startNpc, turnInNpc,
+    /// minLevel/maxLevel, class, linkedQuest (LINK chain), plus mobs/items/rewards arrays and
+    /// the start/action/finish scripts. Lets a quest script drive the chain data-driven.</summary>
+    public DynValue quest(int id)
+    {
+        var q = _mgr.ClientData?.Quest(id);
+        if (q is null) return DynValue.Nil;
+        var t = NewTable();
+        t["id"] = q.Id; t["startNpc"] = q.StartNpc; t["turnInNpc"] = q.TurnInNpc;
+        t["minLevel"] = q.MinLevel; t["maxLevel"] = q.MaxLevel; t["isNeedLevel"] = q.IsNeedLevel;
+        t["class"] = q.Class; t["linkedQuest"] = q.LinkedQuest;
+        t["startScript"] = q.StartScript; t["actionScript"] = q.ActionScript; t["finishScript"] = q.FinishScript;
+        var mobs = NewTable(); int mi = 1;
+        foreach (var m in q.Mobs) { var e = NewTable(); e["isNpc"] = m.IsNpc; e["id"] = m.Id; e["toKill"] = m.ToKill; e["amount"] = m.Amount; mobs[mi++] = DynValue.NewTable(e); }
+        t["mobs"] = DynValue.NewTable(mobs);
+        var items = NewTable(); int ii = 1;
+        foreach (var it in q.Items) { var e = NewTable(); e["type"] = it.Type; e["id"] = it.Id; e["amount"] = it.Amount; items[ii++] = DynValue.NewTable(e); }
+        t["items"] = DynValue.NewTable(items);
+        var rewards = NewTable(); int ri = 1;
+        foreach (var r in q.Rewards) { var e = NewTable(); e["method"] = r.Method; e["type"] = r.Type; e["itemId"] = r.ItemId; e["itemCount"] = r.ItemCount; e["amount"] = r.Amount; rewards[ri++] = DynValue.NewTable(e); }
+        t["rewards"] = DynValue.NewTable(rewards);
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Resolve a quest dialog/title id to its text (QuestDialog.shn). Empty if unknown.</summary>
+    public string questDialog(int id) => _mgr.ClientData?.QuestDialog(id) ?? "";
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     public bool dead() => View?.Dead ?? false;
@@ -200,6 +240,7 @@ public sealed class BotApi
     public int? selfHandle() => _handle.SelfHandle;
     public bool mounted() => View?.IsMounted ?? false;
     public double walkSpeed() => _handle.WalkSpeed;
+    public int level() => (int)_handle.Level;
     public string phase() => _handle.Phase.ToString();
     public bool inZone() => _handle.Phase == BotPhase.InZone;
 
@@ -223,6 +264,24 @@ public sealed class BotApi
             if (d < bestD) { bestD = d; best = n.Handle; }
         }
         return best is { } b ? DynValue.NewNumber(b) : DynValue.Nil;
+    }
+
+    /// <summary>Resolve a mob/NPC id (e.g. a quest's startNpc/turnInNpc) to a live entity in
+    /// view: {handle, x, y, dist}, or nil if not currently spawned near the bot. Lets the quest
+    /// driver turn QuestData ids into something it can walkTo + doQuest.</summary>
+    public DynValue npcByMob(int mobId)
+    {
+        var v = View; if (v is null) return DynValue.Nil;
+        var pos = _handle.Position;
+        foreach (var n in v.NearbyNpcs)
+        {
+            if (n.MobId != mobId) continue;
+            var row = NewTable();
+            row["handle"] = n.Handle; row["mobId"] = n.MobId; row["x"] = n.X; row["y"] = n.Y;
+            if (pos is { } p) row["dist"] = Math.Sqrt(Sq((double)n.X - p.X) + Sq((double)n.Y - p.Y));
+            return DynValue.NewTable(row);
+        }
+        return DynValue.Nil;
     }
 
     public DynValue nearbyMobs()

@@ -64,6 +64,21 @@ public sealed record PickResult(ushort ItemId, uint Lot, ushort Error)
     public DateTime AtUtc { get; init; } = DateTime.UtcNow;
 }
 
+/// <summary>A pending quest-dialogue step the server is prompting (NC_QUEST_SCRIPT_CMD_REQ,
+/// 0x4401): <paramref name="QuestId"/> + the QSC command code (<paramref name="Qsc"/>) + the
+/// command's first <c>Data</c> word (<paramref name="DialogId"/>). The QSC command (Cmd, payload
+/// offset 2) drives the dialogue: <b>Cmd 2 = SAY</b> a line (its <see cref="DialogId"/> is the
+/// QuestDialog.shn text id, e.g. 202), <b>Cmd 0x0A = complete/reward</b>. The script runs
+/// server-side, so every SAY page is its own 0x4401 the client must ACK. The client answers
+/// QUEST_SCRIPT_CMD_ACK {questId, nQSC=Qsc, nResult} — nResult=1 proceeds/accepts (and at the
+/// IF-RESULT branch, accepts the quest). Branching quests read the answer from QuestData.shn.
+/// <see cref="DialogId"/> is the u32 at payload offset 7 (STRUCT_QSC.Data[0]) — for SAY it's the
+/// spoken line id, letting the driver follow the script and detect the accept/complete step.</summary>
+public sealed record QuestStep(ushort QuestId, byte Qsc, int DialogId = 0)
+{
+    public DateTime AtUtc { get; init; } = DateTime.UtcNow;
+}
+
 /// <summary>A combat hit broadcast: <paramref name="Attacker"/> hit
 /// <paramref name="Defender"/> for <paramref name="Damage"/>, leaving the defender at
 /// <paramref name="RestHp"/>. Decoded from SWING_DAMAGE (our swing) and
@@ -205,6 +220,10 @@ public sealed class ZoneView : IDisposable
     // learns which skills it actually has (heal, buffs, attacks) — read from the wire, not
     // hard-coded. Names resolve via client ActiveSkill (ClientData.SkillName).
     private static readonly ushort OpClientSkill = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_SKILL_CMD>();
+    // Quest dialogue: the server drives accept/turn-in via NC_QUEST_SCRIPT_CMD_REQ (0x4401)
+    // {questId u16, STRUCT_QSC}; the QSC command code is the first byte of STRUCT_QSC (payload
+    // offset 2). The client answers QUEST_SCRIPT_CMD_ACK with {questId, nQSC=code, nResult}.
+    private static readonly ushort OpQuestScriptReq = PacketRegistry.GetOpcode<PROTO_NC_QUEST_SCRIPT_CMD_REQ>();
     private const int SkillListHeaderLen = 10; // restempow+PartMark+nMaxNum+chrregnum+number
     private const int SkillBlockLen = 12;
 
@@ -502,6 +521,14 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Raised when the learned-skill list is (re)populated at zone login.</summary>
     public event Action? SkillsChanged;
+
+    /// <summary>The quest-dialogue step the server is currently prompting (last
+    /// NC_QUEST_SCRIPT_CMD_REQ), or null if none pending. The quest driver answers it with
+    /// QUEST_SCRIPT_CMD_ACK ("proceed"); cleared after a few seconds of no new prompt.</summary>
+    public QuestStep? PendingQuest { get; private set; }
+
+    /// <summary>Raised on each quest-dialogue prompt (NC_QUEST_SCRIPT_CMD_REQ).</summary>
+    public event Action<QuestStep>? QuestPrompt;
 
     public bool TryGetPlayer(ushort handle, out NearbyPlayer player) => _nearby.TryGetValue(handle, out player!);
 
@@ -909,6 +936,24 @@ public sealed class ZoneView : IDisposable
                     _log?.Invoke($"[ZoneView] learned skills: {string.Join(",", _skills.Keys.OrderBy(k => k))}");
                     SkillsChanged?.Invoke();
                 }
+            }
+        }
+        else if (op == OpQuestScriptReq)
+        {
+            // Server quest-dialogue step: [questId u16][STRUCT_QSC...] — QSC command code is
+            // the first STRUCT_QSC byte (payload offset 2). Track as the pending step to answer.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 3)
+            {
+                var questId = (ushort)(p[0] | (p[1] << 8));
+                var qsc = p[2];
+                // STRUCT_QSC: Cmd(u32)@2, IsPigeonStartType@6, Data@7. For a SAY (Cmd 2) the
+                // first Data word is the QuestDialog text id being spoken (e.g. 202).
+                int dialogId = p.Length >= 11 ? (p[7] | (p[8] << 8) | (p[9] << 16) | (p[10] << 24)) : 0;
+                var step = new QuestStep(questId, qsc, dialogId);
+                PendingQuest = step;
+                _log?.Invoke($"[ZoneView] quest dialogue: quest {questId} qsc=0x{qsc:X2} dialog={dialogId} (answer to proceed)");
+                QuestPrompt?.Invoke(step);
             }
         }
         else if (op == ChatCodec.SomeoneChatOpcode)

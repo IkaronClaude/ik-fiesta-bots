@@ -1084,6 +1084,76 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, $"buy item {itemId} x{lot}",
             s => s.SendAsync(new PROTO_NC_ITEM_BUY_REQ { itemid = itemId, lot = lot }, ct));
 
+    // ── Quests ────────────────────────────────────────────────────────────────
+    /// <summary>Click an NPC (NC_ACT_NPCCLICK_CMD) — starts its quest dialogue / opens its
+    /// menu. The server then drives the dialogue via NC_QUEST_SCRIPT_CMD_REQ.</summary>
+    public Task<ActionResult> ClickNpcAsync(string id, ushort npcHandle, CancellationToken ct = default)
+        => ActAsync(id, $"click npc h={npcHandle}",
+            s => s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct));
+
+    /// <summary>Answer a quest-dialogue step (NC_QUEST_SCRIPT_CMD_ACK). <paramref name="result"/>=1
+    /// proceeds/accepts (the common case); branching quests read the answer from QuestData.shn.</summary>
+    public Task<ActionResult> AnswerQuestAsync(string id, ushort questId, byte qsc, uint result = 1, CancellationToken ct = default)
+        => ActAsync(id, $"quest {questId} answer qsc=0x{qsc:X2} result={result}",
+            s => s.SendAsync(new PROTO_NC_QUEST_SCRIPT_CMD_ACK { nQuestID = questId, nQSC = qsc, nResult = result }, ct));
+
+    /// <summary>Answer the currently-pending quest dialogue step (from
+    /// <see cref="ZoneView.PendingQuest"/>) — "proceed". Convenience so the caller needn't
+    /// pass the quest id / qsc each step.</summary>
+    public Task<ActionResult> ProceedQuestAsync(string id, uint result = 1, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var h) || h.ZoneView?.PendingQuest is not { } q)
+            return Task.FromResult(ActionResult.NotFound);
+        return AnswerQuestAsync(id, q.QuestId, q.Qsc, result, ct);
+    }
+
+    /// <summary>Drive a whole quest dialogue: click the NPC, then ACK each server-pushed
+    /// script page (NC_QUEST_SCRIPT_CMD_REQ) with <paramref name="result"/> until the server
+    /// stops sending pages. The quest script runs server-side — every SAY line is its own
+    /// 0x4401 page that must be answered — so this loop walks the Start (accept), in-progress,
+    /// or Finish (turn-in) script to completion in one call. <paramref name="result"/>=1 is the
+    /// "proceed/accept" answer (the common case); at the script's IF-RESULT branch this is what
+    /// accepts the quest. Stops when no new page arrives within the per-step timeout or after
+    /// <paramref name="maxSteps"/>. Reward selection (choice quests) is handled separately via
+    /// <see cref="SelectQuestRewardAsync"/>.</summary>
+    public async Task<ActionResult> DriveQuestDialogueAsync(string id, ushort npcHandle, uint result = 1, int maxSteps = 24, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var h)) return ActionResult.NotFound;
+        if (h.Phase != BotPhase.InZone || h.ZoneSession is not { } s) return ActionResult.NotInZone;
+        var zv = h.ZoneView;
+
+        // Baseline on the currently-pending step so we only answer pages that arrive AFTER
+        // this click (a stale step from a previous dialogue must not be re-answered).
+        var lastSeen = zv?.PendingQuest?.AtUtc ?? DateTime.MinValue;
+        await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct);
+        h.Log($"quest dialogue: click npc h={npcHandle}, driving (result={result})");
+
+        int answered = 0;
+        for (int step = 0; step < maxSteps; step++)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(2.5);
+            QuestStep? cur = null;
+            while (DateTime.UtcNow < deadline)
+            {
+                var pq = zv?.PendingQuest;
+                if (pq is not null && pq.AtUtc > lastSeen) { cur = pq; break; }
+                await Task.Delay(80, ct);
+            }
+            if (cur is null) break; // server sent no further page → dialogue finished
+            lastSeen = cur.AtUtc;
+            await AnswerQuestAsync(id, cur.QuestId, cur.Qsc, result, ct);
+            answered++;
+        }
+        h.Log($"quest dialogue done (npc h={npcHandle}, {answered} pages answered)");
+        return ActionResult.Sent;
+    }
+
+    /// <summary>Select a quest reward item by index (NC_QUEST_REWARD_SELECT_ITEM_INDEX_CMD) —
+    /// e.g. the class-appropriate reward.</summary>
+    public Task<ActionResult> SelectQuestRewardAsync(string id, ushort questId, uint itemIndex, CancellationToken ct = default)
+        => ActAsync(id, $"quest {questId} reward index {itemIndex}",
+            s => s.SendAsync(new PROTO_NC_QUEST_REWARD_SELECT_ITEM_INDEX_CMD { nQuestID = questId, nSelectedItemIndex = itemIndex }, ct));
+
     /// <summary>Use an inventory item by slot (invenType: 0 = normal bag).</summary>
     public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)
         => ActAsync(id, $"use item slot={slot} type={invenType}",

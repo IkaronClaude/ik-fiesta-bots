@@ -22,6 +22,8 @@ public sealed class ClientData
 {
     private readonly string _dataDir;
     private readonly ConcurrentDictionary<string, ShnTable?> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyDictionary<int, QuestDef>? _quests;
+    private readonly object _questLock = new();
 
     public ClientData(string dataDir) => _dataDir = dataDir;
 
@@ -123,6 +125,45 @@ public sealed class ClientData
         var m = Mob(mobId);
         if (m is null) return true; // no data — don't filter out a potential mob
         return !m.IsNpc && !m.IsPlayerSide && m.Type != ResourceNodeType;
+    }
+
+    /// <summary>Look up a quest definition by its (wire) quest id from the bespoke
+    /// <c>QuestData.shn</c> — StartNPC, level/class gate, kill/collect objectives, rewards
+    /// and the Start/Action/Finish scripts. Parsed once and cached. Null if missing.
+    /// This is how the quest driver knows which NPC to visit and what the quest wants,
+    /// without hard-coding any of it.</summary>
+    public QuestDef? Quest(int questId)
+    {
+        var q = Quests;
+        return q.TryGetValue(questId, out var def) ? def : null;
+    }
+
+    /// <summary>All decoded quests, keyed by id (loaded once from QuestData.shn).</summary>
+    public IReadOnlyDictionary<int, QuestDef> Quests
+    {
+        get
+        {
+            if (_quests is not null) return _quests;
+            lock (_questLock)
+            {
+                if (_quests is null)
+                {
+                    try { _quests = QuestData.Load(Path.Combine(_dataDir, "QuestData.shn")); }
+                    catch { _quests = new Dictionary<int, QuestDef>(); }
+                }
+            }
+            return _quests;
+        }
+    }
+
+    /// <summary>Resolve a quest dialog/title id to its text from the standard-SHN
+    /// <c>QuestDialog.shn</c> (the indices used by quest scripts' <c>SAY n</c> and a quest's
+    /// Title/Description). Empty if missing.</summary>
+    public string QuestDialog(int dialogId)
+    {
+        var t = Table("QuestDialog");
+        var row = t?.FindByLong("ID", dialogId) ?? t?.FindByLong("id", dialogId);
+        return row is null ? "" : GetStr(row, "Dialog");
     }
 
     /// <summary>MobInfo <c>Type</c> value for a gatherable resource node (herb/wood/mushroom).</summary>
