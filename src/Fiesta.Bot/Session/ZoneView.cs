@@ -524,6 +524,14 @@ public sealed class ZoneView : IDisposable
 
     private readonly HashSet<int> _doneQuests = new();
     private readonly ConcurrentDictionary<int, byte> _activeQuests = new();
+    private readonly HashSet<int> _availableQuests = new();
+
+    /// <summary>Quest ids the character can accept right now — the server's available list from
+    /// the login QUEST_READ burst (0x10CE). This is the authoritative orange-! set (the client
+    /// derives the marker from it); the driver accepts from here rather than guessing from
+    /// QuestData level/prereq.</summary>
+    public IReadOnlyCollection<int> AvailableQuests => _availableQuests;
+    public bool IsQuestAvailable(int id) => _availableQuests.Contains(id);
 
     /// <summary>Quest ids the character has completed (from the login QUEST_DONE burst). The
     /// quest driver diffs this against QuestData.shn to know what's still available.</summary>
@@ -538,18 +546,20 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Seed completed + in-progress quest ids from the zone-login burst
     /// (NC_CHAR_QUEST_DONE_CMD / QUEST_DOING, captured by <see cref="Zone.ZoneEntry"/>).</summary>
-    public void SeedQuests(IEnumerable<ushort>? done, IEnumerable<(ushort id, byte status)>? active)
+    public void SeedQuests(IEnumerable<ushort>? done, IEnumerable<(ushort id, byte status)>? active,
+        IEnumerable<ushort>? available = null)
     {
         if (done is not null) foreach (var d in done) _doneQuests.Add(d);
         if (active is not null) foreach (var (id, st) in active) _activeQuests[id] = st;
-        if (_doneQuests.Count > 0 || _activeQuests.Count > 0)
-            _log?.Invoke($"[ZoneView] seeded quests: done={_doneQuests.Count} active={_activeQuests.Count}");
+        if (available is not null) foreach (var a in available) _availableQuests.Add(a);
+        if (_doneQuests.Count > 0 || _activeQuests.Count > 0 || _availableQuests.Count > 0)
+            _log?.Invoke($"[ZoneView] seeded quests: done={_doneQuests.Count} active={_activeQuests.Count} available={_availableQuests.Count}");
     }
 
     /// <summary>Mark a quest active (just accepted) / done (just turned in) so the driver's
     /// view stays current within the session without waiting for a relog.</summary>
-    public void MarkQuestActive(int id, byte status = 1) => _activeQuests[id] = status;
-    public void MarkQuestDone(int id) { _activeQuests.TryRemove(id, out _); _doneQuests.Add(id); }
+    public void MarkQuestActive(int id, byte status = 1) { _activeQuests[id] = status; _availableQuests.Remove(id); }
+    public void MarkQuestDone(int id) { _activeQuests.TryRemove(id, out _); _availableQuests.Remove(id); _doneQuests.Add(id); }
 
     /// <summary>The quest-dialogue step the server is currently prompting (last
     /// NC_QUEST_SCRIPT_CMD_REQ), or null if none pending. The quest driver answers it with

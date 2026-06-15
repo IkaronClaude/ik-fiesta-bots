@@ -168,28 +168,28 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Quest ids the character can accept RIGHT NOW from NPCs currently in view:
-    /// not done, not active, level/class gate satisfied, and the start NPC is spawned nearby.
-    /// This is how the driver picks the next quest (the data-driven equivalent of the client's
-    /// orange-! marker). Returned as an array of {id, startNpc, turnInNpc, title}.</summary>
+    /// <summary>Quests the character can accept right now — the server's authoritative
+    /// available list from the login QUEST_READ burst (the orange-! set), joined with QuestData
+    /// for startNpc/turnIn details. Each: {id, startNpc, turnInNpc, title, inView} where inView
+    /// = the start NPC is currently spawned near the bot (event quests' NPCs often aren't).
+    /// Refreshed on relog (the server doesn't push READ mid-session).</summary>
     public DynValue availableQuests()
     {
         var t = NewTable();
         var v = View; var cd = _mgr.ClientData;
-        if (v is null || cd is null) return DynValue.NewTable(t);
-        int lvl = (int)_handle.Level;
+        if (v is null) return DynValue.NewTable(t);
         var npcsInView = new HashSet<int>();
         foreach (var n in v.NearbyNpcs) npcsInView.Add(n.MobId);
         int i = 1;
-        foreach (var q in cd.Quests.Values)
+        foreach (var id in v.AvailableQuests)
         {
-            if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
-            if (q.IsNeedLevel && q.MinLevel > 0 && lvl < q.MinLevel) continue;
-            if (q.MaxLevel > 0 && lvl > q.MaxLevel) continue;
-            if (!npcsInView.Contains(q.StartNpc)) continue;     // giver must be reachable here
+            var q = cd?.Quest(id);
             var e = NewTable();
-            e["id"] = q.Id; e["startNpc"] = q.StartNpc; e["turnInNpc"] = q.TurnInNpc;
-            e["title"] = cd.QuestDialog(q.Title); e["minLevel"] = q.MinLevel;
+            e["id"] = id;
+            e["startNpc"] = q?.StartNpc ?? 0;
+            e["turnInNpc"] = q?.TurnInNpc ?? 0;
+            e["title"] = q is not null ? cd!.QuestDialog(q.Title) : "";
+            e["inView"] = q is not null && npcsInView.Contains(q.StartNpc);
             t[i++] = DynValue.NewTable(e);
         }
         return DynValue.NewTable(t);

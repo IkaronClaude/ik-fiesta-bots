@@ -56,6 +56,13 @@ public sealed class ZoneEntry
         (ushort)(((int)ProtocolCommand.Char << 10) | (int)CharOpcode.ClientQuestDoneCmd);
     private static readonly ushort OpQuestDoing =
         (ushort)(((int)ProtocolCommand.Char << 10) | (int)CharOpcode.ClientQuestDoingCmd);
+    // NC_CHAR_CLIENT_QUEST_READ_CMD (0x10CE): the AVAILABLE-quest list — the ids the character
+    // can accept right now (this is what the client turns into the orange-! / available-Q
+    // marker; operator-confirmed). Layout: chrregnum u32@0, nNumOfReadQuest u16@4, then
+    // nNumOfReadQuest × quest-id u16. (Verified: it listed the event quests 20036 "Please Find
+    // My Candy" / 20046, with their unusual ids.) Active quests are excluded (they're in DOING).
+    private static readonly ushort OpQuestRead =
+        (ushort)(((int)ProtocolCommand.Char << 10) | (int)CharOpcode.ClientQuestReadCmd);
 
     private readonly byte[] _xorTable;
     private readonly Action<string> _log;
@@ -110,6 +117,7 @@ public sealed class ZoneEntry
             List<(byte box, ushort inven, ushort itemId)>? items = null;
             List<ushort>? doneQuests = null;
             List<(ushort id, byte status)>? activeQuests = null;
+            List<ushort>? readQuests = null;
             while (DateTime.UtcNow < deadline)
             {
                 var remaining = deadline - DateTime.UtcNow;
@@ -193,6 +201,19 @@ public sealed class ZoneEntry
                     }
                     continue;
                 }
+                if (pkt.Opcode == OpQuestRead) // available-quest list (chrregnum u32, count u16, ids u16[])
+                {
+                    var p = pkt.Payload.Span;
+                    if (p.Length >= 6)
+                    {
+                        int n = p[4] | (p[5] << 8);
+                        readQuests ??= new();
+                        for (int i = 0; i < n && 6 + i * 2 + 2 <= p.Length; i++)
+                            readQuests.Add((ushort)(p[6 + i * 2] | (p[7 + i * 2] << 8)));
+                        _log($"[Zone] quests available ({readQuests.Count}): {string.Join(",", readQuests)}");
+                    }
+                    continue;
+                }
                 if (pkt.Opcode == OpMapLoginAck) // [1802] — the login ack ending the burst
                 {
                     // The spawn position is PROTO_NC_CHAR_MAPLOGIN_ACK.logincoord — the
@@ -233,7 +254,7 @@ public sealed class ZoneEntry
                         var maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
                         _log($"[Zone] maxHPStone={maxHpStone} maxSPStone={maxSpStone}");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, ct);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, ct);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -241,7 +262,7 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, doneQuests, activeQuests, ct);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, doneQuests, activeQuests, readQuests, ct);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -258,11 +279,11 @@ public sealed class ZoneEntry
         uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills,
         IReadOnlyList<(byte box, ushort inven, ushort itemId)>? items,
         IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status)>? activeQuests,
-        CancellationToken ct)
+        IReadOnlyList<ushort>? readQuests, CancellationToken ct)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests);
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
@@ -299,7 +320,8 @@ public sealed record ZoneEntryResult(
     IReadOnlyList<ushort>? Skills = null,
     IReadOnlyList<(byte box, ushort inven, ushort itemId)>? Items = null,
     IReadOnlyList<ushort>? DoneQuests = null,
-    IReadOnlyList<(ushort id, byte status)>? ActiveQuests = null);
+    IReadOnlyList<(ushort id, byte status)>? ActiveQuests = null,
+    IReadOnlyList<ushort>? ReadQuests = null);
 
 public sealed class ZoneEntryException : Exception
 {

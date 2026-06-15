@@ -1467,7 +1467,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);
                 zoneView.SeedSkills(entry.Skills);
                 zoneView.SeedItems(entry.Items);
-                zoneView.SeedQuests(entry.DoneQuests, entry.ActiveQuests);
+                zoneView.SeedQuests(entry.DoneQuests, entry.ActiveQuests, entry.ReadQuests);
                 handle.SetCurrentMap(currentMap);
                 zoneView.MapChanged += h =>
                 {
