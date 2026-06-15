@@ -372,16 +372,19 @@ public sealed class BotManager : IAsyncDisposable
         return null;
     }
 
-    /// <summary>Handle of the nearest non-gate mob/NPC to the bot (null if none in
-    /// view). Out in the field this is a mob; near town it may be an NPC — pass an
-    /// explicit target to <see cref="AttackAsync"/> when that matters.</summary>
-    private static ushort? NearestMob(BotHandle handle)
+    /// <summary>Handle of the nearest huntable enemy to the bot (null if none in view).
+    /// Filters out gates, town guards (player-side), shop NPCs, and gatherable resource
+    /// nodes via client MobInfo (<see cref="GameData.ClientData.IsHuntableEnemy"/>) — so
+    /// auto-attack never charges a guard or a herb. Pass an explicit target to
+    /// <see cref="AttackAsync"/> to override the filter.</summary>
+    private ushort? NearestMob(BotHandle handle)
     {
         if (handle.ZoneView is not { } view || handle.Position is not { } pos) return null;
         ushort? best = null; var bestD = double.MaxValue;
         foreach (var n in view.NearbyNpcs)
         {
             if (n.IsGate) continue;
+            if (ClientData is { } cd && !cd.IsHuntableEnemy(n.MobId)) continue; // skip guards/NPCs/resources
             var d = Math.Pow((double)n.X - pos.X, 2) + Math.Pow((double)n.Y - pos.Y, 2);
             if (d < bestD) { bestD = d; best = n.Handle; }
         }
@@ -957,6 +960,45 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, $"equip inventory slot {slot}",
             s => s.SendAsync(new PROTO_NC_ITEM_EQUIP_REQ { slot = slot }, ct));
 
+    /// <summary>Pick up a ground item by its entity handle (NC_ITEM_PICK_REQ {itemhandle},
+    /// the handle from <see cref="ZoneView.Drops"/> / a DROPEDITEM broadcast). Must be close
+    /// to the item — use <see cref="LootAsync"/> to walk to it first. The server replies with
+    /// CELLCHANGE (bag gains the item) + MAP_LOGOUT (item despawns) + PICK_ACK; success is
+    /// judged by the bag change, not the ack error (see <see cref="ZoneView.PickResult"/>).
+    /// Blocked when the inventory is full or the char is in a mini-house etc. — those failures
+    /// aren't yet pinned to a code, so check the drop actually left view.</summary>
+    public Task<ActionResult> PickupAsync(string id, ushort itemHandle, CancellationToken ct = default)
+        => ActAsync(id, $"pickup item h={itemHandle}",
+            s => s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = itemHandle }, ct));
+
+    /// <summary>Loot a ground drop: walk to it (pathfinding over the current map's grid),
+    /// then pick it up and wait for it to leave view (picked) or a short cap. With
+    /// <paramref name="itemHandle"/> 0 it loots the drop nearest the bot. Returns
+    /// <see cref="ActionResult.NotFound"/> when nothing is on the ground. The convenience
+    /// the combat loop calls after a kill to collect loot.</summary>
+    public async Task<ActionResult> LootAsync(string id, ushort itemHandle = 0, double unitsPerSec = 120.0, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        if (handle.ZoneView is not { } view || handle.Position is not { } pos) return ActionResult.NotInZone;
+
+        var drop = itemHandle != 0
+            ? view.Drops.FirstOrDefault(d => d.Handle == itemHandle)
+            : view.NearestDrop(pos.X, pos.Y);
+        if (drop is null) return ActionResult.NotFound;
+
+        // Walk onto the item, then pick. Pickup has a short range, so stop right on it.
+        await ApproachAsync(id, handle, drop.X, drop.Y, stopShort: 0, unitsPerSec, ct);
+        await s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = drop.Handle }, ct);
+        handle.Log($"loot item {drop.ItemId} (h={drop.Handle}) @({drop.X},{drop.Y})");
+
+        // Success = the drop left view (picked/despawned). PICK_ACK arrives too but its
+        // error code was non-zero even on success, so the drop-gone signal is authoritative.
+        var picked = await WaitUntilAsync(() => view.Drops.All(d => d.Handle != drop.Handle), 3000, ct);
+        handle.Log(picked ? $"looted h={drop.Handle}" : $"loot h={drop.Handle} unconfirmed (still on ground — inventory full / out of range / blocked?)");
+        return ActionResult.Sent;
+    }
+
     // Move/run (ACT MoverunCmd, 0x2019): 16 bytes = fromX,fromY,toX,toY (u32 LE).
     private static readonly ushort OpMoveRun =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.MoverunCmd);
@@ -1215,7 +1257,10 @@ public sealed class BotManager : IAsyncDisposable
                 handle.ZoneView = zoneView;
                 if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
+                if (ClientData is { } cdata) zoneView.IsHuntableMob = mobId => cdata.IsHuntableEnemy(mobId); // ignore guards
                 zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);
+                zoneView.SeedSkills(entry.Skills);
+                zoneView.SeedItems(entry.Items);
                 handle.SetCurrentMap(currentMap);
                 zoneView.MapChanged += h =>
                 {

@@ -59,6 +59,8 @@ public sealed class BotApi
     public bool heal(int skill) => Ok(Wait(_mgr.HealSelfAsync(Id, (ushort)skill)));
     public bool useItem(int slot, int invenType = 9) => Ok(Wait(_mgr.UseItemAsync(Id, (byte)slot, (byte)invenType)));
     public bool equip(int slot) => Ok(Wait(_mgr.EquipAsync(Id, (byte)slot)));
+    public bool pickup(int itemHandle) => Ok(Wait(_mgr.PickupAsync(Id, (ushort)itemHandle)));
+    public bool loot(int itemHandle = 0) => Ok(Wait(_mgr.LootAsync(Id, (ushort)itemHandle)));
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     public bool dead() => View?.Dead ?? false;
@@ -203,6 +205,34 @@ public sealed class BotApi
             t[i++] = row;
         }
         return DynValue.NewTable(t);
+    }
+
+    /// <summary>Items on the ground in view (rows: handle, itemId, x, y, dropMob, dist).
+    /// Loot a kill with <c>bot.loot()</c> (nearest) or <c>bot.loot(handle)</c>.</summary>
+    public DynValue drops()
+    {
+        var t = NewTable();
+        var v = View; if (v is null) return DynValue.NewTable(t);
+        var pos = _handle.Position;
+        var i = 1;
+        foreach (var g in v.Drops)
+        {
+            var row = NewTable();
+            row["handle"] = g.Handle; row["itemId"] = g.ItemId; row["x"] = g.X; row["y"] = g.Y;
+            row["dropMob"] = g.DropMobHandle;
+            if (pos is { } p) row["dist"] = Math.Sqrt(Sq((double)g.X - p.X) + Sq((double)g.Y - p.Y));
+            t[i++] = row;
+        }
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Handle of the ground drop nearest the bot, or nil if nothing's on the ground.</summary>
+    public DynValue nearestDrop()
+    {
+        var v = View; var pos = _handle.Position;
+        if (v is null || pos is not { } p) return DynValue.Nil;
+        var g = v.NearestDrop(p.X, p.Y);
+        return g is null ? DynValue.Nil : DynValue.NewNumber(g.Handle);
     }
 
     public DynValue inventory()

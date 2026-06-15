@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Net;
@@ -30,6 +31,17 @@ public sealed class ZoneEntry
     // burst; the client sends MAP_LOGINCOMPLETE only after seeing it.
     private static readonly ushort OpMapLoginAck =
         (ushort)(((int)ProtocolCommand.Map << 10) | (int)MapOpcode.LoginAck);
+    // NC_CHAR_CLIENT_SKILL_CMD (0x103D): the learned-skill list, sent DURING the post-[1801]
+    // burst (before MAP_LOGINCOMPLETE) — so the in-zone session loop / ZoneView never sees it.
+    // We capture it here and seed ZoneView. Layout: [restempow:1][PartMark:1][nMaxNum:2]
+    // [chrregnum:4][number:2][SKILLREADBLOCK(12) × number]; each block leads with skillid u16.
+    private static readonly ushort OpClientSkill = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_SKILL_CMD>();
+    private const int SkillListHeaderLen = 10;
+    private const int SkillBlockLen = 12;
+    // NC_CHAR_CLIENT_ITEM_CMD (0x1047): the bag + worn-gear list, sent (per `box`) once per
+    // container during the login burst — also drained here, so the bag AND equipment are
+    // empty until a live CELL/EQUIP change. We capture every frame and seed ZoneView.
+    private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
 
     private readonly byte[] _xorTable;
     private readonly Action<string> _log;
@@ -80,6 +92,8 @@ public sealed class ZoneEntry
             // burst until [1802] (or, as a fallback, the deadline) before [1803].
             var deadline = DateTime.UtcNow.AddSeconds(10);
             var sawFrame = false;
+            List<ushort>? skills = null;
+            List<(byte box, ushort inven, ushort itemId)>? items = null;
             while (DateTime.UtcNow < deadline)
             {
                 var remaining = deadline - DateTime.UtcNow;
@@ -101,6 +115,36 @@ public sealed class ZoneEntry
                 }
 
                 sawFrame = true;
+                if (pkt.Opcode == OpClientSkill) // learned-skill list (drained here; seed ZoneView)
+                {
+                    skills = ParseSkillList(pkt.Payload.Span);
+                    _log($"[Zone] learned skills ({skills.Count}): {string.Join(",", skills)}");
+                    continue;
+                }
+                if (pkt.Opcode == OpClientItem) // bag/equip list (per box) — capture + seed ZoneView
+                {
+                    // Hand-parse: [numofitem u8][box u8][flag u8] then numofitem entries, each
+                    // = [datasize u8][location u16][info...] where datasize = info byte-count.
+                    // The typed struct reads a FIXED info size and misaligns/throws on the big
+                    // frames (equipped/enchanted items carry more data) — so walk by datasize.
+                    var p = pkt.Payload.Span;
+                    if (p.Length >= 3)
+                    {
+                        int num = p[0]; byte box = p[1]; int off = 3;
+                        items ??= new();
+                        var logged = new List<string>();
+                        for (int i = 0; i < num && off + 5 <= p.Length; i++)
+                        {
+                            int datasize = p[off];
+                            ushort inven = (ushort)(p[off + 1] | (p[off + 2] << 8));
+                            ushort itemId = (ushort)(p[off + 3] | (p[off + 4] << 8));
+                            if (itemId != 0) { items.Add((box, inven, itemId)); logged.Add($"{inven}:{itemId}"); }
+                            off += 1 + datasize; // entry = datasize-byte + datasize bytes (location(2)+info)
+                        }
+                        _log($"[Zone] item frame box={box} n={num} ds0={(num > 0 && p.Length > 3 ? p[3] : 0)} items=[{string.Join(",", logged)}]");
+                    }
+                    continue;
+                }
                 if (pkt.Opcode == OpMapLoginAck) // [1802] — the login ack ending the burst
                 {
                     // The spawn position is PROTO_NC_CHAR_MAPLOGIN_ACK.logincoord — the
@@ -131,7 +175,17 @@ public sealed class ZoneEntry
                         maxSp = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(150, 4));
                         _log($"[Zone] maxHp={maxHp} maxSp={maxSp}");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, ct);
+                    // Stone region of CHAR_PARAMETER_DATA: MaxHPStone @param160→body162,
+                    // MaxSPStone @param164→body166 (max soul-stone reserve capacity). The
+                    // CURRENT counts are NOT here (the PwrStone/GrdStone sub-structs read 0
+                    // even with stones in reserve) — they come from a BUY_ACK at runtime.
+                    if (span.Length >= 170)
+                    {
+                        var maxHpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(162, 4));
+                        var maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
+                        _log($"[Zone] maxHPStone={maxHpStone} maxSPStone={maxSpStone}");
+                    }
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, ct);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -139,7 +193,7 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, ct);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, ct);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -153,11 +207,29 @@ public sealed class ZoneEntry
     /// then hand back the open connection (now fully in zone).</summary>
     private async Task<ZoneEntryResult> CompleteLoginAsync(
         FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, ushort? charHandle,
-        uint? maxHp, uint? maxSp, CancellationToken ct)
+        uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills,
+        IReadOnlyList<(byte box, ushort inven, ushort itemId)>? items, CancellationToken ct)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items);
+    }
+
+    /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
+    /// (header then <c>number</c> × 12-byte blocks, each leading with the skill id u16).</summary>
+    private static List<ushort> ParseSkillList(ReadOnlySpan<byte> p)
+    {
+        var skills = new List<ushort>();
+        if (p.Length < SkillListHeaderLen) return skills;
+        var number = (ushort)(p[8] | (p[9] << 8));
+        for (var i = 0; i < number; i++)
+        {
+            var off = SkillListHeaderLen + i * SkillBlockLen;
+            if (off + 2 > p.Length) break;
+            var skillId = (ushort)(p[off] | (p[off + 1] << 8));
+            if (skillId != 0) skills.Add(skillId);
+        }
+        return skills;
     }
 
     private static void FillBytes(byte[] dst, string s)
@@ -173,7 +245,9 @@ public sealed class ZoneEntry
 /// <see cref="MaxHp"/>/<see cref="MaxSp"/> — all decoded from the [1802] login ack
 /// (null if it wasn't seen). Current HP/SP arrive later via HPCHANGE/SPCHANGE.</summary>
 public sealed record ZoneEntryResult(
-    FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY, ushort? CharHandle, uint? MaxHp = null, uint? MaxSp = null);
+    FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY, ushort? CharHandle, uint? MaxHp = null, uint? MaxSp = null,
+    IReadOnlyList<ushort>? Skills = null,
+    IReadOnlyList<(byte box, ushort inven, ushort itemId)>? Items = null);
 
 public sealed class ZoneEntryException : Exception
 {

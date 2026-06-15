@@ -55,6 +55,10 @@ public static class BotEndpoints
             group.MapGet("/{id}/npcs", (string id) => Unavailable()).WithSummary("Bot nearby NPCs (unavailable)");
             group.MapGet("/{id}/players", (string id) => Unavailable()).WithSummary("Bot nearby players (unavailable)");
             group.MapPost("/{id}/equip", (string id) => Unavailable()).WithSummary("Bot equip (unavailable)");
+            group.MapPost("/{id}/pickup", (string id) => Unavailable()).WithSummary("Bot pickup (unavailable)");
+            group.MapPost("/{id}/loot", (string id) => Unavailable()).WithSummary("Bot loot (unavailable)");
+            group.MapGet("/{id}/drops", (string id) => Unavailable()).WithSummary("Bot ground drops (unavailable)");
+            group.MapGet("/{id}/skills", (string id) => Unavailable()).WithSummary("Bot learned skills (unavailable)");
             group.MapPost("/{id}/walk", (string id) => Unavailable()).WithSummary("Bot walk (unavailable)");
             group.MapPost("/{id}/walkto", (string id) => Unavailable()).WithSummary("Bot walkto (unavailable)");
             group.MapPost("/{id}/gm", (string id) => Unavailable()).WithSummary("Bot GM command (unavailable)");
@@ -289,7 +293,9 @@ public static class BotEndpoints
                 .Select(n => {
                     var m = cd?.Mob(n.MobId);
                     return new { handle = n.Handle, mobId = n.MobId, name = m?.Name, level = m?.Level,
-                        isNpc = m?.IsNpc, mode = n.Mode, x = n.X, y = n.Y, isGate = n.IsGate, linkMap = n.LinkMap };
+                        isNpc = m?.IsNpc, playerSide = m?.IsPlayerSide, type = m?.Type,
+                        huntable = cd?.IsHuntableEnemy(n.MobId), mode = n.Mode, x = n.X, y = n.Y,
+                        isGate = n.IsGate, linkMap = n.LinkMap };
                 }) });
         })
         .WithSummary("List NPCs/mobs the bot can see (handle, mobId, name, level, coord, gate→destMap) from zone broadcasts + client MobInfo");
@@ -313,6 +319,44 @@ public static class BotEndpoints
             return ToResult(await manager.EquipAsync(id, slot), id, new { id, equippedFromSlot = slot });
         })
         .WithSummary("Equip the inventory item at the given slot");
+
+        group.MapGet("/{id}/drops", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var drops = bot.ZoneView?.Drops;
+            if (drops is null) return Results.Conflict(new { error = "bot is not in zone yet" });
+            var cd = manager.ClientData;
+            return Results.Ok(new { id, count = drops.Count, drops = drops
+                .Select(d => new { handle = d.Handle, itemId = d.ItemId, name = cd?.ItemName(d.ItemId),
+                    x = d.X, y = d.Y, dropMob = d.DropMobHandle }) });
+        })
+        .WithSummary("List items on the ground in view (handle, itemId, name, coord, dropMob) from DROPEDITEM broadcasts");
+
+        group.MapGet("/{id}/skills", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var skills = bot.ZoneView?.LearnedSkills;
+            if (skills is null) return Results.Conflict(new { error = "bot is not in zone yet" });
+            var cd = manager.ClientData;
+            return Results.Ok(new { id, count = skills.Count, skills = skills
+                .OrderBy(s => s)
+                .Select(s => new { skillId = s, name = cd?.SkillName(s) }) });
+        })
+        .WithSummary("List the character's learned skills (skillId + name) from the zone-login skill list");
+
+        group.MapPost("/{id}/pickup", async (string id, PickupRequest req) =>
+        {
+            if (req.Handle is not { } handle)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["handle"] = ["ground-item handle is required"] });
+            return ToResult(await manager.PickupAsync(id, handle), id, new { id, pickedHandle = handle });
+        })
+        .WithSummary("Pick up a ground item by handle (must already be close — NC_ITEM_PICK_REQ)");
+
+        group.MapPost("/{id}/loot", async (string id, LootRequest req) =>
+            ToResult(await manager.LootAsync(id, req.Handle ?? 0), id, new { id, looted = req.Handle ?? 0 }))
+        .WithSummary("Walk to a ground drop and pick it up (nearest if no handle given)");
 
         group.MapPost("/{id}/walkto", (string id, WalkToRequest req) =>
         {
@@ -601,6 +645,20 @@ public sealed record UseItemRequest
 public sealed record EquipRequest
 {
     public byte? Slot { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/pickup</c> — the ground-item handle
+/// (from <c>GET /drops</c>). The bot must already be standing near it.</summary>
+public sealed record PickupRequest
+{
+    public ushort? Handle { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/loot</c>. Omit <c>Handle</c> to loot the
+/// nearest ground drop (walk to it + pick).</summary>
+public sealed record LootRequest
+{
+    public ushort? Handle { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/shop-open</c> — the merchant NPC handle.

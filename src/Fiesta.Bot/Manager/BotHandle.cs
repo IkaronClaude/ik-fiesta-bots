@@ -237,6 +237,7 @@ public sealed class BotHandle
             SpStones: view?.SpStones,
             InCombat: view?.InCombat ?? false,
             Dead: view?.Dead ?? false,
+            Drops: view?.Drops.Count ?? 0,
             Script: ScriptRunner?.StatusLine,
             CreatedAtUtc: CreatedAtUtc,
             RecentLog: RecentLog());
@@ -271,6 +272,7 @@ public sealed record BotSnapshot(
     int? SpStones,
     bool InCombat,
     bool Dead,
+    int Drops,
     string? Script,
     DateTime CreatedAtUtc,
     IReadOnlyList<string> RecentLog);

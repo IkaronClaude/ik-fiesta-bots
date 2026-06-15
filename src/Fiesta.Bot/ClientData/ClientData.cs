@@ -75,7 +75,9 @@ public sealed class ClientData
             InxName: GetStr(row, "InxName"),
             Level: GetInt(row, "Level"),
             MaxHp: GetInt(row, "MaxHP"),
-            IsNpc: GetInt(row, "IsNPC") != 0);
+            IsNpc: GetInt(row, "IsNPC") != 0,
+            IsPlayerSide: GetInt(row, "IsPlayerSide") != 0,
+            Type: GetInt(row, "Type"));
     }
 
     /// <summary>Resolve a map id to its short name (e.g. 17 → "Urg") from the client
@@ -100,6 +102,32 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Name");
     }
 
+    /// <summary>The display name of a skill id from client <c>ActiveSkill</c> (col "Name").
+    /// Empty if missing. Lets the bot resolve a learned-skill id (e.g. find the one named
+    /// "Heal") without hard-coding ids.</summary>
+    public string SkillName(int skillId)
+    {
+        var t = Table("ActiveSkill");
+        var row = t?.FindByLong("ID", skillId) ?? t?.FindByLong("id", skillId);
+        return row is null ? "" : GetStr(row, "Name");
+    }
+
+    /// <summary>True if the mob id is a huntable enemy: not a shop NPC, not player-side
+    /// (a town guard reads <c>IsPlayerSide!=0</c> and must be skipped), and not a gatherable
+    /// resource node (<c>Type==9</c> = herb/wood/mushroom). The combat target filter — keeps
+    /// the bot from auto-attacking guards or harvest nodes. Verified live (Town Guard 9908
+    /// IsPlayerSide=2; Pinky/Orc=0; Herb/Mushroom Type=9). Unknown ids (no client data) are
+    /// treated as huntable so we don't silently skip a real mob.</summary>
+    public bool IsHuntableEnemy(int mobId)
+    {
+        var m = Mob(mobId);
+        if (m is null) return true; // no data — don't filter out a potential mob
+        return !m.IsNpc && !m.IsPlayerSide && m.Type != ResourceNodeType;
+    }
+
+    /// <summary>MobInfo <c>Type</c> value for a gatherable resource node (herb/wood/mushroom).</summary>
+    public const int ResourceNodeType = 9;
+
     private static int GetInt(IReadOnlyDictionary<string, object?> row, string col)
         => row.TryGetValue(col, out var v) && ShnTable.TryToLong(v, out var l) ? (int)l : 0;
 
@@ -111,7 +139,8 @@ public sealed class ClientData
 /// (e.g. "Teleport Gate", "Uruga"), the <see cref="InxName"/> (internal id like
 /// "Gate_Town"), plus <see cref="Level"/>/<see cref="MaxHp"/> and whether it's an
 /// <see cref="IsNpc"/> (vs a monster) — enough to label/triage what the bot sees.</summary>
-public sealed record MobData(int Id, string Name, string InxName, int Level, int MaxHp, bool IsNpc);
+public sealed record MobData(int Id, string Name, string InxName, int Level, int MaxHp, bool IsNpc,
+    bool IsPlayerSide = false, int Type = 0);
 
 /// <summary>Combat-relevant fields of an <c>ActiveSkill</c> row, projected from the client
 /// table. <see cref="UsableDegree"/> = the facing arc the target must be within (the cast

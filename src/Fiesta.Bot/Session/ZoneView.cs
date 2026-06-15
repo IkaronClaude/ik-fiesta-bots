@@ -25,14 +25,41 @@ public sealed record NearbyPlayer(ushort Handle, string Name, byte Class, byte L
 /// destination map name the packet embeds (e.g. RouN's GateRou1 → "RouCos02") —
 /// verified against the server NPC table, 2026-06-11. So gate discovery AND where
 /// each gate leads come straight from the zone, no server files needed.</para></summary>
-public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, uint Y, byte Flag = 0, string? LinkMap = null)
+public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, uint Y, byte Flag = 0, string? LinkMap = null, byte Team = 0)
 {
     public bool IsGate => Flag == 1;
+    /// <summary><c>nKQTeamType</c> from the mob briefinfo (record offset 147): a King's-Quest
+    /// battlefield team. Verified live that it is <b>uniformly 2</b> in a normal field for
+    /// guards, mobs, herbs and NPCs alike — so it does NOT tell allies from enemies. The real
+    /// guard/enemy discriminator is client MobInfo <c>IsPlayerSide</c>/<c>Type</c>
+    /// (<see cref="GameData.ClientData.IsHuntableEnemy"/>). Kept only for completeness.</summary>
     public DateTime SeenAtUtc { get; init; } = DateTime.UtcNow;
 }
 
 /// <summary>An in-zone chat line overheard from a nearby speaker.</summary>
 public sealed record ChatMessage(ushort Handle, string? SenderName, string Text)
+{
+    public DateTime AtUtc { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>An item lying on the ground, broadcast by NC_BRIEFINFO_DROPEDITEM_CMD
+/// (0x1C0A) when a mob dies (or a player drops loot). <paramref name="Handle"/> is the
+/// ground entity's handle — that's what NC_ITEM_PICK_REQ asks for, and what
+/// NC_MAP_LOGOUT_CMD names when the item is gone (picked by anyone / despawned).
+/// <paramref name="DropMobHandle"/> is the mob that dropped it (0 for a player drop).</summary>
+public sealed record GroundItem(ushort Handle, ushort ItemId, uint X, uint Y, ushort DropMobHandle)
+{
+    public DateTime SeenAtUtc { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>Result of a pickup attempt, from NC_ITEM_PICK_ACK (0x300A):
+/// <paramref name="ItemId"/> + <paramref name="Lot"/> picked, plus the raw
+/// <paramref name="Error"/> code. NOTE: on a *successful* pick the captured Error was
+/// 0x341 (not 0) while the item still entered the bag — so success is judged by the
+/// paired NC_ITEM_CELLCHANGE_CMD (the bag slot gained the item), not by Error==0. The
+/// failure code (e.g. inventory full) is unknown until a failing capture is taken — the
+/// raw value is surfaced so it can be learned then.</summary>
+public sealed record PickResult(ushort ItemId, uint Lot, ushort Error)
 {
     public DateTime AtUtc { get; init; } = DateTime.UtcNow;
 }
@@ -104,13 +131,16 @@ public sealed class ZoneView : IDisposable
     // answers with SERVERMENU_ACK (0x3C02) selecting an option. Track that one is open
     // so gate-taking can auto-confirm it.
     private const ushort OpMenuServerMenu = 0x3C01;
-    // Shop open (Menu dept 0x0F): the server sends the merchant's sell list when you
-    // click it. Variants by shop type — weapon(3)/item(6) and their table(9/11) forms —
-    // all wire as [itemnum u16][npc u16][MENUITEM × itemnum]. We read each MENUITEM's
-    // leading u16 as the item id (stride computed from the frame, robust to the element
-    // size we don't have a struct for). buy with NC_ITEM_BUY_REQ {itemid, lot}.
+    // Shop open (Menu dept 0x0F): the server sends a sell list when you click an NPC.
+    // Variants by shop type (Menu cmd): weapon(3), SKILL(4), item(6), and their "table"
+    // forms weapon(9), SKILL(10), item(11) — all wire as [itemnum u16][npc u16][MENUITEM ×
+    // itemnum]. We read each MENUITEM's leading u16 as the item id (stride computed from
+    // the frame, robust to the element size we don't have a struct for). buy with
+    // NC_ITEM_BUY_REQ {itemid, lot}. The SKILL shops (4/10) sell skill-scroll items
+    // (e.g. Heal[12]=5451) — buy + useItem to LEARN the skill. Verified: Skill Master
+    // Cyburn sends 0x3C0A (table-skill), which is why the old weapon/item-only list missed it.
     private static readonly ushort[] OpShopOpen =
-        { 0x3C03, 0x3C06, 0x3C09, 0x3C0B };
+        { 0x3C03, 0x3C04, 0x3C06, 0x3C09, 0x3C0A, 0x3C0B };
     // NPC menu (Act cmd 28 = 0x201C): clicking a merchant/script NPC makes the server
     // open its menu and wait for the client to pick an option (NPCMENUOPEN_ACK 0x201D)
     // before it sends the shop list. Verified in PurchaseSell.pcapng: NPCCLICK ->
@@ -148,6 +178,22 @@ public sealed class ZoneView : IDisposable
     private static readonly ushort OpSpChange = PacketRegistry.GetOpcode<PROTO_NC_BAT_SPCHANGE_CMD>();
     private static readonly ushort OpSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SWING_DAMAGE_CMD>();
     private static readonly ushort OpSomeoneSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SOMEONESWING_DAMAGE_CMD>();
+    // Ground loot: DROPEDITEM (Briefinfo 0x1C0A) broadcasts an item that hit the ground
+    // (mob death or a player drop); MAP_LOGOUT (Map 0x1805) is the universal "this handle
+    // left view" — for a ground item that means it was picked (by anyone) or despawned, so
+    // it's how we retire a tracked drop (SOMEONEPICK carries no handle). PICK_ACK (Item
+    // 0x300A) reports the result of OUR pick attempt. See the GroundItem/PickResult records.
+    private static readonly ushort OpDropedItem = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_DROPEDITEM_CMD>();
+    private static readonly ushort OpMapLogout = PacketRegistry.GetOpcode<PROTO_NC_MAP_LOGOUT_CMD>();
+    private static readonly ushort OpPickAck = PacketRegistry.GetOpcode<PROTO_NC_ITEM_PICK_ACK>();
+    // Learned-skill list, sent at zone login (NC_CHAR_CLIENT_SKILL_CMD, Char 0x0F3D):
+    // [restempow:1][PartMark:1][nMaxNum:2][chrregnum:4][number:2][SKILLREADBLOCK × number].
+    // Each SKILLREADBLOCK is 12 bytes; its leading u16 is the skill id. This is how the bot
+    // learns which skills it actually has (heal, buffs, attacks) — read from the wire, not
+    // hard-coded. Names resolve via client ActiveSkill (ClientData.SkillName).
+    private static readonly ushort OpClientSkill = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_SKILL_CMD>();
+    private const int SkillListHeaderLen = 10; // restempow+PartMark+nMaxNum+chrregnum+number
+    private const int SkillBlockLen = 12;
 
     private readonly BotSession _session;
     private readonly Action<string>? _log;
@@ -155,6 +201,8 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<ushort, NearbyNpc> _npcs = new();
     private readonly ConcurrentDictionary<byte, ushort> _inventory = new(); // bag slot -> itemId
     private readonly ConcurrentDictionary<byte, ushort> _equipment = new(); // equip slot -> itemId
+    private readonly ConcurrentDictionary<ushort, GroundItem> _drops = new(); // ground-item handle -> drop
+    private readonly ConcurrentDictionary<ushort, byte> _skills = new(); // learned skill id -> 1 (set)
     private ushort? _mountHandle; // last known mount mover handle (from RIDE_ON 0xCC02 payload)
 
     public ZoneView(BotSession session, Action<string>? log = null)
@@ -358,6 +406,90 @@ public sealed class ZoneView : IDisposable
     /// <summary>Currently worn gear: equip slot → itemId (from equip-change events).</summary>
     public IReadOnlyDictionary<byte, ushort> Equipment => _equipment;
 
+    /// <summary>Items currently lying on the ground in view (handle → drop), from
+    /// DROPEDITEM broadcasts; retired when MAP_LOGOUT names the handle (picked/despawned).
+    /// The runtime source for looting kills — walk to one and <see cref="Manager.BotManager.PickupAsync"/>.</summary>
+    public IReadOnlyCollection<GroundItem> Drops => _drops.Values.ToArray();
+
+    /// <summary>The ground drop nearest to (<paramref name="x"/>,<paramref name="y"/>), or
+    /// null if nothing is on the ground. Loot picks the nearest by default.</summary>
+    public GroundItem? NearestDrop(uint x, uint y)
+    {
+        GroundItem? best = null; var bestD = double.MaxValue;
+        foreach (var g in _drops.Values)
+        {
+            var d = Math.Pow((double)g.X - x, 2) + Math.Pow((double)g.Y - y, 2);
+            if (d < bestD) { bestD = d; best = g; }
+        }
+        return best;
+    }
+
+    /// <summary>Result of the bot's last pickup attempt (PICK_ACK), or null if none yet.
+    /// NOTE: success is judged by the paired CELLCHANGE (the bag gained the item), not by
+    /// <see cref="PickResult.Error"/> (which was 0x341 on a captured success). The failure
+    /// code (e.g. inventory full) is unknown until a failing capture — surfaced raw here.</summary>
+    public PickResult? LastPickResult { get; private set; }
+
+    /// <summary>Raised when a new item appears on the ground (DROPEDITEM).</summary>
+    public event Action<GroundItem>? DropAppeared;
+
+    /// <summary>Raised when a tracked ground item leaves view (MAP_LOGOUT — picked by
+    /// anyone, or despawned), with its handle.</summary>
+    public event Action<ushort>? DropRemoved;
+
+    /// <summary>Raised on the result of the bot's own pickup attempt (PICK_ACK).</summary>
+    public event Action<PickResult>? PickedUp;
+
+    /// <summary>Skill ids the character has actually learned, from the zone-login skill list
+    /// (NC_CHAR_CLIENT_SKILL_CMD). The source of truth for "do I have a heal / this buff" —
+    /// read from the wire, never hard-coded. Resolve a name with client ActiveSkill.</summary>
+    public IReadOnlyCollection<ushort> LearnedSkills => _skills.Keys.ToArray();
+
+    /// <summary>True if the character has learned the given skill id.</summary>
+    public bool HasSkill(ushort skillId) => _skills.ContainsKey(skillId);
+
+    /// <summary>The NC_CHAR_CLIENT_ITEM_CMD <c>box</c> value that holds WORN gear (vs bag
+    /// pages). Confirmed from the ZoneEntry item-frame log: box 8 carried the 6 equipped
+    /// pieces (helmet 525 at inven 0x2001 → equip slot 1, etc.). Other boxes are inventory
+    /// (9 = main bag, 12 = special, 15 = empty).</summary>
+    private const byte EquipBox = 8;
+
+    /// <summary>Seed bag + worn-gear from the zone-login item list (captured by
+    /// <see cref="Zone.ZoneEntry"/> during the login burst, which the session loop misses —
+    /// the cause of empty Inventory/Equipment at login). Routes each item by its container
+    /// <paramref name="items"/>.box: <see cref="EquipBox"/> → <see cref="Equipment"/>, else
+    /// <see cref="Inventory"/> (slot = low byte of the inven position).</summary>
+    public void SeedItems(IEnumerable<(byte box, ushort inven, ushort itemId)>? items)
+    {
+        if (items is null) return;
+        int bag = 0, eq = 0;
+        foreach (var (box, inven, itemId) in items)
+        {
+            if (itemId == 0) continue;
+            var slot = (byte)(inven & 0xFF);
+            if (box == EquipBox) { _equipment[slot] = itemId; eq++; }
+            else { _inventory[slot] = itemId; bag++; }
+        }
+        if (bag + eq > 0) _log?.Invoke($"[ZoneView] seeded {bag} bag + {eq} equipped items from login");
+    }
+
+    /// <summary>Seed the learned-skill set from the zone-login skill list (captured by
+    /// <see cref="Zone.ZoneEntry"/> during the login burst, which the session loop misses).</summary>
+    public void SeedSkills(IEnumerable<ushort>? skills)
+    {
+        if (skills is null) return;
+        var added = 0;
+        foreach (var s in skills) if (s != 0 && _skills.TryAdd(s, 1)) added++;
+        if (added > 0)
+        {
+            _log?.Invoke($"[ZoneView] seeded {added} learned skills: {string.Join(",", _skills.Keys.OrderBy(k => k))}");
+            SkillsChanged?.Invoke();
+        }
+    }
+
+    /// <summary>Raised when the learned-skill list is (re)populated at zone login.</summary>
+    public event Action? SkillsChanged;
+
     public bool TryGetPlayer(ushort handle, out NearbyPlayer player) => _nearby.TryGetValue(handle, out player!);
 
     /// <summary>The bot's own zone handle (from the [1802] MAP_LOGIN_ACK). Set once
@@ -367,6 +499,12 @@ public sealed class ZoneView : IDisposable
     /// <summary>Supplies the bot's current world position (set by the manager to the live
     /// tracked position). Lets aggro detection tell whether a mob is running toward us.</summary>
     public Func<(uint X, uint Y)?>? SelfPositionProvider { get; set; }
+
+    /// <summary>Returns true if a mob id is a huntable enemy (set by the manager from client
+    /// MobInfo — see <see cref="GameData.ClientData.IsHuntableEnemy"/>). Used to suppress the
+    /// angle-aggro heuristic for town guards (player-side) and other non-enemies that wander
+    /// near us. Null = treat everything as huntable (no client data).</summary>
+    public Func<ushort, bool>? IsHuntableMob { get; set; }
 
     private void OnPacket(FiestaPacket pkt)
     {
@@ -610,7 +748,9 @@ public sealed class ZoneView : IDisposable
                     // the uncertainty) rather than a confident aggro.
                     var (ox, oy) = (npc.X, npc.Y);
                     _npcs[hnd] = npc with { X = toX, Y = toY };
-                    if (op == OpSomeoneMoveRun && SelfPositionProvider?.Invoke() is { } me)
+                    // A player-side mob (town guard) running near us isn't aggro — skip it.
+                    if (op == OpSomeoneMoveRun && IsHuntableMob?.Invoke(npc.MobId) != false
+                        && SelfPositionProvider?.Invoke() is { } me)
                     {
                         double hx = (double)toX - ox, hy = (double)toY - oy;          // run heading
                         if (Cos(hx, hy, (double)me.X - ox, (double)me.Y - oy) > 0.94)  // running ~at us
@@ -643,6 +783,7 @@ public sealed class ZoneView : IDisposable
                 CurrentMapId = h.MapId;
                 _npcs.Clear();   // entities are per-map; the new map will re-broadcast
                 _nearby.Clear();
+                _drops.Clear();  // ground items are per-map too
                 _log?.Invoke(h.IsCrossServer
                     ? $"[ZoneView] map handoff (cross-server) -> mapId={h.MapId} @({h.X},{h.Y}) via {h.Ip}:{h.Port} wm={h.WmHandle}"
                     : $"[ZoneView] map change (in-band) -> mapId={h.MapId} @({h.X},{h.Y})");
@@ -686,6 +827,77 @@ public sealed class ZoneView : IDisposable
                 if (itemId != 0) _equipment[equipSlot] = itemId; else _equipment.TryRemove(equipSlot, out _);
             }
         }
+        else if (op == OpDropedItem)
+        {
+            // An item hit the ground (mob death / player drop). Typed parse: the struct is
+            // {handle, itemid, location.xy, dropmobhandle, attr}. Track it so loot can find it.
+            try
+            {
+                var d = pkt.ReadBody<PROTO_NC_BRIEFINFO_DROPEDITEM_CMD>();
+                var gi = new GroundItem(d.handle, d.itemid, d.location.x, d.location.y, d.dropmobhandle);
+                _drops[d.handle] = gi;
+                _log?.Invoke($"[ZoneView] drop appeared: item {gi.ItemId} (h={gi.Handle}) @({gi.X},{gi.Y}) from mob h={gi.DropMobHandle}");
+                DropAppeared?.Invoke(gi);
+            }
+            catch { /* skip an unparseable drop frame */ }
+        }
+        else if (op == OpMapLogout)
+        {
+            // Universal "this handle left view": for a ground item it was picked (by anyone)
+            // or despawned; for a char/mob it walked out / died. Retire from whichever
+            // collection holds it (same cleanup as BriefDelete, plus drops).
+            var hnd = pkt.ReadBody<PROTO_NC_MAP_LOGOUT_CMD>().handle;
+            if (_drops.TryRemove(hnd, out var goneDrop))
+            {
+                _log?.Invoke($"[ZoneView] drop gone: item {goneDrop.ItemId} (h={hnd})");
+                DropRemoved?.Invoke(hnd);
+            }
+            if (_nearby.TryRemove(hnd, out var gonePlayer))
+            {
+                _log?.Invoke($"[ZoneView] player left (logout): {gonePlayer.Name} (h={hnd})");
+                PlayerLeft?.Invoke(hnd);
+            }
+            _npcs.TryRemove(hnd, out _);
+        }
+        else if (op == OpPickAck)
+        {
+            // Result of OUR pickup. Error 0x341 was seen on a SUCCESS (the bag still gained
+            // the item via CELLCHANGE), so don't treat Error!=0 as failure here — surface it
+            // raw and let callers judge success by the inventory change.
+            try
+            {
+                var a = pkt.ReadBody<PROTO_NC_ITEM_PICK_ACK>();
+                var r = new PickResult(a.itemid, a.lot, a.error);
+                LastPickResult = r;
+                _log?.Invoke($"[ZoneView] pick ack: item {r.ItemId} lot {r.Lot} error 0x{r.Error:X}");
+                PickedUp?.Invoke(r);
+            }
+            catch { /* skip an unparseable pick ack */ }
+        }
+        else if (op == OpClientSkill)
+        {
+            // Learned-skill list at zone login: header then `number` × 12-byte blocks,
+            // each leading with the skill id (u16). Hand-parse (house style) so a struct
+            // quirk never kills the read loop.
+            var p = pkt.Payload.Span;
+            if (p.Length >= SkillListHeaderLen)
+            {
+                var number = (ushort)(p[8] | (p[9] << 8));
+                var added = 0;
+                for (var i = 0; i < number; i++)
+                {
+                    var off = SkillListHeaderLen + i * SkillBlockLen;
+                    if (off + 2 > p.Length) break;
+                    var skillId = (ushort)(p[off] | (p[off + 1] << 8));
+                    if (skillId != 0 && _skills.TryAdd(skillId, 1)) added++;
+                }
+                if (added > 0)
+                {
+                    _log?.Invoke($"[ZoneView] learned skills: {string.Join(",", _skills.Keys.OrderBy(k => k))}");
+                    SkillsChanged?.Invoke();
+                }
+            }
+        }
         else if (op == ChatCodec.SomeoneChatOpcode)
         {
             if (ChatCodec.TryDecodeSomeoneChat(pkt.Payload.Span, out var handle, out var text)
@@ -718,6 +930,7 @@ public sealed class ZoneView : IDisposable
     // flag-blob[99] (gate dest-map string when flagstate==1) | sAnimation[32] | 3 tail.
     private const int MobRecordLen = 149;
     private const int FlagBlobOffset = 15; // within a record
+    private const int MobTeamOffset = 147; // nKQTeamType, within a record (3-byte tail: animLvl, team, regenAni)
 
     private void AddOrUpdateNpc(ReadOnlySpan<byte> p, int off)
     {
@@ -731,14 +944,17 @@ public sealed class ZoneView : IDisposable
         string? linkMap = null;
         if (flag == 1) // gate: the flag blob begins with the null-terminated dest-map name
             linkMap = ReadCString(p, off + FlagBlobOffset, 32);
+        // nKQTeamType (record offset 147) — faction/team byte; tells allies (guards) from
+        // enemies. Defensive read in case the last record is truncated.
+        var team = (off + MobTeamOffset < p.Length) ? p[off + MobTeamOffset] : (byte)0;
 
-        var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap);
+        var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap, team);
         var isNew = !_npcs.ContainsKey(handle);
         _npcs[handle] = npc;
         if (isNew)
             _log?.Invoke(flag == 1
                 ? $"[ZoneView] gate appeared: id={mobid} h={handle} @({x},{y}) -> {linkMap}"
-                : $"[ZoneView] npc/mob appeared: id={mobid} h={handle} @({x},{y})");
+                : $"[ZoneView] npc/mob appeared: id={mobid} h={handle} @({x},{y}) mode={mode} flag={flag} team={team}");
     }
 
     // Conversion: 127 raw units (human runspeed from 0x203E capture) ≈ 120 u/s.
