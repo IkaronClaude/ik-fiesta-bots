@@ -102,6 +102,7 @@ public sealed class ZoneView : IDisposable
     private static readonly ushort OpBriefChar = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_CHARACTER_CMD>();
     private static readonly ushort OpBriefLogin = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_LOGINCHARACTER_CMD>();
     private static readonly ushort OpBriefDelete = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_BRIEFINFODELETE_CMD>();
+    private static readonly ushort OpReallyKill = PacketRegistry.GetOpcode<PROTO_NC_BAT_REALLYKILL_CMD>();
     private static readonly ushort OpBriefMob = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_MOB_CMD>();
     private static readonly ushort OpRegenMob = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_REGENMOB_CMD>();
     // Mover (mount) ride state — self only (0xCC02/0xCC06; 0xCC04 = someone else).
@@ -284,6 +285,10 @@ public sealed class ZoneView : IDisposable
     /// briefinfo. The runtime source for walk-to-NPC and gate location.</summary>
     public IReadOnlyCollection<NearbyNpc> NearbyNpcs => _npcs.Values.ToArray();
     public ChatMessage? LastChat { get; private set; }
+
+    /// <summary>Handle of the most recently killed entity (from REALLYKILL) — lets a grind
+    /// script confirm a kill landed and move on without waiting for the despawn.</summary>
+    public ushort LastKill { get; private set; }
 
     /// <summary>True while the bot is riding a mount (tracked from MOVER ride
     /// on/off, 0xCC02/0xCC06). Drives mount-aware routing (auto-use when far).</summary>
@@ -606,6 +611,17 @@ public sealed class ZoneView : IDisposable
                 PlayerLeft?.Invoke(hnd);
             }
             _npcs.TryRemove(hnd, out _); // the same delete also retires NPCs/mobs
+        }
+        else if (op == OpReallyKill)
+        {
+            // A mob died (REALLYKILL {dead, attacker}) — retire it NOW rather than waiting for
+            // the delayed briefinfo despawn, so a grind script moves to the next target at once.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2)
+            {
+                var dead = (ushort)(p[0] | (p[1] << 8));
+                if (_npcs.TryRemove(dead, out _)) LastKill = dead;
+            }
         }
         else if (op == OpBriefMob)
         {
