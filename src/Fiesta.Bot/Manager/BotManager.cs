@@ -386,34 +386,15 @@ public sealed class BotManager : IAsyncDisposable
         await s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct);
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
 
-        // Close to melee range + face the mob: a final MOVERUN toward it then STOP. The
-        // server validates a swing against position/facing, so this is what lets the
-        // first bash land when we're near but not engaged.
-        if (handle.Position is { } pos && NpcPos(handle, target) is { } tp)
-        {
-            var dx = (double)pos.X - tp.X; var dy = (double)pos.Y - tp.Y;
-            var dist = Math.Sqrt(dx * dx + dy * dy);
-            const double melee = 30.0; // stand this far from the mob (adjacent)
-            uint standX = pos.X, standY = pos.Y;
-            if (dist > 1)
-            {
-                standX = (uint)Math.Round(tp.X + dx / dist * Math.Min(dist, melee));
-                standY = (uint)Math.Round(tp.Y + dy / dist * Math.Min(dist, melee));
-            }
-            var mv = new byte[16];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(0), pos.X);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(4), pos.Y);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(8), standX);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(mv.AsSpan(12), standY);
-            await s.SendAsync(new FiestaPacket(OpMoveRun, mv), ct);
-            var stop = new byte[8];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), standX);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), standY);
-            await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
-            handle.SetPosition(standX, standY);
-        }
+        // FACE the mob then STOP, exactly like a skill cast (CastAsync) — the server validates
+        // a swing against facing, and a zero-distance moverun (when already adjacent) does NOT
+        // set facing, which is why BASHSTART produced no swings. FaceAndStop always steps a
+        // little toward the target so facing is correct. The CALLER must already be within
+        // melee weapon range (walk there first); this doesn't close large gaps.
+        if (NpcPos(handle, target) is { } tp)
+            await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
-        handle.Log($"auto-attack h={target}");
+        handle.Log($"auto-attack h={target} (faced+bashstart)");
         return ActionResult.Sent;
     }
 
@@ -613,9 +594,15 @@ public sealed class BotManager : IAsyncDisposable
     // name passed in (and so an invite doesn't sit unanswered, wedging the party state).
     private const ushort OpPartyJoinPropose = (ushort)(((int)ProtocolCommand.Party << 10) | 3); // 0x3803
     private const ushort OpPartyJoinCmd = (ushort)(((int)ProtocolCommand.Party << 10) | 8); // 0x3808 (joined)
+    // Incoming friend request: the server asks the bot to confirm with
+    // NC_FRIEND_SET_CONFIRM_REQ (Friend dept 0x15, cmd 3 → 0x5403) carrying the requester's
+    // name (charid). We track it so the bot can auto-confirm (an operator friends the bot and
+    // it accepts on its own). NC_FRIEND_ADD_CMD (cmd 8) means the add went through → clear.
+    private const ushort OpFriendConfirmReq = (ushort)(((int)ProtocolCommand.Friend << 10) | 3); // 0x5403
+    private const ushort OpFriendAddCmd = (ushort)(((int)ProtocolCommand.Friend << 10) | 8); // 0x5408
 
-    /// <summary>Subscribe a BotHandle's WM link to track pending party invites (and clear
-    /// on join). Called when the WM session is created.</summary>
+    /// <summary>Subscribe a BotHandle's WM link to track pending party invites + incoming
+    /// friend requests (and clear them when resolved). Called when the WM session is created.</summary>
     private void TrackPartyInvites(BotHandle handle, BotSession wm)
         => wm.PacketReceived += pkt =>
         {
@@ -628,8 +615,16 @@ public sealed class BotManager : IAsyncDisposable
                     handle.Log($"party invite from '{inviter}' pending — acceptParty/declineParty to answer");
                 }
                 else if (pkt.Opcode == OpPartyJoinCmd) handle.PendingPartyInviter = null; // joined; invite resolved
+                else if (pkt.Opcode == OpFriendConfirmReq)
+                {
+                    // charid = the requester (the player adding the bot); friendid = the bot.
+                    var requester = FiestaText.Decode(pkt.ReadBody<PROTO_NC_FRIEND_SET_CONFIRM_REQ>().charid.n5_name);
+                    handle.PendingFriendRequester = requester;
+                    handle.Log($"friend request from '{requester}' pending — friendConfirm to answer");
+                }
+                else if (pkt.Opcode == OpFriendAddCmd) handle.PendingFriendRequester = null; // added; resolved
             }
-            catch { /* ignore an unparseable party frame */ }
+            catch { /* ignore an unparseable WM frame */ }
         };
 
     /// <summary>Invite <paramref name="targetName"/> to a party (WM link).</summary>
@@ -684,11 +679,15 @@ public sealed class BotManager : IAsyncDisposable
     /// <summary>Answer an incoming friend request from <paramref name="requesterName"/>:
     /// <paramref name="accept"/> true = add, false = decline (WM link).</summary>
     public Task<ActionResult> FriendConfirmAsync(string id, string requesterName, bool accept, CancellationToken ct = default)
-        => WmActAsync(id, $"friend {(accept ? "accept" : "decline")} {requesterName}", (s, self) =>
+    {
+        if (_bots.TryGetValue(id, out var h) && string.Equals(h.PendingFriendRequester, requesterName, StringComparison.OrdinalIgnoreCase))
+            h.PendingFriendRequester = null; // answered — clear so a social script won't re-confirm
+        return WmActAsync(id, $"friend {(accept ? "accept" : "decline")} {requesterName}", (s, self) =>
             s.SendAsync(new PROTO_NC_FRIEND_SET_CONFIRM_ACK
             {
                 charid = Name5Of(self), friendid = Name5Of(requesterName), accept_friend = (byte)(accept ? 1 : 0)
             }, ct));
+    }
 
     /// <summary>Remove <paramref name="targetName"/> from the friend list (WM link).</summary>
     public Task<ActionResult> FriendDeleteAsync(string id, string targetName, CancellationToken ct = default)

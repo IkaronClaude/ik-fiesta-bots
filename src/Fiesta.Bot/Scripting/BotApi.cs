@@ -245,6 +245,15 @@ public sealed class BotApi
     public bool friendAdd(string name) => Ok(Wait(_mgr.FriendAddAsync(Id, name)));
     public bool friendConfirm(string name, bool accept) => Ok(Wait(_mgr.FriendConfirmAsync(Id, name, accept)));
     public bool friendDelete(string name) => Ok(Wait(_mgr.FriendDeleteAsync(Id, name)));
+    /// <summary>Name of a pending incoming friend request (someone added the bot), or "" if none.</summary>
+    public string pendingFriend() => _handle.PendingFriendRequester ?? "";
+    /// <summary>Accept the pending incoming friend request (no-op if none). Lets a social
+    /// script auto-confirm so an operator can friend the bot and watch it.</summary>
+    public bool friendAccept()
+    {
+        var who = _handle.PendingFriendRequester;
+        return !string.IsNullOrEmpty(who) && Ok(Wait(_mgr.FriendConfirmAsync(Id, who!, true)));
+    }
 
     // ── state / vitals ──────────────────────────────────────────────────────────
     public double? hp() => View?.Hp;

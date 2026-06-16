@@ -75,6 +75,12 @@ public sealed class BotHandle
     /// leaves the party state stuck — accept or decline clears it). Cleared on join/leave.</summary>
     public string? PendingPartyInviter { get; set; }
 
+    /// <summary>Name of the player whose incoming friend request (NC_FRIEND_SET_CONFIRM_REQ,
+    /// 0x5403) is pending and unanswered, or null if none. Tracked off the WM link so the bot
+    /// can auto-confirm (friendConfirm) without being told the requester's name — lets an
+    /// operator friend the bot and have it accept on its own. Cleared once answered.</summary>
+    public string? PendingFriendRequester { get; set; }
+
     internal CancellationTokenSource Cts { get; }
     internal Task? RunTask { get; set; }
 

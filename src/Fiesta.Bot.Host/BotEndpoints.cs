@@ -383,6 +383,13 @@ public static class BotEndpoints
         })
         .WithSummary("Drive a full quest dialogue with an NPC (click + ACK every page; accept or turn-in)");
 
+        group.MapGet("/{id}/quest-dialog/{dialogId:int}", (string id, int dialogId) =>
+        {
+            var cd = manager.ClientData;
+            return Results.Ok(new { dialogId, text = cd?.QuestDialog(dialogId) ?? "" });
+        })
+        .WithSummary("Resolve a quest dialog/title id to its text (QuestDialog.shn)");
+
         group.MapGet("/{id}/quest-info/{questId:int}", (string id, int questId) =>
         {
             var cd = manager.ClientData;
