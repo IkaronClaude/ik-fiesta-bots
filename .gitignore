@@ -41,3 +41,12 @@ host-err.log
 # Runtime behaviour-graph store (generated from scripts/graph via build_graph.py)
 behavior-graphs/
 **/behavior-graphs/
+
+# Lua behaviour scripts: the full autonomous set (quest/grind drivers, state machines) is
+# operator-local — powerful enough to be a cheat. Only simple, shareable examples are tracked
+# (auto-buffer / party-bot / guild-buff). Everything else under scripts/ stays private.
+/scripts/*
+!/scripts/README.md
+!/scripts/town_buff.lua
+!/scripts/social.lua
+!/scripts/guild_buff_sm.lua
