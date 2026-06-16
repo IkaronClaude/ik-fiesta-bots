@@ -398,8 +398,9 @@ public static class BotEndpoints
             return Results.Ok(new
             {
                 q.Id, q.StartNpc, q.TurnInNpc, q.MinLevel, q.MaxLevel, q.Class, q.LinkedQuest,
+                q.ObjectiveMob,
                 title = cd!.QuestDialog(q.Title),
-                mobs = q.Mobs, items = q.Items, rewards = q.Rewards,
+                npcs = q.Npcs, objectives = q.Objectives, rewards = q.Rewards,
                 q.StartScript, q.ActionScript, q.FinishScript
             });
         })

@@ -55,20 +55,30 @@ public static class QuestData
             ushort title = U16(off + 8);        // QuestDialog id of the quest title/description
             ushort startNpc = U16(off + 30);
 
-            var mobs = new List<QuestTarget>();
+            // @74 block = the quest's NPC list (start + turn-in NPCs), NOT kill targets. Each
+            // 6-byte entry: enabled, ?, npcId u16, ?, ?. (e.g. Master Zach's entry here is Zach
+            // himself = the turn-in NPC.)
+            var npcs = new List<QuestTarget>();
             for (int m = 0; m < 5; m++)
             {
                 int o = off + 74 + m * 6;
                 if (b[o] == 0) continue;
-                mobs.Add(new QuestTarget(b[o + 1] != 0, U16(o + 2), b[o + 4] != 0, b[o + 5]));
+                npcs.Add(new QuestTarget(true, U16(o + 2), false, 0));
             }
 
-            var items = new List<QuestItemReq>();
-            for (int it = 0; it < 10; it++)
+            // Objectives block: the kill/collect goals. Per objective (stride 30): mob u16 @+102
+            // (the mob to slay / that drops the item), TYPE @+104 (0 = disabled, 1 = mob kill,
+            // 2 = item pickup), count @+105, item u16 @+106 (best-effort offset). Verified: q8 mob
+            // 0 (Slime) x5 = "slay 5 slimes" (Master Zach); q12 mob 2002 (King Crab) x1; q4 mob
+            // 300 x5. A pure meeting quest has no objectives.
+            var objectives = new List<QuestObjective>();
+            for (int i = 0; i < 5; i++)
             {
-                int o = off + 104 + it * 6;
-                if (b[o] == 0) continue;
-                items.Add(new QuestItemReq(b[o + 1], U16(o + 2), U16(o + 4)));
+                int o = off + 102 + i * 30;
+                if (o + 8 > off + Fixed) break;
+                byte type = b[o + 2]; // +104
+                if (type == 0) continue; // disabled
+                objectives.Add(new QuestObjective(type, U16(o), b[o + 3], U16(o + 4)));
             }
 
             var rewards = new List<QuestRewardDef>();
@@ -90,7 +100,7 @@ public static class QuestData
             string finish = fLen > 0 ? EucKr.GetString(b, ss + sLen + aLen, fLen).TrimEnd('\0') : "";
 
             map[id] = new QuestDef(id, title, startNpc, b[off + 16] != 0, b[off + 17], b[off + 18],
-                b[off + 51], mobs, items, rewards, start, action, finish);
+                b[off + 51], npcs, objectives, rewards, start, action, finish);
 
             off += (int)dataLen;
         }
@@ -99,26 +109,31 @@ public static class QuestData
 }
 
 /// <summary>A quest definition decoded from QuestData.shn. <see cref="StartNpc"/> is the mobId
-/// of the giver. <see cref="Mobs"/> = kill/meeting targets (an NPC target with IsToKill=false is
-/// usually the turn-in NPC). <see cref="Items"/> = collect requirements. Scripts are the quest
-/// logic (Start = accept dialogue, Action = in-progress, Finish = turn-in).</summary>
+/// of the giver. <see cref="Npcs"/> = the quest's NPC list (start + turn-in NPCs — the @74
+/// block, NOT kill targets). <see cref="Objectives"/> = the kill/collect goals (@102 block):
+/// each names the mob to slay (and optionally an item it drops) + a count. Scripts are the
+/// quest logic (Start = accept dialogue, Action = in-progress, Finish = turn-in).</summary>
 public sealed record QuestDef(
     int Id, int Title, int StartNpc, bool IsNeedLevel, int MinLevel, int MaxLevel, int Class,
-    IReadOnlyList<QuestTarget> Mobs, IReadOnlyList<QuestItemReq> Items,
+    IReadOnlyList<QuestTarget> Npcs, IReadOnlyList<QuestObjective> Objectives,
     IReadOnlyList<QuestRewardDef> Rewards, string StartScript, string ActionScript, string FinishScript)
 {
-    /// <summary>The npc this quest is turned in at: the first non-kill mob target if present
-    /// (a non-kill entry is the related/turn-in NPC — its <c>IsNpc</c> flag is unreliable in
-    /// the data, e.g. Julia(29) on "Baby Steps" reads IsNpc=false yet is the turn-in), else
-    /// the start NPC (most low-level quests turn in where they started).</summary>
+    /// <summary>The npc this quest is turned in at: the first NPC in the quest's NPC list that
+    /// isn't the start NPC, else the start NPC (most low-level quests turn in where they
+    /// started; e.g. "Baby Steps" lists Julia(29) here as the turn-in).</summary>
     public int TurnInNpc
     {
         get
         {
-            foreach (var t in Mobs) if (!t.ToKill && t.Id != 0) return t.Id;
+            foreach (var t in Npcs) if (t.Id != 0 && t.Id != StartNpc) return t.Id;
             return StartNpc;
         }
     }
+
+    /// <summary>The mobId to kill for this quest's (first) objective, or -1 if it has no kill
+    /// objective (a pure meeting/talk quest). This is what the grind driver targets — Master
+    /// Zach → 0 (Slime); a mushroom quest → 1 (Mushroom); King Crab → 2002.</summary>
+    public int ObjectiveMob => Objectives.Count > 0 ? Objectives[0].Mob : -1;
 
     /// <summary>The questId this chains to via a <c>LINK n</c> in any script, or 0 if none.</summary>
     public int LinkedQuest
@@ -138,12 +153,14 @@ public sealed record QuestDef(
     }
 }
 
-/// <summary>A quest mob/NPC target: <see cref="IsNpc"/> (vs monster), <see cref="Id"/> (mobId),
-/// <see cref="ToKill"/> (kill objective) and <see cref="Amount"/> to kill.</summary>
+/// <summary>An NPC referenced by a quest (start / turn-in), from the @74 NPC-list block.</summary>
 public sealed record QuestTarget(bool IsNpc, int Id, bool ToKill, int Amount);
 
-/// <summary>A quest item requirement: <see cref="Type"/>, item <see cref="Id"/>, <see cref="Amount"/>.</summary>
-public sealed record QuestItemReq(int Type, int Id, int Amount);
+/// <summary>A quest kill/collect objective. <see cref="Type"/>: 1 = kill the mob, 2 = pick up
+/// an item (dropped by the mob). <see cref="Mob"/> = the mobId to slay / that drops the item,
+/// <see cref="Count"/> = how many, <see cref="Item"/> = the item id for type 2 (best-effort
+/// offset — uncertain).</summary>
+public sealed record QuestObjective(int Type, int Mob, int Count, int Item);
 
 /// <summary>A quest reward: <see cref="Method"/> (1=Fixed,2=Choice), <see cref="Type"/>
 /// (0=EXP,1=Money,2=Item,3=Fame), with item <see cref="ItemId"/>/<see cref="ItemCount"/> for

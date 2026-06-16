@@ -137,13 +137,14 @@ public sealed class BotApi
         t["id"] = q.Id; t["startNpc"] = q.StartNpc; t["turnInNpc"] = q.TurnInNpc;
         t["minLevel"] = q.MinLevel; t["maxLevel"] = q.MaxLevel; t["isNeedLevel"] = q.IsNeedLevel;
         t["class"] = q.Class; t["linkedQuest"] = q.LinkedQuest;
+        t["objectiveMob"] = q.ObjectiveMob;   // mobId to grind for this quest (-1 = meeting quest)
         t["startScript"] = q.StartScript; t["actionScript"] = q.ActionScript; t["finishScript"] = q.FinishScript;
-        var mobs = NewTable(); int mi = 1;
-        foreach (var m in q.Mobs) { var e = NewTable(); e["isNpc"] = m.IsNpc; e["id"] = m.Id; e["toKill"] = m.ToKill; e["amount"] = m.Amount; mobs[mi++] = DynValue.NewTable(e); }
-        t["mobs"] = DynValue.NewTable(mobs);
-        var items = NewTable(); int ii = 1;
-        foreach (var it in q.Items) { var e = NewTable(); e["type"] = it.Type; e["id"] = it.Id; e["amount"] = it.Amount; items[ii++] = DynValue.NewTable(e); }
-        t["items"] = DynValue.NewTable(items);
+        var npcs = NewTable(); int ni = 1;
+        foreach (var n in q.Npcs) { npcs[ni++] = n.Id; }
+        t["npcs"] = DynValue.NewTable(npcs);
+        var objs = NewTable(); int oi = 1;
+        foreach (var o in q.Objectives) { var e = NewTable(); e["type"] = o.Type; e["mob"] = o.Mob; e["count"] = o.Count; e["item"] = o.Item; objs[oi++] = DynValue.NewTable(e); }
+        t["objectives"] = DynValue.NewTable(objs);
         var rewards = NewTable(); int ri = 1;
         foreach (var r in q.Rewards) { var e = NewTable(); e["method"] = r.Method; e["type"] = r.Type; e["itemId"] = r.ItemId; e["itemCount"] = r.ItemCount; e["amount"] = r.Amount; rewards[ri++] = DynValue.NewTable(e); }
         t["rewards"] = DynValue.NewTable(rewards);
