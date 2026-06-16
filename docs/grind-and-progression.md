@@ -253,3 +253,23 @@ Accept / progress / turn-in is an **NPC dialogue exchange**, not a one-shot acce
   know which NPC currently has a quest — the right "which quest next" signal. Then handle
   hunting-quest mob locations (client enemy-cluster packets or wander+combat-graph) + buy
   skills(Ruby)/gear(Smith)/mount(Pey).
+
+## 10. Quest-grind autonomy — design notes (operator), partly future work
+- **Quest XP >> mob XP** — handing in quests is top priority over raw grinding.
+- **Hand-in = done-detection (now):** the turn-in NPC only runs the FINISH (DONE→reward)
+  branch if the objective is actually met, else it replays the in-progress reminder. So
+  `doQuest(turnInNpc)` + checking `questDone(id)` confirms completion. `scripts/quest_handin.lua`
+  does this (walk to turnInNpc, attempt hand-in).
+- **Multi-enemy quests (NOW, important):** a quest can require killing several DIFFERENT mobs
+  (e.g. 10 slimes AND 5 mushrooms). The driver must detect when THIS quest's **current sub-goal**
+  (one mob type's count) is done before moving to the next enemy group — not just "whole quest
+  done." Needs per-sub-objective kill progress: `NC_QUEST_NOTIFY_MOB_KILL_CMD` (0x440D) carries a
+  `MobOfQuest[]` per-mob count (not in any existing capture nor fully in the PDB extract — must be
+  captured live off the bot while it kills quest mobs, then decoded + exposed to Lua as quest
+  progress). Required counts likely come from QuestData (the kill mob entry/ItemData — the
+  drop-flag+mob decode still TODO for Master Zach, whose slime kill-target wasn't in the decoded
+  mob array).
+- **FUTURE WORK — quest batching:** finish ALL active quests that share the same target enemy in
+  one trip before returning; smarter still, group nearby enemy types (e.g. slimes+mushrooms+imps
+  spawn together → clear those 2-3 quests as a block) to minimise travel. Plan kill-routes by mob
+  co-location.
