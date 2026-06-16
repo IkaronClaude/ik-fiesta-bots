@@ -169,6 +169,11 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>The PLAYER_QUEST_INFO status byte of an active quest (0 if not active). Seen
+    /// values: <b>6</b> = in progress (objective not yet met), <b>8</b> = objective complete /
+    /// ready to hand in. Lets the driver hand in a finished quest instead of re-grinding it.</summary>
+    public int questStatus(int id) => View is { } v && v.ActiveQuests.TryGetValue(id, out var s) ? s : 0;
+
     /// <summary>Quests the character can accept right now — the server's authoritative
     /// available list from the login QUEST_READ burst (the orange-! set), joined with QuestData
     /// for startNpc/turnIn details. Each: {id, startNpc, turnInNpc, title, inView} where inView
