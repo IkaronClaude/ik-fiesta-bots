@@ -1165,8 +1165,12 @@ public sealed class BotManager : IAsyncDisposable
     /// (0x4414 StartReq is "the accept" after browsing a giver's list). Drive the resulting
     /// accept dialogue with <see cref="DriveQuestDialogueAsync"/> afterward.</summary>
     public Task<ActionResult> StartQuestAsync(string id, ushort questId, CancellationToken ct = default)
-        => ActAsync(id, $"quest {questId} start req",
+    {
+        // Stash the questId so the questId-less NC_QUEST_START_ACK can be attributed to it.
+        if (_bots.TryGetValue(id, out var h)) h.ZoneView?.NoteQuestStartAttempt(questId);
+        return ActAsync(id, $"quest {questId} start req",
             s => s.SendAsync(new PROTO_NC_QUEST_START_REQ { nQuestID = questId }, ct));
+    }
 
     /// <summary>Answer the currently-pending quest dialogue step (from
     /// <see cref="ZoneView.PendingQuest"/>) — "proceed". Convenience so the caller needn't

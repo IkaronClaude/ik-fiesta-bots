@@ -128,6 +128,14 @@ public sealed class ZoneView : IDisposable
     private const ushort OpQuestRewardNeedSelect = 0x4412;
     // NC_QUEST_GIVE_UP_ACK (cmd 8) = server confirms a quest abandon {questId, errorCode}.
     private const ushort OpQuestGiveUpAck = 0x4408;
+    // NC_QUEST_START_ACK (cmd 21) = result of START_REQ {err u16}. NO questId — correlated with
+    // the last START_REQ we sent (see _lastStartReqQuestId). err==0 = accepted; nonzero = refusal
+    // reason (level/prereq/log-full/…); the live churn maps the codes to meanings.
+    private const ushort OpQuestStartAck = 0x4415;
+    // NC_QUEST_SELECT_START_ACK (cmd 16) = result of a menu SELECT_START {nNPCID, nQuestID, ErrorType}.
+    private const ushort OpQuestSelectStartAck = 0x4410;
+    // NC_QUEST_ERR (cmd 19) = generic quest error push. Layout not in the PDB — decoded raw.
+    private const ushort OpQuestErr = 0x4413;
 
     /// <summary>Quest id the server is currently asking us to pick a reward for (from 0x4412),
     /// or null. Set when the turn-in shows the reward choices; consumed by the dialogue driver
@@ -626,6 +634,37 @@ public sealed class ZoneView : IDisposable
             _log?.Invoke($"[ZoneView] seeded quests: done={_doneQuests.Count} active={_activeQuests.Count} available={_availableQuests.Count}");
     }
 
+    // --- Quest accept/start result (NC_QUEST_START_ACK / SELECT_START_ACK / QUEST_ERR) ---
+    // NC_QUEST_START_ACK carries only {err} with no questId, so the START_REQ questId is stashed
+    // here when the manager sends it and paired with the next START_ACK.
+    private int _lastStartReqQuestId;
+    private readonly ConcurrentDictionary<int, int> _questAcceptErr = new(); // questId -> last server err code
+
+    /// <summary>Record that a START_REQ for <paramref name="questId"/> was just sent, so the next
+    /// NC_QUEST_START_ACK (which has no questId) can be attributed to it.</summary>
+    public void NoteQuestStartAttempt(int questId) => _lastStartReqQuestId = questId;
+
+    /// <summary>The server's last accept/start result for a quest: 0 = accepted OK, &gt;0 = a refusal
+    /// reason code (from START_ACK.err / SELECT_START_ACK.ErrorType / QUEST_ERR), -1 = never attempted.
+    /// Lets the driver react to WHY an accept failed (and stop blind-retrying) instead of inferring
+    /// from <see cref="IsQuestActive"/> not flipping.</summary>
+    public int QuestAcceptErr(int id) => _questAcceptErr.TryGetValue(id, out var e) ? e : -1;
+
+    /// <summary>(questId, err) of the most recent accept result, or null. err==0 means accepted.</summary>
+    public (int QuestId, int Err)? LastQuestAcceptResult { get; private set; }
+
+    /// <summary>Raised on every quest accept/start result (success or refusal) with (questId, err).</summary>
+    public event Action<int, int>? QuestAcceptResult;
+
+    private void RecordQuestAcceptResult(int questId, int err)
+    {
+        if (questId != 0) _questAcceptErr[questId] = err;
+        LastQuestAcceptResult = (questId, err);
+        if (err == 0 && questId != 0) MarkQuestActive(questId);
+        _log?.Invoke($"[ZoneView] QUEST_ACCEPT_RESULT quest={questId} err={err}{(err == 0 ? " (accepted)" : " (refused)")}");
+        QuestAcceptResult?.Invoke(questId, err);
+    }
+
     /// <summary>Mark a quest active (just accepted) / done (just turned in) so the driver's
     /// view stays current within the session without waiting for a relog.</summary>
     public void MarkQuestActive(int id, byte status = 1) { _activeQuests[id] = status; _availableQuests.Remove(id); }
@@ -1053,6 +1092,35 @@ public sealed class ZoneView : IDisposable
                 _questProgress.TryRemove(qid, out _);
                 _log?.Invoke($"[ZoneView] QUEST_GIVE_UP_ACK quest={qid} err={err} — removed from active");
             }
+        }
+        else if (op == OpQuestStartAck)
+        {
+            // NC_QUEST_START_ACK {err u16} — the result of our last START_REQ. No questId on the
+            // wire, so attribute it to the quest we just tried to start. err==0 → accepted.
+            var p = pkt.Payload.Span;
+            int err = p.Length >= 2 ? (p[0] | (p[1] << 8)) : -1;
+            RecordQuestAcceptResult(_lastStartReqQuestId, err);
+        }
+        else if (op == OpQuestSelectStartAck)
+        {
+            // NC_QUEST_SELECT_START_ACK {nNPCID u16, nQuestID u16, ErrorType u16} — result of a
+            // menu-driven SELECT_START. Carries its own questId, so it's self-correlating.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 6)
+            {
+                int qid = p[2] | (p[3] << 8);
+                int err = p[4] | (p[5] << 8);
+                RecordQuestAcceptResult(qid, err);
+            }
+        }
+        else if (op == OpQuestErr)
+        {
+            // NC_QUEST_ERR — generic quest error push (layout not in the PDB). Log the raw bytes so
+            // the live churn reveals its shape; attribute to the last start attempt as a best guess.
+            var p = pkt.Payload.Span;
+            int err = p.Length >= 2 ? (p[0] | (p[1] << 8)) : (p.Length == 1 ? p[0] : -1);
+            _log?.Invoke($"[ZoneView] QUEST_ERR raw=[{Convert.ToHexString(p)}] (lastStartReq={_lastStartReqQuestId})");
+            if (_lastStartReqQuestId != 0) RecordQuestAcceptResult(_lastStartReqQuestId, err == 0 ? -2 : err);
         }
         else if (op == OpClientItem)
         {

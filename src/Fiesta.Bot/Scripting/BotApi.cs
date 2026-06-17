@@ -216,6 +216,13 @@ public sealed class BotApi
     /// where clicking the NPC opens a selection menu instead of a direct dialogue.</summary>
     public bool startQuest(int id) => Ok(Wait(_mgr.StartQuestAsync(Id, (ushort)id)));
 
+    /// <summary>The server's last accept/start result for a quest: <b>0</b> = accepted, <b>&gt;0</b> =
+    /// a refusal reason code (from NC_QUEST_START_ACK.err / SELECT_START_ACK.ErrorType / QUEST_ERR),
+    /// <b>-1</b> = never attempted. Lets the driver react to WHY an accept failed (level / prereq /
+    /// quest-log full / wrong dialogue) and stop churning, instead of inferring from questActive not
+    /// flipping. Codes are mapped to meanings from the live churn — see PROJECT_PLAN.md.</summary>
+    public int questAcceptErr(int id) => View?.QuestAcceptErr(id) ?? -1;
+
     /// <summary>Quests the character can accept right now — the server's authoritative
     /// available list from the login QUEST_READ burst (the orange-! set), joined with QuestData
     /// for startNpc/turnIn details. Each: {id, startNpc, turnInNpc, title, inView} where inView

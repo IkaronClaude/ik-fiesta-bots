@@ -1430,6 +1430,32 @@ RawIndex, prereq@58, MinLevel@17 were guessed-then-corrected; repeatable flag st
 So treat decoded quest fields as suspect, cross-check against a chat-annotated capture
 (Quest.pcapng / QuestsLowLevel.pcapng) + the live wire, and fix offsets at the source.
 
+### 2026-06-17 — Quest-accept is NPC-DRIVEN, not list-driven (fixed the 439-churn)
+**Root cause of the lvl-8 "439 eligible quests" churn:** the leveler accepted by iterating
+`eligibleQuests()` (QuestData-driven) and clicking each quest's `startNpc`, then checking
+`questActive(thatId)`. **But the SERVER decides which quest an NPC offers** from the quest-chain
+state — clicking Robin (NPC 120) offers whatever quest its chain dictates (live: q313), NOT the
+q11/q26 QuestData claims start there. So the bot accepted the server's quest but checked the wrong
+id → "refused" → retried → churned through hundreds of NPC visits, never leaving town to grind.
+Live-proven facts (Bot1208, lvl 8, RouN, packet log):
+- **A bare `NC_QUEST_START_REQ` (0x4414) for these sub-20 quests gets NO response** (probe: 24
+  START_REQs → 0 acks). The global accept path is dead for them. Operator confirms: sub-20 quests
+  are absent from the global quest log (QUEST_READ) but still show the orange-`!` over NPCs — i.e.
+  **accept is via NPC dialogue, the client computes the marker locally.**
+- **Pure quest-giver click** (NPC 120): C→S `NPCCLICK` (0x200A) → S→C `NC_QUEST_SCRIPT_CMD_REQ`
+  (0x4401) carrying the offered `questId` → drive the dialogue (SCRIPT_CMD_ACK ×N) to accept.
+- **Merchant/hybrid click** (NPC 29/28/88): C→S `NPCCLICK` → S→C `NC_ACT_NPCMENUOPEN_REQ` (0x201C);
+  needs `NPCMENUOPEN_ACK{option}` to pick the quest branch (not yet wired — these gave no new quest
+  at lvl 8 anyway). `pendingQuest` PERSISTS between clicks, so it reads stale unless re-baselined.
+- **Success signal = a new id appears in `activeQuests()`** (the QUEST_DOING set), not a START_ACK.
+**Fix (level_quest.lua, NPC-driven accept):** iterate the quest-giver NPCs IN VIEW (start NPC of an
+eligible quest or turn-in NPC of an active quest), walk to each, click+drive ONCE per town-visit,
+and diff `activeQuests()` to log what was accepted. `visitedNpc` resets on town (re-)entry. Bounded
+to the ~10 town NPCs — no more 439-churn; falls through to grind once all are visited.
+**Also wired (C#, BotApi `questAcceptErr` / ZoneView):** decode `NC_QUEST_START_ACK` (0x4415 {err}),
+`NC_QUEST_SELECT_START_ACK` (0x4410 {npc,quest,err}), `NC_QUEST_ERR` (0x4413) → per-quest result.
+Useful as a result tracker / for the menu path, though the dialogue accept's truth is the active diff.
+
 ### Quests — NEXT after auto-learn-skills (DESIGNED — not impl)
 Quest accept/turn-in (from Full.pcapng facts): remote = `Quest StartReq` (0x4414) after a
 `ReadReq` (0x4416) browse; local at-NPC = `Quest ScriptCmdAck` (0x4402) dialogue. Need: read the
