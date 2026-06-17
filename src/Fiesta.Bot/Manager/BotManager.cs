@@ -77,6 +77,44 @@ public sealed class BotManager : IAsyncDisposable
 
     public BotHandle? Get(string id) => _bots.TryGetValue(id, out var h) ? h : null;
 
+    /// <summary>Toggle a tailable, both-directions, plaintext (XOR-decoded) packet log for a
+    /// bot — every S→C and C→S frame, interleaved in arrival order, with opcode + canonical
+    /// name + a hex/ASCII dump. Returns (found, enabled, path). Path is the file to
+    /// <c>tail -f</c>. Survives cross-server handoffs (re-attached when the zone session swaps).</summary>
+    public (bool Found, bool Enabled, string? Path) SetPacketLog(string id, bool enabled)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return (false, false, null);
+
+        if (enabled)
+        {
+            if (handle.PacketLog is { } already)
+            {
+                // Make sure the current sessions are tapped (e.g. enabled before zone entry).
+                if (handle.ZoneSession is { } zs) zs.PacketTap = already.Tap;
+                if (handle.WmSession is { } ws) ws.PacketTap = already.Tap;
+                return (true, true, already.Path);
+            }
+            var dir = Environment.GetEnvironmentVariable("PACKETLOG_DIR") ?? Directory.GetCurrentDirectory();
+            var path = System.IO.Path.Combine(dir, $"packets-{id}.log");
+            var log = new Net.PacketLog(path);
+            handle.PacketLog = log;
+            if (handle.ZoneSession is { } zs2) zs2.PacketTap = log.Tap;
+            if (handle.WmSession is { } ws2) ws2.PacketTap = log.Tap;
+            handle.Log($"packet log ENABLED -> {path}");
+            return (true, true, path);
+        }
+        else
+        {
+            if (handle.ZoneSession is { } zs) zs.PacketTap = null;
+            if (handle.WmSession is { } ws) ws.PacketTap = null;
+            var path = handle.PacketLog?.Path;
+            handle.PacketLog?.Dispose();
+            handle.PacketLog = null;
+            if (path is not null) handle.Log("packet log DISABLED");
+            return (true, false, path);
+        }
+    }
+
     /// <summary>Signal a bot to stop and wait (briefly) for it to wind down.
     /// Returns false if no such bot. The handle is removed once stopped.</summary>
     public async Task<bool> StopAsync(string id, CancellationToken ct = default)
@@ -1096,6 +1134,22 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, $"quest {questId} answer qsc=0x{qsc:X2} result={result}",
             s => s.SendAsync(new PROTO_NC_QUEST_SCRIPT_CMD_ACK { nQuestID = questId, nQSC = qsc, nResult = result }, ct));
 
+    /// <summary>Abandon a quest (NC_QUEST_GIVE_UP_REQ {questId}). Used to clear a
+    /// persistence-glitched quest (loaded active but stuck at 0 progress) so it can be
+    /// re-accepted fresh — the only way out of the status-8 stuck state.</summary>
+    public Task<ActionResult> GiveUpQuestAsync(string id, ushort questId, CancellationToken ct = default)
+        => ActAsync(id, $"quest {questId} give up",
+            s => s.SendAsync(new PROTO_NC_QUEST_GIVE_UP_REQ { nQuestID = questId }, ct));
+
+    /// <summary>Start a quest by id (NC_QUEST_START_REQ {questId}). The accept command for
+    /// menu/remote quests where clicking the NPC opens a selection menu (0x201C) rather than a
+    /// direct dialogue — the dialogue-only click can't accept those. Verified in Full.pcapng
+    /// (0x4414 StartReq is "the accept" after browsing a giver's list). Drive the resulting
+    /// accept dialogue with <see cref="DriveQuestDialogueAsync"/> afterward.</summary>
+    public Task<ActionResult> StartQuestAsync(string id, ushort questId, CancellationToken ct = default)
+        => ActAsync(id, $"quest {questId} start req",
+            s => s.SendAsync(new PROTO_NC_QUEST_START_REQ { nQuestID = questId }, ct));
+
     /// <summary>Answer the currently-pending quest dialogue step (from
     /// <see cref="ZoneView.PendingQuest"/>) — "proceed". Convenience so the caller needn't
     /// pass the quest id / qsc each step.</summary>
@@ -1113,9 +1167,11 @@ public sealed class BotManager : IAsyncDisposable
     /// or Finish (turn-in) script to completion in one call. <paramref name="result"/>=1 is the
     /// "proceed/accept" answer (the common case); at the script's IF-RESULT branch this is what
     /// accepts the quest. Stops when no new page arrives within the per-step timeout or after
-    /// <paramref name="maxSteps"/>. Reward selection (choice quests) is handled separately via
-    /// <see cref="SelectQuestRewardAsync"/>.</summary>
-    public async Task<ActionResult> DriveQuestDialogueAsync(string id, ushort npcHandle, uint result = 1, int maxSteps = 24, CancellationToken ct = default)
+    /// <paramref name="maxSteps"/>. Choice-reward turn-ins: the server sends a reward-select
+    /// prompt (0x4412) on the [SHOW_REWARD] page; if <paramref name="rewardIndex"/> &gt;= 0 this
+    /// answers it mid-dialogue with NC_QUEST_REWARD_SELECT_ITEM_INDEX (the RAW reward slot) BEFORE
+    /// acking the "Complete" page — the order the real client uses (verified in Quest.pcapng).</summary>
+    public async Task<ActionResult> DriveQuestDialogueAsync(string id, ushort npcHandle, uint result = 1, int rewardIndex = -1, int maxSteps = 24, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var h)) return ActionResult.NotFound;
         if (h.Phase != BotPhase.InZone || h.ZoneSession is not { } s) return ActionResult.NotInZone;
@@ -1124,9 +1180,11 @@ public sealed class BotManager : IAsyncDisposable
         // Baseline on the currently-pending step so we only answer pages that arrive AFTER
         // this click (a stale step from a previous dialogue must not be re-answered).
         var lastSeen = zv?.PendingQuest?.AtUtc ?? DateTime.MinValue;
+        zv?.ClearRewardSelect();
         await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct);
-        h.Log($"quest dialogue: click npc h={npcHandle}, driving (result={result})");
+        h.Log($"quest dialogue: click npc h={npcHandle}, driving (result={result}, rewardIndex={rewardIndex})");
 
+        bool rewardSelected = false;
         int answered = 0;
         for (int step = 0; step < maxSteps; step++)
         {
@@ -1140,10 +1198,21 @@ public sealed class BotManager : IAsyncDisposable
             }
             if (cur is null) break; // server sent no further page → dialogue finished
             lastSeen = cur.AtUtc;
+            // On the [SHOW_REWARD] page (the one with the [Complete the Quest] button), the reward
+            // MUST be chosen BEFORE acking it — the real client does ack→SELECT→ack (Quest.pcapng).
+            // Acking it first = clicking Complete with no reward, which the server rejects/loops.
+            // Detect the page by its dialog text (QuestDialog.shn carries the [SHOW_REWARD] tag).
+            if (rewardIndex >= 0 && !rewardSelected &&
+                (ClientData?.QuestDialog(cur.DialogId)?.Contains("SHOW_REWARD", StringComparison.OrdinalIgnoreCase) ?? false))
+            {
+                await SelectQuestRewardAsync(id, cur.QuestId, (uint)rewardIndex, ct);
+                rewardSelected = true;
+                h.Log($"quest dialogue: reward-select quest={cur.QuestId} index={rewardIndex} (SHOW_REWARD dlg {cur.DialogId})");
+            }
             await AnswerQuestAsync(id, cur.QuestId, cur.Qsc, result, ct);
             answered++;
         }
-        h.Log($"quest dialogue done (npc h={npcHandle}, {answered} pages answered)");
+        h.Log($"quest dialogue done (npc h={npcHandle}, {answered} pages answered, rewardSelected={rewardSelected})");
         return ActionResult.Sent;
     }
 
@@ -1414,6 +1483,7 @@ public sealed class BotManager : IAsyncDisposable
                     "account has no character to enter a zone (and no create spec)");
             handle.SetCharName(sel.Name);
             handle.SetLevel(sel.Level); // authoritative level from the WM avatar list (not inferred)
+            handle.SetClass(sel.Class); // ClassID for class-appropriate quest-reward selection
 
             var zoneEntry = ZoneEntry.FromDataDir(_xorTable, Log, opt.DataDir);
 
@@ -1423,6 +1493,7 @@ public sealed class BotManager : IAsyncDisposable
             var wmSession = new BotSession(wmConn, sel.Name, wmResult.WmHandle, wmEp, Log,
                 linkTag: "wm", logInbound: opt.LogInbound);
             handle.WmSession = wmSession;
+            if (handle.PacketLog is { } plw) wmSession.PacketTap = plw.Tap; // re-attach packet log if enabled
             TrackPartyInvites(handle, wmSession); // capture incoming party invites (the inviter)
             var wmRun = wmSession.RunAsync(ct);
 
@@ -1454,6 +1525,7 @@ public sealed class BotManager : IAsyncDisposable
                 await using var zoneSession = new BotSession(zoneConn, sel.Name, zoneWmHandle, zoneEp, Log,
                     linkTag: "zone", logInbound: opt.LogInbound);
                 handle.ZoneSession = zoneSession;
+                if (handle.PacketLog is { } plz) zoneSession.PacketTap = plz.Tap; // re-attach packet log across handoff
 
                 // Perception model (nearby players + chat) is always on — cheap, and the
                 // status/say surface and any behavior read from it. The buff behavior is
@@ -1489,6 +1561,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.ChatReceived += msg => handle.Emit(new BotEvent(BotEventKind.Chat, msg));
                 zoneView.PlayerAppeared += p => handle.Emit(new BotEvent(BotEventKind.PlayerAppeared, p));
                 zoneView.PlayerLeft += h => handle.Emit(new BotEvent(BotEventKind.PlayerLeft, h));
+                zoneView.LevelChanged += lvl => { handle.SetLevel(lvl); handle.Log($"level up -> {lvl}"); };
                 zoneView.HpChanged += hp => handle.Emit(new BotEvent(BotEventKind.Hp, hp));
                 zoneView.SpChanged += sp => handle.Emit(new BotEvent(BotEventKind.Sp, sp));
                 zoneView.Damaged += hit => handle.Emit(new BotEvent(BotEventKind.Hit, hit));

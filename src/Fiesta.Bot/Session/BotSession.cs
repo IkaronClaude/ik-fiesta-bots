@@ -45,6 +45,15 @@ public sealed class BotSession : IAsyncDisposable
 
     public BotSessionState State { get; }
 
+    /// <summary>Runtime packet tap on the underlying connection — see
+    /// <see cref="FiestaClientConnection.PacketTap"/>. Set to dump both directions
+    /// (plaintext) to a log; null to disable.</summary>
+    public Action<bool, ushort, ReadOnlyMemory<byte>>? PacketTap
+    {
+        get => _conn.PacketTap;
+        set => _conn.PacketTap = value;
+    }
+
     /// <summary>Raised for every inbound frame after built-in keepalive handling.
     /// Handlers must not block the loop — offload heavy work.</summary>
     public event Action<FiestaPacket>? PacketReceived;

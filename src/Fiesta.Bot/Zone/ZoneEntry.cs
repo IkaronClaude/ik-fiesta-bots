@@ -116,7 +116,7 @@ public sealed class ZoneEntry
             List<ushort>? skills = null;
             List<(byte box, ushort inven, ushort itemId)>? items = null;
             List<ushort>? doneQuests = null;
-            List<(ushort id, byte status)>? activeQuests = null;
+            List<(ushort id, byte status, int progress)>? activeQuests = null;
             List<ushort>? readQuests = null;
             while (DateTime.UtcNow < deadline)
             {
@@ -195,9 +195,15 @@ public sealed class ZoneEntry
                         for (int i = 0; i < n && 6 + i * 32 + 3 <= p.Length; i++)
                         {
                             int o = 6 + i * 32;
-                            activeQuests.Add(((ushort)(p[o] | (p[o + 1] << 8)), p[o + 2]));
+                            // PLAYER_QUEST_DATA.End_NPCMobCount[5] at record offset 24 = per-objective
+                            // kill counts; their sum = the quest's credited progress. The zone re-sends
+                            // this authoritatively on every entry (incl. after a handover), so it's how
+                            // progress survives without a persistent cache.
+                            int prog = 0;
+                            if (o + 29 <= p.Length) for (int k = 0; k < 5; k++) prog += p[o + 24 + k];
+                            activeQuests.Add(((ushort)(p[o] | (p[o + 1] << 8)), p[o + 2], prog));
                         }
-                        _log($"[Zone] quests active ({activeQuests.Count}): {string.Join(",", activeQuests.Select(q => $"{q.id}(s{q.status})"))}");
+                        _log($"[Zone] quests active ({activeQuests.Count}): {string.Join(",", activeQuests.Select(q => $"{q.id}(s{q.status},{q.progress}))"))}");
                     }
                     continue;
                 }
@@ -278,7 +284,7 @@ public sealed class ZoneEntry
         FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, ushort? charHandle,
         uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills,
         IReadOnlyList<(byte box, ushort inven, ushort itemId)>? items,
-        IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status)>? activeQuests,
+        IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress)>? activeQuests,
         IReadOnlyList<ushort>? readQuests, CancellationToken ct)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
@@ -320,7 +326,7 @@ public sealed record ZoneEntryResult(
     IReadOnlyList<ushort>? Skills = null,
     IReadOnlyList<(byte box, ushort inven, ushort itemId)>? Items = null,
     IReadOnlyList<ushort>? DoneQuests = null,
-    IReadOnlyList<(ushort id, byte status)>? ActiveQuests = null,
+    IReadOnlyList<(ushort id, byte status, int progress)>? ActiveQuests = null,
     IReadOnlyList<ushort>? ReadQuests = null);
 
 public sealed class ZoneEntryException : Exception

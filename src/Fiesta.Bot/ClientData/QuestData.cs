@@ -66,17 +66,19 @@ public static class QuestData
                 npcs.Add(new QuestTarget(true, U16(o + 2), false, 0));
             }
 
-            // Objectives block: the kill/collect goals. Per objective (stride 30): mob u16 @+102
-            // (the mob to slay / that drops the item), TYPE @+104 (0 = disabled, 1 = mob kill,
-            // 2 = item pickup), count @+105, item u16 @+106 (best-effort offset). Verified: q8 mob
-            // 0 (Slime) x5 = "slay 5 slimes" (Master Zach); q12 mob 2002 (King Crab) x1; q4 mob
-            // 300 x5. A pure meeting quest has no objectives.
+            // Objectives block @+102: the kill/collect goals, up to 5 slots, STRIDE 8. Per
+            // objective: mob u16 @+0 (the mob to slay / that drops the item), TYPE @+2 (0 =
+            // disabled, 1 = mob kill, 2 = item pickup), count @+3, item u16 @+4. Verified against
+            // the wire + QuestData.shn: q8 mob 0 (Slime) x5; q12 mob 2002 x1; q4 mob 300 x5;
+            // q392 mob 515 x50; and the multi-objective q415 = mob 303 x1 AND mob 304 x2 (the
+            // stride-30 bug silently dropped every objective after the first, so multi-goal
+            // quests could never be turned in — the server kept serving the in-progress dialogue).
             var objectives = new List<QuestObjective>();
             for (int i = 0; i < 5; i++)
             {
-                int o = off + 102 + i * 30;
+                int o = off + 102 + i * 8;
                 if (o + 8 > off + Fixed) break;
-                byte type = b[o + 2]; // +104
+                byte type = b[o + 2];
                 if (type == 0) continue; // disabled
                 objectives.Add(new QuestObjective(type, U16(o), b[o + 3], U16(o + 4)));
             }
@@ -87,10 +89,13 @@ public static class QuestData
                 int o = off + 516 + r * 12;
                 byte method = b[o], type = b[o + 1];
                 if (method == 0) continue;
+                // RawIndex = r: the raw 0..11 slot. The server's NC_QUEST_REWARD_SELECT_ITEM_INDEX
+                // wants THIS slot number (incl. fixed rewards + empty gaps), NOT the compacted
+                // position — verified in Quest.pcapng (q8 Fighter choice at r5 → nSelectedItemIndex=5).
                 if (type == 2) // Item
-                    rewards.Add(new QuestRewardDef(method, type, U16(o + 4), U16(o + 6), 0));
+                    rewards.Add(new QuestRewardDef(method, type, U16(o + 4), U16(o + 6), 0, r));
                 else
-                    rewards.Add(new QuestRewardDef(method, type, 0, 0, BitConverter.ToUInt64(b, o + 4)));
+                    rewards.Add(new QuestRewardDef(method, type, 0, 0, BitConverter.ToUInt64(b, o + 4), r));
             }
 
             int sLen = U16(off + 660), fLen = U16(off + 662), aLen = U16(off + 664);
@@ -99,8 +104,16 @@ public static class QuestData
             string action = aLen > 0 ? EucKr.GetString(b, ss + sLen, aLen).TrimEnd('\0') : "";
             string finish = fLen > 0 ? EucKr.GetString(b, ss + sLen + aLen, fLen).TrimEnd('\0') : "";
 
+            // Prerequisite quest: @56 u16 = prereq count (0/1), @58 u16 = the required quest id
+            // (verified: q41 requires q40, q957 requires q956 — the LINK chain's downstream side).
+            // The quest can't be accepted until that quest is DONE. MinLevel@17/MaxLevel@18 gate
+            // it by level (e.g. q11 MaxLevel=1 — un-acceptable once you out-level it).
+            int prereqQuest = U16(off + 56) > 0 ? U16(off + 58) : 0;
+            // Repeatable flag: not yet pinned to an offset. Defaults false; TODO decode (cross-check
+            // against the login QUEST_REPEAT 0x10D7 set) so the driver can prioritise repeatables.
             map[id] = new QuestDef(id, title, startNpc, b[off + 16] != 0, b[off + 17], b[off + 18],
-                b[off + 51], npcs, objectives, rewards, start, action, finish);
+                b[off + 51], npcs, objectives, rewards, start, action, finish, Repeatable: false,
+                PrereqQuest: prereqQuest);
 
             off += (int)dataLen;
         }
@@ -116,7 +129,8 @@ public static class QuestData
 public sealed record QuestDef(
     int Id, int Title, int StartNpc, bool IsNeedLevel, int MinLevel, int MaxLevel, int Class,
     IReadOnlyList<QuestTarget> Npcs, IReadOnlyList<QuestObjective> Objectives,
-    IReadOnlyList<QuestRewardDef> Rewards, string StartScript, string ActionScript, string FinishScript)
+    IReadOnlyList<QuestRewardDef> Rewards, string StartScript, string ActionScript, string FinishScript,
+    bool Repeatable = false, int PrereqQuest = 0)
 {
     /// <summary>The npc this quest is turned in at: the first NPC in the quest's NPC list that
     /// isn't the start NPC, else the start NPC (most low-level quests turn in where they
@@ -165,4 +179,4 @@ public sealed record QuestObjective(int Type, int Mob, int Count, int Item);
 /// <summary>A quest reward: <see cref="Method"/> (1=Fixed,2=Choice), <see cref="Type"/>
 /// (0=EXP,1=Money,2=Item,3=Fame), with item <see cref="ItemId"/>/<see cref="ItemCount"/> for
 /// item rewards or <see cref="Amount"/> otherwise.</summary>
-public sealed record QuestRewardDef(int Method, int Type, int ItemId, int ItemCount, ulong Amount);
+public sealed record QuestRewardDef(int Method, int Type, int ItemId, int ItemCount, ulong Amount, int RawIndex = 0);

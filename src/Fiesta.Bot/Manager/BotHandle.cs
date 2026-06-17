@@ -58,6 +58,13 @@ public sealed class BotHandle
     public uint Level => _level;
     internal void SetLevel(ushort level) => _level = level;
 
+    private volatile int _class;
+    /// <summary>The character's ClassName.shn ClassID (1=Fighter, 6=Cleric, 11=Archer,
+    /// 16=Mage, 21=Joker, 26=Sentinel; promotions in between), from the WM avatar shape at
+    /// char-select. 0 until selected. Used to pick the class-appropriate quest reward.</summary>
+    public int Class => _class;
+    internal void SetClass(byte cls) => _class = cls;
+
     /// <summary>The in-zone session once entered (null until <see cref="BotPhase.InZone"/>).
     /// The WM session is held open alongside it but isn't the status surface.</summary>
     public BotSession? ZoneSession { get; internal set; }
@@ -68,6 +75,11 @@ public sealed class BotHandle
     /// <summary>The WM-link session (held open alongside the zone one); needed to
     /// send the WM-side quit on a clean logout.</summary>
     public BotSession? WmSession { get; internal set; }
+
+    /// <summary>Active packet log (both directions, plaintext) when enabled via the
+    /// /packetlog endpoint, else null. Stored on the handle so it can be re-attached to
+    /// the zone session after a cross-server handoff swaps it out.</summary>
+    internal Net.PacketLog? PacketLog { get; set; }
 
     /// <summary>Name of the player whose party invite (NC_PARTY_JOINPROPOSE_REQ, 0x3803)
     /// is currently pending and unanswered, or null if none. Tracked off the WM link so

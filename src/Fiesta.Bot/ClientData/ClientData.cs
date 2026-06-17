@@ -166,6 +166,85 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Dialog");
     }
 
+    /// <summary>Where a mob type lives, from the client <c>MobCoordinate.shn</c> (the table the
+    /// real client uses to draw the quest-log minimap marker): map name + spawn-area centre. A
+    /// mob can have several rows (multiple spawn patches); we pick the one with the largest
+    /// Width×Height (the main field — the densest grind spot), ignoring the zero-area point
+    /// markers. Null if the table/mob is missing. Pure client data — this is how the quest
+    /// driver decides which map to travel to for an objective, with no server files.</summary>
+    public MobLocation? MobCoordinate(int mobId, string? preferMap = null)
+    {
+        var t = Table("MobCoordinate");
+        if (t is null) return null;
+        MobLocation? best = null, onPrefer = null;
+        long bestArea = -1, preferArea = -1;
+        foreach (var row in t.Rows)
+        {
+            if (GetInt(row, "Mob_ID") != mobId) continue;
+            var map = GetStr(row, "MapName");
+            if (string.IsNullOrEmpty(map)) continue;
+            long area = (long)GetInt(row, "Width") * GetInt(row, "Height");
+            var loc = new MobLocation(mobId, map, GetInt(row, "CenterX"), GetInt(row, "CenterY"),
+                GetInt(row, "Width"), GetInt(row, "Height"));
+            // Prefer the largest spawn ON THE CURRENT MAP (if the mob lives here, grind here
+            // instead of traveling to a bigger patch elsewhere); else the largest overall.
+            if (preferMap != null && string.Equals(map, preferMap, StringComparison.OrdinalIgnoreCase)
+                && area > preferArea) { preferArea = area; onPrefer = loc; }
+            if (area > bestArea) { bestArea = area; best = loc; }
+        }
+        return onPrefer ?? best;
+    }
+
+    /// <summary>All maps a mob spawns on (the largest spawn patch per map), from
+    /// <c>MobCoordinate.shn</c>. Lets the caller pick a spawn on a map it can actually reach
+    /// (e.g. one gated directly off the current map) instead of just the single biggest patch.</summary>
+    public IReadOnlyList<MobLocation> MobCoordinatesAll(int mobId)
+    {
+        var t = Table("MobCoordinate");
+        var byMap = new Dictionary<string, MobLocation>(StringComparer.OrdinalIgnoreCase);
+        if (t is null) return Array.Empty<MobLocation>();
+        foreach (var row in t.Rows)
+        {
+            if (GetInt(row, "Mob_ID") != mobId) continue;
+            var map = GetStr(row, "MapName");
+            if (string.IsNullOrEmpty(map)) continue;
+            long area = (long)GetInt(row, "Width") * GetInt(row, "Height");
+            var loc = new MobLocation(mobId, map, GetInt(row, "CenterX"), GetInt(row, "CenterY"),
+                GetInt(row, "Width"), GetInt(row, "Height"));
+            if (!byMap.TryGetValue(map, out var ex) || area > (long)ex.Width * ex.Height) byMap[map] = loc;
+        }
+        return byMap.Values.ToArray();
+    }
+
+    /// <summary>The <c>ItemInfo.UseClass</c> of an item — the item-gating class enum (a DIFFERENT
+    /// enum from ClassName's ClassID; 1 = Any). 0 if missing. Used to pick a class-appropriate
+    /// quest reward.</summary>
+    public int ItemUseClass(int itemId)
+    {
+        var t = Table("ItemInfo");
+        var row = t?.FindByLong("ID", itemId) ?? t?.FindByLong("id", itemId);
+        return row is null ? 0 : GetInt(row, "UseClass");
+    }
+
+    /// <summary>The set of <c>UseClass</c> values that belong to a character's archetype line,
+    /// keyed by the ClassName <c>ClassID</c> of the character (any tier in the line maps to the
+    /// whole line). The UseClass enum runs: Fighter 2–7, Cleric 8–13, Archer 14–19, Mage 20–25,
+    /// Joker 27–32, Sentinel/Savior 33–34 (26 is a non-class consumable slot). Lets the reward
+    /// picker accept gear for the char's class at any promotion tier (lower/higher/promotion).</summary>
+    public static IReadOnlySet<int> UseClassLineFor(int classId)
+    {
+        // classId is a ClassName ClassID; resolve its archetype, return that line's UseClass band.
+        int[] band =
+            classId is >= 1 and <= 5  ? [2, 3, 4, 5, 6, 7]        // Fighter line (incl. CleverFighter)
+          : classId is >= 6 and <= 10 ? [8, 9, 10, 11, 12, 13]    // Cleric line
+          : classId is >= 11 and <= 15 ? [14, 15, 16, 17, 18, 19] // Archer line
+          : classId is >= 16 and <= 20 ? [20, 21, 22, 23, 24, 25] // Mage line
+          : classId is >= 21 and <= 25 ? [27, 28, 29, 30, 31, 32] // Joker line
+          : classId is >= 26 and <= 27 ? [33, 34]                 // Sentinel/Savior
+          : [];
+        return new HashSet<int>(band);
+    }
+
     /// <summary>MobInfo <c>Type</c> value for a gatherable resource node (herb/wood/mushroom).</summary>
     public const int ResourceNodeType = 9;
 
@@ -182,6 +261,12 @@ public sealed class ClientData
 /// <see cref="IsNpc"/> (vs a monster) — enough to label/triage what the bot sees.</summary>
 public sealed record MobData(int Id, string Name, string InxName, int Level, int MaxHp, bool IsNpc,
     bool IsPlayerSide = false, int Type = 0);
+
+/// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c>: the
+/// <see cref="Map"/> short-name and the <see cref="CenterX"/>/<see cref="CenterY"/> of its
+/// main spawn field (with the field <see cref="Width"/>/<see cref="Height"/>). The quest
+/// driver travels to <see cref="Map"/> and grinds around the centre.</summary>
+public sealed record MobLocation(int MobId, string Map, int CenterX, int CenterY, int Width, int Height);
 
 /// <summary>Combat-relevant fields of an <c>ActiveSkill</c> row, projected from the client
 /// table. <see cref="UsableDegree"/> = the facing arc the target must be within (the cast

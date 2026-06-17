@@ -116,8 +116,36 @@ public sealed class BotApi
     public bool answerQuest(int result = 1) => Ok(Wait(_mgr.ProceedQuestAsync(Id, (uint)result)));
     /// <summary>Drive a whole quest dialogue with one NPC (accept or turn-in): click it and
     /// ACK every server-pushed script page until the dialogue ends. <c>result</c>=1 accepts.</summary>
-    public bool doQuest(int npcHandle, int result = 1) => Ok(Wait(_mgr.DriveQuestDialogueAsync(Id, (ushort)npcHandle, (uint)result)));
+    public bool doQuest(int npcHandle, int result = 1, int rewardIndex = -1) => Ok(Wait(_mgr.DriveQuestDialogueAsync(Id, (ushort)npcHandle, (uint)result, rewardIndex)));
     public bool selectReward(int questId, int index) => Ok(Wait(_mgr.SelectQuestRewardAsync(Id, (ushort)questId, (uint)index)));
+
+    /// <summary>The character's ClassName ClassID (1=Fighter, 6=Cleric, …). 0 until selected.</summary>
+    public int classId() => _handle.Class;
+
+    /// <summary>The choice-reward index (0-based among a quest's method-2 "choose one" rewards) to
+    /// pick for THIS character's class, cross-referencing each reward item's UseClass against the
+    /// char's class line. Returns -1 if the quest has no choice rewards (nothing to select). When
+    /// the choices are explicitly other-class gear and the char's own slot carries a placeholder
+    /// item id 0 (a data quirk seen on the Roumen starter quests), that placeholder index is
+    /// chosen. Falls back to index 0. Lets the turn-in grab the right class's reward.</summary>
+    public int bestRewardIndex(int questId)
+    {
+        var q = _mgr.ClientData?.Quest(questId); var cd = _mgr.ClientData;
+        if (q is null || cd is null) return -1;
+        var choices = q.Rewards.Where(r => r.Method == 2 && r.Type == 2).ToList();
+        if (choices.Count == 0) return -1;
+        var line = GameData.ClientData.UseClassLineFor(_handle.Class);
+        // Return the RAW reward-block slot (RawIndex) — that's what the server's reward-select
+        // packet expects, not the compacted position.
+        int placeholder = -1;
+        for (int i = 0; i < choices.Count; i++)
+        {
+            var uc = cd.ItemUseClass(choices[i].ItemId);
+            if (uc == 1 || line.Contains(uc)) return choices[i].RawIndex;        // gear for our class line
+            if (choices[i].ItemId == 0 && placeholder < 0) placeholder = choices[i].RawIndex; // our-class placeholder
+        }
+        return placeholder >= 0 ? placeholder : choices[0].RawIndex;
+    }
     public DynValue pendingQuest()
     {
         var q = View?.PendingQuest;
@@ -169,10 +197,24 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>The PLAYER_QUEST_INFO status byte of an active quest (0 if not active). Seen
-    /// values: <b>6</b> = in progress (objective not yet met), <b>8</b> = objective complete /
-    /// ready to hand in. Lets the driver hand in a finished quest instead of re-grinding it.</summary>
+    /// <summary>The PLAYER_QUEST_INFO status byte of an active quest (0 if not active). From the
+    /// login QUEST_DOING snapshot — NOT live (it lied: read 8 while the quest was 0/5). Treat
+    /// <b>8</b> as the glitched/stuck state and <b>6</b> as healthy in-progress; for live progress
+    /// use <see cref="questProgress"/>, not this.</summary>
     public int questStatus(int id) => View is { } v && v.ActiveQuests.TryGetValue(id, out var s) ? s : 0;
+
+    /// <summary>Kills the SERVER has credited to this quest this session (from 0x440D). The
+    /// authoritative objective-progress count — when it reaches the objective count, turn in.
+    /// If the bot lands kills (killsByMe rises) but this stays 0, the quest is stuck → abandon it.</summary>
+    public int questProgress(int id) => View?.QuestProgress(id) ?? 0;
+
+    /// <summary>Abandon a quest (NC_QUEST_GIVE_UP_REQ). Used to clear a persistence-glitched
+    /// quest (active but stuck at 0 progress) so it can be re-accepted fresh.</summary>
+    public bool giveUpQuest(int id) => Ok(Wait(_mgr.GiveUpQuestAsync(Id, (ushort)id)));
+
+    /// <summary>Start a quest by id (NC_QUEST_START_REQ) — the accept for menu/remote quests
+    /// where clicking the NPC opens a selection menu instead of a direct dialogue.</summary>
+    public bool startQuest(int id) => Ok(Wait(_mgr.StartQuestAsync(Id, (ushort)id)));
 
     /// <summary>Quests the character can accept right now — the server's authoritative
     /// available list from the login QUEST_READ burst (the orange-! set), joined with QuestData
@@ -200,10 +242,79 @@ public sealed class BotApi
         }
         return DynValue.NewTable(t);
     }
+    /// <summary>Quests the bot should consider accepting, driven from QuestData.shn directly
+    /// (NOT the server's QUEST_READ list — in these data files the low-level quests are buggily
+    /// absent from it). A quest is eligible when: not already done, not already active, it has at
+    /// least one kill objective (type==1), and it has a real start NPC. Class is not filtered
+    /// (≈99% of quests are unrestricted). Level isn't hard-gated either — the server rejects an
+    /// out-of-level accept, which the driver detects via <c>questActive</c> not flipping. Each
+    /// row: {id, startNpc, turnInNpc, minLevel, repeatable, title, objectives[{mob,count}]}.
+    /// The driver bulk-accepts these at their start NPCs in town.</summary>
+    public DynValue eligibleQuests()
+    {
+        var t = NewTable();
+        var v = View; var cd = _mgr.ClientData;
+        if (v is null || cd is null) return DynValue.NewTable(t);
+        int i = 1;
+        foreach (var q in cd.Quests.Values)
+        {
+            if (q.StartNpc == 0) continue;
+            if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
+            if (!q.Objectives.Any(o => o.Type == 1)) continue; // kill quests drive the grind
+            if (q.MinLevel > _handle.Level) continue;          // not high enough level to accept yet (@17)
+            if (q.PrereqQuest != 0 && !v.IsQuestDone(q.PrereqQuest)) continue; // prerequisite quest not done (@58)
+            var e = NewTable();
+            e["id"] = q.Id; e["startNpc"] = q.StartNpc; e["turnInNpc"] = q.TurnInNpc;
+            e["minLevel"] = q.MinLevel; e["prereq"] = q.PrereqQuest; e["repeatable"] = q.Repeatable; e["title"] = cd.QuestDialog(q.Title);
+            var objs = NewTable(); int oi = 1;
+            foreach (var o in q.Objectives.Where(o => o.Type == 1))
+            { var oe = NewTable(); oe["mob"] = o.Mob; oe["count"] = o.Count; objs[oi++] = DynValue.NewTable(oe); }
+            e["objectives"] = DynValue.NewTable(objs);
+            t[i++] = DynValue.NewTable(e);
+        }
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c> (the table the
+    /// real client uses for the quest-log marker): {map, x, y, width, height}, or nil if unknown.
+    /// Lets the driver travel to the right field for a kill objective with no server data.</summary>
+    public DynValue mobLocation(int mobId)
+    {
+        var cd = _mgr.ClientData;
+        if (cd is null) return DynValue.Nil;
+        var all = cd.MobCoordinatesAll(mobId);
+        // Drop zero-area rows: those are quest-log MARKERS (e.g. the gate to go through), not real
+        // spawn fields. Keeping them made "prefer current map" pick the RouN gate-marker and freeze.
+        var nonZero = all.Where(l => (long)l.Width * l.Height > 0).ToList();
+        if (nonZero.Count > 0) all = nonZero;
+        if (all.Count == 0) return DynValue.Nil;
+        // Prefer (1) the current map, then (2) a map reachable via an IN-VIEW gate (adjacent —
+        // so travelTo just takes that gate), then (3) the largest patch overall. This stops the
+        // bot trying to route to a far map when the mob also spawns one gate away.
+        var cur = _handle.CurrentMap;
+        GameData.MobLocation? pick = cur is null ? null : all.FirstOrDefault(l => string.Equals(l.Map, cur, StringComparison.OrdinalIgnoreCase));
+        if (pick is null && View is { } v)
+        {
+            var gateMaps = v.NearbyNpcs.Where(n => n.IsGate && !string.IsNullOrEmpty(n.LinkMap))
+                .Select(n => n.LinkMap).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            pick = all.Where(l => gateMaps.Contains(l.Map))
+                      .OrderByDescending(l => (long)l.Width * l.Height).FirstOrDefault();
+        }
+        pick ??= all.OrderByDescending(l => (long)l.Width * l.Height).First();
+        var t = NewTable();
+        t["map"] = pick.Map; t["x"] = pick.CenterX; t["y"] = pick.CenterY;
+        t["width"] = pick.Width; t["height"] = pick.Height;
+        return DynValue.NewTable(t);
+    }
+
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     public bool dead() => View?.Dead ?? false;
     public bool inCombat() => View?.InCombat ?? false;
+    /// <summary>Count of mobs the bot itself landed the killing blow on (REALLYKILL attacker==self).
+    /// The real kill signal for quest/XP credit — a mob merely vanishing (despawn / another
+    /// player's kill) does NOT count. A grind loop credits a kill when this increments.</summary>
+    public int killsByMe() => View?.KillsByMe ?? 0;
     public bool respawn() => Ok(Wait(_mgr.RespawnAsync(Id)));
     public bool buyHpStone(int number = 1) => Ok(Wait(_mgr.BuyHpStoneAsync(Id, (ushort)number)));
     public bool buySpStone(int number = 1) => Ok(Wait(_mgr.BuySpStoneAsync(Id, (ushort)number)));

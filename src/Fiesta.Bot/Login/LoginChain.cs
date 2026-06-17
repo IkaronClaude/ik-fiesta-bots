@@ -163,7 +163,7 @@ public sealed class LoginChain
                     wmHandle = ack.worldmanager;
                     foreach (var a in ack.avatar)
                         avatars.Add(new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level,
-                            AsciiZ(a.loginmap.n3_name)));
+                            AsciiZ(a.loginmap.n3_name), (byte)a.shape.chrclass));
                     _log($"[WM] << LOGINWORLD_ACK handle={wmHandle} numavatars={avatars.Count}: " +
                          string.Join(", ", avatars.Select(a => $"'{a.Name}'(slot {a.Slot}, {a.LoginMap})")));
 

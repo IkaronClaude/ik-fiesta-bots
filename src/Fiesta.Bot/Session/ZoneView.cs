@@ -121,6 +121,19 @@ public sealed class ZoneView : IDisposable
     // zone server, LINKOTHER = handoff to a different zone server (reconnect).
     private const ushort OpMapLinkSame = 0x1809;
     private const ushort OpMapLinkOther = 0x180A;
+    // NC_QUEST_NOTIFY_MOB_KILL_CMD (Quest dept 0x11, cmd 13) = live quest kill-progress.
+    private const ushort OpQuestMobKill = 0x440D;
+    // NC_QUEST_REWARD_NEED_SELECT_ITEM_CMD (cmd 18) = server asks the client to choose a reward
+    // during a turn-in (the [SHOW_REWARD] page). The driver answers with REWARD_SELECT_ITEM_INDEX.
+    private const ushort OpQuestRewardNeedSelect = 0x4412;
+    // NC_QUEST_GIVE_UP_ACK (cmd 8) = server confirms a quest abandon {questId, errorCode}.
+    private const ushort OpQuestGiveUpAck = 0x4408;
+
+    /// <summary>Quest id the server is currently asking us to pick a reward for (from 0x4412),
+    /// or null. Set when the turn-in shows the reward choices; consumed by the dialogue driver
+    /// which sends the class-appropriate REWARD_SELECT_ITEM_INDEX.</summary>
+    public int? RewardSelectQuestId { get; private set; }
+    public void ClearRewardSelect() => RewardSelectQuestId = null;
     /// <summary>Known NC_BAT_SKILLBASH_CAST_FAIL_ACK reason codes (empirically
     /// captured, not in FiestaLib enums). The <c>0x0F</c>-prefix is consistent across
     /// all codes seen so far — treat as a server-side subsystem, not a random constant.</summary>
@@ -188,6 +201,11 @@ public sealed class ZoneView : IDisposable
     private const ushort OpCharDeadMenu = 0x104D;
     private const ushort OpCharReviveSame = 0x104F;
     private const ushort OpCharReviveOther = 0x1050;
+    // NC_CHAR_LEVEL_CHANGED_CMD (Char dept, cmd 116): {wmhandle u16, charNo u32, newLevel u8}.
+    // Broadcast when ANY char levels; we update OUR level only when wmhandle == our WM handle.
+    // Without this the bot's Level stays stale at the login value (it's only set from the WM
+    // avatar list at login), so eligibleQuests filters on a wrong level and goal-detection (lvl 20) fails.
+    private const ushort OpCharLevelChanged = 0x1074;
     // NC_BAT_SKILLBASH_CAST_FAIL_ACK (Bat cmd 52 = 0x2434): the server rejected a
     // skill cast. Payload is a 2-byte LE u16 reason code. Known codes (empirically
     // captured):
@@ -287,8 +305,14 @@ public sealed class ZoneView : IDisposable
     public ChatMessage? LastChat { get; private set; }
 
     /// <summary>Handle of the most recently killed entity (from REALLYKILL) — lets a grind
-    /// script confirm a kill landed and move on without waiting for the despawn.</summary>
+    /// script confirm a kill landed and move on without waiting for the despawn. Only set when
+    /// the bot itself was the attacker (so a script counts its own kills, not a passer-by's).</summary>
     public ushort LastKill { get; private set; }
+
+    /// <summary>Count of mobs the bot itself killed (REALLYKILL with attacker == self). The
+    /// authoritative "I got the killing blow" signal — quest/XP credit only comes from these,
+    /// not from a mob merely disappearing (despawn, or another player's kill).</summary>
+    public int KillsByMe { get; private set; }
 
     /// <summary>True while the bot is riding a mount (tracked from MOVER ride
     /// on/off, 0xCC02/0xCC06). Drives mount-aware routing (auto-use when far).</summary>
@@ -348,6 +372,10 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Raised when the bot's own HP changes (HPCHANGE 0x240E), with the new
     /// current HP. The combat/script layer reacts (heal / HP soul-stone when low).</summary>
+    /// <summary>Raised when the bot's OWN level changes (NC_CHAR_LEVEL_CHANGED_CMD for our WM
+    /// handle) — carries the new level. BotManager updates BotHandle.Level off this.</summary>
+    public event Action<byte>? LevelChanged;
+
     public event Action<uint>? HpChanged;
 
     /// <summary>Raised when the bot's own SP changes (SPCHANGE 0x240F).</summary>
@@ -530,6 +558,13 @@ public sealed class ZoneView : IDisposable
     private readonly HashSet<int> _doneQuests = new();
     private readonly ConcurrentDictionary<int, byte> _activeQuests = new();
     private readonly HashSet<int> _availableQuests = new();
+    private readonly ConcurrentDictionary<int, int> _questProgress = new(); // questId -> kills credited this session (0x440D)
+
+    /// <summary>Kills the server has CREDITED to a quest this session (counted from
+    /// 0x440D NC_QUEST_NOTIFY_MOB_KILL_CMD). The authoritative objective-progress signal —
+    /// distinct from how many mobs the bot killed: a status-glitched quest gets 0 credit even
+    /// while the bot lands kills, which is how the driver detects a stuck quest to abandon.</summary>
+    public int QuestProgress(int id) => _questProgress.TryGetValue(id, out var n) ? n : 0;
 
     /// <summary>Quest ids the character can accept right now — the server's available list from
     /// the login QUEST_READ burst (0x10CE). This is the authoritative orange-! set (the client
@@ -551,11 +586,14 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Seed completed + in-progress quest ids from the zone-login burst
     /// (NC_CHAR_QUEST_DONE_CMD / QUEST_DOING, captured by <see cref="Zone.ZoneEntry"/>).</summary>
-    public void SeedQuests(IEnumerable<ushort>? done, IEnumerable<(ushort id, byte status)>? active,
+    public void SeedQuests(IEnumerable<ushort>? done, IEnumerable<(ushort id, byte status, int progress)>? active,
         IEnumerable<ushort>? available = null)
     {
         if (done is not null) foreach (var d in done) _doneQuests.Add(d);
-        if (active is not null) foreach (var (id, st) in active) _activeQuests[id] = st;
+        // Seed both the status AND the credited progress (sum of End_NPCMobCount) from the zone's
+        // QUEST_DOING snapshot. This is the authoritative count the zone re-sends on every entry,
+        // so it restores progress after a handover (a fresh ZoneView) instead of reading back 0.
+        if (active is not null) foreach (var (id, st, prog) in active) { _activeQuests[id] = st; _questProgress[id] = prog; }
         if (available is not null) foreach (var a in available) _availableQuests.Add(a);
         if (_doneQuests.Count > 0 || _activeQuests.Count > 0 || _availableQuests.Count > 0)
             _log?.Invoke($"[ZoneView] seeded quests: done={_doneQuests.Count} active={_activeQuests.Count} available={_availableQuests.Count}");
@@ -616,11 +654,16 @@ public sealed class ZoneView : IDisposable
         {
             // A mob died (REALLYKILL {dead, attacker}) — retire it NOW rather than waiting for
             // the delayed briefinfo despawn, so a grind script moves to the next target at once.
+            // Only credit it as OUR kill (LastKill, KillsByMe) when WE are the attacker — in a
+            // busy field other players kill mobs we were on, which earns us no quest/XP credit.
             var p = pkt.Payload.Span;
-            if (p.Length >= 2)
+            if (p.Length >= 4)
             {
                 var dead = (ushort)(p[0] | (p[1] << 8));
-                if (_npcs.TryRemove(dead, out _)) LastKill = dead;
+                var attacker = (ushort)(p[2] | (p[3] << 8));
+                bool mine = SelfHandle != 0 && attacker == SelfHandle;
+                _log?.Invoke($"[ZoneView] REALLYKILL dead={dead} attacker={attacker} self={SelfHandle} mine={mine}");
+                if (_npcs.TryRemove(dead, out _) && mine) { LastKill = dead; KillsByMe++; }
             }
         }
         else if (op == OpBriefMob)
@@ -770,10 +813,47 @@ public sealed class ZoneView : IDisposable
             Dead = true; DeadAtUtc = DateTime.UtcNow;
             _log?.Invoke("[ZoneView] DIED (death menu) — revive in place or respawn to town");
         }
-        else if (op == OpCharReviveSame || op == OpCharReviveOther)
+        else if (op == OpCharReviveSame)
         {
-            if (Dead) _log?.Invoke("[ZoneView] revived in place");
             Dead = false; DeadAtUtc = DateTime.MinValue;
+            // REVIVESAME (same zone server) payload == LINKSAME format {mapId u16, x u32, y u32}.
+            // The real client treats a revive as an in-band map change: after REVIVE_REQ it
+            // re-sends MAP_LOGINCOMPLETE (0x1803), which makes the server spawn it back in and
+            // stream the post-revive state — INCLUDING the HPCHANGE that restores HP (confirmed
+            // in Death.pcapng: REVIVE_REQ → REVIVESAME → LOGINCOMPLETE → HPCHANGE hp=34). Without
+            // re-sending LOGINCOMPLETE the bot never gets that HPCHANGE and sits at 0 HP forever
+            // (the "stuck dead" wedge). Routing through MapChanged reuses the LINKSAME path that
+            // already does SetPosition + re-send LOGINCOMPLETE.
+            if (Navigation.MapHandoff.ParseLinkSame(pkt.Payload.Span) is { } h)
+            {
+                _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
+                CurrentMapId = h.MapId;
+                _npcs.Clear(); _nearby.Clear(); _drops.Clear();
+                MapChanged?.Invoke(h);
+            }
+        }
+        else if (op == OpCharLevelChanged)
+        {
+            // {wmhandle u16, charNo u32, newLevel u8}. Update OUR level only.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 7)
+            {
+                ushort wm = (ushort)(p[0] | (p[1] << 8));
+                byte newLevel = p[6];
+                if (wm == _session.State.WmHandle && newLevel > 0)
+                {
+                    _log?.Invoke($"[ZoneView] LEVEL UP -> {newLevel}");
+                    LevelChanged?.Invoke(newLevel);
+                }
+            }
+        }
+        else if (op == OpCharReviveOther)
+        {
+            if (Dead) _log?.Invoke("[ZoneView] revived (cross-server) — REVIVEOTHER not fully wired");
+            Dead = false; DeadAtUtc = DateTime.MinValue;
+            // TODO: REVIVEOTHER (0x1050) = revive on ANOTHER zone server (payload embeds a
+            // LOGIN_ACK + wm handle, like LINKOTHER). Needs the cross-server reconnect path.
+            // Rare vs same-server REVIVESAME; wire it like the LINKOTHER handoff when needed.
         }
         else if (op == OpActNpcMenuOpen)
         {
@@ -883,6 +963,46 @@ public sealed class ZoneView : IDisposable
                     ? $"[ZoneView] map handoff (cross-server) -> mapId={h.MapId} @({h.X},{h.Y}) via {h.Ip}:{h.Port} wm={h.WmHandle}"
                     : $"[ZoneView] map change (in-band) -> mapId={h.MapId} @({h.X},{h.Y})");
                 MapChanged?.Invoke(h);
+            }
+        }
+        else if (op == OpQuestMobKill)
+        {
+            // NC_QUEST_NOTIFY_MOB_KILL_CMD (Quest dept, cmd 13): the server's authoritative
+            // per-kill quest credit — [NumOfActionQuest u8][MobOfQuest × N], MobOfQuest = 4 bytes
+            // {u16 objIdx, u16 questId} (decoded from Quest.pcapng: payload 01 00 00 08 00 = 1
+            // quest, objIdx 0, questId 8). Each notify = +1 credited kill for that quest. This is
+            // the ONLY reliable progress signal — a mob merely dying credits nothing if the quest
+            // isn't actually tracking it (the persistence-glitched status-8 quests).
+            var p = pkt.Payload.Span;
+            if (p.Length >= 1)
+            {
+                int n = p[0];
+                for (int i = 0; i < n && 1 + i * 4 + 4 <= p.Length; i++)
+                {
+                    int qid = p[1 + i * 4 + 2] | (p[1 + i * 4 + 3] << 8);
+                    _questProgress.AddOrUpdate(qid, 1, (_, v) => v + 1);
+                    _log?.Invoke($"[ZoneView] QUEST_MOB_KILL quest={qid} credited (total {_questProgress[qid]})");
+                }
+            }
+        }
+        else if (op == OpQuestRewardNeedSelect)
+        {
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2) { RewardSelectQuestId = p[0] | (p[1] << 8); _log?.Invoke($"[ZoneView] REWARD_NEED_SELECT quest={RewardSelectQuestId}"); }
+        }
+        else if (op == OpQuestGiveUpAck)
+        {
+            // Abandon confirmed — drop the quest from the active view (and its progress) so the
+            // driver sees it as no-longer-active and can re-accept it fresh. Without this the
+            // active list stays stale and a glitched quest loops on "abandon" forever.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2)
+            {
+                int qid = p[0] | (p[1] << 8);
+                int err = p.Length >= 4 ? (p[2] | (p[3] << 8)) : 0;
+                _activeQuests.TryRemove(qid, out _);
+                _questProgress.TryRemove(qid, out _);
+                _log?.Invoke($"[ZoneView] QUEST_GIVE_UP_ACK quest={qid} err={err} — removed from active");
             }
         }
         else if (op == OpClientItem)

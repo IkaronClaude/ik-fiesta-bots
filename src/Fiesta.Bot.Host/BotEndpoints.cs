@@ -119,6 +119,17 @@ public static class BotEndpoints
         })
         .WithSummary("Stop a bot and remove it from the manager");
 
+        group.MapPost("/{id}/packetlog", (string id, PacketLogRequest? req) =>
+        {
+            var enabled = req?.Enabled ?? true;
+            var (found, on, path) = manager.SetPacketLog(id, enabled);
+            return found
+                ? Results.Ok(new { id, enabled = on, path })
+                : Results.NotFound();
+        })
+        .WithSummary("Toggle a tailable both-directions plaintext packet dump (hex+ASCII) for a bot")
+        .WithDescription("Body {\"enabled\":true|false} (default true). Returns the log file path to `tail -f`. Captures every S→C and C→S frame interleaved, XOR-decoded, with opcode + name + hex/ASCII. Survives zone handoffs.");
+
         group.MapPost("/{id}/say", async (string id, SayRequest req) =>
         {
             if (string.IsNullOrEmpty(req.Text))
@@ -634,6 +645,12 @@ public static class BotEndpoints
 public sealed record SayRequest
 {
     public string? Text { get; init; }
+}
+
+/// <summary>Body for /packetlog. <c>Enabled</c> true (default) starts the dump, false stops it.</summary>
+public sealed record PacketLogRequest
+{
+    public bool? Enabled { get; init; }
 }
 
 /// <summary>Body for the party/friend name-only endpoints (invite / accept / decline /

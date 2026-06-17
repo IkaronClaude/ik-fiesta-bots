@@ -37,6 +37,15 @@ public sealed class FiestaClientConnection : IDisposable
         _xorTable = xorTable;
     }
 
+    /// <summary>
+    /// Optional observer fired for every frame on this connection, in both directions,
+    /// with the <b>plaintext</b> (XOR-decoded) opcode + payload — outbound is captured
+    /// BEFORE the send cipher transforms it, inbound is plaintext already. Set at runtime
+    /// to tap traffic (e.g. a packet log); null = no overhead. Args: (outbound, opcode, payload).
+    /// Must not throw or block — it runs inline on the read/send path.
+    /// </summary>
+    public Action<bool, ushort, ReadOnlyMemory<byte>>? PacketTap { get; set; }
+
     public bool HandshakeComplete => _sendCipher is not null;
 
     /// <summary>The seed the server sent in its handshake frame (0 until handshaked).</summary>
@@ -97,6 +106,7 @@ public sealed class FiestaClientConnection : IDisposable
         var payload = new byte[frameLen - 2];
         if (payload.Length > 0)
             Buffer.BlockCopy(frame, 2, payload, 0, payload.Length);
+        PacketTap?.Invoke(false, opcode, payload);
         return new FiestaPacket(opcode, payload);
     }
 
@@ -105,6 +115,9 @@ public sealed class FiestaClientConnection : IDisposable
     {
         if (_sendCipher is null)
             throw new InvalidOperationException("Send before handshake — call WaitForHandshakeAsync first");
+
+        // Tap BEFORE the cipher transform so observers see plaintext (the c2s wire is enciphered).
+        PacketTap?.Invoke(true, packet.Opcode, packet.Payload);
 
         var bodyLen = 2 + packet.Payload.Length;
         var body = new byte[bodyLen];

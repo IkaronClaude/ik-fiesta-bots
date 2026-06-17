@@ -11,11 +11,24 @@ public static class PathFinder
     private static readonly (int dx, int dy)[] Neighbors =
         { (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1) };
 
+    // A modest heuristic weight makes A* greedier — it explores roughly a corridor toward the
+    // goal instead of a full ellipse, cutting expansions by orders of magnitude on the large,
+    // mostly-open field maps. Paths become slightly suboptimal (fine for a bot) but LONG paths
+    // now finish within budget instead of hitting the cap and falsely reporting "no path" (the
+    // bug that made fully-connected maps like RouCos02 look divided).
+    private const int HeurWeightNum = 3, HeurWeightDen = 2; // 1.5x
+
     public static IReadOnlyList<(uint X, uint Y)> FindPath(
-        BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY, int maxExpansions = 200_000)
+        BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY, int maxExpansions = 3_000_000)
     {
         var (sx, sy) = grid.WorldToTile(startX, startY);
         var (gx, gy) = grid.WorldToTile(goalX, goalY);
+        // Snap a blocked start/goal to the nearest walkable tile. Mob-spawn CENTRES (from
+        // MobCoordinate) often land on a blocked tile (decoration/edge), which would otherwise
+        // make walkTo reject the whole trip and the grind loop freeze. Snapping lets the bot
+        // path to the walkable edge of the spawn area and pick the mob up from there.
+        if (!grid.IsWalkableTile(sx, sy) && NearestWalkable(grid, sx, sy) is { } ns) (sx, sy) = ns;
+        if (!grid.IsWalkableTile(gx, gy) && NearestWalkable(grid, gx, gy) is { } ng2) (gx, gy) = ng2;
         if (!grid.IsWalkableTile(sx, sy) || !grid.IsWalkableTile(gx, gy))
             return Array.Empty<(uint, uint)>();
 
@@ -53,6 +66,24 @@ public static class PathFinder
         return Array.Empty<(uint, uint)>();
     }
 
+    /// <summary>Spiral outward from a (blocked) tile to the nearest walkable tile, up to
+    /// <paramref name="maxRadius"/> tiles. Null if none found (the point is deep inside a
+    /// large obstacle). Used to snap a blocked start/goal onto walkable ground.</summary>
+    private static (int x, int y)? NearestWalkable(BlockGrid grid, int tx, int ty, int maxRadius = 40)
+    {
+        for (int r = 1; r <= maxRadius; r++)
+        {
+            for (int dx = -r; dx <= r; dx++)
+                for (int dy = -r; dy <= r; dy++)
+                {
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != r) continue; // ring only
+                    int nx = tx + dx, ny = ty + dy;
+                    if (grid.IsWalkableTile(nx, ny)) return (nx, ny);
+                }
+        }
+        return null;
+    }
+
     /// <summary>Drop collinear intermediate waypoints, keeping only the start, the
     /// corners (direction changes), and the goal — so we issue one MoverunCmd per
     /// straight run instead of one per tile.</summary>
@@ -77,7 +108,8 @@ public static class PathFinder
     private static int Heur(int x, int y, int gx, int gy)
     {
         int dx = Math.Abs(x - gx), dy = Math.Abs(y - gy);
-        return 10 * (dx + dy) + (14 - 2 * 10) * Math.Min(dx, dy); // octile distance
+        int octile = 10 * (dx + dy) + (14 - 2 * 10) * Math.Min(dx, dy); // octile distance
+        return octile * HeurWeightNum / HeurWeightDen; // weighted (greedier) — see FindPath
     }
 
     private static List<(uint, uint)> Reconstruct(BlockGrid grid, Dictionary<int, int> came, int goal, int W)
