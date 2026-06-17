@@ -386,6 +386,17 @@ public sealed class ZoneView : IDisposable
         if (maxSpStones is { } s && s > 0) MaxSpStones = s;
     }
 
+    /// <summary>Seed the CURRENT soul-stone reserve counts from the zone-enter char-info
+    /// (NC_CHAR_BASE, decoded in <see cref="Zone.ZoneEntry"/>). This is the authoritative starting
+    /// reserve — without it the bot can't tell "reserve full" from "empty", spam-USEs at full HP
+    /// (which fails), and over-buys past the cap. A non-zero count also clears any stale
+    /// depletion flag. -1/null leaves the count unknown.</summary>
+    public void SeedStones(int? hpStones, int? spStones)
+    {
+        if (hpStones is { } h && h >= 0) { HpStones = h; if (h > 0) HpStoneDepleted = false; }
+        if (spStones is { } s && s >= 0) SpStones = s;
+    }
+
     /// <summary>Raised when the bot's own HP changes (HPCHANGE 0x240E), with the new
     /// current HP. The combat/script layer reacts (heal / HP soul-stone when low).</summary>
     /// <summary>Raised when the bot's OWN level changes (NC_CHAR_LEVEL_CHANGED_CMD for our WM
@@ -898,11 +909,17 @@ public sealed class ZoneView : IDisposable
         }
         else if (op == OpSoulStoneUseFail)
         {
-            // No charge available — the reserve is empty (or on cooldown). Flag it so the driver
-            // stops re-firing 0x5007 every tick and goes to restock instead.
-            if (!HpStoneDepleted) _log?.Invoke("[ZoneView] soul-stone USE FAILED (0x5006) — reserve empty, need restock");
-            HpStoneDepleted = true;
-            HpStones = 0;
+            // USEFAIL is AMBIGUOUS: a USE also fails at FULL HP ("nothing to restore"), NOT only on
+            // an empty reserve. Only treat it as depletion when we actually needed the heal (HP below
+            // max) — otherwise a USE at full HP would falsely mark the reserve empty and send the bot
+            // to needlessly restock (it can't buy anyway: already at/near cap). (operator-confirmed)
+            bool full = Hp is { } hp && MaxHp > 0 && hp >= MaxHp;
+            if (!full)
+            {
+                if (!HpStoneDepleted) _log?.Invoke("[ZoneView] soul-stone USE FAILED (0x5006) at non-full HP — reserve empty, need restock");
+                HpStoneDepleted = true;
+                HpStones = 0;
+            }
         }
         else if (Array.IndexOf(OpShopOpen, op) >= 0)
         {

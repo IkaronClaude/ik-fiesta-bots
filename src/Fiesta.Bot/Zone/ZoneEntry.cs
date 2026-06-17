@@ -63,6 +63,15 @@ public sealed class ZoneEntry
     // My Candy" / 20046, with their unusual ids.) Active quests are excluded (they're in DOING).
     private static readonly ushort OpQuestRead =
         (ushort)(((int)ProtocolCommand.Char << 10) | (int)CharOpcode.ClientQuestReadCmd);
+    // NC_CHAR_BASE (live server: Char cmd 56 = 0x1038, the first burst frame) carries the
+    // CURRENT vitals + soul-stone reserve. Layout (verified live — CurHP@42 == MaxHp 208):
+    // CurPwrStone u16@34, CurGrdStone u16@36, CurHPStone u16@38, CurSPStone u16@40,
+    // CurHP u32@42, CurSP u32@46. This is the authoritative CURRENT soul-stone reserve at zone
+    // enter — the [1802] param block only has the MAX (its current/PwrStone fields read 0). The
+    // bot MUST seed from here, else it can't tell "reserve full" from "empty" and (a) spam-USEs at
+    // full HP (a USE at 100% HP fails), (b) tries to over-buy past the cap (buy is refused if
+    // current+buy > max). Verified: reserve was 18/23 the whole time it looked "depleted".
+    private const ushort OpCharBase = 0x1038;
 
     private readonly byte[] _xorTable;
     private readonly Action<string> _log;
@@ -86,9 +95,11 @@ public sealed class ZoneEntry
     /// throws ZoneEntryException on MAP_LOGINFAIL / timeout.
     /// </summary>
     public async Task<ZoneEntryResult> EnterAsync(
-        FiestaEndpoint zoneEp, ushort wmHandle, string charName, CancellationToken ct)
+        FiestaEndpoint zoneEp, ushort wmHandle, string charName, CancellationToken ct,
+        Action<bool, ushort, ReadOnlyMemory<byte>>? packetTap = null)
     {
         var conn = await FiestaClientConnection.ConnectAsync(zoneEp.Host, zoneEp.Port, _xorTable, ct);
+        conn.PacketTap = packetTap; // tap BEFORE the zone-enter burst is drained, so [1802]/charinfo is captured
         try
         {
             await conn.WaitForHandshakeAsync(ct: ct);
@@ -118,6 +129,7 @@ public sealed class ZoneEntry
             List<ushort>? doneQuests = null;
             List<(ushort id, byte status, int progress)>? activeQuests = null;
             List<ushort>? readQuests = null;
+            int? curHpStone = null, curSpStone = null;
             while (DateTime.UtcNow < deadline)
             {
                 var remaining = deadline - DateTime.UtcNow;
@@ -139,6 +151,17 @@ public sealed class ZoneEntry
                 }
 
                 sawFrame = true;
+                if (pkt.Opcode == OpCharBase) // current vitals + soul-stone reserve counts
+                {
+                    var p = pkt.Payload.Span;
+                    if (p.Length >= 42)
+                    {
+                        curHpStone = p[38] | (p[39] << 8);
+                        curSpStone = p[40] | (p[41] << 8);
+                        _log($"[Zone] reserve: HPStone={curHpStone} SPStone={curSpStone}");
+                    }
+                    continue;
+                }
                 if (pkt.Opcode == OpClientSkill) // learned-skill list (drained here; seed ZoneView)
                 {
                     skills = ParseSkillList(pkt.Payload.Span);
@@ -260,7 +283,7 @@ public sealed class ZoneEntry
                         var maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
                         _log($"[Zone] maxHPStone={maxHpStone} maxSPStone={maxSpStone}");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, ct);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -268,7 +291,7 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, doneQuests, activeQuests, readQuests, ct);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -285,11 +308,11 @@ public sealed class ZoneEntry
         uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills,
         IReadOnlyList<(byte box, ushort inven, ushort itemId)>? items,
         IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress)>? activeQuests,
-        IReadOnlyList<ushort>? readQuests, CancellationToken ct)
+        IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone);
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
@@ -327,7 +350,8 @@ public sealed record ZoneEntryResult(
     IReadOnlyList<(byte box, ushort inven, ushort itemId)>? Items = null,
     IReadOnlyList<ushort>? DoneQuests = null,
     IReadOnlyList<(ushort id, byte status, int progress)>? ActiveQuests = null,
-    IReadOnlyList<ushort>? ReadQuests = null);
+    IReadOnlyList<ushort>? ReadQuests = null,
+    int? CurHpStone = null, int? CurSpStone = null);
 
 public sealed class ZoneEntryException : Exception
 {

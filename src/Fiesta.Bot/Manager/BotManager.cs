@@ -1025,16 +1025,28 @@ public sealed class BotManager : IAsyncDisposable
     /// (NC_SOULSTONE_SP_USE_REQ) — the in-game "use an SP stone". Needed before a costly
     /// cast when current SP is low (the reserve must be charged).</summary>
     public Task<ActionResult> UseSoulStoneSpAsync(string id, CancellationToken ct = default)
-        => ActAsync(id, "soul-stone SP recharge (0x5009)",
+    {
+        // Don't USE at full SP — the server rejects it (USEFAIL), wasting the call and (worse)
+        // looking like an empty reserve. Skip as a no-op when already full.
+        if (_bots.TryGetValue(id, out var h) && h.ZoneView is { } v && v.Sp is { } sp && v.MaxSp > 0 && sp >= v.MaxSp)
+            return Task.FromResult(ActionResult.Sent);
+        return ActAsync(id, "soul-stone SP recharge (0x5009)",
             s => s.SendAsync(new FiestaPacket(OpSoulStoneSpUse, ReadOnlyMemory<byte>.Empty), ct));
+    }
 
     /// <summary>Recharge current HP from the character's HP soul-stone reserve
     /// (NC_SOULSTONE_HP_USE_REQ) — the in-game "use an HP stone". The combat-survival
     /// analogue of <see cref="UseSoulStoneSpAsync"/>; an instant out-of-combat-free heal
     /// from the reserve.</summary>
     public Task<ActionResult> UseSoulStoneHpAsync(string id, CancellationToken ct = default)
-        => ActAsync(id, "soul-stone HP recharge (0x5007)",
+    {
+        // Don't USE at full HP — the server rejects it (USEFAIL at 100% HP), which both wastes the
+        // call and falsely reads as an empty reserve. Skip as a no-op when already full.
+        if (_bots.TryGetValue(id, out var h) && h.ZoneView is { } v && v.Hp is { } hp && v.MaxHp > 0 && hp >= v.MaxHp)
+            return Task.FromResult(ActionResult.Sent);
+        return ActAsync(id, "soul-stone HP recharge (0x5007)",
             s => s.SendAsync(new FiestaPacket(OpSoulStoneHpUse, ReadOnlyMemory<byte>.Empty), ct));
+    }
 
     // Shop / buy. Clicking a merchant (target → NPCClick) makes the server send the
     // SHOPOPEN list (decoded by ZoneView). NC_ITEM_BUY_REQ {itemid, lot} then buys an
@@ -1055,8 +1067,14 @@ public sealed class BotManager : IAsyncDisposable
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
         var view = handle.ZoneView;
         var hb = new byte[] { (byte)npcHandle, (byte)(npcHandle >> 8) };
+        // Discard any STALE menu flag BEFORE clicking, so we wait for the menu THIS click opens —
+        // not a leftover NPCMENUOPEN_REQ from a previous attempt. Without this, a restock loop that
+        // re-opens the shop every couple seconds races: it acks the stale menu instantly (before the
+        // server processes the new click), the soul-stone shop never actually opens, and the buy is
+        // silently rejected (no BUY_ACK). Seen live: only the first open got SHOPOPENSOULSTONE.
+        view?.ClearNpcMenu();
         await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
-        // Wait briefly for the server to open the NPC menu, then select the option.
+        // Wait for the server to open the NPC menu (triggered by our click), then select the option.
         for (var waited = 0; waited < 3000; waited += 100)
         {
             if (view?.NpcMenuOpen == true) break;
@@ -1467,15 +1485,27 @@ public sealed class BotManager : IAsyncDisposable
         {
             var chain = new LoginChain(_xorTable, Log);
 
+            // If requested at spawn, start the packet dump NOW — before the first connect — so the
+            // login handshake AND the zone-enter char-info burst (current soul-stone counts, vitals,
+            // quest/skill seed) are captured, not just post-spawn traffic. The tap is threaded into
+            // each connect; the existing /packetlog endpoint reuses the same handle.PacketLog.
+            if (opt.PacketLog && handle.PacketLog is null)
+            {
+                var dir = Environment.GetEnvironmentVariable("PACKETLOG_DIR") ?? Directory.GetCurrentDirectory();
+                handle.PacketLog = new Net.PacketLog(System.IO.Path.Combine(dir, $"packets-{handle.Id}.log"));
+                Log($"packet log ENABLED (from spawn) -> {handle.PacketLog.Path}");
+            }
+            Action<bool, ushort, ReadOnlyMemory<byte>>? tap = handle.PacketLog is { } plog ? plog.Tap : null;
+
             handle.SetPhase(BotPhase.LoggingIn);
             var login = await chain.RunLoginAsync(
-                new FiestaEndpoint(opt.Host, opt.LoginPort), opt.Credentials, opt.WorldNo, ct);
+                new FiestaEndpoint(opt.Host, opt.LoginPort), opt.Credentials, opt.WorldNo, ct, tap);
             var wmPort = login.WmAdvertised.Port == 0 ? opt.WmPortFallback : login.WmAdvertised.Port;
             var wmEp = new FiestaEndpoint(opt.Host, wmPort);
 
             handle.SetPhase(BotPhase.SelectingChar);
             var (wmResult, wmConn) = await chain.RunWmAsync(
-                wmEp, opt.Credentials, login.Otp, opt.Slot, opt.CreateSpec, ct);
+                wmEp, opt.Credentials, login.Otp, opt.Slot, opt.CreateSpec, ct, tap);
             wm = new FiestaClientConnectionScope(wmConn);
 
             if (wmResult.ZoneAdvertised is not { } zoneAdv || wmResult.Selected is not { } sel)
@@ -1512,7 +1542,7 @@ public sealed class BotManager : IAsyncDisposable
             {
                 handle.SetPhase(BotPhase.EnteringZone);
                 handle.ZoneSession = null; // no live zone link during (re)connect
-                var entry = await zoneEntry.EnterAsync(zoneEp, zoneWmHandle, sel.Name, ct);
+                var entry = await zoneEntry.EnterAsync(zoneEp, zoneWmHandle, sel.Name, ct, tap);
                 var zoneConn = entry.Conn;
                 if (entry.SpawnX is { } spx && entry.SpawnY is { } spy) handle.SetPosition(spx, spy);
                 if (entry.CharHandle is { } selfH) handle.SetSelfHandle(selfH);
@@ -1536,6 +1566,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
                 if (ClientData is { } cdata) zoneView.IsHuntableMob = mobId => cdata.IsHuntableEnemy(mobId); // ignore guards
                 zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);
+                zoneView.SeedStones(entry.CurHpStone, entry.CurSpStone); // real reserve from zone-enter char-info
                 zoneView.SeedSkills(entry.Skills);
                 zoneView.SeedItems(entry.Items);
                 zoneView.SeedQuests(entry.DoneQuests, entry.ActiveQuests, entry.ReadQuests);

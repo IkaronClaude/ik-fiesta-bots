@@ -58,4 +58,10 @@ public sealed record BotSpawnOptions
     /// <summary>Log every inbound frame on both the zone and WM links (opcode +
     /// dept/cmd + len + hex preview) — packet introspection. Noisy; off by default.</summary>
     public bool LogInbound { get; init; }
+
+    /// <summary>Start the tailable both-directions packet dump from the VERY FIRST connection
+    /// (login → WM → zone), so the login handshake and the zone-enter char-info burst (current
+    /// soul-stone counts, vitals, quest/skill seed) are captured — not just post-spawn traffic.
+    /// Equivalent to calling /packetlog right after spawn but without missing the burst.</summary>
+    public bool PacketLog { get; init; }
 }

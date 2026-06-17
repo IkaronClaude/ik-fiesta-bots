@@ -879,6 +879,10 @@ public sealed record SpawnBotRequest
     /// <summary>Log every inbound frame on both links (zone + WM) for introspection.</summary>
     public bool LogInbound { get; init; }
 
+    /// <summary>Start the tailable packet dump from the first connection (captures the login +
+    /// zone-enter burst, not just post-spawn). Same file as the /packetlog endpoint.</summary>
+    public bool PacketLog { get; init; }
+
     public BotSpawnOptions ToOptions()
     {
         if (string.IsNullOrWhiteSpace(Host))
@@ -920,6 +924,7 @@ public sealed record SpawnBotRequest
                 AutoBuffNearby = BuffAutoNearby,
             } : null,
             LogInbound = LogInbound,
+            PacketLog = PacketLog,
         };
     }
 }

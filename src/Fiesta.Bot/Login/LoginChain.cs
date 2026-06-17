@@ -47,9 +47,11 @@ public sealed class LoginChain
     /// world, return the OTP + advertised WM endpoint. Socket closed on return.
     /// </summary>
     public async Task<LoginPhaseResult> RunLoginAsync(
-        FiestaEndpoint loginEp, BotCredentials creds, byte worldNo, CancellationToken ct)
+        FiestaEndpoint loginEp, BotCredentials creds, byte worldNo, CancellationToken ct,
+        Action<bool, ushort, ReadOnlyMemory<byte>>? packetTap = null)
     {
         using var conn = await FiestaClientConnection.ConnectAsync(loginEp.Host, loginEp.Port, _xorTable, ct);
+        conn.PacketTap = packetTap; // tap BEFORE the handshake so the whole login is captured
         await conn.WaitForHandshakeAsync(ct: ct);
         _log($"[Login] connected {loginEp}, handshake seed=0x{conn.Seed:X4}");
 
@@ -122,9 +124,11 @@ public sealed class LoginChain
     /// </summary>
     public async Task<(WmPhaseResult Result, FiestaClientConnection WmConn)> RunWmAsync(
         FiestaEndpoint wmEp, BotCredentials creds, byte[] otp, byte? selectSlot,
-        CharacterSpec? createIfMissing, CancellationToken ct)
+        CharacterSpec? createIfMissing, CancellationToken ct,
+        Action<bool, ushort, ReadOnlyMemory<byte>>? packetTap = null)
     {
         var conn = await FiestaClientConnection.ConnectAsync(wmEp.Host, wmEp.Port, _xorTable, ct);
+        conn.PacketTap = packetTap; // capture the WM handshake + char-select from the start
         try
         {
             await conn.WaitForHandshakeAsync(ct: ct);
