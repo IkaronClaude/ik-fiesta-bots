@@ -309,6 +309,17 @@ public sealed class BotApi
 
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
+    /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate
+    /// <see cref="soulstoneHp"/> on <c>not bot.hpStoneDepleted()</c> so the bot stops spamming
+    /// the use on an empty reserve and goes to a healer to restock instead. Cleared by a
+    /// successful use or an HP-stone buy.</summary>
+    public bool hpStoneDepleted() => View?.HpStoneDepleted ?? false;
+    /// <summary>Current HP soul-stone reserve count, or -1 if unknown (no buy/use seen yet).
+    /// Decrements on a successful use, refilled on a buy ack.</summary>
+    public int hpStones() => View?.HpStones ?? -1;
+    /// <summary>Max HP soul-stone reserve capacity (from the [1802] param block), or 0 if not
+    /// seeded. Lets a script restock at a percentage of capacity (e.g. &lt;10%).</summary>
+    public int maxHpStones() => (int)(View?.MaxHpStones ?? 0);
     public bool dead() => View?.Dead ?? false;
     public bool inCombat() => View?.InCombat ?? false;
     /// <summary>Count of mobs the bot itself landed the killing blow on (REALLYKILL attacker==self).

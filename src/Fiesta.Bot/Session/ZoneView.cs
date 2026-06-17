@@ -194,6 +194,14 @@ public sealed class ZoneView : IDisposable
     // so a missing ack = the buy didn't take. (USE draws from this reserve: 0x5007/0x5009.)
     private const ushort OpSoulStoneHpBuyAck = 0x5003;
     private const ushort OpSoulStoneSpBuyAck = 0x5004;
+    // Soul-stone USE result (verified C->S 0x5007 -> S->C 0x5008/0x5006 in this server's
+    // packetlog): HP_USESUC 0x5008 (empty; the HP gain arrives via HPCHANGE 0x240E) = the
+    // reserve had a charge and it was spent; USEFAIL 0x5006 (empty, SHARED HP+SP) = no charge
+    // available — the reserve is empty (or on cooldown). Without tracking these the driver
+    // re-fires 0x5007 every tick on an empty reserve forever (880 USE->USEFAIL pairs in one
+    // capture) and never realises it must restock. SP_USESUC is 0x500A (distinct).
+    private const ushort OpSoulStoneHpUseSuc = 0x5008;
+    private const ushort OpSoulStoneUseFail = 0x5006;
     // Death/revive (Char dept): DEADMENU 0x104D = server opens the death menu (you died);
     // REVIVE_REQ 0x104E (C->S) = "move to respawn point" (-> nearest town); REVIVESAME 0x104F
     // = revived in place (e.g. a cleric's resurrection — no town trip). Auto-respawn caps at
@@ -363,6 +371,14 @@ public sealed class ZoneView : IDisposable
     /// from the login char-info isn't decoded yet — TODO). The restock SM gates on this.</summary>
     public int? HpStones { get; private set; }
     public int? SpStones { get; private set; }
+
+    /// <summary>True once an HP soul-stone USE failed (USEFAIL 0x5006) — the reserve is empty
+    /// (or on cooldown), so further <c>UseSoulStoneHpAsync</c> calls are pointless until the bot
+    /// restocks. Cleared by a successful HP USE (USESUC 0x5008) or an HP BUY ack (0x5003, reserve
+    /// refilled). The driver gates healing on this so it stops spamming 0x5007 on an empty reserve
+    /// and instead goes to a healer to restock. NOTE: 0x5006 is shared HP/SP — for a melee bot
+    /// that never uses SP stones this reliably means "HP reserve empty".</summary>
+    public bool HpStoneDepleted { get; private set; }
 
     public void SeedMaxStones(uint? maxHpStones, uint? maxSpStones)
     {
@@ -868,9 +884,25 @@ public sealed class ZoneView : IDisposable
             if (p.Length >= 2)
             {
                 int total = p[0] | (p[1] << 8);
-                if (op == OpSoulStoneHpBuyAck) HpStones = total; else SpStones = total;
+                if (op == OpSoulStoneHpBuyAck) { HpStones = total; if (total > 0) HpStoneDepleted = false; }
+                else SpStones = total;
                 _log?.Invoke($"[ZoneView] soul-stone {(op == OpSoulStoneHpBuyAck ? "HP" : "SP")} BUY ok — reserve now {total}");
             }
+        }
+        else if (op == OpSoulStoneHpUseSuc)
+        {
+            // The HP reserve had a charge and it was spent (the HP gain itself comes via HPCHANGE).
+            // A success means we're not depleted; if we had a count, decrement it.
+            HpStoneDepleted = false;
+            if (HpStones is { } n && n > 0) HpStones = n - 1;
+        }
+        else if (op == OpSoulStoneUseFail)
+        {
+            // No charge available — the reserve is empty (or on cooldown). Flag it so the driver
+            // stops re-firing 0x5007 every tick and goes to restock instead.
+            if (!HpStoneDepleted) _log?.Invoke("[ZoneView] soul-stone USE FAILED (0x5006) — reserve empty, need restock");
+            HpStoneDepleted = true;
+            HpStones = 0;
         }
         else if (Array.IndexOf(OpShopOpen, op) >= 0)
         {
