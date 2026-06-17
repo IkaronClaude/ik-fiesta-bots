@@ -32,6 +32,12 @@ templates/local/
 # Local session handover (orientation notes, references creds indirectly)
 handover.md
 
+# Scratch backlog of deferred work (free-form, not a team doc)
+tickets.md
+
+# Runtime packet dumps (from the /packetlog endpoint; may contain session data)
+packets-*.log
+
 # Dev helper scripts (local conveniences, not part of the build)
 start-host.ps1
 host.log

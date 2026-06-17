@@ -1420,6 +1420,16 @@ result rule, also track the learn success/fail ack.)
   byte-level decode (they didn't surface in the AggroAndHerbs grep — likely a conversation whose
   handshake wasn't captured; re-decode per-port or grab a focused gather capture).
 
+### ⚠️ DEBUGGING QUESTS — ALWAYS READ QuestData.shn + QuestDialog.shn FIRST
+When anything quest-related misbehaves (wrong objective/mob/count, can't accept, wrong reward,
+missing/odd dialogue), **read `QuestData.shn` AND `QuestDialog.shn` for that quest id before
+theorising** — they are the ground truth the client itself uses. **Quest parsing is currently
+EXPERIMENTAL**: the `QuestData.shn` layout is bespoke/hand-reversed (see the questdata-shn-format
+notes) and some offsets/interpretations may still be WRONG (objective stride was 30→8; reward
+RawIndex, prereq@58, MinLevel@17 were guessed-then-corrected; repeatable flag still undecoded).
+So treat decoded quest fields as suspect, cross-check against a chat-annotated capture
+(Quest.pcapng / QuestsLowLevel.pcapng) + the live wire, and fix offsets at the source.
+
 ### Quests — NEXT after auto-learn-skills (DESIGNED — not impl)
 Quest accept/turn-in (from Full.pcapng facts): remote = `Quest StartReq` (0x4414) after a
 `ReadReq` (0x4416) browse; local at-NPC = `Quest ScriptCmdAck` (0x4402) dialogue. Need: read the
