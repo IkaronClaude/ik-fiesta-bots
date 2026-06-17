@@ -274,16 +274,17 @@ public sealed class ZoneEntry
                         _log($"[Zone] maxHp={maxHp} maxSp={maxSp}");
                     }
                     // Stone region of CHAR_PARAMETER_DATA: MaxHPStone @param160→body162,
-                    // MaxSPStone @param164→body166 (max soul-stone reserve capacity). The
-                    // CURRENT counts are NOT here (the PwrStone/GrdStone sub-structs read 0
-                    // even with stones in reserve) — they come from a BUY_ACK at runtime.
+                    // MaxSPStone @param164→body166 (max soul-stone reserve CAPACITY). The CURRENT
+                    // counts live in NC_CHAR_BASE (0x1038, parsed above), not here. Seed the max so
+                    // the bot can restock at a fraction of capacity (<10%) and compute the buy deficit.
+                    uint? maxHpStone = null, maxSpStone = null;
                     if (span.Length >= 170)
                     {
-                        var maxHpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(162, 4));
-                        var maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
+                        maxHpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(162, 4));
+                        maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
                         _log($"[Zone] maxHPStone={maxHpStone} maxSPStone={maxSpStone}");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -308,11 +309,12 @@ public sealed class ZoneEntry
         uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills,
         IReadOnlyList<(byte box, ushort inven, ushort itemId)>? items,
         IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress)>? activeQuests,
-        IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null)
+        IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null,
+        uint? maxHpStone = null, uint? maxSpStone = null)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone);
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
@@ -351,7 +353,8 @@ public sealed record ZoneEntryResult(
     IReadOnlyList<ushort>? DoneQuests = null,
     IReadOnlyList<(ushort id, byte status, int progress)>? ActiveQuests = null,
     IReadOnlyList<ushort>? ReadQuests = null,
-    int? CurHpStone = null, int? CurSpStone = null);
+    int? CurHpStone = null, int? CurSpStone = null,
+    uint? MaxHpStone = null, uint? MaxSpStone = null);
 
 public sealed class ZoneEntryException : Exception
 {

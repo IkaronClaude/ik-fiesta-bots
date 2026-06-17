@@ -1566,6 +1566,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
                 if (ClientData is { } cdata) zoneView.IsHuntableMob = mobId => cdata.IsHuntableEnemy(mobId); // ignore guards
                 zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);
+                zoneView.SeedMaxStones(entry.MaxHpStone, entry.MaxSpStone); // reserve capacity from [1802]
                 zoneView.SeedStones(entry.CurHpStone, entry.CurSpStone); // real reserve from zone-enter char-info
                 zoneView.SeedSkills(entry.Skills);
                 zoneView.SeedItems(entry.Items);
