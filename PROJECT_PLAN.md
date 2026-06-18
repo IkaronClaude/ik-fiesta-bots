@@ -1456,6 +1456,54 @@ to the ~10 town NPCs — no more 439-churn; falls through to grind once all are 
 `NC_QUEST_SELECT_START_ACK` (0x4410 {npc,quest,err}), `NC_QUEST_ERR` (0x4413) → per-quest result.
 Useful as a result tracker / for the menu path, though the dialogue accept's truth is the active diff.
 
+### 2026-06-18 — Autonomous-leveling robustness (Bot1208 8→9 proven) + nav traps
+After the NPC-driven accept fix, hardened the leveler's nav/grind so it makes steady XP progress
+instead of getting stuck. **Live-proven: Bot1208 leveled 8→9** on the live server under the loop.
+Fixes (all in the gitignored `scripts/level_quest.lua`):
+- **Cross-map travel deadline.** travelTo a quest-mob's map; if not arrived in 45s (or travelTo
+  returns not-started = no route), blacklist that mob and fall back to a reachable one. The old
+  move-counter guard never fired because the bot "wanders" while traveling (moving()=true).
+- **Gate-priority spawn pick.** Prefer a wanted mob whose spawn map has an in-view gate (reachable)
+  over far/instance maps. Ranks: on-current-map > in-view-gate-map > else.
+- **AVOID_MAP (EchoCave).** A quest mob in a cave/instance we're too weak for + can't easily leave
+  is blacklisted, never traveled to. If we get dragged in anyway (a "gate" NPC teleport — EchoCave
+  is reachable from RouCos01 via the **miner** SERVERMENU, see below), an **escape** step heads
+  straight back to the safe field. EchoCave trapped the bot twice (stuck taking damage, 0 kills).
+- **xpGrind only on a designated safe field (RouCos02).** Grinding "whatever map we're on" is what
+  let it grind EchoCave's too-tough mobs. From anywhere else, travel to RouCos02 first.
+- **Un-chaseable target switch.** xpGrind locked onto one mob (h=551) it chased forever (dist stuck
+  ~800u, never reached melee → 0 kills). Now: if a chase can't get within 3×MELEE in 9s, ignore that
+  handle 25s and pick another mob (disconnected block grid / fast roamer / bad path).
+- **Tour cadence.** The NPC accept-tour is gated: only when <3 kill quests AND once per 5 min
+  (TOUR_CD) — crossing town toward a gate no longer restarts the slow ~80s tour; the bot commits to
+  grinding between tours.
+**SERVERMENU teleport decoded (relevant to task NPC-teleport-nav):** a "gate" NPC click → NC_MENU_
+SERVERMENU_REQ (0x3C01) {title[128], npcHandle, menunum, SERVERMENU[]{reply u8, string[32]}} — e.g.
+Robin = "Do you want to move to Roumen field? Yes/No". Answer NC_MENU_SERVERMENU_ACK (0x3C02){reply}
+(reply=0 = Yes). `BotManager.UseGateAsync`/`bot.useGate` already sends this. **Known remaining nav
+gaps (separate tickets):** EchoCave needs the miner-NPC teleport wired; RouCos01's far block is a
+disconnected grid (MapWayPoint graph not routed). Those quests are skipped; xpGrind covers leveling.
+
+### 2026-06-18 — QuestData MinLevel/MaxLevel offset bug fixed (@27/@28); leveling is by ZONE
+**Root cause of "bot grinds instead of questing / should have ~10 quests".** The QuestData parser
+read the level gate from byte **@17/@18**, which is ~0 for almost every quest (it had been "confirmed"
+on one coincidental match, q20046). So `eligibleQuests` never narrowed by level → **438 candidates**
+(the whole file incl. event quests) and out-leveled quests were never dropped; the bot couldn't find
+its real level-appropriate quests and fell back to grinding the starter field forever. Real fields:
+**MinLevel = byte@27, MaxLevel = byte@28** — verified by zone against ground truth (operator's method:
+enumerate a zone's mobs via MobCoordinate, find the quests, dump byte offsets, the level field is the
+one reading the zone's level): q1 "Baby Steps" 1–10, Forest-of-Mist (RouVal01) 10–21, **Burning Rock
+(UrgFire01) 79–91**; @27 distribution spans 0–124 properly. Fixed `QuestData.cs` (@27/@28) +
+`eligibleQuests` now filters `MinLevel ≤ level ≤ MaxLevel` and skips no-gate/event quests (MaxLevel≤0).
+**Live result: a level-11 fighter's eligible set went 438 → 9** level-appropriate quests (incl. "Fine
+Deal (Daily quest Lv11~Lv20)" + the Forest-of-Mist Cursed Doll chain) — the bot now grinds its actual
+quest mobs on RouCos01 instead of the out-leveled RouCos02 field. **⚠️ Many other QuestData offsets are
+likely also wrong** (same hand-RE failure mode) — verify across zones before trusting (see memory).
+**Leveling is by ZONE** (no quest-level field beyond min/max gate): Roumen (RouN/RouCos01-02) ~1-10 →
+**Forest of Mist (RouVal01) 10-20** → Sea of Greed (RouCos03) ~20 → Burning Hill (RouVal02) ~25. The
+bot must progress zones; reaching some (RouVal01, EchoCave) needs NPC-teleport pathing (the RouCos
+miners — operator P2). See memory `fiesta-leveling-zones`.
+
 ### Quests — NEXT after auto-learn-skills (DESIGNED — not impl)
 Quest accept/turn-in (from Full.pcapng facts): remote = `Quest StartReq` (0x4414) after a
 `ReadReq` (0x4416) browse; local at-NPC = `Quest ScriptCmdAck` (0x4402) dialogue. Need: read the
