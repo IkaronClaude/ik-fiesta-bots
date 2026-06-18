@@ -962,9 +962,11 @@ public sealed class ZoneView : IDisposable
         }
         else if (Array.IndexOf(OpShopOpen, op) >= 0)
         {
-            // [itemnum u16][npc u16][MENUITEM × itemnum]. Read each MENUITEM's leading u16
-            // as the item id; stride = remaining bytes / itemnum (we have no MENUITEM
-            // struct, so derive it — robust to whatever the element size is).
+            // [itemnum u16][npc u16][MENUITEM × itemnum]. The TABLE shops (skill master/smith/
+            // general — 0x3C09/0A/0B) use MENUITEM = {slot u8, itemid u16} = 3 bytes, so the itemid
+            // is at off+1 (NOT the leading byte — verified on 0x3C09: slot 0x18 → itemid 0x0324).
+            // The simple shops (0x3C03/04/06) lead with the itemid u16. Derive stride and place the
+            // itemid read accordingly: a 3-byte (slot-prefixed) record reads at off+1, else off.
             var p = pkt.Payload.Span;
             if (p.Length >= 4)
             {
@@ -975,9 +977,10 @@ public sealed class ZoneView : IDisposable
                 if (itemnum > 0 && rest > 0)
                 {
                     var stride = rest / itemnum;
+                    int idAt = stride == 3 ? 1 : 0; // 3-byte MENUITEM is {slot u8, itemid u16}
                     for (int i = 0; i < itemnum; i++)
                     {
-                        var off = 4 + i * stride;
+                        var off = 4 + i * stride + idAt;
                         if (off + 2 > p.Length) break;
                         items.Add((ushort)(p[off] | (p[off + 1] << 8)));
                     }
