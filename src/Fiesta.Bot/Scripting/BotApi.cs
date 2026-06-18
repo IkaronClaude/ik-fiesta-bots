@@ -68,6 +68,42 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>Item fields from client ItemInfo for shop eval: {id, name, useClass, demandLv, grade,
+    /// equipSlot, isScroll}. isScroll = a skill scroll (USE it to learn the skill named the same as
+    /// the item). useClass = class line (Fighter 2–7, 0 = all). nil if unknown.</summary>
+    public DynValue itemInfo(int id)
+    {
+        var it = _mgr.ClientData?.Item(id);
+        if (it is null) return DynValue.Nil;
+        var t = NewTable();
+        t["id"] = id; t["name"] = it.Name; t["useClass"] = it.UseClass; t["demandLv"] = it.DemandLv;
+        t["grade"] = it.Grade; t["equipSlot"] = it.EquipSlot; t["isScroll"] = it.IsScroll;
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>The item ids the last-opened merchant sells (from SHOPOPEN/SHOPOPENTABLE). Empty
+    /// until a shop is opened. The driver reads this + <see cref="itemInfo"/> to decide what to buy.</summary>
+    public DynValue shopItems()
+    {
+        var t = NewTable(); var v = View;
+        if (v is null) return DynValue.NewTable(t);
+        int i = 1; foreach (var id in v.ShopItems) t[i++] = (int)id;
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>True if the bot has already learned this skill id (from the login skill list +
+    /// any learned this session). Lets the driver skip re-buying a scroll it already knows.</summary>
+    public bool hasSkill(int id) => View?.HasSkill((ushort)id) ?? false;
+
+    /// <summary>The inventory bag slot currently holding <paramref name="itemId"/> (e.g. a scroll
+    /// just bought), or -1 if not in the bag. Use with <see cref="useItem"/> to consume it.</summary>
+    public int invenSlotOf(int itemId)
+    {
+        var v = View; if (v is null) return -1;
+        foreach (var kv in v.Inventory) if (kv.Value == (ushort)itemId) return kv.Key;
+        return -1;
+    }
+
     /// <summary>The learned skill id of the highest rank whose name starts with
     /// <paramref name="prefix"/> (e.g. <c>"Heal"</c> → the best heal you've learned), or 0 if
     /// none. Rank parsed from the <c>"[NN]"</c> in the skill name. Lets a script pick a skill

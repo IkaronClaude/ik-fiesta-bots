@@ -104,6 +104,20 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Name");
     }
 
+    /// <summary>Item fields from client <c>ItemInfo</c> for shop eval: <see cref="ItemData.UseClass"/>
+    /// (class line — Fighter 2–7, 0 = all), <see cref="ItemData.DemandLv"/> (level to use/equip),
+    /// <see cref="ItemData.Grade"/> (rarity), <see cref="ItemData.EquipSlot"/> (the <c>Equip</c> slot),
+    /// and <see cref="ItemData.IsScroll"/> (a skill scroll — <c>ItemUseSkill=="UseSkill"</c>; USE it to
+    /// learn the skill named the same as the item, e.g. "Slice and Dice [02]"). null if unknown.</summary>
+    public ItemData? Item(int itemId)
+    {
+        var t = Table("ItemInfo");
+        var row = t?.FindByLong("ID", itemId) ?? t?.FindByLong("id", itemId);
+        if (row is null) return null;
+        return new ItemData(itemId, GetStr(row, "Name"), GetInt(row, "UseClass"), GetInt(row, "DemandLv"),
+            GetInt(row, "Grade"), GetInt(row, "Equip"), GetStr(row, "ItemUseSkill") == "UseSkill");
+    }
+
     /// <summary>The display name of a skill id from client <c>ActiveSkill</c> (col "Name").
     /// Empty if missing. Lets the bot resolve a learned-skill id (e.g. find the one named
     /// "Heal") without hard-coding ids.</summary>
@@ -294,6 +308,13 @@ public sealed class ClientData
 /// <see cref="IsNpc"/> (vs a monster) — enough to label/triage what the bot sees.</summary>
 public sealed record MobData(int Id, string Name, string InxName, int Level, int MaxHp, bool IsNpc,
     bool IsPlayerSide = false, int Type = 0);
+
+/// <summary>Shop-eval fields of an <c>ItemInfo</c> row. <see cref="IsScroll"/> = a skill scroll
+/// (USE to learn the skill named the same as the item); otherwise an equip if <see cref="EquipSlot"/>
+/// is a real slot. <see cref="UseClass"/> = the class line that may use it (Fighter 2–7, 0 = all),
+/// <see cref="DemandLv"/> = the level required, <see cref="Grade"/> = rarity tier.</summary>
+public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
+    int EquipSlot, bool IsScroll);
 
 /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c>: the
 /// <see cref="Map"/> short-name and the <see cref="CenterX"/>/<see cref="CenterY"/> of its
