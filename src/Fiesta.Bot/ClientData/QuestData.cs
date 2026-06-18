@@ -106,12 +106,18 @@ public static class QuestData
 
             // Prerequisite quest: @56 u16 = prereq count (0/1), @58 u16 = the required quest id
             // (verified: q41 requires q40, q957 requires q956 — the LINK chain's downstream side).
-            // The quest can't be accepted until that quest is DONE. MinLevel@17/MaxLevel@18 gate
-            // it by level (e.g. q11 MaxLevel=1 — un-acceptable once you out-level it).
+            // The quest can't be accepted until that quest is DONE.
             int prereqQuest = U16(off + 56) > 0 ? U16(off + 58) : 0;
+            // LEVEL GATE: MinLevel = byte@27, MaxLevel = byte@28 (CORRECTED 2026-06-18 — was wrongly
+            // @17/@18 which read ~0 for everything and never narrowed the eligible set). Verified by
+            // zone: q1 "Baby Steps" 1–10, Forest-of-Mist quests 10–21, Burning Rock quests 79–91; the
+            // @27 distribution spans 0–124 properly. The quest is offered only while MinLevel ≤ char
+            // level ≤ MaxLevel (above MaxLevel it drops from Available but an in-progress one stays).
+            // @17 is a different (small 0–10) field; @16 is a 0–150 recommended/area level.
+            int minLevel = b[off + 27], maxLevel = b[off + 28];
             // Repeatable flag: not yet pinned to an offset. Defaults false; TODO decode (cross-check
             // against the login QUEST_REPEAT 0x10D7 set) so the driver can prioritise repeatables.
-            map[id] = new QuestDef(id, title, startNpc, b[off + 16] != 0, b[off + 17], b[off + 18],
+            map[id] = new QuestDef(id, title, startNpc, b[off + 16] != 0, minLevel, maxLevel,
                 b[off + 51], npcs, objectives, rewards, start, action, finish, Repeatable: false,
                 PrereqQuest: prereqQuest);
 

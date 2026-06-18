@@ -268,7 +268,12 @@ public sealed class BotApi
             if (q.StartNpc == 0) continue;
             if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
             if (!q.Objectives.Any(o => o.Type == 1)) continue; // kill quests drive the grind
-            if (q.MinLevel > _handle.Level) continue;          // not high enough level to accept yet (@17)
+            // LEVEL WINDOW (MinLevel@27 ≤ level ≤ MaxLevel@28). MaxLevel<=0 = a no-gate / event quest
+            // (min0/max0) — skip those; the real leveling quests carry a proper level range (e.g.
+            // Forest-of-Mist 10–20, Burning Rock 79–90), so this narrows the flood to the ~handful
+            // appropriate for the char's level. Above MaxLevel the quest is no longer offered.
+            if (q.MaxLevel <= 0) continue;
+            if (q.MinLevel > _handle.Level || _handle.Level > q.MaxLevel) continue;
             if (q.PrereqQuest != 0 && !v.IsQuestDone(q.PrereqQuest)) continue; // prerequisite quest not done (@58)
             var e = NewTable();
             e["id"] = q.Id; e["startNpc"] = q.StartNpc; e["turnInNpc"] = q.TurnInNpc;
