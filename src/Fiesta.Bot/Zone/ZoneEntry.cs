@@ -125,7 +125,7 @@ public sealed class ZoneEntry
             var deadline = DateTime.UtcNow.AddSeconds(10);
             var sawFrame = false;
             List<ushort>? skills = null;
-            List<(byte box, ushort inven, ushort itemId)>? items = null;
+            List<(byte box, ushort inven, ushort itemId, int count)>? items = null;
             List<ushort>? doneQuests = null;
             List<(ushort id, byte status, int progress)>? activeQuests = null;
             List<ushort>? readQuests = null;
@@ -185,7 +185,14 @@ public sealed class ZoneEntry
                             int datasize = p[off];
                             ushort inven = (ushort)(p[off + 1] | (p[off + 2] << 8));
                             ushort itemId = (ushort)(p[off + 3] | (p[off + 4] << 8));
-                            if (itemId != 0) { items.Add((box, inven, itemId)); logged.Add($"{inven}:{itemId}"); }
+                            // Stack count = the lot bytes right after itemid. datasize = location(2)+
+                            // itemid(2)+attr; a stackable material has attr = 1 byte-lot (e.g. Bone x29
+                            // = datasize 5) or 2 word-lot; gear has a big attr blob (no lot → count 1).
+                            int attr = datasize - 4;
+                            int count = (attr == 1 && off + 5 < p.Length) ? p[off + 5]
+                                      : (attr == 2 && off + 6 < p.Length) ? (p[off + 5] | (p[off + 6] << 8))
+                                      : 1;
+                            if (itemId != 0) { items.Add((box, inven, itemId, count)); logged.Add($"{inven}:{itemId}x{count}"); }
                             off += 1 + datasize; // entry = datasize-byte + datasize bytes (location(2)+info)
                         }
                         _log($"[Zone] item frame box={box} n={num} ds0={(num > 0 && p.Length > 3 ? p[3] : 0)} items=[{string.Join(",", logged)}]");
@@ -307,7 +314,7 @@ public sealed class ZoneEntry
     private async Task<ZoneEntryResult> CompleteLoginAsync(
         FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, ushort? charHandle,
         uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills,
-        IReadOnlyList<(byte box, ushort inven, ushort itemId)>? items,
+        IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? items,
         IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress)>? activeQuests,
         IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null,
         uint? maxHpStone = null, uint? maxSpStone = null)
@@ -349,7 +356,7 @@ public sealed class ZoneEntry
 public sealed record ZoneEntryResult(
     FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY, ushort? CharHandle, uint? MaxHp = null, uint? MaxSp = null,
     IReadOnlyList<ushort>? Skills = null,
-    IReadOnlyList<(byte box, ushort inven, ushort itemId)>? Items = null,
+    IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? Items = null,
     IReadOnlyList<ushort>? DoneQuests = null,
     IReadOnlyList<(ushort id, byte status, int progress)>? ActiveQuests = null,
     IReadOnlyList<ushort>? ReadQuests = null,

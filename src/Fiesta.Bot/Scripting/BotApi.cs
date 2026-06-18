@@ -104,6 +104,10 @@ public sealed class BotApi
         return -1;
     }
 
+    /// <summary>The stack count in main-bag <paramref name="slot"/> (from the wire lot field), 0 if
+    /// empty. Sell the EXACT whole stack with <c>bot.sell(slot, bot.invenCount(slot))</c>.</summary>
+    public int invenCount(int slot) => View?.ItemCount((byte)slot) ?? 0;
+
     /// <summary>The learned skill id of the highest rank whose name starts with
     /// <paramref name="prefix"/> (e.g. <c>"Heal"</c> → the best heal you've learned), or 0 if
     /// none. Rank parsed from the <c>"[NN]"</c> in the skill name. Lets a script pick a skill

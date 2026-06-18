@@ -267,6 +267,7 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<ushort, NearbyPlayer> _nearby = new();
     private readonly ConcurrentDictionary<ushort, NearbyNpc> _npcs = new();
     private readonly ConcurrentDictionary<byte, ushort> _inventory = new(); // bag slot -> itemId
+    private readonly ConcurrentDictionary<byte, int> _invCount = new();      // bag slot -> stack count
     private readonly ConcurrentDictionary<byte, ushort> _equipment = new(); // equip slot -> itemId
     private readonly ConcurrentDictionary<ushort, GroundItem> _drops = new(); // ground-item handle -> drop
     private readonly ConcurrentDictionary<ushort, byte> _skills = new(); // learned skill id -> 1 (set)
@@ -503,6 +504,10 @@ public sealed class ZoneView : IDisposable
     /// and live cell/equip changes).</summary>
     public IReadOnlyDictionary<byte, ushort> Inventory => _inventory;
 
+    /// <summary>The stack count in main-bag <paramref name="slot"/> (from the wire lot field), or 0
+    /// if the slot is empty. Used to sell the EXACT whole stack (not a guessed upper bound).</summary>
+    public int ItemCount(byte slot) => _invCount.TryGetValue(slot, out var c) ? c : 0;
+
     /// <summary>Currently worn gear: equip slot → itemId (from equip-change events).</summary>
     public IReadOnlyDictionary<byte, ushort> Equipment => _equipment;
 
@@ -567,17 +572,17 @@ public sealed class ZoneView : IDisposable
     /// the cause of empty Inventory/Equipment at login). Routes each item by its container
     /// <paramref name="items"/>.box: <see cref="EquipBox"/> → <see cref="Equipment"/>, else
     /// <see cref="Inventory"/> (slot = low byte of the inven position).</summary>
-    public void SeedItems(IEnumerable<(byte box, ushort inven, ushort itemId)>? items)
+    public void SeedItems(IEnumerable<(byte box, ushort inven, ushort itemId, int count)>? items)
     {
         if (items is null) return;
         int bag = 0, eq = 0;
-        foreach (var (box, inven, itemId) in items)
+        foreach (var (box, inven, itemId, count) in items)
         {
             if (itemId == 0) continue;
             var slot = (byte)(inven & 0xFF);
             if (box == EquipBox) { _equipment[slot] = itemId; eq++; }
-            else if (box == MainBag) { _inventory[slot] = itemId; bag++; } // ONLY the main bag (other
-            // boxes — premium/mini-house — would collide on slot and hide the real loot)
+            else if (box == MainBag) { _inventory[slot] = itemId; _invCount[slot] = count; bag++; } // ONLY
+            // the main bag (other boxes — premium/mini-house — collide on slot and hide the real loot)
         }
         if (bag + eq > 0) _log?.Invoke($"[ZoneView] seeded {bag} bag + {eq} equipped items from login");
     }
@@ -1140,11 +1145,24 @@ public sealed class ZoneView : IDisposable
             // any struct quirk so a bad frame never kills the read loop.
             try
             {
-                foreach (var it in pkt.ReadBody<PROTO_NC_CHAR_CLIENT_ITEM_CMD>().ItemArray)
+                // Hand-parse (like ZoneEntry) to read box + per-item stack count, which the typed
+                // struct doesn't expose: [num u8][box u8][flag u8] then [datasize u8][location u16]
+                // [itemid u16][attr…]; count = the lot byte/word after itemid (attr size = datasize-4).
+                var p = pkt.Payload.Span;
+                if (p.Length >= 3 && p[1] == MainBag)
                 {
-                    if (BoxOf(it.location.Inven) != MainBag) continue; // main bag only (not mini-house etc.)
-                    var slot = (byte)(it.location.Inven & 0xFF);
-                    if (it.info.itemid != 0) _inventory[slot] = it.info.itemid;
+                    int num = p[0], off = 3;
+                    for (int i = 0; i < num && off + 5 <= p.Length; i++)
+                    {
+                        int datasize = p[off];
+                        var slot = p[off + 1]; // inven low byte = slot
+                        var itemId = (ushort)(p[off + 3] | (p[off + 4] << 8));
+                        int attr = datasize - 4;
+                        int count = (attr == 1 && off + 5 < p.Length) ? p[off + 5]
+                                  : (attr == 2 && off + 6 < p.Length) ? (p[off + 5] | (p[off + 6] << 8)) : 1;
+                        if (itemId != 0) { _inventory[slot] = itemId; _invCount[slot] = count; }
+                        off += 1 + datasize;
+                    }
                 }
             }
             catch { /* skip unparseable inventory frame */ }
@@ -1162,7 +1180,15 @@ public sealed class ZoneView : IDisposable
                 {
                     var slot = (byte)(location & 0xFF);
                     var itemId = (ushort)(p[4] | (p[5] << 8));
-                    if (itemId != 0) _inventory[slot] = itemId; else _inventory.TryRemove(slot, out _);
+                    if (itemId != 0)
+                    {
+                        _inventory[slot] = itemId;
+                        // stack count = the lot after itemid: len 7 = byte-lot, len 8 = word-lot,
+                        // bigger = gear/complex (count 1). Mirrors the CLIENT_ITEM layout.
+                        _invCount[slot] = p.Length == 7 ? p[6]
+                                        : p.Length == 8 ? (p[6] | (p[7] << 8)) : 1;
+                    }
+                    else { _inventory.TryRemove(slot, out _); _invCount.TryRemove(slot, out _); }
                 }
             }
         }
