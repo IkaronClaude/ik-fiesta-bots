@@ -553,6 +553,14 @@ public sealed class ZoneView : IDisposable
     /// pieces (helmet 525 at inven 0x2001 → equip slot 1, etc.). Other boxes are inventory
     /// (9 = main bag, 12 = special, 15 = empty).</summary>
     private const byte EquipBox = 8;
+    // The character has MULTIPLE inventory boxes; the box is encoded in the item's inven position as
+    // (inven >> 10) — box 8 (0x20xx) = equipped, box 9 (0x24xx) = the MAIN BAG (loot/sell/buy go
+    // here; useItem/sell default invenType 9), box 12 (0x30xx) = premium mini-houses, box 15 = empty.
+    // We track ONLY the main bag (9) + equip (8); other boxes' slots COLLIDE on (inven & 0xFF) and
+    // clobbered the bag before (the "Mushroom House" mini-house item hid the real loot). Main bag has
+    // the lvl-1 "Mystery Vault" item as a tell.
+    private const byte MainBag = 9;
+    private static byte BoxOf(int inven) => (byte)(inven >> 10);
 
     /// <summary>Seed bag + worn-gear from the zone-login item list (captured by
     /// <see cref="Zone.ZoneEntry"/> during the login burst, which the session loop misses —
@@ -568,7 +576,8 @@ public sealed class ZoneView : IDisposable
             if (itemId == 0) continue;
             var slot = (byte)(inven & 0xFF);
             if (box == EquipBox) { _equipment[slot] = itemId; eq++; }
-            else { _inventory[slot] = itemId; bag++; }
+            else if (box == MainBag) { _inventory[slot] = itemId; bag++; } // ONLY the main bag (other
+            // boxes — premium/mini-house — would collide on slot and hide the real loot)
         }
         if (bag + eq > 0) _log?.Invoke($"[ZoneView] seeded {bag} bag + {eq} equipped items from login");
     }
@@ -1133,6 +1142,7 @@ public sealed class ZoneView : IDisposable
             {
                 foreach (var it in pkt.ReadBody<PROTO_NC_CHAR_CLIENT_ITEM_CMD>().ItemArray)
                 {
+                    if (BoxOf(it.location.Inven) != MainBag) continue; // main bag only (not mini-house etc.)
                     var slot = (byte)(it.location.Inven & 0xFF);
                     if (it.info.itemid != 0) _inventory[slot] = it.info.itemid;
                 }
@@ -1141,13 +1151,19 @@ public sealed class ZoneView : IDisposable
         }
         else if (op == OpCellChange)
         {
-            // [exchange:2][location:2][itemid:2][attr…] — a slot gained/changed an item.
+            // [exchange:2][location:2][itemid:2][attr…] — a slot gained/changed an item. location
+            // encodes box (>>10) + slot (&0xFF); only track the MAIN BAG so mini-house/premium box
+            // changes don't collide with / clobber bag slots.
             var p = pkt.Payload.Span;
             if (p.Length >= 6)
             {
-                var slot = p[2];
-                var itemId = (ushort)(p[4] | (p[5] << 8));
-                if (itemId != 0) _inventory[slot] = itemId; else _inventory.TryRemove(slot, out _);
+                var location = (ushort)(p[2] | (p[3] << 8));
+                if (BoxOf(location) == MainBag)
+                {
+                    var slot = (byte)(location & 0xFF);
+                    var itemId = (ushort)(p[4] | (p[5] << 8));
+                    if (itemId != 0) _inventory[slot] = itemId; else _inventory.TryRemove(slot, out _);
+                }
             }
         }
         else if (op == OpEquipChange)
