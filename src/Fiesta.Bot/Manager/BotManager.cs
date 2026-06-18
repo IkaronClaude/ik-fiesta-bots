@@ -868,7 +868,15 @@ public sealed class BotManager : IAsyncDisposable
         if (string.Equals(from, destMap, StringComparison.OrdinalIgnoreCase))
             return (TravelResult.AlreadyThere, Array.Empty<GateEdge>());
 
-        ObserveGates(id); // fold the bot's in-view gates into the graph before planning
+        // Seed the COMPLETE cross-map web from client nav data once (MapWayPoint/MapLinkPoint), so
+        // routing works to maps the bot has never visited — not just auto-discovered links.
+        if (!Graph.Seeded && ClientData is { } cd)
+        {
+            var seedEdges = cd.BuildGateEdges();
+            Graph.Seed(seedEdges);
+            _bots.TryGetValue(id, out var hh); hh?.Log($"[travel] seeded map graph: {seedEdges.Count} cross-map gate edges");
+        }
+        ObserveGates(id); // fold the bot's in-view gates into the graph (refreshes live handles)
         var route = Graph.Route(from, destMap);
         if (route is null || route.Count == 0) return (TravelResult.NoRoute, null);
 
@@ -903,13 +911,19 @@ public sealed class BotManager : IAsyncDisposable
                 var edge = route[hop];
                 var expected = edge.ToMap;
 
-                // Resolve the live gate to this destination from the current view. Gates
-                // arrive in the field-enter MOB briefinfo, so one should be present soon
-                // after the map loads — wait briefly for it.
+                // Walk to the gate's KNOWN location first (seeded from MapWayPoint/MapLinkPoint, or
+                // last observed). A map's gate can be anywhere on it; the old code only took a gate
+                // already in view and aborted otherwise — the #1 cause of "pathfinding failed". By
+                // approaching the stored coords the gate NPC comes into view, then we resolve + click.
+                if (edge.GateX != 0 || edge.GateY != 0)
+                    await ApproachAsync(id, handle, edge.GateX, edge.GateY, GateApproachDist, unitsPerSec, ct);
+
+                // Resolve the live gate to this destination from the current view (now that we're at
+                // its location). Gates arrive in the field MOB briefinfo — wait briefly for it.
                 if (!await WaitUntilAsync(() => GateTo(handle, expected) is not null, 8000, ct)
                     || GateTo(handle, expected) is not { } gate)
                 {
-                    handle.Log($"[travel] hop {hop + 1}/{route.Count}: no gate to '{expected}' in view — aborting");
+                    handle.Log($"[travel] hop {hop + 1}/{route.Count}: no gate to '{expected}' in view near ({edge.GateX},{edge.GateY}) — aborting");
                     return;
                 }
                 handle.Log($"[travel] hop {hop + 1}/{route.Count}: -> {expected} via gate h={gate.Handle} @({gate.X},{gate.Y})");

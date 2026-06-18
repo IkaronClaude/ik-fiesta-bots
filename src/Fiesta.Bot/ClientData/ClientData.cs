@@ -245,6 +245,39 @@ public sealed class ClientData
         return new HashSet<int>(band);
     }
 
+    /// <summary>Build the complete CROSS-MAP gate web from the client nav tables
+    /// <c>MapWayPoint.shn</c> (nodes: MapID, X=Undefined0, Y=Undefined1, MWP_Gate) +
+    /// <c>MapLinkPoint.shn</c> (edges: MLP_FromID, MLP_ToID, MLP_OneWay_Street — 0-based row
+    /// indices into MapWayPoint). A link whose two endpoints sit on DIFFERENT MapIDs is a
+    /// map-to-map gate; the from-point's (X,Y) is where to stand to take it. This is the game's
+    /// own routing graph — seeding it (vs the bot's slow auto-discovery) is what makes cross-map
+    /// pathfinding reliable: every map has a few interconnected teleports, so a route always
+    /// exists. Returns (fromMap, toMap, gateX, gateY); reverse direction added unless one-way.</summary>
+    public IReadOnlyList<(string From, string To, uint X, uint Y)> BuildGateEdges()
+    {
+        var edges = new List<(string, string, uint, uint)>();
+        var wp = Table("MapWayPoint");
+        var lp = Table("MapLinkPoint");
+        if (wp is null || lp is null) return edges;
+        var rows = wp.Rows; int n = rows.Count;
+        var nameCache = new Dictionary<int, string?>();
+        string? NameOf(int id) => nameCache.TryGetValue(id, out var c) ? c : (nameCache[id] = MapName(id));
+        foreach (var link in lp.Rows)
+        {
+            int from = GetInt(link, "MLP_FromID"), to = GetInt(link, "MLP_ToID");
+            if (from < 0 || from >= n || to < 0 || to >= n) continue;
+            var wf = rows[from]; var wt = rows[to];
+            int mf = GetInt(wf, "MapID"), mt = GetInt(wt, "MapID");
+            if (mf == mt) continue; // same-map waypoint edge (in-map nav), not a cross-map gate
+            var fromName = NameOf(mf); var toName = NameOf(mt);
+            if (fromName is null || toName is null) continue;
+            edges.Add((fromName, toName, (uint)GetInt(wf, "Undefined0"), (uint)GetInt(wf, "Undefined1")));
+            if (GetInt(link, "MLP_OneWay_Street") == 0)
+                edges.Add((toName, fromName, (uint)GetInt(wt, "Undefined0"), (uint)GetInt(wt, "Undefined1")));
+        }
+        return edges;
+    }
+
     /// <summary>MobInfo <c>Type</c> value for a gatherable resource node (herb/wood/mushroom).</summary>
     public const int ResourceNodeType = 9;
 

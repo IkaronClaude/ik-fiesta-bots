@@ -25,6 +25,21 @@ public sealed class MapGraph
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, GateEdge>> _edges =
         new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>True once <see cref="Seed"/> has populated the graph from server/client nav data,
+    /// so callers seed only once.</summary>
+    public bool Seeded { get; private set; }
+
+    /// <summary>Seed the graph from the game's own cross-map gate web (ClientData.BuildGateEdges,
+    /// from MapWayPoint/MapLinkPoint) so routing is COMPLETE up-front instead of relying on the bot
+    /// to have physically explored each link. Edges are stored with handle 0 (no live handle yet —
+    /// the travel loop walks to the stored coords, which brings the gate NPC into view, then clicks
+    /// it). A later <see cref="ObserveGate"/> with a live handle just refreshes the same edge.</summary>
+    public void Seed(IEnumerable<(string From, string To, uint X, uint Y)> edges)
+    {
+        foreach (var (from, to, x, y) in edges) ObserveGate(from, to, x, y, 0);
+        Seeded = true;
+    }
+
     /// <summary>Record/refresh a gate seen in <paramref name="fromMap"/>. Ignores
     /// gates with no known destination. The latest coordinates/handle win (the handle
     /// is only valid while in view, the link itself is stable).</summary>
