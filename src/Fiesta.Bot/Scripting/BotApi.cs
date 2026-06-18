@@ -500,6 +500,17 @@ public sealed class BotApi
     /// <summary>Resolve a mob/NPC id (e.g. a quest's startNpc/turnInNpc) to a live entity in
     /// view: {handle, x, y, dist}, or nil if not currently spawned near the bot. Lets the quest
     /// driver turn QuestData ids into something it can walkTo + doQuest.</summary>
+    /// <summary>Last-known {x, y, dist} of an NPC by mobId — learned from the zone NPC broadcasts and
+    /// remembered zone-wide (survives leaving view), so the driver can walkTo a known town NPC
+    /// (healer/merchant/skill master) WITHOUT hardcoded coords. nil if never seen this zone-session.</summary>
+    public DynValue npcLocation(int mobId)
+    {
+        if (View?.NpcPosition(mobId) is not { } pos) return DynValue.Nil;
+        var t = NewTable(); t["x"] = pos.X; t["y"] = pos.Y;
+        if (_handle.Position is { } p) t["dist"] = Math.Sqrt(Sq((double)pos.X - p.X) + Sq((double)pos.Y - p.Y));
+        return DynValue.NewTable(t);
+    }
+
     public DynValue npcByMob(int mobId)
     {
         var v = View; if (v is null) return DynValue.Nil;

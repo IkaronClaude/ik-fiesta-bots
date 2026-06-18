@@ -266,6 +266,11 @@ public sealed class ZoneView : IDisposable
     private readonly Action<string>? _log;
     private readonly ConcurrentDictionary<ushort, NearbyPlayer> _nearby = new();
     private readonly ConcurrentDictionary<ushort, NearbyNpc> _npcs = new();
+    // Last-known position of each NPC by mobId, learned from the zone's NPC broadcasts and KEPT even
+    // after the NPC leaves view (unlike _npcs, which is view-scoped). Lets the bot pathfind to a town
+    // NPC (healer/merchant/skill master) it has seen this zone-session without hardcoded coords.
+    // Cleared on a map change (positions are per-map).
+    private readonly ConcurrentDictionary<int, (uint X, uint Y)> _npcPos = new();
     private readonly ConcurrentDictionary<byte, ushort> _inventory = new(); // bag slot -> itemId
     private readonly ConcurrentDictionary<byte, int> _invCount = new();      // bag slot -> stack count
     private readonly ConcurrentDictionary<byte, ushort> _equipment = new(); // equip slot -> itemId
@@ -319,6 +324,11 @@ public sealed class ZoneView : IDisposable
     /// <summary>NPCs/mobs currently in view (handle → id/coord), from the zone's MOB
     /// briefinfo. The runtime source for walk-to-NPC and gate location.</summary>
     public IReadOnlyCollection<NearbyNpc> NearbyNpcs => _npcs.Values.ToArray();
+
+    /// <summary>Last-known (x,y) of an NPC by mobId, learned from the zone's NPC broadcasts and kept
+    /// after it leaves view (this zone-session) — so the bot can pathfind to a known town NPC without
+    /// hardcoded coords. null if never seen this session.</summary>
+    public (uint X, uint Y)? NpcPosition(int mobId) => _npcPos.TryGetValue(mobId, out var pos) ? pos : null;
     public ChatMessage? LastChat { get; private set; }
 
     /// <summary>Handle of the most recently killed entity (from REALLYKILL) — lets a grind
@@ -908,7 +918,7 @@ public sealed class ZoneView : IDisposable
             {
                 _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _nearby.Clear(); _drops.Clear();
+                _npcs.Clear(); _npcPos.Clear(); _nearby.Clear(); _drops.Clear();
                 MapChanged?.Invoke(h);
             }
         }
@@ -1061,7 +1071,7 @@ public sealed class ZoneView : IDisposable
             if (handoff is { } h)
             {
                 CurrentMapId = h.MapId;
-                _npcs.Clear();   // entities are per-map; the new map will re-broadcast
+                _npcs.Clear(); _npcPos.Clear();  // entities are per-map; the new map will re-broadcast
                 _nearby.Clear();
                 _drops.Clear();  // ground items are per-map too
                 _log?.Invoke(h.IsCrossServer
@@ -1351,6 +1361,7 @@ public sealed class ZoneView : IDisposable
         var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap, team);
         var isNew = !_npcs.ContainsKey(handle);
         _npcs[handle] = npc;
+        if (flag != 1) _npcPos[mobid] = (x, y); // remember NPC (not gate) positions zone-wide
         if (isNew)
             _log?.Invoke(flag == 1
                 ? $"[ZoneView] gate appeared: id={mobid} h={handle} @({x},{y}) -> {linkMap}"
