@@ -1086,17 +1086,30 @@ public sealed class BotManager : IAsyncDisposable
         // re-opens the shop every couple seconds races: it acks the stale menu instantly (before the
         // server processes the new click), the soul-stone shop never actually opens, and the buy is
         // silently rejected (no BUY_ACK). Seen live: only the first open got SHOPOPENSOULSTONE.
-        view?.ClearNpcMenu();
-        await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
-        // Wait for the server to open the NPC menu (triggered by our click), then select the option.
-        for (var waited = 0; waited < 3000; waited += 100)
+        // Try up to 2 full click→menu→ack cycles, confirming the SHOP actually opened (a shop-open
+        // packet, item 0x3C0x or soul-stone 0x3C05 — ShopOpen) — NOT just the menu prompt. Selling
+        // into a menu that never resolved to a shop is rejected 0x0383. Re-clicking blindly in a
+        // loop (the old behaviour) raced and left the shop closed; this verifies + retries cleanly.
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            if (view?.NpcMenuOpen == true) break;
-            await Task.Delay(100, ct);
+            view?.ClearNpcMenu();
+            await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
+            // Wait for the server to open the NPC menu (triggered by our click), then select the option.
+            for (var waited = 0; waited < 3000 && view?.NpcMenuOpen != true; waited += 100)
+                await Task.Delay(100, ct);
+            await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = menuOption }, ct);
+            view?.ClearNpcMenu();
+            // Now wait for the actual shop-open packet (this is what makes SELL/BUY valid).
+            for (var waited = 0; waited < 2500 && view?.ShopOpen != true; waited += 100)
+                await Task.Delay(100, ct);
+            if (view?.ShopOpen == true)
+            {
+                handle.Log($"open shop npc h={npcHandle} OPEN (menu-ack {menuOption}, attempt {attempt + 1})");
+                return ActionResult.Sent;
+            }
+            handle.Log($"open shop npc h={npcHandle} — no shop-open after ack (attempt {attempt + 1}), retrying");
         }
-        await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = menuOption }, ct);
-        view?.ClearNpcMenu();
-        handle.Log($"open shop npc h={npcHandle} (click + menu-ack {menuOption})");
+        handle.Log($"open shop npc h={npcHandle} FAILED — no shop-open packet (sells would be rejected)");
         return ActionResult.Sent;
     }
 

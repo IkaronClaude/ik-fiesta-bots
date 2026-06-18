@@ -191,6 +191,12 @@ public sealed class ZoneView : IDisposable
     // Cyburn sends 0x3C0A (table-skill), which is why the old weapon/item-only list missed it.
     private static readonly ushort[] OpShopOpen =
         { 0x3C03, 0x3C04, 0x3C06, 0x3C09, 0x3C0A, 0x3C0B };
+    // Soul-stone shop open (Menu cmd 5 = 0x3C05, NC_MENU_SHOPOPENSOULSTONE_CMD): a soul-stone
+    // merchant's shop. It has its own payload (no item list) so it's NOT in OpShopOpen, but it
+    // IS a real shop session — it accepts BOTH soul-stone buys AND item SELLs (verified in
+    // SellAndInventoryManagement.pcapng). So it must flip the generic "shop is open" signal that
+    // SELL gates on, else a sell into it is rejected 0x0383 ("shop not open").
+    private const ushort OpShopOpenSoulStone = 0x3C05;
     // NPC menu (Act cmd 28 = 0x201C): clicking a merchant/script NPC makes the server
     // open its menu and wait for the client to pick an option (NPCMENUOPEN_ACK 0x201D)
     // before it sends the shop list. Verified in PurchaseSell.pcapng: NPCCLICK ->
@@ -232,6 +238,15 @@ public sealed class ZoneView : IDisposable
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
+    // NC_CHAR_CENCHANGE_CMD (Char 0x1033): {cen u64} = the new money ("cen") total. The
+    // authoritative money signal — sent whenever money changes (sell/buy/quest reward/drop).
+    // Without it the bot sells blind and can't tell a sell worked. Seeds Money for afford-checks.
+    private static readonly ushort OpCenChange = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CENCHANGE_CMD>();
+    // NC_ITEM_SELL_ACK (Item 0x3005): a 2-byte result code for our SELL_REQ. No PDB struct, but
+    // the wire is unambiguous — a real client's successful sells return 0x0381; a rejected sell
+    // (e.g. shop-not-open / bad lot) returns a different code (seen 0x0383). We record the raw
+    // code so the driver/log can SEE whether a sell took, instead of firing it blind.
+    private const ushort OpSellAck = 0x3005;
     // Self HP/SP change (BAT 0x240E/0x240F): the server's authoritative current HP/SP
     // after any change (combat damage, heal, regen, soul-stone). MaxHp/MaxSp come from
     // the [1802] login param block (seeded by the manager). These drive "HP-stone when
@@ -499,6 +514,14 @@ public sealed class ZoneView : IDisposable
     /// <summary>The npc handle of the last-opened shop (0 if none).</summary>
     public ushort ShopNpc { get; private set; }
 
+    /// <summary>UTC of the last shop-open packet (item 0x3C0x OR soul-stone 0x3C05). A SELL is only
+    /// accepted while a shop is genuinely open — firing into a closed shop is rejected 0x0383. The
+    /// open-shop flow waits on this; <see cref="ShopOpen"/> is the recency view used to gate sells.</summary>
+    public DateTime ShopOpenUtc { get; private set; }
+    /// <summary>True if a shop opened recently (within ~10s) and we haven't left the map / been
+    /// rejected since — i.e. a SELL should be accepted now.</summary>
+    public bool ShopOpen => (DateTime.UtcNow - ShopOpenUtc) < TimeSpan.FromSeconds(10);
+
     /// <summary>True while an NPC menu prompt is open and unanswered (server sent
     /// NPCMENUOPEN_REQ after we clicked a merchant/script NPC). The shop-open flow replies
     /// with NPCMENUOPEN_ACK to advance to the sell list.</summary>
@@ -509,6 +532,17 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Raised when a merchant's shop opens, with the sell-list item ids.</summary>
     public event Action<IReadOnlyList<ushort>>? ShopOpened;
+
+    /// <summary>Current money ("cen"), from NC_CHAR_CENCHANGE_CMD (0x1033). -1 until the first
+    /// money packet is seen this session. Gates afford-checks (skills/gear/stones) and is how the
+    /// bot confirms a SELL actually paid out (Money rises after a successful sell).</summary>
+    public long Money { get; private set; } = -1;
+
+    /// <summary>The raw 2-byte code from the last NC_ITEM_SELL_ACK (0x3005), or -1 if none yet.
+    /// 0x0381 = the success code a real client sees; a different code (e.g. 0x0383) = rejected.</summary>
+    public int LastSellAck { get; private set; } = -1;
+    /// <summary>UTC time of the last SELL_ACK — lets the driver wait for the result of a sell.</summary>
+    public DateTime LastSellAckUtc { get; private set; }
 
     /// <summary>Current bag contents: slot → itemId (built from the login item list
     /// and live cell/equip changes).</summary>
@@ -1011,7 +1045,41 @@ public sealed class ZoneView : IDisposable
                     _log?.Invoke($"[ZoneView] shop opened (0x{op:X4}) npc={ShopNpc} items={itemnum} stride={stride}");
                 }
                 _shopItems = items.ToArray();
+                ShopOpenUtc = DateTime.UtcNow;
                 ShopOpened?.Invoke(_shopItems);
+            }
+        }
+        else if (op == OpShopOpenSoulStone)
+        {
+            // Soul-stone shop opened — a real shop session (buys soul stones AND accepts item
+            // sells). No item list, so just flip the "shop open" signal that SELL gates on.
+            ShopOpenUtc = DateTime.UtcNow;
+            _log?.Invoke("[ZoneView] soul-stone shop opened (0x3C05) — sells accepted");
+        }
+        else if (op == OpCenChange)
+        {
+            // {cen u64} = the new money total. The authoritative money signal.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 8)
+            {
+                var cen = (long)System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(p);
+                if (cen != Money) _log?.Invoke($"[ZoneView] money -> {cen} (was {Money})");
+                Money = cen;
+            }
+        }
+        else if (op == OpSellAck)
+        {
+            // 2-byte result code for our SELL_REQ (no PDB struct). 0x0381 = success (real client);
+            // anything else = rejected. Record it so the driver can verify the sell took.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2)
+            {
+                LastSellAck = p[0] | (p[1] << 8);
+                LastSellAckUtc = DateTime.UtcNow;
+                // A reject (not 0x0381) usually means the shop isn't really open — drop the
+                // open signal so the driver re-opens cleanly before retrying.
+                if (LastSellAck != 0x0381) ShopOpenUtc = default;
+                _log?.Invoke($"[ZoneView] SELL_ACK 0x{LastSellAck:X4}{(LastSellAck == 0x0381 ? " (OK)" : " (rejected)")}");
             }
         }
         else if (op == OpSomeoneMoveWalk || op == OpSomeoneMoveRun)
@@ -1074,6 +1142,7 @@ public sealed class ZoneView : IDisposable
                 _npcs.Clear(); _npcPos.Clear();  // entities are per-map; the new map will re-broadcast
                 _nearby.Clear();
                 _drops.Clear();  // ground items are per-map too
+                ShopOpenUtc = default;  // any open shop closes when we leave the map
                 _log?.Invoke(h.IsCrossServer
                     ? $"[ZoneView] map handoff (cross-server) -> mapId={h.MapId} @({h.X},{h.Y}) via {h.Ip}:{h.Port} wm={h.WmHandle}"
                     : $"[ZoneView] map change (in-band) -> mapId={h.MapId} @({h.X},{h.Y})");

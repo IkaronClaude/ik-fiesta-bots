@@ -105,8 +105,21 @@ public sealed class BotApi
     }
 
     /// <summary>The stack count in main-bag <paramref name="slot"/> (from the wire lot field), 0 if
-    /// empty. Sell the EXACT whole stack with <c>bot.sell(slot, bot.invenCount(slot))</c>.</summary>
+    /// empty. NOTE: SELL's lot is a 0/1 toggle (1 = sell the WHOLE stack), not a count — so to sell
+    /// a slot use <c>bot.sell(slot, 1)</c>, not this count. Kept for inventory-fullness checks.</summary>
     public int invenCount(int slot) => View?.ItemCount((byte)slot) ?? 0;
+
+    /// <summary>Current money ("cen"), or -1 if no money packet seen yet. Use to gate buys and to
+    /// confirm a sell paid out (money rises after a successful sell).</summary>
+    public double money() => View?.Money ?? -1;
+
+    /// <summary>The raw code from the last SELL_ACK (0x3005): 0x0381 = success, else rejected;
+    /// -1 if no sell acked yet this session. Lets the driver verify a sell took.</summary>
+    public int lastSellAck() => View?.LastSellAck ?? -1;
+
+    /// <summary>True if a shop is genuinely open right now (item or soul-stone) — a SELL/BUY will be
+    /// accepted. openShop() confirms this before returning; check it before selling.</summary>
+    public bool shopOpen() => View?.ShopOpen ?? false;
 
     /// <summary>The learned skill id of the highest rank whose name starts with
     /// <paramref name="prefix"/> (e.g. <c>"Heal"</c> → the best heal you've learned), or 0 if
