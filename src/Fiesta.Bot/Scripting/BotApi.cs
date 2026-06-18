@@ -77,7 +77,7 @@ public sealed class BotApi
         if (it is null) return DynValue.Nil;
         var t = NewTable();
         t["id"] = id; t["name"] = it.Name; t["useClass"] = it.UseClass; t["demandLv"] = it.DemandLv;
-        t["grade"] = it.Grade; t["equipSlot"] = it.EquipSlot; t["isScroll"] = it.IsScroll;
+        t["grade"] = it.Grade; t["equipSlot"] = it.EquipSlot; t["isScroll"] = it.IsScroll; t["type"] = it.Type;
         return DynValue.NewTable(t);
     }
 

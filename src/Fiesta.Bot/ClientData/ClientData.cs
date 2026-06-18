@@ -115,7 +115,8 @@ public sealed class ClientData
         var row = t?.FindByLong("ID", itemId) ?? t?.FindByLong("id", itemId);
         if (row is null) return null;
         return new ItemData(itemId, GetStr(row, "Name"), GetInt(row, "UseClass"), GetInt(row, "DemandLv"),
-            GetInt(row, "Grade"), GetInt(row, "Equip"), GetStr(row, "ItemUseSkill") == "UseSkill");
+            GetInt(row, "Grade"), GetInt(row, "Equip"), GetStr(row, "ItemUseSkill") == "UseSkill",
+            GetInt(row, "Type"));
     }
 
     /// <summary>The display name of a skill id from client <c>ActiveSkill</c> (col "Name").
@@ -314,7 +315,7 @@ public sealed record MobData(int Id, string Name, string InxName, int Level, int
 /// is a real slot. <see cref="UseClass"/> = the class line that may use it (Fighter 2–7, 0 = all),
 /// <see cref="DemandLv"/> = the level required, <see cref="Grade"/> = rarity tier.</summary>
 public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
-    int EquipSlot, bool IsScroll);
+    int EquipSlot, bool IsScroll, int Type = 0);
 
 /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c>: the
 /// <see cref="Map"/> short-name and the <see cref="CenterX"/>/<see cref="CenterY"/> of its
