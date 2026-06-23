@@ -400,6 +400,9 @@ public sealed class BotManager : IAsyncDisposable
     // STOP (ACT StopReq 0x2012): 8 bytes [x u32][y u32] — the position the char halts at.
     private static readonly ushort OpActStop =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.StopReq);
+    // ENDOFTRADE (ACT cmd 11 = 0x200B, empty): closes the current NPC shop/trade interaction. Must be
+    // sent before opening a DIFFERENT NPC's shop (the server won't open a 2nd shop while one is open).
+    private const ushort OpActEndOfTrade = (ushort)(((int)ProtocolCommand.Act << 10) | 11);
     // BASHSTART / BASHSTOP (BAT 0x242B / 0x2432, empty): begin / end melee auto-attack on
     // the current target. While bashing the server streams SWING_START/SWING_DAMAGE
     // (0x2447/0x2448) until the mob dies or we BASHSTOP — verified in CombatExtensive.pcapng.
@@ -1081,31 +1084,24 @@ public sealed class BotManager : IAsyncDisposable
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
         var view = handle.ZoneView;
         var hb = new byte[] { (byte)npcHandle, (byte)(npcHandle >> 8) };
+        // CLOSE any previously-open shop FIRST. ROOT CAUSE of the "shop won't open" bug: you must
+        // close shop A before opening shop B (a different nearby NPC) — the server won't open a new
+        // shop while one is already open. The real client sends NC_ACT_ENDOFTRADE_CMD (0x200B, empty)
+        // to clear that interaction state (it fires it 3× right after login to clear stale state too).
+        // Without this, the 2nd shop's NPCCLICK gets the menu (0x201C) but NEVER the shop-open
+        // (0x3C05/0x3C0x), and the sell is rejected 0x0383. Operator-confirmed; reproducible at Forest
+        // of Mist (two adjacent travelling merchants). A relog also clears it, which is why a fresh
+        // login's FIRST open always worked (and masked the bug as "intermittent").
+        await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
         // Discard any STALE menu flag BEFORE clicking, so we wait for the menu THIS click opens —
-        // not a leftover NPCMENUOPEN_REQ from a previous attempt. Without this, a restock loop that
-        // re-opens the shop every couple seconds races: it acks the stale menu instantly (before the
-        // server processes the new click), the soul-stone shop never actually opens, and the buy is
-        // silently rejected (no BUY_ACK). Seen live: only the first open got SHOPOPENSOULSTONE.
-        // Try up to 2 full click→menu→ack cycles, confirming the SHOP actually opened (a shop-open
-        // packet, item 0x3C0x or soul-stone 0x3C05 — ShopOpen) — NOT just the menu prompt. Selling
-        // into a menu that never resolved to a shop is rejected 0x0383. Re-clicking blindly in a
-        // loop (the old behaviour) raced and left the shop closed; this verifies + retries cleanly.
+        // not a leftover NPCMENUOPEN_REQ from a previous attempt. Try up to 2 full click→menu→ack
+        // cycles, confirming the SHOP actually opened (a shop-open packet, item 0x3C0x or soul-stone
+        // 0x3C05 — ShopOpen) — NOT just the menu prompt. Selling into a menu that never resolved to a
+        // shop is rejected 0x0383.
         for (var attempt = 0; attempt < 2; attempt++)
         {
             view?.ClearNpcMenu();
             await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
-            // CRITICAL: send STOP_REQ at our current position right after the click — the real client
-            // does this (SellAndInventoryManagement.pcapng: NPCCLICK → STOP_REQ → menu-ack → shop).
-            // The server only opens a shop for a STATIONARY player; if it still thinks we're moving
-            // (just walked up to the NPC), it sends the menu but NEVER the shop-open (0x3C05/0x3C0x),
-            // so the sell is rejected 0x0383. This is the root cause of the "shop won't re-open" bug.
-            if (handle.Position is { } p)
-            {
-                var stop = new byte[8];
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), p.X);
-                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), p.Y);
-                await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
-            }
             // Wait for the server to open the NPC menu (triggered by our click), then select the option.
             for (var waited = 0; waited < 3000 && view?.NpcMenuOpen != true; waited += 100)
                 await Task.Delay(100, ct);
