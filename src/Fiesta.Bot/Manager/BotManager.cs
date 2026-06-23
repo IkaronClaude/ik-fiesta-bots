@@ -1094,6 +1094,18 @@ public sealed class BotManager : IAsyncDisposable
         {
             view?.ClearNpcMenu();
             await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
+            // CRITICAL: send STOP_REQ at our current position right after the click — the real client
+            // does this (SellAndInventoryManagement.pcapng: NPCCLICK → STOP_REQ → menu-ack → shop).
+            // The server only opens a shop for a STATIONARY player; if it still thinks we're moving
+            // (just walked up to the NPC), it sends the menu but NEVER the shop-open (0x3C05/0x3C0x),
+            // so the sell is rejected 0x0383. This is the root cause of the "shop won't re-open" bug.
+            if (handle.Position is { } p)
+            {
+                var stop = new byte[8];
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), p.X);
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), p.Y);
+                await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
+            }
             // Wait for the server to open the NPC menu (triggered by our click), then select the option.
             for (var waited = 0; waited < 3000 && view?.NpcMenuOpen != true; waited += 100)
                 await Task.Delay(100, ct);
