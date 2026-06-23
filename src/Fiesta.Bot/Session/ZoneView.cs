@@ -542,10 +542,14 @@ public sealed class ZoneView : IDisposable
     /// <summary>Raised when a merchant's shop opens, with the sell-list item ids.</summary>
     public event Action<IReadOnlyList<ushort>>? ShopOpened;
 
-    /// <summary>Current money ("cen"), from NC_CHAR_CENCHANGE_CMD (0x1033). -1 until the first
-    /// money packet is seen this session. Gates afford-checks (skills/gear/stones) and is how the
-    /// bot confirms a SELL actually paid out (Money rises after a successful sell).</summary>
+    /// <summary>Current money ("cen"). SEEDED at zone-enter from NC_CHAR_BASE (0x1038, Cen@58) so it's
+    /// never unknown, then kept current by NC_CHAR_CENCHANGE_CMD (0x1033). -1 only if neither was seen
+    /// yet. Gates afford-checks (skills/gear/stones) and confirms a SELL paid out (Money rises).</summary>
     public long Money { get; private set; } = -1;
+
+    /// <summary>Seed money from the zone-enter char-info (NC_CHAR_BASE Cen). Money is always in the
+    /// login data, so the bot should know it immediately — not wait for the first transaction.</summary>
+    public void SeedMoney(long cen) => Money = cen;
 
     /// <summary>The raw 2-byte code from the last NC_ITEM_SELL_ACK (0x3005), or -1 if none yet.
     /// 0x0381 = the success code a real client sees; a different code (e.g. 0x0383) = rejected.</summary>

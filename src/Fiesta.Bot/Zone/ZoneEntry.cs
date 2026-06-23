@@ -130,6 +130,7 @@ public sealed class ZoneEntry
             List<(ushort id, byte status, int progress)>? activeQuests = null;
             List<ushort>? readQuests = null;
             int? curHpStone = null, curSpStone = null;
+            ulong? cen = null;
             while (DateTime.UtcNow < deadline)
             {
                 var remaining = deadline - DateTime.UtcNow;
@@ -151,7 +152,7 @@ public sealed class ZoneEntry
                 }
 
                 sawFrame = true;
-                if (pkt.Opcode == OpCharBase) // current vitals + soul-stone reserve counts
+                if (pkt.Opcode == OpCharBase) // current vitals + soul-stone reserve counts + MONEY
                 {
                     var p = pkt.Payload.Span;
                     if (p.Length >= 42)
@@ -159,6 +160,13 @@ public sealed class ZoneEntry
                         curHpStone = p[38] | (p[39] << 8);
                         curSpStone = p[40] | (p[41] << 8);
                         _log($"[Zone] reserve: HPStone={curHpStone} SPStone={curSpStone}");
+                    }
+                    // Cen (money) u64 @58 (PDB: ...CurHP@42, CurSP@46, CurLP@50, fame@54, Cen@58).
+                    // Money is ALWAYS in the char-info — seed it at login so money() is never -1/unknown.
+                    if (p.Length >= 66)
+                    {
+                        cen = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(p.Slice(58, 8));
+                        _log($"[Zone] money (cen) = {cen}");
                     }
                     continue;
                 }
@@ -291,7 +299,7 @@ public sealed class ZoneEntry
                         maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
                         _log($"[Zone] maxHPStone={maxHpStone} maxSPStone={maxSpStone}");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -299,7 +307,7 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -317,11 +325,11 @@ public sealed class ZoneEntry
         IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? items,
         IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress)>? activeQuests,
         IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null,
-        uint? maxHpStone = null, uint? maxSpStone = null)
+        uint? maxHpStone = null, uint? maxSpStone = null, ulong? cen = null)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen);
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
@@ -361,7 +369,8 @@ public sealed record ZoneEntryResult(
     IReadOnlyList<(ushort id, byte status, int progress)>? ActiveQuests = null,
     IReadOnlyList<ushort>? ReadQuests = null,
     int? CurHpStone = null, int? CurSpStone = null,
-    uint? MaxHpStone = null, uint? MaxSpStone = null);
+    uint? MaxHpStone = null, uint? MaxSpStone = null,
+    ulong? Cen = null);
 
 public sealed class ZoneEntryException : Exception
 {
