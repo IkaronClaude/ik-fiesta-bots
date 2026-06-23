@@ -121,6 +121,18 @@ public sealed class BotApi
     /// accepted. openShop() confirms this before returning; check it before selling.</summary>
     public bool shopOpen() => View?.ShopOpen ?? false;
 
+    /// <summary>The KIND of the last-opened shop: "skill" | "weapon" | "item" | "soulstone" |
+    /// "unknown". Lets the driver classify an NPC by what shop it opens (find the skill master /
+    /// smith / item merchant / healer dynamically — no hardcoded ids). Read right after openShop().</summary>
+    public string shopKind() => (View?.LastShopKind ?? Session.ShopKind.Unknown) switch
+    {
+        Session.ShopKind.Skill => "skill",
+        Session.ShopKind.Weapon => "weapon",
+        Session.ShopKind.Item => "item",
+        Session.ShopKind.SoulStone => "soulstone",
+        _ => "unknown",
+    };
+
     /// <summary>The learned skill id of the highest rank whose name starts with
     /// <paramref name="prefix"/> (e.g. <c>"Heal"</c> → the best heal you've learned), or 0 if
     /// none. Rank parsed from the <c>"[NN]"</c> in the skill name. Lets a script pick a skill
@@ -138,6 +150,17 @@ public sealed class BotApi
             if (rank > bestRank) { bestRank = rank; best = s; }
         }
         return best;
+    }
+
+    /// <summary>All learned skill ids (from the zone-login skill list + any learned this session).
+    /// The combat rotation reads this and casts each offensive skill by its own cooldown
+    /// (<see cref="skillInfo"/>) — class-agnostic, no hardcoded skill names.</summary>
+    public DynValue learnedSkills()
+    {
+        var t = NewTable(); var v = View;
+        if (v is null) return DynValue.NewTable(t);
+        int i = 1; foreach (var s in v.LearnedSkills) t[i++] = (int)s;
+        return DynValue.NewTable(t);
     }
 
     private static int ParseRank(string name)

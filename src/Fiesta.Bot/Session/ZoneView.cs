@@ -25,6 +25,10 @@ public sealed record NearbyPlayer(ushort Handle, string Name, byte Class, byte L
 /// destination map name the packet embeds (e.g. RouN's GateRou1 → "RouCos02") —
 /// verified against the server NPC table, 2026-06-11. So gate discovery AND where
 /// each gate leads come straight from the zone, no server files needed.</para></summary>
+/// <summary>What service an NPC's shop offers, classified from the shop-open opcode it sends when
+/// clicked (so the bot finds the skill master / smith / item merchant / healer dynamically).</summary>
+public enum ShopKind { Unknown, Item, Weapon, Skill, SoulStone }
+
 public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, uint Y, byte Flag = 0, string? LinkMap = null, byte Team = 0)
 {
     public bool IsGate => Flag == 1;
@@ -521,6 +525,11 @@ public sealed class ZoneView : IDisposable
     /// <summary>True if a shop opened recently (within ~10s) and we haven't left the map / been
     /// rejected since — i.e. a SELL should be accepted now.</summary>
     public bool ShopOpen => (DateTime.UtcNow - ShopOpenUtc) < TimeSpan.FromSeconds(10);
+
+    /// <summary>The KIND of the last shop that opened, derived from the shop-open opcode (skill
+    /// master / smith / item merchant / soul-stone healer). Lets the driver classify an NPC's
+    /// service by what it sends when clicked — no hardcoded NPC ids. Unknown until a shop opens.</summary>
+    public ShopKind LastShopKind { get; private set; } = ShopKind.Unknown;
 
     /// <summary>True while an NPC menu prompt is open and unanswered (server sent
     /// NPCMENUOPEN_REQ after we clicked a merchant/script NPC). The shop-open flow replies
@@ -1046,6 +1055,9 @@ public sealed class ZoneView : IDisposable
                 }
                 _shopItems = items.ToArray();
                 ShopOpenUtc = DateTime.UtcNow;
+                LastShopKind = op is 0x3C03 or 0x3C09 ? ShopKind.Weapon
+                    : op is 0x3C04 or 0x3C0A ? ShopKind.Skill
+                    : ShopKind.Item; // 0x3C06 / 0x3C0B
                 ShopOpened?.Invoke(_shopItems);
             }
         }
@@ -1054,6 +1066,7 @@ public sealed class ZoneView : IDisposable
             // Soul-stone shop opened — a real shop session (buys soul stones AND accepts item
             // sells). No item list, so just flip the "shop open" signal that SELL gates on.
             ShopOpenUtc = DateTime.UtcNow;
+            LastShopKind = ShopKind.SoulStone;
             _log?.Invoke("[ZoneView] soul-stone shop opened (0x3C05) — sells accepted");
         }
         else if (op == OpCenChange)
