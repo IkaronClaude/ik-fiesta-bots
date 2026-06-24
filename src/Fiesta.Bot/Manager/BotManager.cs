@@ -800,9 +800,14 @@ public sealed class BotManager : IAsyncDisposable
         // already-open menu directly; otherwise target+click and poll ~3s for one.
         async Task AnswerMenu()
         {
+            // Capture the parsed menu BEFORE answering (ClearServerMenu wipes it) so the trace shows
+            // exactly what we picked and from what prompt — wrong picks (e.g. landing in a shop instead
+            // of a quest) are then obvious in the tail.
+            var title = view?.ServerMenuTitle;
+            var picked = view?.ServerMenuOptions.FirstOrDefault(o => o.Reply == menuOption);
             await s.SendAsync(new FiestaPacket(OpMenuServerMenuAck, new[] { menuOption }), ct);
             view?.ClearServerMenu();
-            handle.Log($"gate confirm menu answered (option {menuOption})");
+            handle.Log($"server menu answered: reply={menuOption} ([{menuOption}]={picked?.Text ?? "?"}) for \"{title ?? "?"}\"");
         }
 
         if (view?.ServerMenuOpen == true)
