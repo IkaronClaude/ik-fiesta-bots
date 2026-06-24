@@ -1228,7 +1228,7 @@ public sealed class BotManager : IAsyncDisposable
     /// prompt (0x4412) on the [SHOW_REWARD] page; if <paramref name="rewardIndex"/> &gt;= 0 this
     /// answers it mid-dialogue with NC_QUEST_REWARD_SELECT_ITEM_INDEX (the RAW reward slot) BEFORE
     /// acking the "Complete" page — the order the real client uses (verified in Quest.pcapng).</summary>
-    public async Task<ActionResult> DriveQuestDialogueAsync(string id, ushort npcHandle, uint result = 1, int rewardIndex = -1, int maxSteps = 24, CancellationToken ct = default)
+    public async Task<ActionResult> DriveQuestDialogueAsync(string id, ushort npcHandle, uint result = 1, int rewardIndex = -1, int maxSteps = 24, ushort questId = 0, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var h)) return ActionResult.NotFound;
         if (h.Phase != BotPhase.InZone || h.ZoneSession is not { } s) return ActionResult.NotInZone;
@@ -1238,8 +1238,49 @@ public sealed class BotManager : IAsyncDisposable
         // this click (a stale step from a previous dialogue must not be re-answered).
         var lastSeen = zv?.PendingQuest?.AtUtc ?? DateTime.MinValue;
         zv?.ClearRewardSelect();
+        zv?.ClearNpcMenu();
         await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct);
-        h.Log($"quest dialogue: click npc h={npcHandle}, driving (result={result}, rewardIndex={rewardIndex})");
+        // The real client ALWAYS follows NPCCLICK with STOP_REQ (0x2012) reporting the position it
+        // halted at to talk — and the server only starts pushing the quest script (0x4401) AFTER that
+        // STOP arrives (verified across every accept in QuestsLowLevel.pcapng: click→stop→0x4401→0x4402,
+        // no menu for a plain quest giver). The bot used to click without STOP, so the server treated
+        // the click as a bare/menu interaction and never drove the script. Send STOP at our current pos.
+        if (h.Position is { } pos)
+        {
+            var stop = new byte[8];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), pos.X);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), pos.Y);
+            await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
+        }
+        h.Log($"quest dialogue: click npc h={npcHandle} + stop, driving (result={result}, rewardIndex={rewardIndex})");
+
+        // A quest GIVER that offers SEVERAL quests opens an NPC MENU (0x201C) on click — the quest
+        // script (0x4401) only arrives AFTER we tell the server WHICH quest to advance. That is the
+        // packet the operator flagged: NC_QUEST_SELECT_START_REQ (0x440F) {nNPCID, nQuestID}, keyed by
+        // the NPC mobId (the menu's payload), not the entity handle. A single-quest giver sends the
+        // script straight away (no menu, questId unused). So wait briefly: if a menu opens before any
+        // quest page AND we were told which quest to take, select it. Without this the bot sits on the
+        // unanswered menu → "0 pages answered" → nothing accepted.
+        for (var w = 0; w < 1500
+             && zv?.NpcMenuOpen != true
+             && (zv?.PendingQuest?.AtUtc ?? DateTime.MinValue) <= lastSeen; w += 80)
+            await Task.Delay(80, ct);
+        if (zv?.NpcMenuOpen == true)
+        {
+            if (questId != 0)
+            {
+                var npcId = zv.MenuNpcId != 0 ? zv.MenuNpcId : (ushort)(zv.NearbyNpcs.FirstOrDefault(n => n.Handle == npcHandle)?.MobId ?? 0);
+                await s.SendAsync(new PROTO_NC_QUEST_SELECT_START_REQ { nNPCID = npcId, nQuestID = questId }, ct);
+                zv.ClearNpcMenu();
+                h.Log($"quest dialogue: SELECT_START npc={npcId} quest={questId} (multi-quest menu)");
+            }
+            else
+            {
+                // No specific quest given — can't pick from the menu. Leave it; the caller should pass
+                // questId for multi-quest givers. (P3: handle in-progress turn-in menus separately.)
+                h.Log($"quest dialogue: NPC menu open (npc={zv.MenuNpcId}) but no questId to select — skipping");
+            }
+        }
 
         bool rewardSelected = false;
         int answered = 0;

@@ -408,8 +408,10 @@ public static class BotEndpoints
             if (q is null) return Results.NotFound();
             return Results.Ok(new
             {
-                q.Id, q.StartNpc, q.TurnInNpc, q.MinLevel, q.MaxLevel, q.Class, q.LinkedQuest,
-                q.ObjectiveMob,
+                q.Id, q.StartNpc, q.TurnInNpc, q.MinLevel, q.MaxLevel, q.IsNeedLevel, q.Class, q.LinkedQuest,
+                q.ObjectiveMob, q.PrereqQuest,
+                q.NeedsNpc, q.NeedsItem, q.NeedsItemId, q.NeedsClass, q.IsEnabled,
+                remoteAcceptable = q.IsInstantAccept, q.IsInstantHandIn, q.Region, q.QuestType, q.Repeatable,
                 title = cd!.QuestDialog(q.Title),
                 npcs = q.Npcs, objectives = q.Objectives, rewards = q.Rewards,
                 q.StartScript, q.ActionScript, q.FinishScript

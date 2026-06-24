@@ -536,8 +536,13 @@ public sealed class ZoneView : IDisposable
     /// with NPCMENUOPEN_ACK to advance to the sell list.</summary>
     public bool NpcMenuOpen { get; private set; }
 
-    /// <summary>Mark the NPC menu answered (after sending NPCMENUOPEN_ACK).</summary>
-    public void ClearNpcMenu() => NpcMenuOpen = false;
+    /// <summary>The NPC mobId the last 0x201C menu belongs to (its payload = the NPC mobId). Needed
+    /// to drive a multi-quest giver: SELECT_START_REQ keys the quest by this NPC id, not the entity
+    /// handle.</summary>
+    public ushort MenuNpcId { get; private set; }
+
+    /// <summary>Mark the NPC menu answered (after sending NPCMENUOPEN_ACK / SELECT_START_REQ).</summary>
+    public void ClearNpcMenu() { NpcMenuOpen = false; MenuNpcId = 0; }
 
     /// <summary>Raised when a merchant's shop opens, with the sell-list item ids.</summary>
     public event Action<IReadOnlyList<ushort>>? ShopOpened;
@@ -995,7 +1000,11 @@ public sealed class ZoneView : IDisposable
         else if (op == OpActNpcMenuOpen)
         {
             NpcMenuOpen = true;
-            _log?.Invoke($"[ZoneView] NPC menu opened (0x201C) — awaiting NPCMENUOPEN_ACK");
+            // Payload = the NPC mobId that opened the menu (e.g. 5D 00 = 93 = Pey). A multi-quest
+            // giver opens this; SELECT_START_REQ then keys the chosen quest by this id.
+            var mp = pkt.Payload.Span;
+            MenuNpcId = mp.Length >= 2 ? (ushort)(mp[0] | (mp[1] << 8)) : (ushort)0;
+            _log?.Invoke($"[ZoneView] NPC menu opened (0x201C) npc={MenuNpcId} — awaiting select");
         }
         else if (op == OpSoulStoneHpBuyAck || op == OpSoulStoneSpBuyAck)
         {

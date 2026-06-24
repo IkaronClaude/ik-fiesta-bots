@@ -192,7 +192,7 @@ public sealed class BotApi
     public bool answerQuest(int result = 1) => Ok(Wait(_mgr.ProceedQuestAsync(Id, (uint)result)));
     /// <summary>Drive a whole quest dialogue with one NPC (accept or turn-in): click it and
     /// ACK every server-pushed script page until the dialogue ends. <c>result</c>=1 accepts.</summary>
-    public bool doQuest(int npcHandle, int result = 1, int rewardIndex = -1) => Ok(Wait(_mgr.DriveQuestDialogueAsync(Id, (ushort)npcHandle, (uint)result, rewardIndex)));
+    public bool doQuest(int npcHandle, int result = 1, int rewardIndex = -1, int questId = 0) => Ok(Wait(_mgr.DriveQuestDialogueAsync(Id, (ushort)npcHandle, (uint)result, rewardIndex, questId: (ushort)questId)));
     public bool selectReward(int questId, int index) => Ok(Wait(_mgr.SelectQuestRewardAsync(Id, (ushort)questId, (uint)index)));
 
     /// <summary>The character's ClassName ClassID (1=Fighter, 6=Cleric, …). 0 until selected.</summary>
@@ -241,6 +241,10 @@ public sealed class BotApi
         t["id"] = q.Id; t["startNpc"] = q.StartNpc; t["turnInNpc"] = q.TurnInNpc;
         t["minLevel"] = q.MinLevel; t["maxLevel"] = q.MaxLevel; t["isNeedLevel"] = q.IsNeedLevel;
         t["class"] = q.Class; t["linkedQuest"] = q.LinkedQuest;
+        t["needsNpc"] = q.NeedsNpc; t["needsItem"] = q.NeedsItem; t["needsItemId"] = q.NeedsItemId;
+        t["needsClass"] = q.NeedsClass; t["isEnabled"] = q.IsEnabled;
+        t["remoteAcceptable"] = q.IsInstantAccept; t["instantHandIn"] = q.IsInstantHandIn;
+        t["region"] = q.Region; t["questType"] = q.QuestType; t["repeatable"] = q.Repeatable;
         t["objectiveMob"] = q.ObjectiveMob;   // mobId to grind for this quest (-1 = meeting quest)
         t["startScript"] = q.StartScript; t["actionScript"] = q.ActionScript; t["finishScript"] = q.FinishScript;
         var npcs = NewTable(); int ni = 1;
@@ -341,19 +345,26 @@ public sealed class BotApi
         int i = 1;
         foreach (var q in cd.Quests.Values)
         {
-            if (q.StartNpc == 0) continue;
+            // ACCEPT GATE = the StartCondition Needs* flags, NOT a bare StartNpc. A quest is
+            // NPC-startable only when NeedsNpc && NPCID set; quests with NeedsNpc=0 (e.g. RouN's
+            // "Cursed Doll" from Pey) are NOT acceptable by clicking — the server rejects them
+            // (SELECT_START err 2887). NeedsItem=1 = a "hidden"/trigger-item quest, also not
+            // plain-NPC-startable. (Validated against QuestData.shn + live wire, 2026-06-24.)
+            if (!q.NeedsNpc || q.StartNpc == 0 || q.NeedsItem) continue;
             if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
             if (!q.Objectives.Any(o => o.Type == 1)) continue; // kill quests drive the grind
-            // LEVEL WINDOW (MinLevel@27 ≤ level ≤ MaxLevel@28). MaxLevel<=0 = a no-gate / event quest
-            // (min0/max0) — skip those; the real leveling quests carry a proper level range (e.g.
-            // Forest-of-Mist 10–20, Burning Rock 79–90), so this narrows the flood to the ~handful
-            // appropriate for the char's level. Above MaxLevel the quest is no longer offered.
-            if (q.MaxLevel <= 0) continue;
+            // LEVEL WINDOW only when the quest is level-gated (NeedsLevel@26). MinLevel@27 ≤ level ≤
+            // MaxLevel@28. Non-level-gated quests are event/special — skip them for the leveler.
+            if (!q.IsNeedLevel) continue;
             if (q.MinLevel > _handle.Level || _handle.Level > q.MaxLevel) continue;
             if (q.PrereqQuest != 0 && !v.IsQuestDone(q.PrereqQuest)) continue; // prerequisite quest not done (@58)
             var e = NewTable();
             e["id"] = q.Id; e["startNpc"] = q.StartNpc; e["turnInNpc"] = q.TurnInNpc;
-            e["minLevel"] = q.MinLevel; e["prereq"] = q.PrereqQuest; e["repeatable"] = q.Repeatable; e["title"] = cd.QuestDialog(q.Title);
+            e["minLevel"] = q.MinLevel; e["maxLevel"] = q.MaxLevel; e["prereq"] = q.PrereqQuest;
+            e["repeatable"] = q.Repeatable; e["title"] = cd.QuestDialog(q.Title);
+            // remoteAcceptable = can be accepted from the quest log without walking (0x4414 START_REQ).
+            // A separate client-side level-floor (~lvl 10–20) also applies — the driver ANDs that in.
+            e["remoteAcceptable"] = q.IsInstantAccept; e["instantHandIn"] = q.IsInstantHandIn;
             var objs = NewTable(); int oi = 1;
             foreach (var o in q.Objectives.Where(o => o.Type == 1))
             { var oe = NewTable(); oe["mob"] = o.Mob; oe["count"] = o.Count; objs[oi++] = DynValue.NewTable(oe); }
