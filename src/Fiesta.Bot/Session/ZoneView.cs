@@ -83,6 +83,11 @@ public sealed record QuestStep(ushort QuestId, byte Qsc, int DialogId = 0)
     public DateTime AtUtc { get; init; } = DateTime.UtcNow;
 }
 
+/// <summary>One option of a server menu (0x3C01 SERVERMENU): <paramref name="Reply"/> is the byte
+/// to send back in SERVERMENU_ACK (0x3C02) to select it; <paramref name="Text"/> is its label
+/// (e.g. {0,"Yes"}, {1,"No"}). The answerer picks by matching Text, not a fixed reply.</summary>
+public sealed record ServerMenuOption(byte Reply, string Text);
+
 /// <summary>A combat hit broadcast: <paramref name="Attacker"/> hit
 /// <paramref name="Defender"/> for <paramref name="Damage"/>, leaving the defender at
 /// <paramref name="RestHp"/>. Decoded from SWING_DAMAGE (our swing) and
@@ -526,7 +531,30 @@ public sealed class ZoneView : IDisposable
     public bool ServerMenuOpen { get; private set; }
 
     /// <summary>Mark the open server menu as answered (called after sending the ack).</summary>
-    public void ClearServerMenu() => ServerMenuOpen = false;
+    public void ClearServerMenu() { ServerMenuOpen = false; ServerMenuTitle = null; ServerMenuOptions = Array.Empty<ServerMenuOption>(); }
+
+    /// <summary>The prompt text of the currently-open server menu (0x3C01), e.g. "Do you want to
+    /// move to Roumen field?" or a quest confirm. Null when none open. Lets the answerer pick the
+    /// right option by MEANING (parse the options below) instead of guessing a fixed reply byte.</summary>
+    public string? ServerMenuTitle { get; private set; }
+
+    /// <summary>The options of the open server menu (0x3C01), each = the reply byte to send in
+    /// SERVERMENU_ACK (0x3C02) to SELECT it + its display text (e.g. {0,"Yes"},{1,"No"}). Parsed
+    /// from the SERVERMENU[menunum] array. Empty when no menu is open. The answerer matches an
+    /// option's Text to choose its Reply — never hardcode the reply value.</summary>
+    public IReadOnlyList<ServerMenuOption> ServerMenuOptions { get; private set; } = Array.Empty<ServerMenuOption>();
+
+    /// <summary>The reply byte for the FIRST option whose text matches any of <paramref name="wants"/>
+    /// (case-insensitive substring), or null if none match. e.g. <c>ServerMenuReplyFor("yes")</c> for a
+    /// gate confirm, or a quest-title / "quest" keyword to reach a service NPC's quest dialogue.</summary>
+    public byte? ServerMenuReplyFor(params string[] wants)
+    {
+        foreach (var o in ServerMenuOptions)
+            foreach (var w in wants)
+                if (!string.IsNullOrEmpty(o.Text) && o.Text.Contains(w, StringComparison.OrdinalIgnoreCase))
+                    return o.Reply;
+        return null;
+    }
 
     private volatile ushort[] _shopItems = Array.Empty<ushort>();
 
@@ -966,9 +994,29 @@ public sealed class ZoneView : IDisposable
         }
         else if (op == OpMenuServerMenu)
         {
+            // NC_MENU_SERVERMENU_REQ: title[128], priority u8 @128, npcHandle u16 @129,
+            // npcPosition @131 (8B), limitRange u16 @139, menunum u8 @141, then menunum ×
+            // SERVERMENU{ reply u8, string[32] } @142 (33B each). The reply byte is what to send
+            // in SERVERMENU_ACK (0x3C02) to pick that option; the string is its label. Verified
+            // live: "Do you want to move to Forest of Tides field?" -> {0,"Yes"},{1,"No"}.
             LastMenuAtUtc = DateTime.UtcNow;
             ServerMenuOpen = true;
-            _log?.Invoke($"[ZoneView] server menu opened (0x3C01, {pkt.Payload.Length}b) — awaiting select");
+            var p = pkt.Payload.Span;
+            ServerMenuTitle = ReadCString(p, 0, 128);
+            var opts = new List<ServerMenuOption>();
+            if (p.Length >= 142)
+            {
+                int menunum = p[141];
+                for (int i = 0; i < menunum; i++)
+                {
+                    int off = 142 + i * 33;
+                    if (off + 33 > p.Length) break;
+                    opts.Add(new ServerMenuOption(p[off], ReadCString(p, off + 1, 32) ?? ""));
+                }
+            }
+            ServerMenuOptions = opts;
+            var optStr = string.Join(", ", opts.Select(o => $"[{o.Reply}]={o.Text}"));
+            _log?.Invoke($"[ZoneView] server menu opened (0x3C01): \"{ServerMenuTitle}\" {{{optStr}}}");
         }
         else if (op == OpCharDeadMenu)
         {
