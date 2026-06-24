@@ -1098,23 +1098,23 @@ public sealed class ZoneView : IDisposable
         {
             // Soul-stone shop opened — a real shop session (buys soul stones AND accepts item
             // sells). Payload = SHOPOPENSOULSTONE_CMD: two SOULSTONEMENU (hp @0, sp @12), each
-            // 3× u32 {price, maxReserve, curReserve}. Verified vs SellAndInventoryManagement.pcapng:
-            // hp = {207, 29, 16}, sp = {104, 14, 7} (cur<max holds; price is the only hp≠sp field).
-            // Read the UNIT PRICE so restock can buy the max affordable, and seed the live reserve.
+            // 3× u32 = {restorePerStone @0, maxReserve @4, UNIT PRICE @8}. CORRECTED 2026-06-24:
+            // the PRICE is the THIRD field, not the first — verified live (IkFresh hp={79,17,7} →
+            // a 5-stone buy cost 35 cen = 7/stone, matching field@8=7; field@0=79 is HP-restored-
+            // per-stone, which scales with level). The original capture hp={207,29,16} → price 16.
+            // The CURRENT reserve is NOT in this packet (it's in NC_CHAR_BASE) — don't seed it here.
             var p = pkt.Payload.Span;
             if (p.Length >= 24)
             {
-                HpStonePrice = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(0, 4));
-                uint hpMax = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(4, 4));
-                uint hpCur = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(8, 4));
-                SpStonePrice = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(12, 4));
-                uint spMax = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(16, 4));
-                uint spCur = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(20, 4));
+                uint hpRestore = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(0, 4));
+                uint hpMax     = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(4, 4));
+                HpStonePrice   = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(8, 4));
+                uint spRestore = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(12, 4));
+                uint spMax     = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(16, 4));
+                SpStonePrice   = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(20, 4));
                 if (hpMax > 0) MaxHpStones = hpMax;
                 if (spMax > 0) MaxSpStones = spMax;
-                HpStones = (int)hpCur; if (hpCur > 0) HpStoneDepleted = false;
-                SpStones = (int)spCur;
-                _log?.Invoke($"[ZoneView] soul-stone shop opened (0x3C05) — HP {hpCur}/{hpMax} @{HpStonePrice}cen, SP {spCur}/{spMax} @{SpStonePrice}cen");
+                _log?.Invoke($"[ZoneView] soul-stone shop opened (0x3C05) — HP restore {hpRestore} max {hpMax} @{HpStonePrice}cen, SP restore {spRestore} max {spMax} @{SpStonePrice}cen");
             }
             else _log?.Invoke("[ZoneView] soul-stone shop opened (0x3C05) — sells accepted (no menu payload)");
             ShopOpenUtc = DateTime.UtcNow;
@@ -1122,12 +1122,23 @@ public sealed class ZoneView : IDisposable
         }
         else if (op == OpCenChange)
         {
-            // {cen u64} = the new money total. The authoritative money signal.
+            // {cen u64} = the new money total. The authoritative money signal. Log the DELTA with a
+            // sign + a greppable [money] tag so "where does the money go?" is answerable from the tail
+            // (grep '[money]'): a '-' is a spend (shop buy / restock), a '+' is income (drop / sell /
+            // quest reward). Income should outpace spend — a long run of '-' with no '+' is the bug.
             var p = pkt.Payload.Span;
             if (p.Length >= 8)
             {
                 var cen = (long)System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(p);
-                if (cen != Money) _log?.Invoke($"[ZoneView] money -> {cen} (was {Money})");
+                if (cen != Money)
+                {
+                    var delta = Money < 0 ? 0 : cen - Money;  // first seed (Money==-1) isn't a real delta
+                    var line = Money < 0
+                        ? $"[money] seed {cen}"
+                        : $"[money] {(delta >= 0 ? "+" : "")}{delta} -> {cen} (was {Money})";
+                    if (_logLevel is not null) _logLevel(BotLogLevel.Info, $"[ZoneView] {line}");
+                    else _log?.Invoke($"[ZoneView] {line}");
+                }
                 Money = cen;
             }
         }
