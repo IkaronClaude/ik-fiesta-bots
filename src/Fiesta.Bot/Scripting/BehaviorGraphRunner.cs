@@ -186,6 +186,8 @@ public sealed class BehaviorGraphRunner : IDisposable
         _api.AttachScript(_lua);
         _lua.Globals["bot"] = _api;
         _lua.Globals["log"] = (Action<string>)(m => _log($"[graph:{_graph.Name}:{_current}] {m}"));
+        _lua.Globals["logi"] = (Action<string>)(m => _handle.Log(BotLogLevel.Info, $"[graph:{_graph.Name}:{_current}] {m}"));
+        _lua.Globals["logv"] = (Action<string>)(m => _handle.Log(BotLogLevel.Verbose, $"[graph:{_graph.Name}:{_current}] {m}"));
         _lua.Options.DebugPrint = m => _log($"[graph:{_graph.Name}:{_current}] {m}");
 
         // Shared helpers go into the VM globals so every node/transition env sees them

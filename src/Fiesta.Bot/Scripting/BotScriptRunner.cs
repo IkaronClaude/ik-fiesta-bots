@@ -158,6 +158,11 @@ public sealed class BotScriptRunner : IDisposable
         // Both an explicit log() and Lua's built-in print(...) reach the bot log (and
         // thus the console + the live log-stream). DebugPrint catches print/io.write.
         _lua.Globals["log"] = (Action<string>)(m => _log($"[script:{_name}] {m}"));
+        // Verbosity-leveled siblings: logi(...) = progress (kills/quest credit), logv(...) =
+        // per-tick firehose (move/cast/auto-attack). Both go straight to the ring buffer at
+        // their level so the tail/snapshot endpoints can filter; plain log() stays headline.
+        _lua.Globals["logi"] = (Action<string>)(m => _handle.Log(BotLogLevel.Info, $"[script:{_name}] {m}"));
+        _lua.Globals["logv"] = (Action<string>)(m => _handle.Log(BotLogLevel.Verbose, $"[script:{_name}] {m}"));
         _lua.Options.DebugPrint = m => _log($"[script:{_name}] {m}");
         // Layer 2: the state-machine harness. Defines a global statemachine(states,
         // initial) that, when a script calls it, wires the top-level on_*/tick to

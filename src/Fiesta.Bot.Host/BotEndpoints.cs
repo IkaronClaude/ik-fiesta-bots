@@ -112,6 +112,24 @@ public static class BotEndpoints
         })
         .WithSummary("Status of one bot (incl. recent log)");
 
+        group.MapGet("/{id}/log", (string id, string? level, int? max) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var maxLevel = (level?.ToLowerInvariant()) switch
+            {
+                "note" or "n" => BotLogLevel.Note,
+                "info" or "i" => BotLogLevel.Info,
+                _ => BotLogLevel.Verbose,   // default: the full firehose
+            };
+            var lines = bot.RecentLines(max ?? 200, maxLevel);
+            return Results.Text(string.Join("\n", lines) + "\n", "text/plain");
+        })
+        .WithSummary("Tail a bot's log as plain text, filtered by verbosity")
+        .WithDescription("Query: level=note|info|verbose (default verbose=everything), max=N lines (default 200). " +
+            "note=headline only (quest accept/finish, level-up, death, purchase, errors); info adds kills/quest-progress; " +
+            "verbose adds move/cast/auto-attack. Plain text so `curl .../log?level=info` is directly readable.");
+
         group.MapPost("/{id}/stop", async (string id) =>
         {
             var stopped = await manager.StopAsync(id);
@@ -410,7 +428,7 @@ public static class BotEndpoints
             {
                 q.Id, q.StartNpc, q.TurnInNpc, q.MinLevel, q.MaxLevel, q.IsNeedLevel, q.Class, q.LinkedQuest,
                 q.ObjectiveMob, q.PrereqQuest,
-                q.NeedsNpc, q.NeedsItem, q.NeedsItemId, q.NeedsClass, q.IsEnabled,
+                q.NeedsNpc, q.NeedsItem, q.NeedsItemId, q.NeedsClass, q.IsVisible,
                 remoteAcceptable = q.IsInstantAccept, q.IsInstantHandIn, q.Region, q.QuestType, q.Repeatable,
                 title = cd!.QuestDialog(q.Title),
                 npcs = q.Npcs, objectives = q.Objectives, rewards = q.Rewards,

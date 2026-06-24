@@ -303,7 +303,7 @@ public sealed class BotManager : IAsyncDisposable
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
-        handle.Log($"cast skill {skill} on h={target} ({(needFace || needStop ? "target+mode+face+stop+cast" : "target+mode+cast")})");
+        handle.Log(BotLogLevel.Verbose, $"cast skill {skill} on h={target} ({(needFace || needStop ? "target+mode+face+stop+cast" : "target+mode+cast")})");
         return ActionResult.Sent;
     }
 
@@ -339,7 +339,7 @@ public sealed class BotManager : IAsyncDisposable
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
         if (needFace || needStop) await FaceAndStopAsync(handle, s, x, y, ct);
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_FLD_CAST_REQ { skill = skill, locate = new SHINE_XY_TYPE { x = x, y = y } }, ct);
-        handle.Log($"ground-cast skill {skill} at ({x},{y})");
+        handle.Log(BotLogLevel.Verbose, $"ground-cast skill {skill} at ({x},{y})");
         return ActionResult.Sent;
     }
 
@@ -435,7 +435,7 @@ public sealed class BotManager : IAsyncDisposable
         if (NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
-        handle.Log($"auto-attack h={target} (faced+bashstart)");
+        handle.Log(BotLogLevel.Verbose, $"auto-attack h={target} (faced+bashstart)");
         return ActionResult.Sent;
     }
 
@@ -1276,9 +1276,12 @@ public sealed class BotManager : IAsyncDisposable
             }
             else
             {
-                // No specific quest given — can't pick from the menu. Leave it; the caller should pass
-                // questId for multi-quest givers. (P3: handle in-progress turn-in menus separately.)
-                h.Log($"quest dialogue: NPC menu open (npc={zv.MenuNpcId}) but no questId to select — skipping");
+                // No specific quest given → answer the menu with option 1 (NPCMENUOPEN_ACK) to reach the
+                // quest dialogue. This is the single-quest-giver path (e.g. Remi opens a menu, option 1 =
+                // its one quest). Removing this regressed the leveler into skipping every menu NPC.
+                await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = 1 }, ct);
+                zv.ClearNpcMenu();
+                h.Log($"quest dialogue: answered NPC menu (option 1) npc={zv.MenuNpcId} to reach the quest dialogue");
             }
         }
 
@@ -1361,12 +1364,12 @@ public sealed class BotManager : IAsyncDisposable
         // Walk onto the item, then pick. Pickup has a short range, so stop right on it.
         await ApproachAsync(id, handle, drop.X, drop.Y, stopShort: 0, unitsPerSec, ct);
         await s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = drop.Handle }, ct);
-        handle.Log($"loot item {drop.ItemId} (h={drop.Handle}) @({drop.X},{drop.Y})");
+        handle.Log(BotLogLevel.Verbose, $"loot item {drop.ItemId} (h={drop.Handle}) @({drop.X},{drop.Y})");
 
         // Success = the drop left view (picked/despawned). PICK_ACK arrives too but its
         // error code was non-zero even on success, so the drop-gone signal is authoritative.
         var picked = await WaitUntilAsync(() => view.Drops.All(d => d.Handle != drop.Handle), 3000, ct);
-        handle.Log(picked ? $"looted h={drop.Handle}" : $"loot h={drop.Handle} unconfirmed (still on ground — inventory full / out of range / blocked?)");
+        handle.Log(BotLogLevel.Info, picked ? $"looted h={drop.Handle}" : $"loot h={drop.Handle} unconfirmed (still on ground — inventory full / out of range / blocked?)");
         return ActionResult.Sent;
     }
 
@@ -1434,7 +1437,7 @@ public sealed class BotManager : IAsyncDisposable
                         await Task.Delay((int)Math.Clamp(stepDist / paceSpeed * 1000, 40, 2000), ct);
                     }
                 }
-                handle.Log($"walk-path done ({waypoints.Count} waypoints, {steps} move steps)");
+                handle.Log(BotLogLevel.Verbose, $"walk-path done ({waypoints.Count} waypoints, {steps} move steps)");
             }
             catch (OperationCanceledException) { handle.Log("walk-path aborted (cancelled / move blocked)"); }
             catch (Exception ex) { handle.Log($"walk-path error: {ex.Message}"); }
@@ -1640,7 +1643,7 @@ public sealed class BotManager : IAsyncDisposable
                 // Perception model (nearby players + chat) is always on — cheap, and the
                 // status/say surface and any behavior read from it. The buff behavior is
                 // opt-in via spawn options.
-                using var zoneView = new ZoneView(zoneSession, Log);
+                using var zoneView = new ZoneView(zoneSession, Log, handle.Log);
                 handle.ZoneView = zoneView;
                 if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)

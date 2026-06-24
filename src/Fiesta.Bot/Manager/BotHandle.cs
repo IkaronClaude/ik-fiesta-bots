@@ -1,3 +1,4 @@
+using System.Linq;
 using Fiesta.Bot.Session;
 
 namespace Fiesta.Bot.Manager;
@@ -26,8 +27,10 @@ public enum BotPhase
 /// </summary>
 public sealed class BotHandle
 {
-    private const int MaxLogLines = 200;
-    private readonly List<string> _log = new();
+    // Big enough that a verbose firehose (move/cast every tick) doesn't evict the headline
+    // Note/Info lines before a tailer reads them. Filtered down per-level on the way out.
+    private const int MaxLogLines = 1500;
+    private readonly List<(BotLogLevel Level, string Line)> _log = new();
     private readonly object _logGate = new();
 
     private volatile BotPhase _phase = BotPhase.Pending;
@@ -208,31 +211,42 @@ public sealed class BotHandle
     /// time. Raised from whatever thread logged — handlers must not block.</summary>
     public event Action<string>? LogLine;
 
-    internal void Log(string message)
+    internal void Log(string message) => Log(BotLogLevel.Note, message);
+
+    /// <summary>Append a log line at the given verbosity. The level is stamped into the
+    /// text (<c>N</c>/<c>I</c>/<c>V</c> after the timestamp) so a raw tail is still readable,
+    /// and retained structurally so the snapshot/tail endpoints can filter by level.</summary>
+    internal void Log(BotLogLevel level, string message)
     {
-        var line = $"{DateTime.UtcNow:HH:mm:ss.fff} {message}";
+        var tag = level switch { BotLogLevel.Verbose => "V", BotLogLevel.Info => "I", _ => "N" };
+        var line = $"{DateTime.UtcNow:HH:mm:ss.fff} {tag} {message}";
         lock (_logGate)
         {
-            _log.Add(line);
+            _log.Add((level, line));
             if (_log.Count > MaxLogLines) _log.RemoveRange(0, _log.Count - MaxLogLines);
         }
         // Fan out to live tailers outside the lock; never let a subscriber break logging.
         try { LogLine?.Invoke(line); } catch { }
     }
 
+    // The polled snapshot stays readable: headline + progress only (drop the verbose firehose).
+    // Pull the full stream (incl. Verbose) from the /log tail endpoint when chasing a bug.
     private IReadOnlyList<string> RecentLog()
     {
-        lock (_logGate) return _log.ToArray();
+        lock (_logGate)
+            return _log.Where(e => e.Level <= BotLogLevel.Info).Select(e => e.Line).ToArray();
     }
 
-    /// <summary>The most recent <paramref name="max"/> log lines (all if max ≤ 0 or
-    /// exceeds the buffer) — the backfill a fresh log-stream connection replays first.</summary>
-    public IReadOnlyList<string> RecentLines(int max)
+    /// <summary>The most recent <paramref name="max"/> log lines at or quieter than
+    /// <paramref name="maxLevel"/> (Note ⊂ Info ⊂ Verbose). <paramref name="max"/> ≤ 0 or
+    /// past the buffer returns all matching lines — the backfill a tail connection replays.</summary>
+    public IReadOnlyList<string> RecentLines(int max, BotLogLevel maxLevel = BotLogLevel.Verbose)
     {
         lock (_logGate)
         {
-            if (max <= 0 || max >= _log.Count) return _log.ToArray();
-            return _log.GetRange(_log.Count - max, max).ToArray();
+            var filtered = _log.Where(e => e.Level <= maxLevel).Select(e => e.Line).ToList();
+            if (max <= 0 || max >= filtered.Count) return filtered;
+            return filtered.GetRange(filtered.Count - max, max);
         }
     }
 

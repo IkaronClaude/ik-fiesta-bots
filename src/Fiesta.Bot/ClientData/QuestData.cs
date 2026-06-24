@@ -14,7 +14,8 @@ namespace Fiesta.Bot.GameData;
 ///   +4  u32 QuestID · +8 u32 TitleID · +12 u32 DescriptionID (all QuestDialog.shn ids)
 ///   +16 u8 Region · +17 u8 QuestType · +18 IsRepeatable · +19 IsDailyQuest · +20 DailyType
 ///   +21 StartCondition (67B, the ACCEPT GATE):
-///       +24 IsEnabled · +25 IsInstantAccept(=remote accept via quest log) · +26 NeedsLevel
+///       +24 IsVisible(=shows in the available quest LOG; 0 = hidden but still completable) ·
+///       +25 IsInstantAccept(=remote accept via quest log) · +26 NeedsLevel
 ///       +27 LevelMin · +28 LevelMax · +29 NeedsNPC · +30 u16 NPCID(giver) · +32 NeedsItem
 ///       +33 u16 ItemID · +56 NeedsPreviousQuest · +58 u16 PreviousQuestID · +62 NeedsClass · +63 Class
 ///   +88 EndCondition (104B, turn-in gate + OBJECTIVES):
@@ -65,7 +66,7 @@ public static class QuestData
             int title = (int)U32(off + 8);   // QuestDialog id of the title (DescriptionID is @12)
 
             // --- StartCondition (the accept gate) ---
-            bool isEnabled = Flag(off + StartCond + 3);          // @24
+            bool isVisible = Flag(off + StartCond + 3);          // @24 = shows in available quest LOG
             bool isInstantAccept = Flag(off + StartCond + 4);    // @25 = remote-accept via quest log
             bool needsLevel = Flag(off + StartCond + 5);         // @26
             int minLevel = b[off + StartCond + 6];               // @27
@@ -131,7 +132,7 @@ public static class QuestData
             map[id] = new QuestDef(id, title, startNpc, needsLevel, minLevel, maxLevel, reqClass,
                 npcs, objectives, rewards, start, action2, finish,
                 Repeatable: Flag(off + 18), PrereqQuest: prereqQuest,
-                IsEnabled: isEnabled, IsInstantAccept: isInstantAccept, IsInstantHandIn: isInstantHandIn,
+                IsVisible: isVisible, IsInstantAccept: isInstantAccept, IsInstantHandIn: isInstantHandIn,
                 NeedsNpc: needsNpc, NeedsItem: needsItem, NeedsItemId: needsItemId, NeedsClass: needsClass,
                 Region: b[off + 16], QuestType: b[off + 17]);
 
@@ -150,7 +151,7 @@ public sealed record QuestDef(
     IReadOnlyList<QuestTarget> Npcs, IReadOnlyList<QuestObjective> Objectives,
     IReadOnlyList<QuestRewardDef> Rewards, string StartScript, string ActionScript, string FinishScript,
     bool Repeatable = false, int PrereqQuest = 0,
-    bool IsEnabled = false, bool IsInstantAccept = false, bool IsInstantHandIn = false,
+    bool IsVisible = false, bool IsInstantAccept = false, bool IsInstantHandIn = false,
     bool NeedsNpc = false, bool NeedsItem = false, int NeedsItemId = 0, bool NeedsClass = false,
     int Region = 0, int QuestType = 0)
 {

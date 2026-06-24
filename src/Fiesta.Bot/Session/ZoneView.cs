@@ -282,7 +282,8 @@ public sealed class ZoneView : IDisposable
     private const int SkillBlockLen = 12;
 
     private readonly BotSession _session;
-    private readonly Action<string>? _log;
+    private readonly Action<string>? _log;            // Note channel (also fans out to host stdout)
+    private readonly Action<BotLogLevel, string>? _logLevel; // leveled channel for verbose perception spam
     private readonly ConcurrentDictionary<ushort, NearbyPlayer> _nearby = new();
     private readonly ConcurrentDictionary<ushort, NearbyNpc> _npcs = new();
     // Last-known position of each NPC by mobId, learned from the zone's NPC broadcasts and KEPT even
@@ -297,12 +298,18 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<ushort, byte> _skills = new(); // learned skill id -> 1 (set)
     private ushort? _mountHandle; // last known mount mover handle (from RIDE_ON 0xCC02 payload)
 
-    public ZoneView(BotSession session, Action<string>? log = null)
+    public ZoneView(BotSession session, Action<string>? log = null, Action<BotLogLevel, string>? logLevel = null)
     {
         _session = session;
         _log = log;
+        _logLevel = logLevel;
         _session.PacketReceived += OnPacket;
     }
+
+    // Verbose (per-frame perception) log: mob/player appeared, MOVEFAIL, speed changes — the
+    // firehose that would otherwise drown the headline events. Routes to the leveled channel at
+    // Verbose; falls back to the plain Note channel if no leveled logger was supplied.
+    private void LogV(string m) { if (_logLevel is not null) _logLevel(BotLogLevel.Verbose, m); else _log?.Invoke(m); }
 
     /// <summary>Raised when a player enters (or refreshes in) view.</summary>
     public event Action<NearbyPlayer>? PlayerAppeared;
@@ -404,6 +411,14 @@ public sealed class ZoneView : IDisposable
     public uint MaxHpStones { get; private set; }
     public uint MaxSpStones { get; private set; }
 
+    /// <summary>Unit price (cen) of one HP/SP soul-stone charge, as sent by the healer's
+    /// soul-stone shop-open (0x3C05 SOULSTONEMENU = {price u32, max u32, cur u32}). 0 until a
+    /// soul-stone shop has been opened. The restock logic reads this to buy the MAX AFFORDABLE
+    /// charges — <c>min(deficit, money / price)</c> — instead of asking for the full deficit and
+    /// having the server silently reject the buy when <c>price*count &gt; money</c>.</summary>
+    public uint HpStonePrice { get; private set; }
+    public uint SpStonePrice { get; private set; }
+
     /// <summary>Current soul-stone reserve charges (HP/SP), as last reported by a BUY_ACK
     /// (0x5003/0x5004, <c>totalnumber</c>). Null until a buy ack is seen (the initial count
     /// from the login char-info isn't decoded yet — TODO). The restock SM gates on this.</summary>
@@ -487,6 +502,11 @@ public sealed class ZoneView : IDisposable
     {
         if (SelfHandle is { } self && h.Defender == self)
         {
+            // Combat-START marker for the tail: a hit arriving after a CombatWindow gap is a fresh
+            // engagement. Just a LOG line (no metric state kept here — pair START↔KILLED/DIED
+            // timestamps in the tail to read time-to-kill / time-to-death and spot a death-loop).
+            if (DateTime.UtcNow - LastHitAtUtc > CombatWindow)
+                _log?.Invoke($"[combat] START vs mob h={h.Attacker}");
             _aggressors[h.Attacker] = DateTime.UtcNow;
             LastHitAtUtc = DateTime.UtcNow;
         }
@@ -787,7 +807,7 @@ public sealed class ZoneView : IDisposable
             var hnd = pkt.ReadBody<PROTO_NC_BRIEFINFO_BRIEFINFODELETE_CMD>().hnd;
             if (_nearby.TryRemove(hnd, out var gone))
             {
-                _log?.Invoke($"[ZoneView] player left: {gone.Name} (h={hnd})");
+                LogV($"[ZoneView] player left: {gone.Name} (h={hnd})");
                 PlayerLeft?.Invoke(hnd);
             }
             _npcs.TryRemove(hnd, out _); // the same delete also retires NPCs/mobs
@@ -804,8 +824,8 @@ public sealed class ZoneView : IDisposable
                 var dead = (ushort)(p[0] | (p[1] << 8));
                 var attacker = (ushort)(p[2] | (p[3] << 8));
                 bool mine = SelfHandle != 0 && attacker == SelfHandle;
-                _log?.Invoke($"[ZoneView] REALLYKILL dead={dead} attacker={attacker} self={SelfHandle} mine={mine}");
-                if (_npcs.TryRemove(dead, out _) && mine) { LastKill = dead; KillsByMe++; }
+                LogV($"[ZoneView] REALLYKILL dead={dead} attacker={attacker} self={SelfHandle} mine={mine}");
+                if (_npcs.TryRemove(dead, out _) && mine) { LastKill = dead; KillsByMe++; _log?.Invoke($"[combat] KILLED mob h={dead} (totalKills={KillsByMe})"); }
             }
         }
         else if (op == OpBriefMob)
@@ -844,7 +864,7 @@ public sealed class ZoneView : IDisposable
             // prevents a stale mount speed from pacing movement in the gap.
             if (Math.Abs(WalkSpeed - 120.0) > 0.5)
             {
-                _log?.Invoke($"[ZoneView] move speed: {WalkSpeed:F0} -> 120 u/s (dismounted)");
+                LogV($"[ZoneView] move speed: {WalkSpeed:F0} -> 120 u/s (dismounted)");
                 WalkSpeed = 120.0;
                 WalkSpeedChanged?.Invoke(120.0);
             }
@@ -885,7 +905,7 @@ public sealed class ZoneView : IDisposable
             {
                 var bx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p);
                 var by = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[4..]);
-                _log?.Invoke($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
+                LogV($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
                 MoveFailed?.Invoke((bx, by));
             }
         }
@@ -953,7 +973,7 @@ public sealed class ZoneView : IDisposable
         else if (op == OpCharDeadMenu)
         {
             Dead = true; DeadAtUtc = DateTime.UtcNow;
-            _log?.Invoke("[ZoneView] DIED (death menu) — revive in place or respawn to town");
+            _log?.Invoke("[combat] DIED (death menu) — revive in place or respawn to town");
         }
         else if (op == OpCharReviveSame)
         {
@@ -1077,10 +1097,28 @@ public sealed class ZoneView : IDisposable
         else if (op == OpShopOpenSoulStone)
         {
             // Soul-stone shop opened — a real shop session (buys soul stones AND accepts item
-            // sells). No item list, so just flip the "shop open" signal that SELL gates on.
+            // sells). Payload = SHOPOPENSOULSTONE_CMD: two SOULSTONEMENU (hp @0, sp @12), each
+            // 3× u32 {price, maxReserve, curReserve}. Verified vs SellAndInventoryManagement.pcapng:
+            // hp = {207, 29, 16}, sp = {104, 14, 7} (cur<max holds; price is the only hp≠sp field).
+            // Read the UNIT PRICE so restock can buy the max affordable, and seed the live reserve.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 24)
+            {
+                HpStonePrice = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(0, 4));
+                uint hpMax = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(4, 4));
+                uint hpCur = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(8, 4));
+                SpStonePrice = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(12, 4));
+                uint spMax = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(16, 4));
+                uint spCur = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(20, 4));
+                if (hpMax > 0) MaxHpStones = hpMax;
+                if (spMax > 0) MaxSpStones = spMax;
+                HpStones = (int)hpCur; if (hpCur > 0) HpStoneDepleted = false;
+                SpStones = (int)spCur;
+                _log?.Invoke($"[ZoneView] soul-stone shop opened (0x3C05) — HP {hpCur}/{hpMax} @{HpStonePrice}cen, SP {spCur}/{spMax} @{SpStonePrice}cen");
+            }
+            else _log?.Invoke("[ZoneView] soul-stone shop opened (0x3C05) — sells accepted (no menu payload)");
             ShopOpenUtc = DateTime.UtcNow;
             LastShopKind = ShopKind.SoulStone;
-            _log?.Invoke("[ZoneView] soul-stone shop opened (0x3C05) — sells accepted");
         }
         else if (op == OpCenChange)
         {
@@ -1318,7 +1356,7 @@ public sealed class ZoneView : IDisposable
                 var d = pkt.ReadBody<PROTO_NC_BRIEFINFO_DROPEDITEM_CMD>();
                 var gi = new GroundItem(d.handle, d.itemid, d.location.x, d.location.y, d.dropmobhandle);
                 _drops[d.handle] = gi;
-                _log?.Invoke($"[ZoneView] drop appeared: item {gi.ItemId} (h={gi.Handle}) @({gi.X},{gi.Y}) from mob h={gi.DropMobHandle}");
+                LogV($"[ZoneView] drop appeared: item {gi.ItemId} (h={gi.Handle}) @({gi.X},{gi.Y}) from mob h={gi.DropMobHandle}");
                 DropAppeared?.Invoke(gi);
             }
             catch { /* skip an unparseable drop frame */ }
@@ -1336,7 +1374,7 @@ public sealed class ZoneView : IDisposable
             }
             if (_nearby.TryRemove(hnd, out var gonePlayer))
             {
-                _log?.Invoke($"[ZoneView] player left (logout): {gonePlayer.Name} (h={hnd})");
+                LogV($"[ZoneView] player left (logout): {gonePlayer.Name} (h={hnd})");
                 PlayerLeft?.Invoke(hnd);
             }
             _npcs.TryRemove(hnd, out _);
@@ -1425,7 +1463,7 @@ public sealed class ZoneView : IDisposable
         _nearby[c.handle] = player;
         if (isNew)
         {
-            _log?.Invoke($"[ZoneView] player appeared: {name} (h={c.handle} class={c.chrclass} lvl={c.Level})");
+            LogV($"[ZoneView] player appeared: {name} (h={c.handle} class={c.chrclass} lvl={c.Level})");
             PlayerAppeared?.Invoke(player);
         }
     }
@@ -1458,7 +1496,7 @@ public sealed class ZoneView : IDisposable
         _npcs[handle] = npc;
         if (flag != 1) _npcPos[mobid] = (x, y); // remember NPC (not gate) positions zone-wide
         if (isNew)
-            _log?.Invoke(flag == 1
+            LogV(flag == 1
                 ? $"[ZoneView] gate appeared: id={mobid} h={handle} @({x},{y}) -> {linkMap}"
                 : $"[ZoneView] npc/mob appeared: id={mobid} h={handle} @({x},{y}) mode={mode} flag={flag} team={team}");
     }
@@ -1473,7 +1511,7 @@ public sealed class ZoneView : IDisposable
         var newSpeed = rawRun * SpeedRawToUPerSec;
         if (Math.Abs(newSpeed - WalkSpeed) > 0.5)
         {
-            _log?.Invoke($"[ZoneView] move speed: {WalkSpeed:F0} -> {newSpeed:F0} u/s (raw: walk={rawWalk} run={rawRun}, {source})");
+            LogV($"[ZoneView] move speed: {WalkSpeed:F0} -> {newSpeed:F0} u/s (raw: walk={rawWalk} run={rawRun}, {source})");
             WalkSpeed = newSpeed;
             WalkSpeedChanged?.Invoke(newSpeed);
         }

@@ -58,7 +58,8 @@ public sealed class ClientData
             IsMovingSkill: GetInt(row, "IsMovingSkill") != 0,
             DelayTimeMs: GetInt(row, "DlyTime"),
             Range: GetInt(row, "Range"),
-            Sp: GetInt(row, "SP"));
+            Sp: GetInt(row, "SP"),
+            UseClass: GetInt(row, "UseClass"));
     }
 
     /// <summary>Look up a mob/NPC by its id in the client <c>MobInfo</c> table and project
@@ -329,4 +330,4 @@ public sealed record MobLocation(int MobId, string Map, int CenterX, int CenterY
 /// facing requirement. <see cref="IsMovingSkill"/> = castable while moving (no STOP needed).
 /// <see cref="DelayTimeMs"/> = cooldown (ms). <see cref="Range"/> = cast range (0 = melee).
 /// <see cref="Sp"/> = mana cost.</summary>
-public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp);
+public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0);

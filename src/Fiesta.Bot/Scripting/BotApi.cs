@@ -65,6 +65,10 @@ public sealed class BotApi
         t["id"] = id; t["name"] = _mgr.ClientData?.SkillName(id) ?? "";
         t["cooldownMs"] = si.DelayTimeMs; t["sp"] = si.Sp; t["range"] = si.Range;
         t["usableDegree"] = si.UsableDegree; t["moving"] = si.IsMovingSkill;
+        // UseClass: real class combat skills are >=2 (Fighter line 2-7, Cleric 8-13, Archer 14-19,
+        // Mage 20-25, Joker 27+); ==1 is the Trainee/alchemy/event bucket (Mining, Ride Mover, the
+        // event water-balloons) — the cast rotation must skip those. Passives aren't in ActiveSkill.
+        t["useClass"] = si.UseClass;
         return DynValue.NewTable(t);
     }
 
@@ -242,7 +246,7 @@ public sealed class BotApi
         t["minLevel"] = q.MinLevel; t["maxLevel"] = q.MaxLevel; t["isNeedLevel"] = q.IsNeedLevel;
         t["class"] = q.Class; t["linkedQuest"] = q.LinkedQuest;
         t["needsNpc"] = q.NeedsNpc; t["needsItem"] = q.NeedsItem; t["needsItemId"] = q.NeedsItemId;
-        t["needsClass"] = q.NeedsClass; t["isEnabled"] = q.IsEnabled;
+        t["needsClass"] = q.NeedsClass; t["isVisible"] = q.IsVisible;
         t["remoteAcceptable"] = q.IsInstantAccept; t["instantHandIn"] = q.IsInstantHandIn;
         t["region"] = q.Region; t["questType"] = q.QuestType; t["repeatable"] = q.Repeatable;
         t["objectiveMob"] = q.ObjectiveMob;   // mobId to grind for this quest (-1 = meeting quest)
@@ -337,6 +341,11 @@ public sealed class BotApi
     /// out-of-level accept, which the driver detects via <c>questActive</c> not flipping. Each
     /// row: {id, startNpc, turnInNpc, minLevel, repeatable, title, objectives[{mob,count}]}.
     /// The driver bulk-accepts these at their start NPCs in town.</summary>
+    /// <summary>Maps a Fiesta class id to its base/first-job class (the LINE leader): Fighter(1-5)→1,
+    /// Cleric(6-10)→6, Archer(11-15)→11, Mage(16-20)→16, Joker(21+)→21. Quest Class@63 is a base id;
+    /// matching by line lets an advanced char (e.g. Warrior 3) still take its line's base quests.</summary>
+    private static int ClassLine(int c) => c > 0 ? ((c - 1) / 5) * 5 + 1 : 0;
+
     public DynValue eligibleQuests()
     {
         var t = NewTable();
@@ -351,10 +360,18 @@ public sealed class BotApi
             // (SELECT_START err 2887). NeedsItem=1 = a "hidden"/trigger-item quest, also not
             // plain-NPC-startable. (Validated against QuestData.shn + live wire, 2026-06-24.)
             if (!q.NeedsNpc || q.StartNpc == 0 || q.NeedsItem) continue;
+            // CLASS GATE (@62 NeedsClass / @63 Class): the starter quests come in one copy PER CLASS
+            // (q1 "Baby Steps" Fighter / q944 Cleric / q945 Archer / q946 Mage) — a Fighter must only
+            // see the Fighter copy, else it loops clicking the giver for a quest it can't get. Match by
+            // class LINE (Fighter 1-5, Cleric 6-10, Archer 11-15, Mage 16-20, Joker 21+) so advanced
+            // classes still match their base quest. q.Class 0 = any class.
+            if (q.NeedsClass && q.Class != 0 && _handle.Class != 0 && ClassLine(q.Class) != ClassLine(_handle.Class)) continue;
             if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
-            if (!q.Objectives.Any(o => o.Type == 1)) continue; // kill quests drive the grind
-            // LEVEL WINDOW only when the quest is level-gated (NeedsLevel@26). MinLevel@27 ≤ level ≤
-            // MaxLevel@28. Non-level-gated quests are event/special — skip them for the leveler.
+            // Accept ALL NPC-startable, level-appropriate quests: kill (Type 1), item-collect (Type 2),
+            // find/visit (Type 3) AND 0-objective story quests (the Roumen newbie chain q1→q2→q3, which
+            // instant-complete at the turn-in NPC). Earlier this required a kill objective, so the
+            // leveler skipped the newbie chain + item-pickup quests and went straight to grind.
+            // LEVEL WINDOW only when the quest is level-gated (NeedsLevel@26).
             if (!q.IsNeedLevel) continue;
             if (q.MinLevel > _handle.Level || _handle.Level > q.MaxLevel) continue;
             if (q.PrereqQuest != 0 && !v.IsQuestDone(q.PrereqQuest)) continue; // prerequisite quest not done (@58)
@@ -362,12 +379,15 @@ public sealed class BotApi
             e["id"] = q.Id; e["startNpc"] = q.StartNpc; e["turnInNpc"] = q.TurnInNpc;
             e["minLevel"] = q.MinLevel; e["maxLevel"] = q.MaxLevel; e["prereq"] = q.PrereqQuest;
             e["repeatable"] = q.Repeatable; e["title"] = cd.QuestDialog(q.Title);
+            int kills = q.Objectives.Count(o => o.Type == 1);
+            e["hasKill"] = kills > 0; e["hasItem"] = q.Objectives.Any(o => o.Type == 2);
+            e["noObjective"] = q.Objectives.Count == 0;  // 0-objective: accept + instant turn-in
             // remoteAcceptable = can be accepted from the quest log without walking (0x4414 START_REQ).
             // A separate client-side level-floor (~lvl 10–20) also applies — the driver ANDs that in.
             e["remoteAcceptable"] = q.IsInstantAccept; e["instantHandIn"] = q.IsInstantHandIn;
             var objs = NewTable(); int oi = 1;
-            foreach (var o in q.Objectives.Where(o => o.Type == 1))
-            { var oe = NewTable(); oe["mob"] = o.Mob; oe["count"] = o.Count; objs[oi++] = DynValue.NewTable(oe); }
+            foreach (var o in q.Objectives)
+            { var oe = NewTable(); oe["type"] = o.Type; oe["mob"] = o.Mob; oe["count"] = o.Count; oe["item"] = o.Item; objs[oi++] = DynValue.NewTable(oe); }
             e["objectives"] = DynValue.NewTable(objs);
             t[i++] = DynValue.NewTable(e);
         }
@@ -419,6 +439,13 @@ public sealed class BotApi
     /// <summary>Max HP soul-stone reserve capacity (from the [1802] param block), or 0 if not
     /// seeded. Lets a script restock at a percentage of capacity (e.g. &lt;10%).</summary>
     public int maxHpStones() => (int)(View?.MaxHpStones ?? 0);
+    /// <summary>Unit price (cen) of one HP soul-stone charge, from the healer's soul-stone
+    /// shop-open (0x3C05). 0 until a soul-stone shop has been opened this session. Buy the MAX
+    /// AFFORDABLE: <c>min(deficit, money/hpStonePrice)</c> — never ask for more than you can pay
+    /// (the server silently rejects an unaffordable buy with no ack).</summary>
+    public int hpStonePrice() => (int)(View?.HpStonePrice ?? 0);
+    /// <summary>Unit price (cen) of one SP soul-stone charge (0x3C05 shop-open). 0 until opened.</summary>
+    public int spStonePrice() => (int)(View?.SpStonePrice ?? 0);
     public bool dead() => View?.Dead ?? false;
     public bool inCombat() => View?.InCombat ?? false;
     /// <summary>Count of mobs the bot itself landed the killing blow on (REALLYKILL attacker==self).
@@ -526,7 +553,12 @@ public sealed class BotApi
     /// (<c>if bot.now() - last > 3000 then ...</c>).</summary>
     public double now() => Environment.TickCount64;
 
-    public void log(string message) => _handle.Log($"[lua] {message}");
+    /// <summary>Headline log (Note): quest accept/finish, level-up, death, purchase, errors.</summary>
+    public void log(string message) => _handle.Log(BotLogLevel.Note, $"[lua] {message}");
+    /// <summary>Progress log (Info): each kill, quest-objective credit, restock/travel choices.</summary>
+    public void logi(string message) => _handle.Log(BotLogLevel.Info, $"[lua] {message}");
+    /// <summary>Firehose log (Verbose): per-tick move/cast/auto-attack + the state dump.</summary>
+    public void logv(string message) => _handle.Log(BotLogLevel.Verbose, $"[lua] {message}");
 
     // ── perception (tables) ───────────────────────────────────────────────────
     /// <summary>Zone handle of the nearest non-gate mob/NPC in view, or nil.</summary>
