@@ -88,6 +88,14 @@ public sealed record QuestStep(ushort QuestId, byte Qsc, int DialogId = 0)
 /// (e.g. {0,"Yes"}, {1,"No"}). The answerer picks by matching Text, not a fixed reply.</summary>
 public sealed record ServerMenuOption(byte Reply, string Text);
 
+/// <summary>One entry in the MAP-ENTER NPC SEED — the authoritative full-map roster the server sends
+/// in the bulk <c>NC_BRIEFINFO_MOB_CMD</c> (0x1C09) on map-enter (ALL NPCs+gates at infinite range, as
+/// shown on the minimap). <paramref name="MobId"/> is the NPC's identity (stable across sessions; the
+/// runtime handle is not), <paramref name="X"/>/<paramref name="Y"/> its server position, plus the gate
+/// flag + link map. This is the SOURCE OF TRUTH for "where is NPC X on this map" — prefer it over the
+/// lossy in-view (<c>_npcs</c>) cache for navigation.</summary>
+public sealed record NpcSeedEntry(int MobId, uint X, uint Y, bool IsGate, string? LinkMap);
+
 /// <summary>A combat hit broadcast: <paramref name="Attacker"/> hit
 /// <paramref name="Defender"/> for <paramref name="Damage"/>, leaving the defender at
 /// <paramref name="RestHp"/>. Decoded from SWING_DAMAGE (our swing) and
@@ -290,12 +298,15 @@ public sealed class ZoneView : IDisposable
     private readonly Action<string>? _log;            // Note channel (also fans out to host stdout)
     private readonly Action<BotLogLevel, string>? _logLevel; // leveled channel for verbose perception spam
     private readonly ConcurrentDictionary<ushort, NearbyPlayer> _nearby = new();
-    private readonly ConcurrentDictionary<ushort, NearbyNpc> _npcs = new();
-    // Last-known position of each NPC by mobId, learned from the zone's NPC broadcasts and KEPT even
-    // after the NPC leaves view (unlike _npcs, which is view-scoped). Lets the bot pathfind to a town
-    // NPC (healer/merchant/skill master) it has seen this zone-session without hardcoded coords.
-    // Cleared on a map change (positions are per-map).
-    private readonly ConcurrentDictionary<int, (uint X, uint Y)> _npcPos = new();
+    private readonly ConcurrentDictionary<ushort, NearbyNpc> _npcs = new();   // ⚠ view-scoped (pruned by
+    // BRIEFINFODELETE as you move). Use ONLY for live in-view things (combat targets, the nearby gate
+    // HANDLE to click). For "where is NPC X on this map" use _npcSeed (below), not this.
+    // ✅ THE NPC SEED — the single authoritative full-map roster, keyed by mobId, holding position + the
+    // gate flag + link-destination map. Populated by the bulk 0x1C09 NC_BRIEFINFO_MOB_CMD on map-enter
+    // (ALL NPCs+gates at infinite range, as on the minimap) and any later 0x1C09/REGENMOB. Cleared on
+    // map-change, NOT pruned on BRIEFINFODELETE (NPCs are static). SOURCE OF TRUTH for NPC + gate
+    // positions — navigation (quest giver / merchant / gate / cross-map hop) reads from HERE.
+    private readonly ConcurrentDictionary<int, NpcSeedEntry> _npcSeed = new();
     private readonly ConcurrentDictionary<byte, ushort> _inventory = new(); // bag slot -> itemId
     private readonly ConcurrentDictionary<byte, int> _invCount = new();      // bag slot -> stack count
     private readonly ConcurrentDictionary<byte, ushort> _equipment = new(); // equip slot -> itemId
@@ -356,10 +367,26 @@ public sealed class ZoneView : IDisposable
     /// briefinfo. The runtime source for walk-to-NPC and gate location.</summary>
     public IReadOnlyCollection<NearbyNpc> NearbyNpcs => _npcs.Values.ToArray();
 
-    /// <summary>Last-known (x,y) of an NPC by mobId, learned from the zone's NPC broadcasts and kept
-    /// after it leaves view (this zone-session) — so the bot can pathfind to a known town NPC without
-    /// hardcoded coords. null if never seen this session.</summary>
-    public (uint X, uint Y)? NpcPosition(int mobId) => _npcPos.TryGetValue(mobId, out var pos) ? pos : null;
+    /// <summary>✅ (x,y) of an NPC by mobId from the authoritative map-enter SEED (bulk 0x1C09 at infinite
+    /// range) — the source of truth for "where is NPC X on this map." null if the seed has no such NPC on
+    /// the current map (it's on another map — don't fall back to stale coords). Use to walkTo any quest
+    /// giver / merchant / gate without hardcoded coords and without having seen it.</summary>
+    public (uint X, uint Y)? NpcPosition(int mobId)
+        => _npcSeed.TryGetValue(mobId, out var e) ? (e.X, e.Y) : null;
+
+    /// <summary>The full seed entry for an NPC/gate by mobId (position + gate flag + link-destination map),
+    /// or null if not on the current map's seed.</summary>
+    public NpcSeedEntry? Npc(int mobId) => _npcSeed.TryGetValue(mobId, out var e) ? e : null;
+
+    /// <summary>The full map-enter NPC seed roster (all NPCs+gates the server broadcast on map-enter).</summary>
+    public IReadOnlyCollection<NpcSeedEntry> NpcSeed => _npcSeed.Values.ToArray();
+    /// <summary>Gate entries in the seed: linkMap -> (x,y) — the LIVE current-map gate positions, better
+    /// than the static MapLink/MapWayPoint SHN coords for taking a gate. (Current map only.)</summary>
+    public IReadOnlyList<(string LinkMap, uint X, uint Y)> SeedGates()
+        => _npcSeed.Values.Where(e => e.IsGate && !string.IsNullOrEmpty(e.LinkMap))
+                          .Select(e => (e.LinkMap!, e.X, e.Y)).ToArray();
+    /// <summary>Count of NPCs in the current map's seed roster (for logging/diagnostics).</summary>
+    public int NpcSeedCount => _npcSeed.Count;
     public ChatMessage? LastChat { get; private set; }
 
     /// <summary>Handle of the most recently killed entity (from REALLYKILL) — lets a grind
@@ -868,6 +895,14 @@ public sealed class ZoneView : IDisposable
                 int n = p[0];
                 for (int i = 0; i < n; i++)
                     AddOrUpdateNpc(p, 1 + i * MobRecordLen);
+                // The bulk batch (the map-enter NPC SEED) carries many records — log the roster size +
+                // a few entries so "what does the bot know about this map's NPCs" is traceable.
+                if (n > 1)
+                {
+                    var sample = string.Join(",", _npcSeed.Values.Take(8)
+                        .Select(e => e.IsGate ? $"gate->{e.LinkMap}" : $"npc{e.MobId}"));
+                    _log?.Invoke($"[ZoneView] NPC SEED received: {n} records (roster now {_npcSeed.Count}) — {sample}…");
+                }
             }
         }
         else if (op == OpRegenMob)
@@ -1038,7 +1073,7 @@ public sealed class ZoneView : IDisposable
             {
                 _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _npcPos.Clear(); _nearby.Clear(); _drops.Clear();
+                _npcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
                 MapChanged?.Invoke(h);
             }
         }
@@ -1262,7 +1297,7 @@ public sealed class ZoneView : IDisposable
             if (handoff is { } h)
             {
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _npcPos.Clear();  // entities are per-map; the new map will re-broadcast
+                _npcs.Clear(); _npcSeed.Clear();  // entities are per-map; the new map re-broadcasts
                 _nearby.Clear();
                 _drops.Clear();  // ground items are per-map too
                 ShopOpenUtc = default;  // any open shop closes when we leave the map
@@ -1553,7 +1588,9 @@ public sealed class ZoneView : IDisposable
         var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap, team);
         var isNew = !_npcs.ContainsKey(handle);
         _npcs[handle] = npc;
-        if (flag != 1) _npcPos[mobid] = (x, y); // remember NPC (not gate) positions zone-wide
+        // THE SEED: record every NPC/gate by mobId (the bulk 0x1C09 on map-enter populates this fully).
+        // Authoritative roster, kept until map change — the navigation source of truth.
+        _npcSeed[mobid] = new NpcSeedEntry(mobid, x, y, flag == 1, linkMap);
         if (isNew)
             LogV(flag == 1
                 ? $"[ZoneView] gate appeared: id={mobid} h={handle} @({x},{y}) -> {linkMap}"

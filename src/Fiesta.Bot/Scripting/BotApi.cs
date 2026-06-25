@@ -579,16 +579,20 @@ public sealed class BotApi
     /// <summary>Resolve a mob/NPC id (e.g. a quest's startNpc/turnInNpc) to a live entity in
     /// view: {handle, x, y, dist}, or nil if not currently spawned near the bot. Lets the quest
     /// driver turn QuestData ids into something it can walkTo + doQuest.</summary>
-    /// <summary>Last-known {x, y, dist} of an NPC by mobId — learned from the zone NPC broadcasts and
-    /// remembered zone-wide (survives leaving view), so the driver can walkTo a known town NPC
-    /// (healer/merchant/skill master) WITHOUT hardcoded coords. nil if never seen this zone-session.</summary>
+    /// <summary>✅ {x, y, dist, isGate, linkMap} of an NPC/gate by mobId from the AUTHORITATIVE map-enter
+    /// SEED (the bulk 0x1C09 broadcast at infinite range — ALL the map's NPCs+gates). The source of truth
+    /// for "where is NPC X on THIS map" — walkTo any quest giver / merchant / gate WITHOUT hardcoded coords
+    /// and WITHOUT having seen it. For a gate, <c>isGate=true</c> and <c>linkMap</c> = where it leads. nil
+    /// if the seed has no such NPC on the current map (it's on another map — don't use stale coords).</summary>
     public DynValue npcLocation(int mobId)
     {
-        if (View?.NpcPosition(mobId) is not { } pos) return DynValue.Nil;
-        var t = NewTable(); t["x"] = pos.X; t["y"] = pos.Y;
-        if (_handle.Position is { } p) t["dist"] = Math.Sqrt(Sq((double)pos.X - p.X) + Sq((double)pos.Y - p.Y));
+        if (View?.Npc(mobId) is not { } e) return DynValue.Nil;
+        var t = NewTable(); t["x"] = e.X; t["y"] = e.Y; t["isGate"] = e.IsGate; t["linkMap"] = e.LinkMap;
+        if (_handle.Position is { } p) t["dist"] = Math.Sqrt(Sq((double)e.X - p.X) + Sq((double)e.Y - p.Y));
         return DynValue.NewTable(t);
     }
+    /// <summary>Count of NPCs in the current map's seed roster.</summary>
+    public int npcSeedCount() => View?.NpcSeedCount ?? 0;
 
     public DynValue npcByMob(int mobId)
     {
