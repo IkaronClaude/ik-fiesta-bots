@@ -51,6 +51,10 @@ public sealed class BotManager : IAsyncDisposable
     /// Set by the host; null = no client data dir configured (callers fall back).</summary>
     public GameData.ClientData? ClientData { get; set; }
 
+    /// <summary>Durable, per-server store of learnt NPC shop classifications (skip re-probing a town
+    /// that's already been classified once). Shared across all bots this manager runs.</summary>
+    public NpcKnowledge Knowledge { get; } = new();
+
     public BotManager(byte[] xorTable, Action<string>? globalLog = null)
     {
         _xorTable = xorTable;
@@ -1108,13 +1112,17 @@ public sealed class BotManager : IAsyncDisposable
             view?.ClearNpcMenu();
             await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
             // Wait for the server to open the NPC menu (triggered by our click), then select the option.
-            for (var waited = 0; waited < 3000 && view?.NpcMenuOpen != true; waited += 100)
-                await Task.Delay(100, ct);
+            // The menu comes fast (~200ms) if it's coming, so a 1.2s cap is plenty.
+            for (var waited = 0; waited < 1200 && view?.NpcMenuOpen != true; waited += 50)
+                await Task.Delay(50, ct);
             await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = menuOption }, ct);
             view?.ClearNpcMenu();
-            // Now wait for the actual shop-open packet (this is what makes SELL/BUY valid).
-            for (var waited = 0; waited < 2500 && view?.ShopOpen != true; waited += 100)
-                await Task.Delay(100, ct);
+            // Now wait for the actual shop-open packet (this is what makes SELL/BUY valid). A REAL shop
+            // opens within ~1s; a non-shop (quest) NPC never sends it. Keep this short — discovery probes
+            // many quest NPCs, and a long wait here is what made town-discovery crawl (~13s/NPC). 1.2s ×
+            // 2 attempts fails a non-shop in ~3s instead of ~13s, while still catching a real shop.
+            for (var waited = 0; waited < 1200 && view?.ShopOpen != true; waited += 50)
+                await Task.Delay(50, ct);
             if (view?.ShopOpen == true)
             {
                 handle.Log($"open shop npc h={npcHandle} OPEN (menu-ack {menuOption}, attempt {attempt + 1})");

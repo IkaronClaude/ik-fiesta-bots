@@ -93,6 +93,24 @@ public sealed class BotApi
     /// don't buy a scroll whose <c>scrollSkillId</c> is already learned (or whose item is in the bag).</summary>
     public int scrollSkillId(int itemId) => _mgr.ClientData?.ScrollSkillId(itemId) ?? -1;
 
+    /// <summary>The PERSISTED learnt shop kind of an NPC on the current server+map ("weapon"|"skill"|
+    /// "item"|"soulstone"|"notshop"), or "" if never encountered. Lets discovery skip re-probing an NPC
+    /// it (or another bot, on a prior run) already classified — a town is classified ONCE EVER.</summary>
+    public string knownShopKind(int npcId)
+    {
+        var map = _handle.CurrentMap;
+        if (string.IsNullOrEmpty(map)) return "";
+        return _mgr.Knowledge.ShopKind(_handle.Options.Host, map!, npcId) ?? "";
+    }
+
+    /// <summary>Record + PERSIST what an NPC's shop turned out to be (current server+map). Call after a
+    /// shop-open classifies it so the knowledge survives relog/restart.</summary>
+    public void recordShop(int npcId, string kind)
+    {
+        var map = _handle.CurrentMap;
+        if (!string.IsNullOrEmpty(map)) _mgr.Knowledge.RecordShop(_handle.Options.Host, map!, npcId, kind);
+    }
+
     /// <summary>The item ids the last-opened merchant sells (from SHOPOPEN/SHOPOPENTABLE). Empty
     /// until a shop is opened. The driver reads this + <see cref="itemInfo"/> to decide what to buy.</summary>
     public DynValue shopItems()
