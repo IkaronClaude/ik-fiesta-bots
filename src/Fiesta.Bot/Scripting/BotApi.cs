@@ -129,6 +129,13 @@ public sealed class BotApi
     /// -1 if no sell acked yet this session. Lets the driver verify a sell took.</summary>
     public int lastSellAck() => View?.LastSellAck ?? -1;
 
+    /// <summary>The raw code from the last BUY_ACK (0x3004): 0x0201 = success (item added), else rejected
+    /// (e.g. 0x0204); -1 if no buy acked yet. Lets buyGear/learnSkills confirm a buy took before marking
+    /// it bought/learned — and pace buys one-per-ACK to dodge the rapid-fire rejection.</summary>
+    public int lastBuyAck() => View?.LastBuyAck ?? -1;
+    /// <summary>True if the last buy succeeded (0x0201).</summary>
+    public bool lastBuyOk() => (View?.LastBuyAck ?? -1) == 0x0201;
+
     /// <summary>True if a shop is genuinely open right now (item or soul-stone) — a SELL/BUY will be
     /// accepted. openShop() confirms this before returning; check it before selling.</summary>
     public bool shopOpen() => View?.ShopOpen ?? false;

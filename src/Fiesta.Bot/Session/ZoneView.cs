@@ -264,6 +264,10 @@ public sealed class ZoneView : IDisposable
     // (e.g. shop-not-open / bad lot) returns a different code (seen 0x0383). We record the raw
     // code so the driver/log can SEE whether a sell took, instead of firing it blind.
     private const ushort OpSellAck = 0x3005;
+    // NC_ITEM_BUY_ACK (Item 0x3004): a 2-byte result code for our BUY_REQ. No PDB struct. Verified
+    // live at the weapon smith: a successful buy returns 0x0201 (+ a CELLCHANGE adding the item); a
+    // rejected buy returns 0x0204. Track it so buyGear/learnSkills don't mark a FAILED buy as bought.
+    private const ushort OpItemBuyAck = 0x3004;
     // Self HP/SP change (BAT 0x240E/0x240F): the server's authoritative current HP/SP
     // after any change (combat damage, heal, regen, soul-stone). MaxHp/MaxSp come from
     // the [1802] login param block (seeded by the manager). These drive "HP-stone when
@@ -648,6 +652,12 @@ public sealed class ZoneView : IDisposable
     public int LastSellAck { get; private set; } = -1;
     /// <summary>UTC time of the last SELL_ACK — lets the driver wait for the result of a sell.</summary>
     public DateTime LastSellAckUtc { get; private set; }
+    /// <summary>The raw 2-byte code from the last NC_ITEM_BUY_ACK (0x3004), or -1 if none yet.
+    /// 0x0201 = success (the item was added); anything else (e.g. 0x0204) = rejected. Lets the driver
+    /// confirm a buy actually took before marking it bought/learned.</summary>
+    public int LastBuyAck { get; private set; } = -1;
+    /// <summary>UTC time of the last BUY_ACK — lets the driver wait for / pace on a buy result.</summary>
+    public DateTime LastBuyAckUtc { get; private set; }
 
     /// <summary>Error code of the last NC_ITEM_USE_ACK (0x700 ok, 0x708 skill-level-too-low,
     /// 0x70B already-know-the-skill). -1 until a use is acked. Lets the driver see WHY a scroll-use
@@ -1282,6 +1292,18 @@ public sealed class ZoneView : IDisposable
                 // open signal so the driver re-opens cleanly before retrying.
                 if (LastSellAck != 0x0381) ShopOpenUtc = default;
                 _log?.Invoke($"[ZoneView] SELL_ACK 0x{LastSellAck:X4}{(LastSellAck == 0x0381 ? " (OK)" : " (rejected)")}");
+            }
+        }
+        else if (op == OpItemBuyAck)
+        {
+            // 2-byte result code for our BUY_REQ. 0x0201 = success (item added via CELLCHANGE);
+            // anything else (e.g. 0x0204) = rejected. Record so the driver verifies the buy took.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2)
+            {
+                LastBuyAck = p[0] | (p[1] << 8);
+                LastBuyAckUtc = DateTime.UtcNow;
+                _log?.Invoke($"[ZoneView] BUY_ACK 0x{LastBuyAck:X4}{(LastBuyAck == 0x0201 ? " (OK)" : " (rejected)")}");
             }
         }
         else if (op == OpSomeoneMoveWalk || op == OpSomeoneMoveRun)
