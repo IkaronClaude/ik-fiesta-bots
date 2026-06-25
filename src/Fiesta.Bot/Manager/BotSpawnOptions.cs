@@ -26,8 +26,15 @@ public sealed record BotSpawnOptions
 
     public byte WorldNo { get; init; }
 
-    /// <summary>Avatar slot to enter with. Null = first avatar on the account.</summary>
+    /// <summary>Avatar slot to enter with. Null = first avatar on the account.
+    /// <see cref="Character"/> (by name) takes precedence when both are set.</summary>
     public byte? Slot { get; init; }
+
+    /// <summary>Character to enter with, selected BY NAME from the WM avatar list — the stable,
+    /// deterministic identifier (slot ordinal shifts as chars are added/retired, so picking the
+    /// first/slot-0 avatar logs into the wrong char). Null = fall back to <see cref="Slot"/>, then
+    /// the first avatar. Preferred over <see cref="Slot"/> when set.</summary>
+    public string? Character { get; init; }
 
     /// <summary>If the chosen slot is empty (or the account has no avatars),
     /// create this character in-band first. Null = don't create.</summary>

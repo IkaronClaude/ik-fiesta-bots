@@ -1593,7 +1593,7 @@ public sealed class BotManager : IAsyncDisposable
 
             handle.SetPhase(BotPhase.SelectingChar);
             var (wmResult, wmConn) = await chain.RunWmAsync(
-                wmEp, opt.Credentials, login.Otp, opt.Slot, opt.CreateSpec, ct, tap);
+                wmEp, opt.Credentials, login.Otp, opt.Slot, opt.CreateSpec, ct, tap, opt.Character);
             wm = new FiestaClientConnectionScope(wmConn);
 
             if (wmResult.ZoneAdvertised is not { } zoneAdv || wmResult.Selected is not { } sel)

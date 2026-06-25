@@ -125,7 +125,7 @@ public sealed class LoginChain
     public async Task<(WmPhaseResult Result, FiestaClientConnection WmConn)> RunWmAsync(
         FiestaEndpoint wmEp, BotCredentials creds, byte[] otp, byte? selectSlot,
         CharacterSpec? createIfMissing, CancellationToken ct,
-        Action<bool, ushort, ReadOnlyMemory<byte>>? packetTap = null)
+        Action<bool, ushort, ReadOnlyMemory<byte>>? packetTap = null, string? selectName = null)
     {
         var conn = await FiestaClientConnection.ConnectAsync(wmEp.Host, wmEp.Port, _xorTable, ct);
         conn.PacketTap = packetTap; // capture the WM handshake + char-select from the start
@@ -171,9 +171,18 @@ public sealed class LoginChain
                     _log($"[WM] << LOGINWORLD_ACK handle={wmHandle} numavatars={avatars.Count}: " +
                          string.Join(", ", avatars.Select(a => $"'{a.Name}'(slot {a.Slot}, {a.LoginMap})")));
 
-                    selected = selectSlot is { } s
-                        ? avatars.FirstOrDefault(a => a.Slot == s)
-                        : avatars.FirstOrDefault();
+                    // Select BY NAME first (stable across slot reordering when chars are
+                    // added/retired), then by explicit slot, then fall back to the first
+                    // avatar. Picking the first/slot-0 avatar blindly logs into the wrong
+                    // character (e.g. a retired char still occupying slot 0).
+                    selected = selectName is { Length: > 0 } name
+                        ? avatars.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase))
+                        : selectSlot is { } s
+                            ? avatars.FirstOrDefault(a => a.Slot == s)
+                            : avatars.FirstOrDefault();
+                    if (selectName is { Length: > 0 } wantName && selected is null && createIfMissing is null)
+                        _log($"[WM] ⚠ requested character '{wantName}' not in avatar list " +
+                             $"[{string.Join(", ", avatars.Select(a => a.Name))}] — cannot enter");
 
                     // First-class character creation: if there's nothing to enter
                     // with and a spec was given, create one in-band. Pick the

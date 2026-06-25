@@ -879,6 +879,9 @@ public sealed record SpawnBotRequest
     public string? PasswordMd5 { get; init; }
     public byte? WorldNo { get; init; }
     public byte? Slot { get; init; }
+    /// <summary>Character to enter BY NAME (stable; preferred over <see cref="Slot"/>). Picking by
+    /// slot/first-avatar logs into the wrong char when a retired char still holds an earlier slot.</summary>
+    public string? Character { get; init; }
     public string? DataDir { get; init; }
     public int? WmPortFallback { get; init; }
     public string? Id { get; init; }
@@ -933,6 +936,7 @@ public sealed record SpawnBotRequest
             Credentials = creds,
             WorldNo = WorldNo ?? 0,
             Slot = Slot,
+            Character = string.IsNullOrWhiteSpace(Character) ? null : Character,
             CreateSpec = createSpec,
             DataDir = string.IsNullOrWhiteSpace(DataDir) ? "Z:/ClientProd2/ressystem" : DataDir!,
             WmPortFallback = WmPortFallback ?? 9013,
