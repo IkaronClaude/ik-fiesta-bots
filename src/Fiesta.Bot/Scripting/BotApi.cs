@@ -594,6 +594,28 @@ public sealed class BotApi
     /// <summary>Count of NPCs in the current map's seed roster.</summary>
     public int npcSeedCount() => View?.NpcSeedCount ?? 0;
 
+    /// <summary>The full map-enter NPC SEED roster as a lua array of {mobId, x, y, isGate, linkMap, dist}
+    /// — every NPC+gate on the current map (authoritative). Iterate it to DISCOVER/visit services
+    /// (skill master / Smith / healer) by walking to their seed coords, instead of only probing the few
+    /// NPCs currently in view. dist is from the bot's position (nil if unknown).</summary>
+    public DynValue npcSeedList()
+    {
+        var v = View; var arr = NewTable();
+        if (v is not null)
+        {
+            int i = 1;
+            foreach (var e in v.NpcSeed)
+            {
+                var t = NewTable();
+                t["mobId"] = e.MobId; t["x"] = e.X; t["y"] = e.Y; t["isGate"] = e.IsGate; t["linkMap"] = e.LinkMap;
+                if (_handle.Position is { } p) t["dist"] = Math.Sqrt(Sq((double)e.X - p.X) + Sq((double)e.Y - p.Y));
+                arr.Append(DynValue.NewTable(t));
+                i++;
+            }
+        }
+        return DynValue.NewTable(arr);
+    }
+
     public DynValue npcByMob(int mobId)
     {
         var v = View; if (v is null) return DynValue.Nil;
