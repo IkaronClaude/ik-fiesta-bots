@@ -287,6 +287,10 @@ public sealed class ZoneView : IDisposable
     // learns which skills it actually has (heal, buffs, attacks) — read from the wire, not
     // hard-coded. Names resolve via client ActiveSkill (ClientData.SkillName).
     private static readonly ushort OpClientSkill = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_SKILL_CMD>();
+    // NC_SKILL_SKILL_LEARNSUC_CMD (SKILL dept 18, cmd 4) — server confirms a skill was learned.
+    private const ushort OpSkillLearnSuc = 0x4804;
+    // NC_SKILL_SKILL_LEARNFAIL_CMD (cmd 5) — server REJECTED a learn (carries the reason err code).
+    private const ushort OpSkillLearnFail = 0x4805;
     // Quest dialogue: the server drives accept/turn-in via NC_QUEST_SCRIPT_CMD_REQ (0x4401)
     // {questId u16, STRUCT_QSC}; the QSC command code is the first byte of STRUCT_QSC (payload
     // offset 2). The client answers QUEST_SCRIPT_CMD_ACK with {questId, nQSC=code, nResult}.
@@ -1517,6 +1521,33 @@ public sealed class ZoneView : IDisposable
                     SkillsChanged?.Invoke();
                 }
             }
+        }
+        else if (op == OpSkillLearnSuc)
+        {
+            // NC_SKILL_SKILL_LEARNSUC_CMD (0x4804): the server CONFIRMS a skill was learned (e.g. after
+            // using a skill scroll) = {skillId u16 @0, level u8 @2}. Without handling this, learnedSkills()
+            // stayed at the login seed and castRotation never used a freshly-learned skill. Add it so the
+            // bot recognizes + casts the real combat skills it just bought from the skill master.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2)
+            {
+                var skillId = (ushort)(p[0] | (p[1] << 8));
+                var lvl = p.Length >= 3 ? p[2] : (byte)0;
+                if (skillId != 0 && _skills.TryAdd(skillId, 1))
+                {
+                    _log?.Invoke($"[ZoneView] SKILL LEARNED: id={skillId} lv{lvl} (now know {_skills.Count})");
+                    SkillsChanged?.Invoke();
+                }
+            }
+        }
+        else if (op == OpSkillLearnFail)
+        {
+            // NC_SKILL_SKILL_LEARNFAIL_CMD: the server REJECTED the scroll-learn. Log the raw bytes
+            // (err code) so we see WHY (prerequisite? already known? wrong class? not at trainer?).
+            var p = pkt.Payload.Span;
+            var hex = Convert.ToHexString(p.Length > 8 ? p.Slice(0, 8) : p);
+            int err = p.Length >= 2 ? (p[0] | (p[1] << 8)) : (p.Length == 1 ? p[0] : -1);
+            _log?.Invoke($"[ZoneView] SKILL LEARN FAILED — err={err} ({p.Length}b: {hex})");
         }
         else if (op == OpQuestScriptReq)
         {

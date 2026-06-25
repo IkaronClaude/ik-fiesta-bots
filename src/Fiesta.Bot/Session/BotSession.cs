@@ -58,9 +58,16 @@ public sealed class BotSession : IAsyncDisposable
     /// Handlers must not block the loop — offload heavy work.</summary>
     public event Action<FiestaPacket>? PacketReceived;
 
+    /// <summary>Opcode of the last C→S frame we sent — logged on disconnect so an invalid packet that
+    /// got us kicked is immediately visible (e.g. a scroll-USE or a stray menu-ack right before a kick).</summary>
+    public ushort LastSentOpcode { get; private set; }
+
     /// <summary>Send a C→S frame (enciphered + serialized by the connection).</summary>
     public Task SendAsync(FiestaPacket packet, CancellationToken ct = default)
-        => _conn.SendAsync(packet, ct);
+    {
+        LastSentOpcode = packet.Opcode;
+        return _conn.SendAsync(packet, ct);
+    }
 
     /// <summary>Send the client's clean-logout sequence so the server drops the
     /// character immediately (avoids a duplicate-login kick on the next login).
@@ -80,7 +87,10 @@ public sealed class BotSession : IAsyncDisposable
 
     /// <summary>Send a typed C→S body.</summary>
     public Task SendAsync<T>(T body, CancellationToken ct = default) where T : IFiestaPacketBody
-        => _conn.SendAsync(body, ct);
+    {
+        try { LastSentOpcode = PacketRegistry.GetOpcode<T>(); } catch { }
+        return _conn.SendAsync(body, ct);
+    }
 
     /// <summary>
     /// Pump inbound frames until the peer closes, an error occurs, or
@@ -126,8 +136,11 @@ public sealed class BotSession : IAsyncDisposable
         State.Connected = false;
         State.DisconnectedAtUtc = DateTime.UtcNow;
         State.DisconnectReason = reason;
-        _log($"[Session:{State.CharName}] ended ({reason}) — uptime {State.Uptime.TotalSeconds:F0}s, " +
-             $"{State.InboundCount} frames, {State.HeartbeatCount} heartbeats");
+        // PROMINENT immediate disconnect log (operator P1): a server kick = "peer closed" / forcibly-
+        // closed right after we sent an INVALID packet. lastSent is the prime suspect (e.g. a scroll
+        // USE, a stray menu-ack on a quest NPC). Compare lastSent to the action the bot just did.
+        _log($"[Session:{State.CharName}] *** DISCONNECTED *** reason={reason} | lastSENT=0x{LastSentOpcode:X4} " +
+             $"lastRECV=0x{State.LastOpcode:X4} — uptime {State.Uptime.TotalSeconds:F0}s, {State.InboundCount} frames");
     }
 
     public ValueTask DisposeAsync()
