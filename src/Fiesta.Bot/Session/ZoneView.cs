@@ -721,7 +721,13 @@ public sealed class ZoneView : IDisposable
             else if (box == MainBag) { _inventory[slot] = itemId; _invCount[slot] = count; bag++; } // ONLY
             // the main bag (other boxes — premium/mini-house — collide on slot and hide the real loot)
         }
-        if (bag + eq > 0) _log?.Invoke($"[ZoneView] seeded {bag} bag + {eq} equipped items from login");
+        if (bag + eq > 0)
+        {
+            // Log the actual EQUIPPED item ids (by slot) — so "what is the bot wearing" is traceable
+            // (a fighter on just a starter Shortsword vs upgraded gear). Per the decode->log rule.
+            var worn = string.Join(",", _equipment.OrderBy(kv => kv.Key).Select(kv => $"slot{kv.Key}=item{kv.Value}"));
+            _log?.Invoke($"[ZoneView] seeded {bag} bag + {eq} equipped items from login — worn: {worn}");
+        }
     }
 
     /// <summary>Seed the learned-skill set from the zone-login skill list (captured by
