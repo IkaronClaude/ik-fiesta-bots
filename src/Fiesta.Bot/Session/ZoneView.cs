@@ -291,6 +291,8 @@ public sealed class ZoneView : IDisposable
     private const ushort OpSkillLearnSuc = 0x4804;
     // NC_SKILL_SKILL_LEARNFAIL_CMD (cmd 5) — server REJECTED a learn (carries the reason err code).
     private const ushort OpSkillLearnFail = 0x4805;
+    // NC_ITEM_USE_ACK (ITEM dept 12, cmd 22) — result of using an item (e.g. a skill scroll).
+    private const ushort OpItemUseAck = 0x3016;
     // Quest dialogue: the server drives accept/turn-in via NC_QUEST_SCRIPT_CMD_REQ (0x4401)
     // {questId u16, STRUCT_QSC}; the QSC command code is the first byte of STRUCT_QSC (payload
     // offset 2). The client answers QUEST_SCRIPT_CMD_ACK with {questId, nQSC=code, nResult}.
@@ -640,6 +642,13 @@ public sealed class ZoneView : IDisposable
     public int LastSellAck { get; private set; } = -1;
     /// <summary>UTC time of the last SELL_ACK — lets the driver wait for the result of a sell.</summary>
     public DateTime LastSellAckUtc { get; private set; }
+
+    /// <summary>Error code of the last NC_ITEM_USE_ACK (0x700 ok, 0x708 skill-level-too-low,
+    /// 0x70B already-know-the-skill). -1 until a use is acked. Lets the driver see WHY a scroll-use
+    /// failed and skip re-buying/re-using that scroll.</summary>
+    public int LastUseAckError { get; private set; } = -1;
+    /// <summary>Item id from the last NC_ITEM_USE_ACK (which item the use result is for).</summary>
+    public int LastUseAckItem { get; private set; } = -1;
 
     /// <summary>Current bag contents: slot → itemId (built from the login item list
     /// and live cell/equip changes).</summary>
@@ -1548,6 +1557,28 @@ public sealed class ZoneView : IDisposable
             var hex = Convert.ToHexString(p.Length > 8 ? p.Slice(0, 8) : p);
             int err = p.Length >= 2 ? (p[0] | (p[1] << 8)) : (p.Length == 1 ? p[0] : -1);
             _log?.Invoke($"[ZoneView] SKILL LEARN FAILED — err={err} ({p.Length}b: {hex})");
+        }
+        else if (op == OpItemUseAck)
+        {
+            // NC_ITEM_USE_ACK {error u16 @0, useditem u16 @2, invenType u8 @4}. Map the error so a
+            // failed scroll/item use is human-readable. Codes from Skills.pcapng (operator-annotated):
+            //   0x700 ok · 0x708 skill level too low · 0x70B already know the skill.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 4)
+            {
+                int err = p[0] | (p[1] << 8);
+                int item = p[2] | (p[3] << 8);
+                LastUseAckError = err;
+                LastUseAckItem = item;
+                var meaning = err switch
+                {
+                    0x700 => "ok",
+                    0x708 => "FAIL: skill level too low",
+                    0x70B => "FAIL: already know the skill",
+                    _ => $"err 0x{err:X}",
+                };
+                if (err != 0x700) _log?.Invoke($"[ZoneView] item USE item={item} -> {meaning} (0x{err:X})");
+            }
         }
         else if (op == OpQuestScriptReq)
         {
