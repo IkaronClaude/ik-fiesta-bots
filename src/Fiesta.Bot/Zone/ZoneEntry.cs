@@ -38,6 +38,10 @@ public sealed class ZoneEntry
     private static readonly ushort OpClientSkill = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_SKILL_CMD>();
     private const int SkillListHeaderLen = 10;
     private const int SkillBlockLen = 12;
+    // NC_CHAR_CLIENT_PASSIVE_CMD (0x103E): the PASSIVE-skill list, sent in the same burst right after
+    // the active list (0x103D). Unnamed in FiestaLib (only the 0x100E update variant is mapped), so
+    // hand-parse: {number u16 @0, passive u16[number] @2}. Verified: IkFresh 01 00 09 00 = 1 passive id 9.
+    private const ushort OpClientPassive = 0x103E;
     // NC_CHAR_CLIENT_ITEM_CMD (0x1047): the bag + worn-gear list, sent (per `box`) once per
     // container during the login burst — also drained here, so the bag AND equipment are
     // empty until a live CELL/EQUIP change. We capture every frame and seed ZoneView.
@@ -125,6 +129,7 @@ public sealed class ZoneEntry
             var deadline = DateTime.UtcNow.AddSeconds(10);
             var sawFrame = false;
             List<ushort>? skills = null;
+            List<ushort>? passives = null;
             List<(byte box, ushort inven, ushort itemId, int count)>? items = null;
             List<ushort>? doneQuests = null;
             List<(ushort id, byte status, int progress)>? activeQuests = null;
@@ -174,6 +179,12 @@ public sealed class ZoneEntry
                 {
                     skills = ParseSkillList(pkt.Payload.Span);
                     _log($"[Zone] learned skills ({skills.Count}): {string.Join(",", skills)}");
+                    continue;
+                }
+                if (pkt.Opcode == OpClientPassive) // learned-passive list (drained here; seed ZoneView)
+                {
+                    passives = ParsePassiveList(pkt.Payload.Span);
+                    _log($"[Zone] learned passives ({passives.Count}): {string.Join(",", passives)}");
                     continue;
                 }
                 if (pkt.Opcode == OpClientItem) // bag/equip list (per box) — capture + seed ZoneView
@@ -299,7 +310,7 @@ public sealed class ZoneEntry
                         maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
                         _log($"[Zone] maxHPStone={maxHpStone} maxSPStone={maxSpStone}");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -307,7 +318,7 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -321,7 +332,7 @@ public sealed class ZoneEntry
     /// then hand back the open connection (now fully in zone).</summary>
     private async Task<ZoneEntryResult> CompleteLoginAsync(
         FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, ushort? charHandle,
-        uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills,
+        uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills, IReadOnlyList<ushort>? passives,
         IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? items,
         IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress)>? activeQuests,
         IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null,
@@ -329,7 +340,7 @@ public sealed class ZoneEntry
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen);
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
@@ -349,6 +360,23 @@ public sealed class ZoneEntry
         return skills;
     }
 
+    /// <summary>Parse the learned passive ids out of a NC_CHAR_CLIENT_PASSIVE_CMD (0x103E) body:
+    /// {number u16 @0, passive u16[number] @2}.</summary>
+    private static List<ushort> ParsePassiveList(ReadOnlySpan<byte> p)
+    {
+        var passives = new List<ushort>();
+        if (p.Length < 2) return passives;
+        var number = (ushort)(p[0] | (p[1] << 8));
+        for (var i = 0; i < number; i++)
+        {
+            var off = 2 + i * 2;
+            if (off + 2 > p.Length) break;
+            var pid = (ushort)(p[off] | (p[off + 1] << 8));
+            if (pid != 0) passives.Add(pid);
+        }
+        return passives;
+    }
+
     private static void FillBytes(byte[] dst, string s)
     {
         Array.Clear(dst);
@@ -364,6 +392,7 @@ public sealed class ZoneEntry
 public sealed record ZoneEntryResult(
     FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY, ushort? CharHandle, uint? MaxHp = null, uint? MaxSp = null,
     IReadOnlyList<ushort>? Skills = null,
+    IReadOnlyList<ushort>? Passives = null,
     IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? Items = null,
     IReadOnlyList<ushort>? DoneQuests = null,
     IReadOnlyList<(ushort id, byte status, int progress)>? ActiveQuests = null,

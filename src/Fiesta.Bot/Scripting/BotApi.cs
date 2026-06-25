@@ -82,8 +82,16 @@ public sealed class BotApi
         var t = NewTable();
         t["id"] = id; t["name"] = it.Name; t["useClass"] = it.UseClass; t["demandLv"] = it.DemandLv;
         t["grade"] = it.Grade; t["equipSlot"] = it.EquipSlot; t["isScroll"] = it.IsScroll; t["type"] = it.Type;
+        // For a skill scroll, the ACTIVE-skill id it teaches (InxName join), else -1. Lets the driver
+        // skip buying a scroll for a skill already learned: if hasSkill(itemInfo(id).scrollSkillId) skip.
+        t["scrollSkillId"] = it.IsScroll ? (_mgr.ClientData?.ScrollSkillId(id) ?? -1) : -1;
         return DynValue.NewTable(t);
     }
+
+    /// <summary>The ACTIVE-skill id a skill scroll teaches (via the ItemInfo↔ActiveSkill InxName join),
+    /// or -1 if the item isn't a skill scroll. Pair with <see cref="hasSkill"/> to avoid over-buying:
+    /// don't buy a scroll whose <c>scrollSkillId</c> is already learned (or whose item is in the bag).</summary>
+    public int scrollSkillId(int itemId) => _mgr.ClientData?.ScrollSkillId(itemId) ?? -1;
 
     /// <summary>The item ids the last-opened merchant sells (from SHOPOPEN/SHOPOPENTABLE). Empty
     /// until a shop is opened. The driver reads this + <see cref="itemInfo"/> to decide what to buy.</summary>

@@ -24,6 +24,8 @@ public sealed class ClientData
     private readonly ConcurrentDictionary<string, ShnTable?> _cache = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<int, QuestDef>? _quests;
     private readonly object _questLock = new();
+    private IReadOnlyDictionary<string, int>? _skillIdByInx; // ActiveSkill InxName -> skill ID
+    private readonly object _skillInxLock = new();
 
     public ClientData(string dataDir) => _dataDir = dataDir;
 
@@ -128,6 +130,41 @@ public sealed class ClientData
         var t = Table("ActiveSkill");
         var row = t?.FindByLong("ID", skillId) ?? t?.FindByLong("id", skillId);
         return row is null ? "" : GetStr(row, "Name");
+    }
+
+    /// <summary>The ACTIVE-skill id a skill scroll teaches, or -1 if the item isn't a skill scroll
+    /// (or no matching skill). A scroll's <c>ItemInfo.InxName</c> equals the <c>ActiveSkill.InxName</c>
+    /// of the skill it teaches (e.g. scroll item 4720 "Bone Slicer [01]" InxName <c>SeverBone01</c> →
+    /// ActiveSkill id 20). <c>ItemUseSkill</c> is only the generic use-handler ("UseSkill"), NOT the
+    /// skill id — so we join on InxName. Lets the leveler avoid buying a scroll for a skill it already
+    /// knows: <c>if HasSkill(ScrollSkillId(itemId)) skip</c>.</summary>
+    public int ScrollSkillId(int itemId)
+    {
+        var it = Table("ItemInfo");
+        var row = it?.FindByLong("ID", itemId) ?? it?.FindByLong("id", itemId);
+        if (row is null) return -1;
+        if (GetStr(row, "ItemUseSkill") != "UseSkill") return -1; // not a skill scroll
+        var inx = GetStr(row, "InxName");
+        if (string.IsNullOrEmpty(inx)) return -1;
+        return SkillIdByInx().TryGetValue(inx, out var id) ? id : -1;
+    }
+
+    private IReadOnlyDictionary<string, int> SkillIdByInx()
+    {
+        if (_skillIdByInx is { } cached) return cached;
+        lock (_skillInxLock)
+        {
+            if (_skillIdByInx is { } c2) return c2;
+            var map = new Dictionary<string, int>(StringComparer.Ordinal);
+            var t = Table("ActiveSkill");
+            if (t is not null)
+                foreach (var row in t.Rows)
+                {
+                    var inx = GetStr(row, "InxName");
+                    if (!string.IsNullOrEmpty(inx)) map[inx] = GetInt(row, "ID");
+                }
+            return _skillIdByInx = map;
+        }
     }
 
     /// <summary>True if the mob id is a huntable enemy: not a shop NPC, not player-side

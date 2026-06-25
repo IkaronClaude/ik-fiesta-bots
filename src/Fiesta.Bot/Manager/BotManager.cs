@@ -1658,6 +1658,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SeedStones(entry.CurHpStone, entry.CurSpStone); // real reserve from zone-enter char-info
                 if (entry.Cen is { } cen0) zoneView.SeedMoney((long)cen0); // money from char-info — never leave it -1
                 zoneView.SeedSkills(entry.Skills);
+                zoneView.SeedPassives(entry.Passives);
                 zoneView.SeedItems(entry.Items);
                 zoneView.SeedQuests(entry.DoneQuests, entry.ActiveQuests, entry.ReadQuests);
                 handle.SetCurrentMap(currentMap);

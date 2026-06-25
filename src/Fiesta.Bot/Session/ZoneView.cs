@@ -287,6 +287,11 @@ public sealed class ZoneView : IDisposable
     // learns which skills it actually has (heal, buffs, attacks) — read from the wire, not
     // hard-coded. Names resolve via client ActiveSkill (ClientData.SkillName).
     private static readonly ushort OpClientSkill = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_SKILL_CMD>();
+    // NC_CHAR_CLIENT_PASSIVE_CMD (CHAR dept 4, cmd 62 = 0x103E) — the login PASSIVE-skill list, sent
+    // right after the active list (0x103D). NOT in FiestaLib's registry (only the 0x100E update variant
+    // is), so it arrives unnamed — hand-parse it: {number u16 @0, passive u16[number] @2}. Verified live:
+    // IkFresh sent 01 00 09 00 = 1 passive, id 9 = One Handed Sword Mastery [01].
+    private const ushort OpClientPassive = 0x103E;
     // NC_SKILL_SKILL_LEARNSUC_CMD (SKILL dept 18, cmd 4) — server confirms a skill was learned.
     private const ushort OpSkillLearnSuc = 0x4804;
     // NC_SKILL_SKILL_LEARNFAIL_CMD (cmd 5) — server REJECTED a learn (carries the reason err code).
@@ -317,7 +322,8 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<byte, int> _invCount = new();      // bag slot -> stack count
     private readonly ConcurrentDictionary<byte, ushort> _equipment = new(); // equip slot -> itemId
     private readonly ConcurrentDictionary<ushort, GroundItem> _drops = new(); // ground-item handle -> drop
-    private readonly ConcurrentDictionary<ushort, byte> _skills = new(); // learned skill id -> 1 (set)
+    private readonly ConcurrentDictionary<ushort, byte> _skills = new(); // learned ACTIVE skill id -> 1 (set)
+    private readonly ConcurrentDictionary<ushort, byte> _passives = new(); // learned PASSIVE skill id -> 1 (set)
     private ushort? _mountHandle; // last known mount mover handle (from RIDE_ON 0xCC02 payload)
 
     public ZoneView(BotSession session, Action<string>? log = null, Action<BotLogLevel, string>? logLevel = null)
@@ -700,8 +706,13 @@ public sealed class ZoneView : IDisposable
     /// read from the wire, never hard-coded. Resolve a name with client ActiveSkill.</summary>
     public IReadOnlyCollection<ushort> LearnedSkills => _skills.Keys.ToArray();
 
-    /// <summary>True if the character has learned the given skill id.</summary>
-    public bool HasSkill(ushort skillId) => _skills.ContainsKey(skillId);
+    /// <summary>Passive skill ids the character has learned, from the login passive list
+    /// (NC_CHAR_CLIENT_PASSIVE_CMD 0x103E). Resolve a name with client PassiveSkill.</summary>
+    public IReadOnlyCollection<ushort> LearnedPassives => _passives.Keys.ToArray();
+
+    /// <summary>True if the character has learned the given skill id (active OR passive) — the
+    /// "do I already know this" check (e.g. to avoid buying a scroll for a skill already learned).</summary>
+    public bool HasSkill(ushort skillId) => _skills.ContainsKey(skillId) || _passives.ContainsKey(skillId);
 
     /// <summary>The NC_CHAR_CLIENT_ITEM_CMD <c>box</c> value that holds WORN gear (vs bag
     /// pages). Confirmed from the ZoneEntry item-frame log: box 8 carried the 6 equipped
@@ -753,6 +764,20 @@ public sealed class ZoneView : IDisposable
         if (added > 0)
         {
             _log?.Invoke($"[ZoneView] seeded {added} learned skills: {string.Join(",", _skills.Keys.OrderBy(k => k))}");
+            SkillsChanged?.Invoke();
+        }
+    }
+
+    /// <summary>Seed the learned PASSIVE skills from the zone-login passive list (0x103E).
+    /// Resolve names via client PassiveSkill; <see cref="HasSkill"/> covers actives + passives.</summary>
+    public void SeedPassives(IEnumerable<ushort>? passives)
+    {
+        if (passives is null) return;
+        var added = 0;
+        foreach (var p in passives) if (p != 0 && _passives.TryAdd(p, 1)) added++;
+        if (added > 0)
+        {
+            _log?.Invoke($"[ZoneView] seeded {added} learned passives: {string.Join(",", _passives.Keys.OrderBy(k => k))}");
             SkillsChanged?.Invoke();
         }
     }
@@ -1527,6 +1552,29 @@ public sealed class ZoneView : IDisposable
                 if (added > 0)
                 {
                     _log?.Invoke($"[ZoneView] learned skills: {string.Join(",", _skills.Keys.OrderBy(k => k))}");
+                    SkillsChanged?.Invoke();
+                }
+            }
+        }
+        else if (op == OpClientPassive)
+        {
+            // Login PASSIVE-skill list (0x103E): {number u16 @0, passive u16[number] @2}. Hand-parse
+            // (no FiestaLib struct for the 0x103E variant). IkFresh: 01 00 09 00 = 1 passive, id 9.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2)
+            {
+                var number = (ushort)(p[0] | (p[1] << 8));
+                var added = 0;
+                for (var i = 0; i < number; i++)
+                {
+                    var off = 2 + i * 2;
+                    if (off + 2 > p.Length) break;
+                    var pid = (ushort)(p[off] | (p[off + 1] << 8));
+                    if (pid != 0 && _passives.TryAdd(pid, 1)) added++;
+                }
+                if (added > 0)
+                {
+                    _log?.Invoke($"[ZoneView] learned passives: {string.Join(",", _passives.Keys.OrderBy(k => k))}");
                     SkillsChanged?.Invoke();
                 }
             }
