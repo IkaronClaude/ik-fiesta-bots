@@ -675,6 +675,9 @@ public sealed class BotApi
             var row = NewTable();
             row["handle"] = n.Handle; row["mobId"] = n.MobId; row["mode"] = n.Mode;
             row["x"] = n.X; row["y"] = n.Y; row["isGate"] = n.IsGate; row["linkMap"] = n.LinkMap;
+            // Huntable = a real monster (not a guard / shop NPC / quest giver / resource node). Lets the
+            // field-grind avoid mistargeting a town NPC (it would walk into it forever). Unknown → true.
+            row["isHuntable"] = v.IsHuntableMob?.Invoke((ushort)n.MobId) ?? true;
             if (pos is { } p) row["dist"] = Math.Sqrt(Sq((double)n.X - p.X) + Sq((double)n.Y - p.Y));
             t[i++] = row;
         }
