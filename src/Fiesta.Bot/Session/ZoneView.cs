@@ -658,6 +658,11 @@ public sealed class ZoneView : IDisposable
     public int LastBuyAck { get; private set; } = -1;
     /// <summary>UTC time of the last BUY_ACK — lets the driver wait for / pace on a buy result.</summary>
     public DateTime LastBuyAckUtc { get; private set; }
+    /// <summary>Monotonic count of BUY_ACKs (0x3004) seen this session. Lets the driver correlate a
+    /// fired buy to ITS ack (record the count before buying; a new ack arrived once it goes up) instead
+    /// of racing on the shared <see cref="LastBuyAck"/> value — so a buy with NO ack (shop closed) isn't
+    /// mistaken for the previous buy's result.</summary>
+    public int BuyAckCount { get; private set; }
 
     /// <summary>Error code of the last NC_ITEM_USE_ACK (0x700 ok, 0x708 skill-level-too-low,
     /// 0x70B already-know-the-skill). -1 until a use is acked. Lets the driver see WHY a scroll-use
@@ -1303,6 +1308,7 @@ public sealed class ZoneView : IDisposable
             {
                 LastBuyAck = p[0] | (p[1] << 8);
                 LastBuyAckUtc = DateTime.UtcNow;
+                BuyAckCount++;
                 _log?.Invoke($"[ZoneView] BUY_ACK 0x{LastBuyAck:X4}{(LastBuyAck == 0x0201 ? " (OK)" : " (rejected)")}");
             }
         }

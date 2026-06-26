@@ -153,6 +153,10 @@ public sealed class BotApi
     public int lastBuyAck() => View?.LastBuyAck ?? -1;
     /// <summary>True if the last buy succeeded (0x0201).</summary>
     public bool lastBuyOk() => (View?.LastBuyAck ?? -1) == 0x0201;
+    /// <summary>Monotonic count of BUY_ACKs seen this session. Record it just before firing a buy;
+    /// when it increases, THIS buy's result has landed in <see cref="lastBuyOk"/> — so buyGear/learnSkills
+    /// can gate "bought/learned" on the actual ack (and detect a buy that got NO ack = shop closed).</summary>
+    public int buyAckCount() => View?.BuyAckCount ?? 0;
 
     /// <summary>True if a shop is genuinely open right now (item or soul-stone) — a SELL/BUY will be
     /// accepted. openShop() confirms this before returning; check it before selling.</summary>
