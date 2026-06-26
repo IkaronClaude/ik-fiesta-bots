@@ -702,9 +702,21 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Result of the bot's last pickup attempt (PICK_ACK), or null if none yet.
     /// NOTE: success is judged by the paired CELLCHANGE (the bag gained the item), not by
-    /// <see cref="PickResult.Error"/> (which was 0x341 on a captured success). The failure
-    /// code (e.g. inventory full) is unknown until a failing capture — surfaced raw here.</summary>
+    /// <see cref="PickResult.Error"/> (which was 0x341 on a captured success). The
+    /// inventory-full failure was captured live 2026-06-26 as <see cref="PickInventoryFull"/>
+    /// (itemid 0xFFFF, lot 0) — surfaced raw here.</summary>
     public PickResult? LastPickResult { get; private set; }
+
+    /// <summary>PICK_ACK error code meaning "inventory full" — captured live 2026-06-26 when
+    /// IkFresh ran with a completely full bag: every pick returned itemid 0xFFFF, lot 0, error
+    /// 0x346. (Contrast 0x341, seen on a SUCCESSFUL pick.)</summary>
+    public const ushort PickInventoryFull = 0x346;
+
+    /// <summary>True when the bag is FULL — set when a pickup fails with <see cref="PickInventoryFull"/>,
+    /// cleared on a successful SELL (room freed) or a successful pick. The leveler watches this to break
+    /// the death spiral (full bag → loot picks fail → it paces over un-pickable drops forever): when set,
+    /// it travels to town and sells instead of looting. Exposed as <c>bot.bagFull()</c>.</summary>
+    public bool BagFull { get; private set; }
 
     /// <summary>Raised when a new item appears on the ground (DROPEDITEM).</summary>
     public event Action<GroundItem>? DropAppeared;
@@ -1296,6 +1308,7 @@ public sealed class ZoneView : IDisposable
                 // A reject (not 0x0381) usually means the shop isn't really open — drop the
                 // open signal so the driver re-opens cleanly before retrying.
                 if (LastSellAck != 0x0381) ShopOpenUtc = default;
+                else BagFull = false;   // a successful sell freed a bag slot — clear the full flag
                 _log?.Invoke($"[ZoneView] SELL_ACK 0x{LastSellAck:X4}{(LastSellAck == 0x0381 ? " (OK)" : " (rejected)")}");
             }
         }
@@ -1555,6 +1568,11 @@ public sealed class ZoneView : IDisposable
                 var a = pkt.ReadBody<PROTO_NC_ITEM_PICK_ACK>();
                 var r = new PickResult(a.itemid, a.lot, a.error);
                 LastPickResult = r;
+                // Inventory-full (0x346, itemid 0xFFFF) → flag a full bag so the driver sells/declutters
+                // instead of pacing over an un-pickable drop. A real pick (a valid itemid) means there was
+                // room → clear it.
+                if (r.Error == PickInventoryFull) { if (!BagFull) _log?.Invoke("[ZoneView] BAG FULL (pick ack 0x346) — needs a sell/declutter trip"); BagFull = true; }
+                else if (r.ItemId != 0xFFFF) BagFull = false;
                 _log?.Invoke($"[ZoneView] pick ack: item {r.ItemId} lot {r.Lot} error 0x{r.Error:X}");
                 PickedUp?.Invoke(r);
             }

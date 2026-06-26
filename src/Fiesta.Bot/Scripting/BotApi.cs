@@ -139,6 +139,11 @@ public sealed class BotApi
     /// a slot use <c>bot.sell(slot, 1)</c>, not this count. Kept for inventory-fullness checks.</summary>
     public int invenCount(int slot) => View?.ItemCount((byte)slot) ?? 0;
 
+    /// <summary>True when the bag is FULL (a pickup failed with the inventory-full ack 0x346). The leveler
+    /// uses this to break the death spiral: when full it travels to town and sells/declutters instead of
+    /// pacing over a drop it can't carry. Cleared on a successful sell or pick.</summary>
+    public bool bagFull() => View?.BagFull ?? false;
+
     /// <summary>Current money ("cen"), or -1 if no money packet seen yet. Use to gate buys and to
     /// confirm a sell paid out (money rises after a successful sell).</summary>
     public double money() => View?.Money ?? -1;
