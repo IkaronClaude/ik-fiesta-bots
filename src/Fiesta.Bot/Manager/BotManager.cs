@@ -1107,6 +1107,7 @@ public sealed class BotManager : IAsyncDisposable
         {
             view?.ResetShopState();
             view?.ClearNpcMenu();
+            view?.ClearQuestScript();   // so a fresh PendingQuest after the click = THIS click's quest dialogue
             await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
             await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
             if (handle.Position is { } pos)
@@ -1130,6 +1131,15 @@ public sealed class BotManager : IAsyncDisposable
                     // RandomOption (Anvil reforge) — NOT a shop. CLOSE the UI before we move on.
                     await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
                     handle.Log($"open shop npc h={npcHandle} — RandomOption menu, NOT a shop — closed, ignoring NPC");
+                    return ActionResult.Sent;
+                }
+                if (view?.PendingQuest != null)
+                {
+                    // The click opened QUEST DIALOGUE, not a shop — a dual-role NPC (shop + quest giver).
+                    // Do NOT classify from this probe (it would mis-mark a real shop) and do NOT ack a menu
+                    // (avoid an accidental accept). The caller does the quest first, then re-probes the shop.
+                    // (operator P1 2026-06-30: "temporarily unknown"; classify after the dialogue.)
+                    handle.Log($"open shop npc h={npcHandle} — opened QUEST dialogue (dual-role NPC) — classify deferred");
                     return ActionResult.Sent;
                 }
                 if (!acked && view?.NpcMenuOpen == true)

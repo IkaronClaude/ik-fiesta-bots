@@ -520,6 +520,7 @@ public sealed class BotApi
         var v = View; if (v is null) return "none";
         if (v.ShopOpen) return shopKind();
         if (v.RandomOptionUtc > DateTime.MinValue) return "randomoption";
+        if (v.PendingQuest != null) return "quest";  // dual-role NPC: click opened quest dialogue, not a shop
         return "none";
     }
 
