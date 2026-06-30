@@ -98,13 +98,33 @@ public static class QuestData
                 else if (action == 2 || action == 3) // Find / Talk (visit a mob/NPC)
                     objectives.Add(new QuestObjective(3, mobId, cnt, 0));
             }
+            // Actions @196 (i32 NumOfActions @192, then Action[10] stride 32) carry the DROP-SOURCE
+            // map: which mob drops a collect item. The dropping mob is NOT in the ItemList objective
+            // (mob=0) — it's an Action "IF MobKill(IfTarget) THEN DropItem(ThenTarget) @ThenPercent".
+            // (gherblino Action.cs: +0 IfType +4 IfTarget +8 ThenType +12 ThenTarget; TypeIf.MobKill=1,
+            // TypeThen.DropItem=1.) Validated: q14 mob3->item3079, q316 mob305(Blue Crab)->item3240
+            // (Blue Crab Meat). This is the SAME mob<=>item link the client's hover box uses, fully
+            // client-side — so a collect quest can target the right mob without any server data.
+            var dropMobForItem = new Dictionary<int, int>();
+            int numActions = (int)U32(off + 192);
+            for (int a = 0; a < numActions && a < 10; a++)
+            {
+                int o = off + 196 + a * 32;
+                if (o + 32 > off + dataLen) break;
+                int ifType = (int)U32(o), ifTarget = (int)U32(o + 4);
+                int thenType = (int)U32(o + 8), thenItem = (int)U32(o + 12);
+                if (ifType == 1 && thenType == 1 && ifTarget != 0 && thenItem != 0)
+                    dropMobForItem[thenItem] = ifTarget;   // item -> mob that drops it (first wins)
+            }
             // ItemList[5] @132 stride 6: need(1) itemType(1) itemId(u16) lot(u16) — item-collect goals.
             for (int it = 0; it < 5; it++)
             {
                 int o = off + EndCond + 44 + it * 6;  // = off+132 + it*6
                 if (b[o] == 0 && U16(o + 2) == 0) continue;
                 int itemId = U16(o + 2); int lot = U16(o + 4);
-                if (itemId != 0) objectives.Add(new QuestObjective(2, 0, lot == 0 ? 1 : lot, itemId));
+                // Attach the dropping mob from the Action map so the collect objective knows what to kill.
+                if (itemId != 0) objectives.Add(new QuestObjective(2,
+                    dropMobForItem.TryGetValue(itemId, out var dm) ? dm : 0, lot == 0 ? 1 : lot, itemId));
             }
 
             // --- Rewards @516, stride 12 ---

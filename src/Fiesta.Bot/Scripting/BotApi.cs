@@ -139,6 +139,18 @@ public sealed class BotApi
     /// a slot use <c>bot.sell(slot, 1)</c>, not this count. Kept for inventory-fullness checks.</summary>
     public int invenCount(int slot) => View?.ItemCount((byte)slot) ?? 0;
 
+    /// <summary>Total quantity of an item id carried across ALL bag slots (sums stacks). Used by collect
+    /// quests to know how many of the drop item the bot is holding vs the required count — the hand-in
+    /// gate is "carried >= required", not the kill-objective progress counter.</summary>
+    public int invenCountOf(int itemId)
+    {
+        var v = View; if (v is null) return 0;
+        int total = 0;
+        foreach (var (slot, id) in v.Inventory)
+            if (id == itemId) total += v.ItemCount(slot);
+        return total;
+    }
+
     /// <summary>True when the bag is FULL (a pickup failed with the inventory-full ack 0x346). The leveler
     /// uses this to break the death spiral: when full it travels to town and sells/declutters instead of
     /// pacing over a drop it can't carry. Cleared on a successful sell or pick.</summary>
