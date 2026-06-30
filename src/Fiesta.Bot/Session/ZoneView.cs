@@ -870,7 +870,11 @@ public sealed class ZoneView : IDisposable
         // Seed both the status AND the credited progress (sum of End_NPCMobCount) from the zone's
         // QUEST_DOING snapshot. This is the authoritative count the zone re-sends on every entry,
         // so it restores progress after a handover (a fresh ZoneView) instead of reading back 0.
-        if (active is not null) foreach (var (id, st, prog) in active) { _activeQuests[id] = st; _questProgress[id] = prog; }
+        // ACTIVE is authoritative over DONE: a quest that is currently in progress is NOT "done" right
+        // now even if a PRIOR completion left it in the done set — a REPEATABLE quest re-accepted after
+        // completion is the case that bit us (q11 looped "COMPLETE" forever because IsQuestDone stayed
+        // true while it was active again, so handin short-circuited and never drove the turn-in).
+        if (active is not null) foreach (var (id, st, prog) in active) { _activeQuests[id] = st; _questProgress[id] = prog; _doneQuests.Remove(id); }
         if (available is not null) foreach (var a in available) _availableQuests.Add(a);
         if (_doneQuests.Count > 0 || _activeQuests.Count > 0 || _availableQuests.Count > 0)
             _log?.Invoke($"[ZoneView] seeded quests: done={_doneQuests.Count} active={_activeQuests.Count} available={_availableQuests.Count}");
@@ -909,7 +913,9 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Mark a quest active (just accepted) / done (just turned in) so the driver's
     /// view stays current within the session without waiting for a relog.</summary>
-    public void MarkQuestActive(int id, byte status = 1) { _activeQuests[id] = status; _availableQuests.Remove(id); }
+    // Re-accepting a quest makes it active and NOT done (clear any stale prior completion — repeatable
+    // quests re-accepted after completion otherwise stay IsQuestDone=true and loop the hand-in forever).
+    public void MarkQuestActive(int id, byte status = 1) { _activeQuests[id] = status; _availableQuests.Remove(id); _doneQuests.Remove(id); }
     public void MarkQuestDone(int id) { _activeQuests.TryRemove(id, out _); _availableQuests.Remove(id); _doneQuests.Add(id); }
 
     /// <summary>The quest-dialogue step the server is currently prompting (last
