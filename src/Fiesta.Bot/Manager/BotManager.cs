@@ -1275,6 +1275,7 @@ public sealed class BotManager : IAsyncDisposable
         var lastSeen = zv?.PendingQuest?.AtUtc ?? DateTime.MinValue;
         zv?.ClearRewardSelect();
         zv?.ClearNpcMenu();
+        zv?.ClearQuestScript();   // drop stale pages so we drain ONLY the burst this click triggers
         await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct);
         // The real client ALWAYS follows NPCCLICK with STOP_REQ (0x2012) reporting the position it
         // halted at to talk — and the server only starts pushing the quest script (0x4401) AFTER that
@@ -1321,24 +1322,26 @@ public sealed class BotManager : IAsyncDisposable
             }
         }
 
-        bool rewardSelected = false;
+        // DRAIN the server's script-page BURST and ACK each page — the real client acks EVERY SAY page
+        // (0x4402 {questId, nQSC, nResult=1}); the server sends the whole script (SAY×n + a terminal
+        // ACCEPT 0x06 / DONE 0x0A) without waiting for acks (QuestsNew.pcapng: q11 turn-in = 5 acks).
+        // We previously polled a single PendingQuest field which the burst overwrote → only the last page
+        // got acked ("1 page answered") → QUEST_DONE never fired. Now we dequeue all pages.
+        // Ack rule = match the client: ACK SAY pages (and any non-terminal page); do NOT ack the terminal
+        // 0x06 (accept-confirm) / 0x0A (done) — those just signal the dialogue concluded.
+        bool rewardSelected = false, concluded = false;
         int answered = 0;
-        for (int step = 0; step < maxSteps; step++)
+        var idle = DateTime.UtcNow.AddSeconds(3.0); // wait for the first page; refreshed as pages arrive
+        while (DateTime.UtcNow < idle && answered < maxSteps && !concluded)
         {
-            var deadline = DateTime.UtcNow.AddSeconds(2.5);
-            QuestStep? cur = null;
-            while (DateTime.UtcNow < deadline)
-            {
-                var pq = zv?.PendingQuest;
-                if (pq is not null && pq.AtUtc > lastSeen) { cur = pq; break; }
-                await Task.Delay(80, ct);
-            }
-            if (cur is null) break; // server sent no further page → dialogue finished
+            var cur = zv?.DequeueQuestStep();
+            if (cur is null) { await Task.Delay(50, ct); continue; }
+            idle = DateTime.UtcNow.AddSeconds(2.0); // got a page → keep draining the rest of the burst
             lastSeen = cur.AtUtc;
-            // On the [SHOW_REWARD] page (the one with the [Complete the Quest] button), the reward
-            // MUST be chosen BEFORE acking it — the real client does ack→SELECT→ack (Quest.pcapng).
-            // Acking it first = clicking Complete with no reward, which the server rejects/loops.
-            // Detect the page by its dialog text (QuestDialog.shn carries the [SHOW_REWARD] tag).
+            if (cur.Qsc is 0x06 or 0x0A) { concluded = true; break; } // ACCEPT/DONE — terminal, no ack
+            // On the [SHOW_REWARD] page (the [Complete the Quest] button), pick the reward BEFORE acking it
+            // — the real client does ack→SELECT→ack (Quest.pcapng). Acking first = Complete with no reward,
+            // which the server rejects/loops. Detect via the QuestDialog text tag.
             if (rewardIndex >= 0 && !rewardSelected &&
                 (ClientData?.QuestDialog(cur.DialogId)?.Contains("SHOW_REWARD", StringComparison.OrdinalIgnoreCase) ?? false))
             {
@@ -1349,7 +1352,7 @@ public sealed class BotManager : IAsyncDisposable
             await AnswerQuestAsync(id, cur.QuestId, cur.Qsc, result, ct);
             answered++;
         }
-        h.Log($"quest dialogue done (npc h={npcHandle}, {answered} pages answered, rewardSelected={rewardSelected})");
+        h.Log($"quest dialogue done (npc h={npcHandle}, {answered} pages acked, concluded={concluded}, rewardSelected={rewardSelected})");
         return ActionResult.Sent;
     }
 

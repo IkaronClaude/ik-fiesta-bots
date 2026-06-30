@@ -923,6 +923,17 @@ public sealed class ZoneView : IDisposable
     /// QUEST_SCRIPT_CMD_ACK ("proceed"); cleared after a few seconds of no new prompt.</summary>
     public QuestStep? PendingQuest { get; private set; }
 
+    // The server sends the accept/turn-in script as a BURST of NC_QUEST_SCRIPT_CMD_REQ (0x4401) pages
+    // (e.g. 4 SAY pages ~100ms apart, then a DONE) WITHOUT waiting for an ack between them. The driver
+    // must ack EACH page — but a single PendingQuest field gets overwritten by the burst, so it only saw
+    // (and acked) the LAST page → "1 page answered" → QUEST_DONE never fired. Queue every page so the
+    // driver can drain + ack all of them (verified vs QuestsNew.pcapng: q11 turn-in = 5× SCRIPT_CMD_ACK).
+    private readonly System.Collections.Concurrent.ConcurrentQueue<QuestStep> _questScript = new();
+    /// <summary>Dequeue the next un-answered quest-script page (FIFO), or null if none queued.</summary>
+    public QuestStep? DequeueQuestStep() => _questScript.TryDequeue(out var s) ? s : null;
+    /// <summary>Drop any stale queued pages + the pending prompt — call before driving a fresh dialogue.</summary>
+    public void ClearQuestScript() { while (_questScript.TryDequeue(out _)) { } PendingQuest = null; }
+
     /// <summary>Raised on each quest-dialogue prompt (NC_QUEST_SCRIPT_CMD_REQ).</summary>
     public event Action<QuestStep>? QuestPrompt;
 
@@ -1722,6 +1733,7 @@ public sealed class ZoneView : IDisposable
                 int dialogId = p.Length >= 11 ? (p[7] | (p[8] << 8) | (p[9] << 16) | (p[10] << 24)) : 0;
                 var step = new QuestStep(questId, qsc, dialogId);
                 PendingQuest = step;
+                _questScript.Enqueue(step);  // queue every page so a burst isn't collapsed to just the last
                 // Keep the active/done view current as the script runs: Cmd 0x06 = ACCEPT
                 // (quest becomes active), Cmd 0x0A = DONE (completed). Lets the driver re-derive
                 // availability mid-session without waiting for a relog's QUEST_DONE burst.
