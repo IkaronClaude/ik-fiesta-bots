@@ -1093,46 +1093,69 @@ public sealed class BotManager : IAsyncDisposable
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
         var view = handle.ZoneView;
         var hb = new byte[] { (byte)npcHandle, (byte)(npcHandle >> 8) };
-        // CLOSE any previously-open shop FIRST. ROOT CAUSE of the "shop won't open" bug: you must
-        // close shop A before opening shop B (a different nearby NPC) — the server won't open a new
-        // shop while one is already open. The real client sends NC_ACT_ENDOFTRADE_CMD (0x200B, empty)
-        // to clear that interaction state (it fires it 3× right after login to clear stale state too).
-        // Without this, the 2nd shop's NPCCLICK gets the menu (0x201C) but NEVER the shop-open
-        // (0x3C05/0x3C0x), and the sell is rejected 0x0383. Operator-confirmed; reproducible at Forest
-        // of Mist (two adjacent travelling merchants). A relog also clears it, which is why a fresh
-        // login's FIRST open always worked (and masked the bug as "intermittent").
-        await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
-        // Discard any STALE menu flag BEFORE clicking, so we wait for the menu THIS click opens —
-        // not a leftover NPCMENUOPEN_REQ from a previous attempt. Try up to 2 full click→menu→ack
-        // cycles, confirming the SHOP actually opened (a shop-open packet, item 0x3C0x or soul-stone
-        // 0x3C05 — ShopOpen) — NOT just the menu prompt. Selling into a menu that never resolved to a
-        // shop is rejected 0x0383.
+        // SYNC request→response open (operator 2026-06-30: "the recency window is insane — sync call with
+        // a timeout"). We RESET the shop/menu signals first so the result reflects ONLY this click (the old
+        // 10s ShopOpen recency window mis-tagged the Anvil as a weapon shop because it was probed within 10s
+        // of the adjacent smith). Then: ENDOFTRADE (clear) → NPCCLICK → STOP_REQ (report we're in range; the
+        // real client always sends it after a click — without it the server treats it as a bare interaction)
+        // → answer the NPC menu → wait a few seconds for a DEFINITIVE reply:
+        //   • a shop-open packet (0x3C0x / soul-stone 0x3C05)  ⇒ it IS a shop, return its kind.
+        //   • NC_MENU_RANDOMOPTION_CMD (0x3C0E, the Anvil)     ⇒ NOT a shop — CLOSE the UI, ignore the NPC.
+        //   • nothing tracked within the timeout                ⇒ NOT a shop (untracked NPC) — ignore it.
+        // Outcome is read back by the caller via ZoneView (ShopOpen+LastShopKind / RandomOptionUtc).
         for (var attempt = 0; attempt < 2; attempt++)
         {
+            view?.ResetShopState();
             view?.ClearNpcMenu();
+            await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
             await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
-            // Wait for the server to open the NPC menu (triggered by our click), then select the option.
-            // The menu comes fast (~200ms) if it's coming, so a 1.2s cap is plenty.
-            for (var waited = 0; waited < 1200 && view?.NpcMenuOpen != true; waited += 50)
-                await Task.Delay(50, ct);
-            await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = menuOption }, ct);
-            view?.ClearNpcMenu();
-            // Now wait for the actual shop-open packet (this is what makes SELL/BUY valid). A REAL shop
-            // opens within ~1s; a non-shop (quest) NPC never sends it. Keep this short — discovery probes
-            // many quest NPCs, and a long wait here is what made town-discovery crawl (~13s/NPC). 1.2s ×
-            // 2 attempts fails a non-shop in ~3s instead of ~13s, while still catching a real shop.
-            for (var waited = 0; waited < 1200 && view?.ShopOpen != true; waited += 50)
-                await Task.Delay(50, ct);
-            if (view?.ShopOpen == true)
+            if (handle.Position is { } pos)
             {
-                handle.Log($"open shop npc h={npcHandle} OPEN (menu-ack {menuOption}, attempt {attempt + 1})");
-                return ActionResult.Sent;
+                var stop = new byte[8];
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), pos.X);
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), pos.Y);
+                await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
             }
-            handle.Log($"open shop npc h={npcHandle} — no shop-open after ack (attempt {attempt + 1}), retrying");
+            // Sync wait (~3s) for a definitive reply; answer the NPC menu (0x201C) once when it appears.
+            var acked = false;
+            for (var waited = 0; waited < 3000; waited += 50)
+            {
+                if (view?.ShopOpen == true)
+                {
+                    handle.Log($"open shop npc h={npcHandle} OPEN ({ShopKindStr(view.LastShopKind)})");
+                    return ActionResult.Sent;
+                }
+                if (view is { } v && v.RandomOptionUtc > DateTime.MinValue)
+                {
+                    // RandomOption (Anvil reforge) — NOT a shop. CLOSE the UI before we move on.
+                    await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
+                    handle.Log($"open shop npc h={npcHandle} — RandomOption menu, NOT a shop — closed, ignoring NPC");
+                    return ActionResult.Sent;
+                }
+                if (!acked && view?.NpcMenuOpen == true)
+                {
+                    await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = menuOption }, ct);
+                    view?.ClearNpcMenu();
+                    acked = true;
+                }
+                await Task.Delay(50, ct);
+            }
+            handle.Log($"open shop npc h={npcHandle} — no shop/menu reply within 3s (attempt {attempt + 1})");
         }
-        handle.Log($"open shop npc h={npcHandle} FAILED — no shop-open packet (sells would be rejected)");
+        // No tracked reply at all — close anything left open and treat the NPC as not-a-shop.
+        await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
+        handle.Log($"open shop npc h={npcHandle} — not a shop (timeout/untracked) — ignoring NPC");
         return ActionResult.Sent;
     }
+
+    private static string ShopKindStr(Session.ShopKind k) => k switch
+    {
+        Session.ShopKind.Skill => "skill",
+        Session.ShopKind.Weapon => "weapon",
+        Session.ShopKind.Item => "item",
+        Session.ShopKind.SoulStone => "soulstone",
+        _ => "unknown",
+    };
 
     /// <summary>Sell <paramref name="lot"/> of the bag item at <paramref name="slot"/> to
     /// the open shop (NC_ITEM_SELL_REQ {slot, lot}). Verified in PurchaseSell.pcapng.</summary>

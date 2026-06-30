@@ -214,6 +214,10 @@ public sealed class ZoneView : IDisposable
     // SellAndInventoryManagement.pcapng). So it must flip the generic "shop is open" signal that
     // SELL gates on, else a sell into it is rejected 0x0383 ("shop not open").
     private const ushort OpShopOpenSoulStone = 0x3C05;
+    // NC_MENU_RANDOMOPTION_CMD (Menu cmd 14 = 0x3C0E): a NON-shop NPC menu (the Anvil reforge/reroll
+    // service). Clicking such an NPC returns this instead of a shop-open — the sync open flow uses it
+    // to classify the NPC as "not a shop". (Catalogue the other niche NPC menus per the P1 ticket.)
+    private const ushort OpMenuRandomOption = 0x3C0E;
     // NPC menu (Act cmd 28 = 0x201C): clicking a merchant/script NPC makes the server
     // open its menu and wait for the client to pick an option (NPCMENUOPEN_ACK 0x201D)
     // before it sends the shop list. Verified in PurchaseSell.pcapng: NPCCLICK ->
@@ -617,10 +621,26 @@ public sealed class ZoneView : IDisposable
     /// rejected since — i.e. a SELL should be accepted now.</summary>
     public bool ShopOpen => (DateTime.UtcNow - ShopOpenUtc) < TimeSpan.FromSeconds(10);
 
+    /// <summary>UTC of the last NC_MENU_RANDOMOPTION_CMD (0x3C0E) — a NON-shop NPC menu (e.g. the
+    /// RouN Anvil: reforge/reroll item stats, costs a Hammer of Bijou + premium currency). The
+    /// sync open flow treats this as "this NPC is NOT a shop" (vs a shop-open packet). Reset per open.</summary>
+    public DateTime RandomOptionUtc { get; private set; }
+
     /// <summary>The KIND of the last shop that opened, derived from the shop-open opcode (skill
     /// master / smith / item merchant / soul-stone healer). Lets the driver classify an NPC's
     /// service by what it sends when clicked — no hardcoded NPC ids. Unknown until a shop opens.</summary>
     public ShopKind LastShopKind { get; private set; } = ShopKind.Unknown;
+
+    /// <summary>Reset the shop/menu-open signals to "nothing opened" — called BEFORE each open attempt
+    /// so the result reflects ONLY the current NPC click (a proper sync request→response), never a
+    /// stale recency window. The old 10s window mis-tagged the Anvil as a weapon shop because it was
+    /// probed within 10s of the adjacent smith. (operator 2026-06-30.)</summary>
+    public void ResetShopState()
+    {
+        ShopOpenUtc = DateTime.MinValue;
+        RandomOptionUtc = DateTime.MinValue;
+        LastShopKind = ShopKind.Unknown;
+    }
 
     /// <summary>True while an NPC menu prompt is open and unanswered (server sent
     /// NPCMENUOPEN_REQ after we clicked a merchant/script NPC). The shop-open flow replies
@@ -1273,6 +1293,14 @@ public sealed class ZoneView : IDisposable
             else _log?.Invoke("[ZoneView] soul-stone shop opened (0x3C05) — sells accepted (no menu payload)");
             ShopOpenUtc = DateTime.UtcNow;
             LastShopKind = ShopKind.SoulStone;
+        }
+        else if (op == OpMenuRandomOption)
+        {
+            // 0x3C0E NC_MENU_RANDOMOPTION_CMD — a NON-shop NPC menu (the RouN Anvil: reforge/reroll item
+            // stats, needs a Hammer of Bijou + premium currency). NOT a merchant. Record the time so the
+            // sync open flow classifies this NPC as "not a shop" and CLOSES the UI before moving on.
+            RandomOptionUtc = DateTime.UtcNow;
+            _log?.Invoke("[ZoneView] NPC RandomOption menu (0x3C0E) — NOT a shop (e.g. Anvil reforge)");
         }
         else if (op == OpCenChange)
         {

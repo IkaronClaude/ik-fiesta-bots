@@ -509,7 +509,23 @@ public sealed class BotApi
     public bool respawn() => Ok(Wait(_mgr.RespawnAsync(Id)));
     public bool buyHpStone(int number = 1) => Ok(Wait(_mgr.BuyHpStoneAsync(Id, (ushort)number)));
     public bool buySpStone(int number = 1) => Ok(Wait(_mgr.BuySpStoneAsync(Id, (ushort)number)));
-    public bool openShop(int npcHandle, int menuOption = 1) => Ok(Wait(_mgr.OpenShopAsync(Id, (ushort)npcHandle, (byte)menuOption)));
+    /// <summary>Open an NPC's shop SYNCHRONOUSLY and return the OUTCOME (operator 2026-06-30: no recency
+    /// window). Blocks a few seconds for a definitive reply, then returns: "weapon"/"skill"/"item"/
+    /// "soulstone" if a real shop opened, "randomoption" if the NPC is a non-shop RandomOption menu (the
+    /// Anvil — closed for you), or "none" on timeout/untracked. The driver classifies the NPC from THIS
+    /// return, not a time window. (bot.shopOpen()/shopKind() also reflect the result.)</summary>
+    public string openShop(int npcHandle, int menuOption = 1)
+    {
+        Wait(_mgr.OpenShopAsync(Id, (ushort)npcHandle, (byte)menuOption));
+        var v = View; if (v is null) return "none";
+        if (v.ShopOpen) return shopKind();
+        if (v.RandomOptionUtc > DateTime.MinValue) return "randomoption";
+        return "none";
+    }
+
+    /// <summary>True if the last openShop() got a RandomOption menu (0x3C0E, e.g. the Anvil) rather than a
+    /// shop — i.e. the NPC is definitively NOT a merchant. Lets noteShop reclassify it as notshop.</summary>
+    public bool lastOpenWasRandomOption() => (View?.RandomOptionUtc ?? DateTime.MinValue) > DateTime.MinValue;
     public bool buy(int itemId, int lot = 1) => Ok(Wait(_mgr.BuyAsync(Id, (ushort)itemId, (uint)lot)));
     public bool sell(int slot, int lot = 1) => Ok(Wait(_mgr.SellAsync(Id, (byte)slot, (uint)lot)));
     public bool enchant(int equip, int raw, int rawLeft = 255, int rawMiddle = 255, int rawRight = 255, int money = 0)
