@@ -862,6 +862,25 @@ public sealed class BotManager : IAsyncDisposable
     // effect within its range, no need to stand on the tile (verified Portals.pcapng).
     // If a click from range doesn't transition, we close to the exact coord and retry.
     private const double GateApproachDist = 60.0;
+    // How close a NearbyNpc must be to a town-portal's known coord to be taken as the portal NPC.
+    private const double PortalNpcRadius = 250.0;
+
+    /// <summary>The live handle of the nearest in-view NPC (excluding field gates) to
+    /// (<paramref name="x"/>,<paramref name="y"/>) within <paramref name="maxDist"/> world-units, or
+    /// null. Used to resolve a town-portal NPC from its known coord once it's in view.</summary>
+    private static ushort? NearestNpcHandle(BotHandle handle, uint x, uint y, double maxDist)
+    {
+        var npcs = handle.ZoneView?.NearbyNpcs;
+        if (npcs is null) return null;
+        ushort? best = null; double bestD = maxDist;
+        foreach (var n in npcs)
+        {
+            if (n.IsGate) continue; // a portal is a service NPC, not a field gate
+            double d = Dist((n.X, n.Y), x, y);
+            if (d <= bestD) { bestD = d; best = n.Handle; }
+        }
+        return best;
+    }
 
     /// <summary>Outcome of kicking off an autonomous <see cref="TravelTo"/>.</summary>
     public enum TravelResult { Started, NotFound, NotInZone, AlreadyThere, NoRoute }
@@ -880,17 +899,29 @@ public sealed class BotManager : IAsyncDisposable
         if (string.Equals(from, destMap, StringComparison.OrdinalIgnoreCase))
             return (TravelResult.AlreadyThere, Array.Empty<GateEdge>());
 
-        // Seed the COMPLETE cross-map web from client nav data once (MapWayPoint/MapLinkPoint), so
-        // routing works to maps the bot has never visited — not just auto-discovered links.
+        // Seed the COMPLETE cross-map web from client nav data once (MapWayPoint/MapLinkPoint) plus the
+        // TOWN-PORTAL edges (TownPortal.shn), so routing works to maps the bot has never visited and can
+        // choose a portal hop when it's cheaper than hiking the field-gate chain.
         if (!Graph.Seeded && ClientData is { } cd)
         {
             var seedEdges = cd.BuildGateEdges();
             Graph.Seed(seedEdges);
-            _bots.TryGetValue(id, out var hh); hh?.Log($"[travel] seeded map graph: {seedEdges.Count} cross-map gate edges");
+            var portalEdges = BuildPortalEdges(cd);
+            Graph.SeedPortals(portalEdges);
+            _bots.TryGetValue(id, out var hh);
+            hh?.Log($"[travel] seeded map graph: {seedEdges.Count} gate edges + {portalEdges.Count} town-portal edges");
         }
         ObserveGates(id); // fold the bot's in-view gates into the graph (refreshes live handles)
-        var route = Graph.Route(from, destMap);
-        if (route is null || route.Count == 0) return (TravelResult.NoRoute, null);
+
+        // Cost-gated route: Dijkstra over field gates AND town portals, edge cost = on-map walk distance
+        // to the transition (portal warp ~0). Picks a portal ONLY when toPortal+fromPortal < directWalk.
+        var startPos = handle.Position is { } sp ? (sp.X, sp.Y) : (0u, 0u);
+        var costed = Graph.RouteCost(from, startPos, destMap, null, (int)handle.Level, StraightLineCost);
+        if (costed is not { Route.Count: > 0 } cr) return (TravelResult.NoRoute, null);
+        var route = cr.Route;
+        int portalHops = route.Count(e => e.IsPortal);
+        handle.Log($"[travel] route to {destMap}: {route.Count} hop(s), {portalHops} portal, cost~{cr.Cost:F0} " +
+                   $"[{string.Join(" -> ", route.Select(e => e.IsPortal ? $"{e.ToMap}(portal)" : e.ToMap))}]");
 
         var travelCts = CancellationTokenSource.CreateLinkedTokenSource(handle.Cts.Token);
         handle.TravelCts?.Cancel();
@@ -922,6 +953,47 @@ public sealed class BotManager : IAsyncDisposable
                 if (ct.IsCancellationRequested) break;
                 var edge = route[hop];
                 var expected = edge.ToMap;
+
+                // TOWN-PORTAL hop: walk to the portal NPC, resolve its live handle from view, then
+                // target+click it and select the destination index. Unlike a field gate the portal NPC
+                // isn't a linkMap-carrying gate, so we resolve it as the nearest NPC to its known coord.
+                if (edge.IsPortal && edge.PortalDestIndex is int destIdx)
+                {
+                    if (edge.GateX != 0 || edge.GateY != 0)
+                        await ApproachAsync(id, handle, edge.GateX, edge.GateY, GateApproachDist, unitsPerSec, ct);
+                    if (!await WaitUntilAsync(() => NearestNpcHandle(handle, edge.GateX, edge.GateY, PortalNpcRadius) is not null, 8000, ct)
+                        || NearestNpcHandle(handle, edge.GateX, edge.GateY, PortalNpcRadius) is not { } portalH)
+                    {
+                        handle.Log($"[travel] hop {hop + 1}/{route.Count}: no portal NPC in view near ({edge.GateX},{edge.GateY}) -> {expected} — aborting");
+                        return;
+                    }
+                    handle.Log($"[travel] hop {hop + 1}/{route.Count}: -> {expected} via TOWN PORTAL npc h={portalH} dest={destIdx}");
+                    await ApproachAsync(id, handle, edge.GateX, edge.GateY, GateApproachDist, unitsPerSec, ct);
+                    handle.PendingDestMap = expected;
+                    var pSeq = handle.MapChangeSeq;
+                    await TownPortalAsync(id, portalH, (byte)destIdx, ct);
+                    if (!await WaitUntilAsync(() => handle.MapChangeSeq > pSeq, 8000, ct))
+                    {
+                        handle.Log($"[travel] hop {hop + 1}: portal didn't fire from range — closing in and retrying");
+                        await ApproachAsync(id, handle, edge.GateX, edge.GateY, 0, unitsPerSec, ct);
+                        await TownPortalAsync(id, portalH, (byte)destIdx, ct);
+                        if (!await WaitUntilAsync(() => handle.MapChangeSeq > pSeq, 8000, ct))
+                        {
+                            handle.Log($"[travel] hop {hop + 1}: portal failed twice — aborting");
+                            handle.PendingDestMap = null; return;
+                        }
+                    }
+                    handle.PendingDestMap = null;
+                    if (!await WaitUntilAsync(() => handle.Phase == BotPhase.InZone && handle.ZoneSession is not null, 20000, ct))
+                    {
+                        handle.Log($"[travel] hop {hop + 1}: didn't re-enter zone after portal — aborting");
+                        return;
+                    }
+                    handle.SetCurrentMap(expected);
+                    ObserveGates(id);
+                    handle.Log($"[travel] hop {hop + 1}/{route.Count}: arrived on {expected} (town portal)");
+                    continue;
+                }
 
                 // Walk to the gate's KNOWN location first (seeded from MapWayPoint/MapLinkPoint, or
                 // last observed). A map's gate can be anywhere on it; the old code only took a gate
@@ -1025,6 +1097,32 @@ public sealed class BotManager : IAsyncDisposable
 
     private static double Dist((uint X, uint Y) a, uint x, uint y)
         => Math.Sqrt(Math.Pow((double)a.X - x, 2) + Math.Pow((double)a.Y - y, 2));
+
+    /// <summary>Straight-line (Euclidean) world-unit distance — the routing cost proxy for an on-map
+    /// walk between two points (cheap, grid-free; good enough to rank routes).</summary>
+    private static double StraightLineCost((uint X, uint Y) a, (uint X, uint Y) b)
+        => Math.Sqrt(Math.Pow((double)a.X - b.X, 2) + Math.Pow((double)a.Y - b.Y, 2));
+
+    /// <summary>Build the town-portal routing edges from <c>TownPortal.shn</c>: within each portal
+    /// group, every member map links to every OTHER member (a portal NPC on the from-map warps to the
+    /// dest by its Index). GateX/Y = the portal NPC on the from-map (that map's own arrival coord),
+    /// ToX/Y + MinLevel = the destination's arrival coord + level gate, PortalDestIndex = the dest byte.</summary>
+    private static IReadOnlyList<GateEdge> BuildPortalEdges(GameData.ClientData cd)
+    {
+        var edges = new List<GateEdge>();
+        foreach (var grp in cd.BuildPortalDests().GroupBy(p => p.GroupNo))
+        {
+            var members = grp.ToList();
+            foreach (var a in members)
+                foreach (var b in members)
+                {
+                    if (a.Index == b.Index || string.Equals(a.Map, b.Map, StringComparison.OrdinalIgnoreCase)) continue;
+                    edges.Add(new GateEdge(a.Map, b.Map, a.X, a.Y, 0,
+                        PortalDestIndex: b.Index, MinLevel: b.MinLevel, ToX: b.X, ToY: b.Y));
+                }
+        }
+        return edges;
+    }
 
     /// <summary>Poll <paramref name="cond"/> until it's true or <paramref name="timeoutMs"/>
     /// elapses; returns the final state. Throws if <paramref name="ct"/> is cancelled.</summary>

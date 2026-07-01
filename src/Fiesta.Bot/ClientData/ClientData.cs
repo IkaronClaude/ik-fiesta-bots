@@ -306,9 +306,9 @@ public sealed class ClientData
     /// own routing graph — seeding it (vs the bot's slow auto-discovery) is what makes cross-map
     /// pathfinding reliable: every map has a few interconnected teleports, so a route always
     /// exists. Returns (fromMap, toMap, gateX, gateY); reverse direction added unless one-way.</summary>
-    public IReadOnlyList<(string From, string To, uint X, uint Y)> BuildGateEdges()
+    public IReadOnlyList<(string From, string To, uint X, uint Y, uint ToX, uint ToY)> BuildGateEdges()
     {
-        var edges = new List<(string, string, uint, uint)>();
+        var edges = new List<(string, string, uint, uint, uint, uint)>();
         var wp = Table("MapWayPoint");
         var lp = Table("MapLinkPoint");
         if (wp is null || lp is null) return edges;
@@ -324,11 +324,42 @@ public sealed class ClientData
             if (mf == mt) continue; // same-map waypoint edge (in-map nav), not a cross-map gate
             var fromName = NameOf(mf); var toName = NameOf(mt);
             if (fromName is null || toName is null) continue;
-            edges.Add((fromName, toName, (uint)GetInt(wf, "Undefined0"), (uint)GetInt(wf, "Undefined1")));
+            // The from-point's (X,Y) is where to stand to take the gate; the to-point's (X,Y) is
+            // where you EMERGE on the destination map — the entry point for costing the next hop.
+            uint fx = (uint)GetInt(wf, "Undefined0"), fy = (uint)GetInt(wf, "Undefined1");
+            uint tx = (uint)GetInt(wt, "Undefined0"), ty = (uint)GetInt(wt, "Undefined1");
+            edges.Add((fromName, toName, fx, fy, tx, ty));
             if (GetInt(link, "MLP_OneWay_Street") == 0)
-                edges.Add((toName, fromName, (uint)GetInt(wt, "Undefined0"), (uint)GetInt(wt, "Undefined1")));
+                edges.Add((toName, fromName, tx, ty, fx, fy));
         }
         return edges;
+    }
+
+    /// <summary>All town-portal destinations from <c>TownPortal.shn</c> (rows:
+    /// <c>Index, MinLevel, TP_GroupNo, MapName, X=Undefined0, Y=Undefined1</c>). A portal NPC
+    /// standing in any map of a <c>GroupNo</c> network offers warps to the OTHER maps in the same
+    /// group; you pick a destination by its (global) row <c>Index</c> — the <c>dest</c> byte for
+    /// the portal packet (0x181A). <c>X</c>/<c>Y</c> is the arrival coord on that map, which sits
+    /// at/next to the map's portal NPC (so it doubles as "where the portal NPC is"). Used to add
+    /// town-portal edges to the routing graph. Returns empty if the table is absent.</summary>
+    public IReadOnlyList<PortalDest> BuildPortalDests()
+    {
+        var outp = new List<PortalDest>();
+        var tp = Table("TownPortal");
+        if (tp is null) return outp;
+        int i = 0;
+        foreach (var r in tp.Rows)
+        {
+            var map = GetStr(r, "MapName");
+            // The destination index sent to the portal is the (global) row ordinal — 0=RouN,
+            // 1=RouVal01, 2=Eld, … — matching TownPortalAsync's `dest`. Read it positionally so
+            // we don't depend on an "Index" column that may be the tool's row number.
+            if (!string.IsNullOrWhiteSpace(map))
+                outp.Add(new PortalDest(i, GetInt(r, "TP_GroupNo"), map, GetInt(r, "MinLevel"),
+                    (uint)GetInt(r, "Undefined0"), (uint)GetInt(r, "Undefined1")));
+            i++;
+        }
+        return outp;
     }
 
     /// <summary>MobInfo <c>Type</c> value for a gatherable resource node (herb/wood/mushroom).</summary>
@@ -360,6 +391,12 @@ public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, i
 /// main spawn field (with the field <see cref="Width"/>/<see cref="Height"/>). The quest
 /// driver travels to <see cref="Map"/> and grinds around the centre.</summary>
 public sealed record MobLocation(int MobId, string Map, int CenterX, int CenterY, int Width, int Height);
+
+/// <summary>One town-portal destination from <c>TownPortal.shn</c>: within the <see cref="GroupNo"/>
+/// portal network, selecting <see cref="Index"/> at any portal NPC of that group warps to
+/// <see cref="Map"/> (arriving near <see cref="X"/>,<see cref="Y"/>), gated by <see cref="MinLevel"/>.
+/// <see cref="Index"/> is the <c>dest</c> byte for the portal packet (0x181A).</summary>
+public sealed record PortalDest(int Index, int GroupNo, string Map, int MinLevel, uint X, uint Y);
 
 /// <summary>Combat-relevant fields of an <c>ActiveSkill</c> row, projected from the client
 /// table. <see cref="UsableDegree"/> = the facing arc the target must be within (the cast
