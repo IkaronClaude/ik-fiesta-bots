@@ -1201,6 +1201,12 @@ public sealed class BotManager : IAsyncDisposable
         //   • NC_MENU_RANDOMOPTION_CMD (0x3C0E, the Anvil)     ⇒ NOT a shop — CLOSE the UI, ignore the NPC.
         //   • nothing tracked within the timeout                ⇒ NOT a shop (untracked NPC) — ignore it.
         // Outcome is read back by the caller via ZoneView (ShopOpen+LastShopKind / RandomOptionUtc).
+        // A dual-role NPC (shop + quest giver) first serves a quest CONTINUATION page (e.g. an active
+        // quest's ActionScript "SAY … END"); the real client presses Next on it and the standard bubble
+        // + SHOP button returns — a quest NEVER blocks a shop (operator 2026-07-01). So we ACK such pages
+        // and keep waiting for the shop-open, capping acks so a genuinely stuck page can't spin forever.
+        var lastQuestAck = DateTime.MinValue;
+        var questAcks = 0;
         for (var attempt = 0; attempt < 2; attempt++)
         {
             view?.ResetShopState();
@@ -1231,13 +1237,24 @@ public sealed class BotManager : IAsyncDisposable
                     handle.Log($"open shop npc h={npcHandle} — RandomOption menu, NOT a shop — closed, ignoring NPC");
                     return ActionResult.Sent;
                 }
-                if (view?.PendingQuest != null)
+                if (view?.PendingQuest is { } pq && pq.AtUtc > lastQuestAck)
                 {
-                    // The click opened QUEST DIALOGUE, not a shop — a dual-role NPC (shop + quest giver).
-                    // Do NOT classify from this probe (it would mis-mark a real shop) and do NOT ack a menu
-                    // (avoid an accidental accept). The caller does the quest first, then re-probes the shop.
-                    // (operator P1 2026-06-30: "temporarily unknown"; classify after the dialogue.)
-                    handle.Log($"open shop npc h={npcHandle} — opened QUEST dialogue (dual-role NPC) — classify deferred");
+                    // Dual-role NPC served a quest continuation page. Press Next (ack the SAY page) so the
+                    // standard bubble + shop button returns, then keep waiting for the shop-open. Never ack a
+                    // terminal ACCEPT/DONE (0x06/0x0A) — those aren't Next pages. Cap total acks so a page
+                    // that refuses to advance (e.g. a genuinely unmet turn-in) doesn't loop forever.
+                    lastQuestAck = pq.AtUtc;
+                    if (++questAcks <= 6)
+                    {
+                        if (pq.Qsc is not (0x06 or 0x0A))
+                            await AnswerQuestAsync(id, pq.QuestId, pq.Qsc, 1, ct);
+                        view.ClearQuestScript();
+                        acked = false; // a fresh NPC menu may follow the ack — allow acking it
+                        handle.Log($"open shop npc h={npcHandle} — quest continuation page (q{pq.QuestId} qsc=0x{pq.Qsc:X2}) — acked (Next), awaiting shop");
+                        await Task.Delay(50, ct);
+                        continue;
+                    }
+                    handle.Log($"open shop npc h={npcHandle} — quest page didn't clear after {questAcks} acks — deferring");
                     return ActionResult.Sent;
                 }
                 if (!acked && view?.NpcMenuOpen == true)
