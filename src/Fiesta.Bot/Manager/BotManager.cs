@@ -1816,6 +1816,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SeedMaxStones(entry.MaxHpStone, entry.MaxSpStone); // reserve capacity from [1802]
                 zoneView.SeedStones(entry.CurHpStone, entry.CurSpStone); // real reserve from zone-enter char-info
                 if (entry.Cen is { } cen0) zoneView.SeedMoney((long)cen0); // money from char-info — never leave it -1
+                if (entry.Exp is { } exp0) zoneView.SeedExp((long)exp0); // exp from char-info — track grind progress live
                 zoneView.SeedSkills(entry.Skills);
                 zoneView.SeedPassives(entry.Passives);
                 zoneView.SeedItems(entry.Items);

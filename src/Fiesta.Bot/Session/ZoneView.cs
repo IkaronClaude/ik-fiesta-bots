@@ -249,6 +249,10 @@ public sealed class ZoneView : IDisposable
     // Without this the bot's Level stays stale at the login value (it's only set from the WM
     // avatar list at login), so eligibleQuests filters on a wrong level and goal-detection (lvl 20) fails.
     private const ushort OpCharLevelChanged = 0x1074;
+    // NC_BAT_EXPGAIN_CMD (Bat cmd 11 = 0x240B): {expgain u32@0, mobhandle u16@4}. The server credits
+    // exp per kill via this delta (it does NOT send an absolute NC_CHAR_EXP_CHANGED here), so we seed
+    // the absolute at zone-enter and accumulate these to track live exp progress toward the next level.
+    private const ushort OpBatExpGain = 0x240B;
     // NC_BAT_SKILLBASH_CAST_FAIL_ACK (Bat cmd 52 = 0x2434): the server rejected a
     // skill cast. Payload is a 2-byte LE u16 reason code. Known codes (empirically
     // captured):
@@ -666,6 +670,15 @@ public sealed class ZoneView : IDisposable
     /// <summary>Seed money from the zone-enter char-info (NC_CHAR_BASE Cen). Money is always in the
     /// login data, so the bot should know it immediately — not wait for the first transaction.</summary>
     public void SeedMoney(long cen) => Money = cen;
+
+    /// <summary>Current total experience. SEEDED at zone-enter from NC_CHAR_BASE (0x1038, Experience@26)
+    /// then kept current by adding each NC_BAT_EXPGAIN_CMD (0x240B) kill credit. -1 until seeded. Lets
+    /// the bot SEE grind progress (the server doesn't send an absolute NC_CHAR_EXP_CHANGED here).</summary>
+    public long Exp { get; private set; } = -1;
+    /// <summary>Experience gained since this zone session started (Σ of EXPGAIN credits) — progress rate.</summary>
+    public long SessionExpGained { get; private set; }
+    /// <summary>Seed the absolute exp from the zone-enter char-info (NC_CHAR_BASE Experience).</summary>
+    public void SeedExp(long exp) => Exp = exp;
 
     /// <summary>The raw 2-byte code from the last NC_ITEM_SELL_ACK (0x3005), or -1 if none yet.
     /// 0x0381 = the success code a real client sees; a different code (e.g. 0x0383) = rejected.</summary>
@@ -1183,6 +1196,19 @@ public sealed class ZoneView : IDisposable
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
                 MapChanged?.Invoke(h);
+            }
+        }
+        else if (op == OpBatExpGain)
+        {
+            // {expgain u32@0, mobhandle u16@4}. Per-kill exp credit. Accumulate onto the seeded
+            // absolute so Exp tracks live; log the delta + total (Info) so the grind rate is visible.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 4)
+            {
+                long gain = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(0, 4));
+                SessionExpGained += gain;
+                if (Exp >= 0) Exp += gain;
+                _logLevel?.Invoke(BotLogLevel.Info, $"[exp] +{gain} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session +{SessionExpGained})");
             }
         }
         else if (op == OpCharLevelChanged)

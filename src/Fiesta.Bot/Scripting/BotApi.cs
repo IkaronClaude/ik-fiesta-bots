@@ -159,6 +159,9 @@ public sealed class BotApi
     /// <summary>Current money ("cen"), or -1 if no money packet seen yet. Use to gate buys and to
     /// confirm a sell paid out (money rises after a successful sell).</summary>
     public double money() => View?.Money ?? -1;
+    /// <summary>Current total experience (seeded at zone-enter, updated by per-kill EXPGAIN), or -1
+    /// if not yet seeded. Lets the leveler see grind progress toward the next level.</summary>
+    public double exp() => View?.Exp ?? -1;
 
     /// <summary>The raw code from the last SELL_ACK (0x3005): 0x0381 = success, else rejected;
     /// -1 if no sell acked yet this session. Lets the driver verify a sell took.</summary>
