@@ -62,6 +62,74 @@ public sealed class BlockGrid
         return ((_data[bytePos] >> (tx & 7)) & 1) == 0; // bit 0 = walkable
     }
 
+    // --- Obstacle inflation (P0 2026-06-30: paths hugged obstacle edges → the straight-run
+    // MOVERUN between waypoints clipped an object corner → server MOVEFAIL → bot stuck). We
+    // keep the path a few tiles clear of any blocked tile. A tile is 6.25 world units (~10 cm),
+    // so a 2-3 tile margin is only ~20-30 cm — plenty to stop corner-clipping without closing
+    // narrow gates. Implemented as a Chebyshev distance-to-nearest-blocked field, computed once
+    // per grid and cached: clearance[t] = how far tile t is from the nearest blocked/OOB tile.
+
+    private byte[]? _clearance;
+    private readonly object _clearanceLock = new();
+    private const byte ClearanceCap = 63; // margins are tiny; cap keeps it a byte
+
+    private byte[] Clearance()
+    {
+        if (_clearance is { } c) return c;
+        lock (_clearanceLock)
+        {
+            if (_clearance is { } c2) return c2;
+            int W = WidthTiles, H = HeightTiles;
+            var dist = new byte[W * H];
+            // seed: blocked = 0, walkable = cap
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++)
+                    dist[y * W + x] = IsWalkableTile(x, y) ? ClearanceCap : (byte)0;
+            // forward pass — pull from already-visited neighbours (and OOB = blocked at borders)
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++)
+                {
+                    int i = y * W + x;
+                    if (dist[i] == 0) continue;
+                    int best = dist[i];
+                    if (x == 0 || y == 0 || x == W - 1) best = Math.Min(best, 1); // touches OOB
+                    if (x > 0) best = Math.Min(best, dist[i - 1] + 1);
+                    if (y > 0) best = Math.Min(best, dist[i - W] + 1);
+                    if (x > 0 && y > 0) best = Math.Min(best, dist[i - W - 1] + 1);
+                    if (x < W - 1 && y > 0) best = Math.Min(best, dist[i - W + 1] + 1);
+                    dist[i] = (byte)best;
+                }
+            // backward pass — pull from the other four neighbours
+            for (int y = H - 1; y >= 0; y--)
+                for (int x = W - 1; x >= 0; x--)
+                {
+                    int i = y * W + x;
+                    if (dist[i] == 0) continue;
+                    int best = dist[i];
+                    if (x == W - 1 || y == H - 1 || x == 0) best = Math.Min(best, 1); // touches OOB
+                    if (x < W - 1) best = Math.Min(best, dist[i + 1] + 1);
+                    if (y < H - 1) best = Math.Min(best, dist[i + W] + 1);
+                    if (x < W - 1 && y < H - 1) best = Math.Min(best, dist[i + W + 1] + 1);
+                    if (x > 0 && y < H - 1) best = Math.Min(best, dist[i + W - 1] + 1);
+                    dist[i] = (byte)best;
+                }
+            _clearance = dist;
+            return dist;
+        }
+    }
+
+    /// <summary>Walkable AND at least <paramref name="margin"/> tiles clear of the nearest
+    /// blocked/out-of-bounds tile (Chebyshev). <paramref name="margin"/> ≤ 0 is just
+    /// <see cref="IsWalkableTile"/>. Used by the pathfinder to keep routes off obstacle edges.</summary>
+    public bool IsPathable(int tx, int ty, int margin)
+    {
+        if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return false;
+        if (margin <= 0) return IsWalkableTile(tx, ty);
+        // clearance c means the nearest blocked tile is Chebyshev-distance c away; we require
+        // every tile within `margin` to be walkable, i.e. nearest blocked is farther than margin.
+        return Clearance()[ty * WidthTiles + tx] > margin;
+    }
+
     /// <summary>World coordinate of a tile's centre (for issuing move packets).</summary>
     public (uint X, uint Y) TileToWorld(int tx, int ty)
         => ((uint)((tx + 0.5) * WorldPerTile), (uint)((ty + 0.5) * WorldPerTile));
