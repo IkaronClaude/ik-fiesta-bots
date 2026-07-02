@@ -266,8 +266,15 @@ public sealed class LoginChain
             {
                 var ok = pkt.ReadBody<PROTO_NC_AVATAR_CREATESUCC_ACK>();
                 var a = ok.avatar;
-                var sum = new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level);
-                _log($"[WM] << AVATAR_CREATESUCC_ACK name='{sum.Name}' slot={sum.Slot} level={sum.Level}");
+                // Thread the created char's CLASS through so the zone driver's class-gated logic works
+                // up-front (quest-accept class filter, class-appropriate reward selection). The
+                // CREATESUCC avatar carries no reliable shape byte, so use the spec we just created it
+                // with — it's authoritative. Without this, AvatarSummary.Class defaulted to 0 and a fresh
+                // Fighter reported classId=0, defeating eligibleQuests' class gate (the other-class "Baby
+                // Steps" leaked into the accept candidates). QuestData.Class uses the same ClassName-ID
+                // enum (Fighter=1/Cleric=6/Archer=11/Mage=16/Joker=21), so no mapping is needed.
+                var sum = new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level, Class: (byte)spec.Class);
+                _log($"[WM] << AVATAR_CREATESUCC_ACK name='{sum.Name}' slot={sum.Slot} level={sum.Level} class={spec.Class}({(byte)spec.Class})");
                 return sum;
             }
             if (pkt.Opcode == OpAvatarCreateFail)
