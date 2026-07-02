@@ -1916,6 +1916,10 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SeedStones(entry.CurHpStone, entry.CurSpStone); // real reserve from zone-enter char-info
                 if (entry.Cen is { } cen0) zoneView.SeedMoney((long)cen0); // money from char-info — never leave it -1
                 if (entry.Exp is { } exp0) zoneView.SeedExp((long)exp0); // exp from char-info — track grind progress live
+                // Level from char-info (NC_CHAR_BASE Level@25) — authoritative on EVERY zone-enter, so
+                // bot.level() advances with real level-ups even if the live 0x1074 LEVELUP was missed
+                // (else it stays frozen at the login value and level-gated quest eligibility never grows).
+                if (entry.Level is { } lvl0 && lvl0 > 0) handle.SetLevel(lvl0);
                 zoneView.SeedSkills(entry.Skills);
                 zoneView.SeedPassives(entry.Passives);
                 zoneView.SeedItems(entry.Items);

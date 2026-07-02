@@ -136,6 +136,7 @@ public sealed class ZoneEntry
             List<ushort>? readQuests = null;
             int? curHpStone = null, curSpStone = null;
             ulong? cen = null, exp = null;
+            byte? charLevel = null;
             while (DateTime.UtcNow < deadline)
             {
                 var remaining = deadline - DateTime.UtcNow;
@@ -166,6 +167,11 @@ public sealed class ZoneEntry
                     if (p.Length >= 34)
                     {
                         exp = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(p.Slice(26, 8));
+                        // Level@25 is the char's AUTHORITATIVE current level, sent on EVERY zone-enter
+                        // (login AND every cross-server handoff). Capture + apply it so bot.level() tracks
+                        // level-ups even when the live 0x1074 LEVELUP packet is missed — otherwise level
+                        // stays frozen at the login value and level-gated quest eligibility never advances.
+                        charLevel = p[25];
                         _log($"[Zone] exp = {exp} (level {p[25]})");
                     }
                     if (p.Length >= 42)
@@ -318,7 +324,7 @@ public sealed class ZoneEntry
                         maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
                         _log($"[Zone] maxHPStone={maxHpStone} maxSPStone={maxSpStone}");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -326,7 +332,7 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen, exp);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen, exp, charLevel);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -344,11 +350,11 @@ public sealed class ZoneEntry
         IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? items,
         IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress)>? activeQuests,
         IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null,
-        uint? maxHpStone = null, uint? maxSpStone = null, ulong? cen = null, ulong? exp = null)
+        uint? maxHpStone = null, uint? maxSpStone = null, ulong? cen = null, ulong? exp = null, byte? charLevel = null)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel);
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
@@ -410,7 +416,7 @@ public sealed record ZoneEntryResult(
     IReadOnlyList<ushort>? ReadQuests = null,
     int? CurHpStone = null, int? CurSpStone = null,
     uint? MaxHpStone = null, uint? MaxSpStone = null,
-    ulong? Cen = null, ulong? Exp = null);
+    ulong? Cen = null, ulong? Exp = null, byte? Level = null);
 
 public sealed class ZoneEntryException : Exception
 {
