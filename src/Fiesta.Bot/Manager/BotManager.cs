@@ -1576,8 +1576,13 @@ public sealed class BotManager : IAsyncDisposable
     /// Blocked when the inventory is full or the char is in a mini-house etc. — those failures
     /// aren't yet pinned to a code, so check the drop actually left view.</summary>
     public Task<ActionResult> PickupAsync(string id, ushort itemHandle, CancellationToken ct = default)
-        => ActAsync(id, $"pickup item h={itemHandle}",
-            s => s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = itemHandle }, ct));
+        => ActAsync(id, $"pickup item h={itemHandle}", s =>
+        {
+            // Arm the pick-ack pacing gate (ZoneView.CanPick): the server handles ONE item-cell
+            // pick at a time — the driver polls canPick() and never bursts pick requests.
+            if (_bots.TryGetValue(id, out var hh)) hh.ZoneView?.MarkPickSent();
+            return s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = itemHandle }, ct);
+        });
 
     /// <summary>Loot a ground drop: walk to it (pathfinding over the current map's grid),
     /// then pick it up and wait for it to leave view (picked) or a short cap. With
@@ -1597,6 +1602,7 @@ public sealed class BotManager : IAsyncDisposable
 
         // Walk onto the item, then pick. Pickup has a short range, so stop right on it.
         await ApproachAsync(id, handle, drop.X, drop.Y, stopShort: 0, unitsPerSec, ct);
+        view.MarkPickSent(); // same pick-ack pacing gate as PickupAsync
         await s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = drop.Handle }, ct);
         handle.Log(BotLogLevel.Verbose, $"loot item {drop.ItemId} (h={drop.Handle}) @({drop.X},{drop.Y})");
 

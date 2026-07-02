@@ -539,6 +539,18 @@ public sealed class ZoneView : IDisposable
     public int StoneBuyFailCount { get; private set; }
     public ushort LastStoneBuyFailErr { get; private set; }
 
+    // ── Pick pacing (operator 2026-07-02): the server processes ONE item-cell pick at a time —
+    // the flow must be pick→ack→pick→ack, never a burst of picks. Polling model (NOT synchronous):
+    // the driver checks CanPick each tick, fires ONE pick (which sets PickPending), and the pick
+    // ack (OpPickAck) clears it. The 2s staleness escape covers a lost/never-sent ack so a dropped
+    // frame can't freeze looting forever.
+    public bool PickPending { get; private set; }
+    public DateTime PickSentUtc { get; private set; } = DateTime.MinValue;
+    public bool CanPick => !PickPending || (DateTime.UtcNow - PickSentUtc) > TimeSpan.FromSeconds(2);
+
+    /// <summary>Called at the PICK_REQ send site (BotManager) — arms the pick-ack pacing gate.</summary>
+    public void MarkPickSent() { PickPending = true; PickSentUtc = DateTime.UtcNow; }
+
     public void SeedMaxStones(uint? maxHpStones, uint? maxSpStones)
     {
         if (maxHpStones is { } h && h > 0) MaxHpStones = h;
@@ -1731,6 +1743,9 @@ public sealed class ZoneView : IDisposable
             // Result of OUR pickup. Error 0x341 was seen on a SUCCESS (the bag still gained
             // the item via CELLCHANGE), so don't treat Error!=0 as failure here — surface it
             // raw and let callers judge success by the inventory change.
+            // The ack also paces the NEXT pick (operator 2026-07-02: the server handles ONE
+            // item-cell at a time — pick→ack→pick→ack, never pick-pick-pick):
+            PickPending = false;
             try
             {
                 var a = pkt.ReadBody<PROTO_NC_ITEM_PICK_ACK>();

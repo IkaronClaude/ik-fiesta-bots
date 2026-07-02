@@ -264,6 +264,11 @@ public sealed class BotApi
     public bool equip(int slot) => Ok(Wait(_mgr.EquipAsync(Id, (byte)slot)));
     public bool pickup(int itemHandle) => Ok(Wait(_mgr.PickupAsync(Id, (ushort)itemHandle)));
     public bool loot(int itemHandle = 0) => Ok(Wait(_mgr.LootAsync(Id, (ushort)itemHandle)));
+    /// <summary>Pick-pacing poll gate (operator 2026-07-02): the server processes ONE item-cell
+    /// pick at a time — the driver polls this and fires ONE <see cref="pickup"/> when true
+    /// (pick→ack→pick→ack, never a burst). Cleared by firing a pick; set again by its PICK_ACK
+    /// (with a 2s staleness escape for a lost ack).</summary>
+    public bool canPick() => View?.CanPick ?? false;
     public bool clickNpc(int handle) => Ok(Wait(_mgr.ClickNpcAsync(Id, (ushort)handle)));
     public bool answerQuest(int result = 1) => Ok(Wait(_mgr.ProceedQuestAsync(Id, (uint)result)));
     /// <summary>Drive a whole quest dialogue with one NPC (accept or turn-in): click it and
