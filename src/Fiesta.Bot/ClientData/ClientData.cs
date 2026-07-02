@@ -119,7 +119,8 @@ public sealed class ClientData
         if (row is null) return null;
         return new ItemData(itemId, GetStr(row, "Name"), GetInt(row, "UseClass"), GetInt(row, "DemandLv"),
             GetInt(row, "Grade"), GetInt(row, "Equip"), GetStr(row, "ItemUseSkill") == "UseSkill",
-            GetInt(row, "Type"), GetInt(row, "ItemGradeType"));
+            GetInt(row, "Type"), GetInt(row, "ItemGradeType"),
+            GetInt(row, "Class"), GetInt(row, "MaxLot"), GetInt(row, "SellPrice"));
     }
 
     /// <summary>The display name of a skill id from client <c>ActiveSkill</c> (col "Name").
@@ -391,7 +392,8 @@ public sealed record MobData(int Id, string Name, string InxName, int Level, int
 /// drop worth keeping regardless of level (operator 2026-06-26: "dropped 'special' gear is a
 /// DIFFERENT (higher) rarity — never sell those").</summary>
 public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
-    int EquipSlot, bool IsScroll, int Type = 0, int GradeType = 0);
+    int EquipSlot, bool IsScroll, int Type = 0, int GradeType = 0, int ItemClass = 0,
+    int MaxLot = 0, int SellPrice = 0);
 
 /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c>: the
 /// <see cref="Map"/> short-name and the <see cref="CenterX"/>/<see cref="CenterY"/> of its

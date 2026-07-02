@@ -1584,6 +1584,29 @@ public sealed class BotManager : IAsyncDisposable
             return s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = itemHandle }, ct);
         });
 
+    /// <summary>Drop (or destroy) a bag item onto the ground: NC_ITEM_DROP_REQ (0x3007)
+    /// <c>{slot ITEM_INVEN (box&lt;&lt;10|slot), lot u32, loc XY}</c>. Wire format verified from
+    /// QuestsNew.pcapng (operator demo, 2026-07-02): a NON-quest item lands on the ground and is
+    /// re-pickable (<see cref="PickupAsync"/>); a QUEST item is DESTROYED. Either way the server
+    /// first replies with a SERVERMENU confirm (0x3C01) that must be answered with
+    /// NC_MENU_SERVERMENU_ACK (0x3C02) — reply value not yet pinned (the capture's operator fumbled
+    /// the Yes/No), so the caller should drive the confirm via the existing server-menu answer path
+    /// once the confirm option is decoded. <paramref name="box"/> defaults to 9 (the main bag).
+    /// NOTE (2026-07-02): currently UNUSED — added for the P3 "destroy quest items of abandoned
+    /// quests" + a general drop primitive the operator asked to have on hand. Keep it dead until wired.</summary>
+    public Task<ActionResult> DropItemAsync(string id, int slot, uint lot = 1, int box = 9, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var h) || h.Position is not { } pos)
+            return Task.FromResult(ActionResult.NotInZone);
+        var req = new PROTO_NC_ITEM_DROP_REQ
+        {
+            slot = new ITEM_INVEN { Inven = (ushort)(((box & 0x3F) << 10) | (slot & 0x3FF)) },
+            lot = lot,
+            loc = new SHINE_XY_TYPE { x = (uint)pos.X, y = (uint)pos.Y },
+        };
+        return ActAsync(id, $"drop item box={box} slot={slot} lot={lot} (0x3007)", s => s.SendAsync(req, ct));
+    }
+
     /// <summary>Loot a ground drop: walk to it (pathfinding over the current map's grid),
     /// then pick it up and wait for it to leave view (picked) or a short cap. With
     /// <paramref name="itemHandle"/> 0 it loots the drop nearest the bot. Returns

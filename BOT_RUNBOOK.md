@@ -83,6 +83,11 @@ curl -s -X POST http://127.0.0.1:5097/api/bots/Bot1208/packetlog \
 curl -s -X POST http://127.0.0.1:5097/api/bots/Bot1208/packetlog -d '{"enabled":false}'
 ```
 
+- ⚠️ **Does NOT survive a bot stop→respawn** (2026-07-02: cost us the wire evidence for the zigzag
+  orbit deadlock — the log's last frame was the previous session's logout). **Re-POST the enable after
+  EVERY respawn**, or spawn with `{"PacketLog":true}` in the spawn body (threads the tap through
+  login→WM→zone so the handshake + char-info burst are captured too — see fiesta-soulstone-restock).
+
 - Writes to `<host-cwd>/packets-<id>.log` → currently
   `C:/Projects/ik-fiesta-bots/src/Fiesta.Bot.Host/packets-Bot1208.log`. `tail -f` it.
 - Captures **both directions interleaved**, XOR-decoded to plaintext (C→S logged *before* the

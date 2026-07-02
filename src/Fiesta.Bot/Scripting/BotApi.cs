@@ -82,6 +82,14 @@ public sealed class BotApi
         var t = NewTable();
         t["id"] = id; t["name"] = it.Name; t["useClass"] = it.UseClass; t["demandLv"] = it.DemandLv;
         t["grade"] = it.Grade; t["equipSlot"] = it.EquipSlot; t["isScroll"] = it.IsScroll; t["type"] = it.Type;
+        // itemClass = the ItemInfo `Class` sub-type WITHIN a Type (e.g. Type 2 material: Class 0 =
+        // plain material/dust [sellable junk], 14 = Elrue enchant stone, 34 = enchant "rune", 19/20/25
+        // = Red Eye/Blue Mile/Gold Nine safety gems, 16 = license, 17 = key — all KEEP; Type 1 usable:
+        // Class 0 = potion/buff, 11 = skill scroll, 12 = recall/port scroll, 30 = unopened card).
+        // sellPrice 0 = the server will NOT vendor it (quest items, Ex Elreu, keys) — never attempt.
+        // maxLot 1 = non-stacking (enchant runes fill the bag; operator 2026-07-02). Used by the
+        // sell/keep classifier (classifyItem in level_quest.lua). See QuestsNew.pcapng sell demo.
+        t["itemClass"] = it.ItemClass; t["maxLot"] = it.MaxLot; t["sellPrice"] = it.SellPrice;
         // gradeType 0 = ordinary/replaceable gear (every plain smith-bought item — Leather/Chain Boots,
         // Chain Helmet/Pants, Buckler — verified ItemGradeType=0); >=1 = a named/special drop (e.g. "Solar
         // Eclipse Leather Boots") worth keeping. The vendor-trash signal for grey-gear selling.
