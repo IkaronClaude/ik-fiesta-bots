@@ -1154,8 +1154,13 @@ public sealed class BotManager : IAsyncDisposable
         // looking like an empty reserve. Skip as a no-op when already full.
         if (_bots.TryGetValue(id, out var h) && h.ZoneView is { } v && v.Sp is { } sp && v.MaxSp > 0 && sp >= v.MaxSp)
             return Task.FromResult(ActionResult.Sent);
-        return ActAsync(id, "soul-stone SP recharge (0x5009)",
-            s => s.SendAsync(new FiestaPacket(OpSoulStoneSpUse, ReadOnlyMemory<byte>.Empty), ct));
+        return ActAsync(id, "soul-stone SP recharge (0x5009)", s =>
+        {
+            // Note the kind BEFORE the reply can arrive: USEFAIL (0x5006) is shared HP+SP and only
+            // this correlation lets ZoneView attribute it to the right reserve.
+            if (_bots.TryGetValue(id, out var hh)) hh.ZoneView?.NoteStoneUseFired(hp: false);
+            return s.SendAsync(new FiestaPacket(OpSoulStoneSpUse, ReadOnlyMemory<byte>.Empty), ct);
+        });
     }
 
     /// <summary>Recharge current HP from the character's HP soul-stone reserve
@@ -1168,8 +1173,12 @@ public sealed class BotManager : IAsyncDisposable
         // call and falsely reads as an empty reserve. Skip as a no-op when already full.
         if (_bots.TryGetValue(id, out var h) && h.ZoneView is { } v && v.Hp is { } hp && v.MaxHp > 0 && hp >= v.MaxHp)
             return Task.FromResult(ActionResult.Sent);
-        return ActAsync(id, "soul-stone HP recharge (0x5007)",
-            s => s.SendAsync(new FiestaPacket(OpSoulStoneHpUse, ReadOnlyMemory<byte>.Empty), ct));
+        return ActAsync(id, "soul-stone HP recharge (0x5007)", s =>
+        {
+            // Same correlation as the SP use above — USEFAIL carries no HP/SP marker.
+            if (_bots.TryGetValue(id, out var hh)) hh.ZoneView?.NoteStoneUseFired(hp: true);
+            return s.SendAsync(new FiestaPacket(OpSoulStoneHpUse, ReadOnlyMemory<byte>.Empty), ct);
+        });
     }
 
     // Shop / buy. Clicking a merchant (target → NPCClick) makes the server send the
@@ -1180,11 +1189,37 @@ public sealed class BotManager : IAsyncDisposable
     // then sends the SHOPOPEN sell list.
     private const ushort OpActNpcMenuAck = (ushort)(((int)ProtocolCommand.Act << 10) | 29); // 0x201D
 
+    /// <summary>Whether a quest-dialogue page's TEXT (QuestDialog.shn, looked up by
+    /// <paramref name="dialogId"/>) carries the <c>[MENU]</c> tag — the data-driven flag (operator
+    /// 2026-07-01: "there likely is a flag somewhere e.g. in QuestDialogue that decides if a message
+    /// blocks normal buttons or not") that tells us THIS specific page allows bypassing into the NPC's
+    /// normal menu (shop / a different quest) instead of continuing the script. Verified against real
+    /// dialog text: plain continue pages are tagged <c>[NEXT]</c> (must be acked, no bypass — "the
+    /// first page MUST be acked"); a completable page is tagged <c>[SHOW_REWARD]</c>; a bypass-capable
+    /// page (an UNMET quest's action-script line, or a fresh quest-giver's opening line) is tagged
+    /// <c>[MENU]</c> — e.g. quest 32's stuck continuation (dialog 2807) carries `[MENU]`, confirmed
+    /// live: the real client answers it with NC_ACT_NPCMENUOPEN_ACK instead of acking it, and the shop
+    /// opens (QuestsLowLevel.pcapng). Without this per-page check, a multi-line script would either
+    /// wrongly skip pages that MUST be acked to progress, or wrongly keep acking a page that already
+    /// offers the bypass we want.</summary>
+    private bool DialogHasMenuTag(int dialogId)
+        => ClientData?.QuestDialog(dialogId)?.Contains("[MENU]", StringComparison.OrdinalIgnoreCase) ?? false;
+
     /// <summary>Open a merchant's shop and wait for its sell list. Mirrors the real client
     /// (PurchaseSell.pcapng): NPC-click → the server opens the NPC menu (NPCMENUOPEN_REQ) →
     /// reply NPCMENUOPEN_ACK with <paramref name="menuOption"/> (1 = shop) → the server sends
     /// the SHOPOPEN list (decoded into <see cref="ZoneView.ShopItems"/>). A plain click alone
-    /// does NOT open the shop — the menu-ack is required.</summary>
+    /// does NOT open the shop — the menu-ack is required.
+    /// ROOT-CAUSED 2026-07-01 (was an infinite loop on npc h=17084/quest 32 — verified via
+    /// packets-IkFresh.log live capture AND QuestsLowLevel.pcapng): a dual-role NPC with an active
+    /// quest pushes that quest's continuation SAY (0x4401) on every click. Blindly acking it
+    /// (NC_QUEST_SCRIPT_CMD_ACK, 0x4402) — what this method used to do — just keeps you IN that
+    /// quest's dialogue if the page doesn't carry `[MENU]`; but when it DOES (see
+    /// <see cref="DialogHasMenuTag"/>), acking it is ALSO wrong — the real client instead answers with
+    /// <c>NC_ACT_NPCMENUOPEN_ACK {ack=1}</c> (0x201D) directly (no preceding server NPCMENUOPEN_REQ
+    /// required) and the server opens the shop immediately. So each queued page is checked individually:
+    /// `[MENU]` present → request the shop menu, don't ack; absent → ack normally (0x4402) to progress
+    /// past a page we're forced through before a bypass becomes available.</summary>
     public async Task<ActionResult> OpenShopAsync(string id, ushort npcHandle, byte menuOption = 1, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -1196,22 +1231,17 @@ public sealed class BotManager : IAsyncDisposable
         // 10s ShopOpen recency window mis-tagged the Anvil as a weapon shop because it was probed within 10s
         // of the adjacent smith). Then: ENDOFTRADE (clear) → NPCCLICK → STOP_REQ (report we're in range; the
         // real client always sends it after a click — without it the server treats it as a bare interaction)
-        // → answer the NPC menu → wait a few seconds for a DEFINITIVE reply:
+        // → drain any quest pages per DialogHasMenuTag → wait for a DEFINITIVE reply:
         //   • a shop-open packet (0x3C0x / soul-stone 0x3C05)  ⇒ it IS a shop, return its kind.
         //   • NC_MENU_RANDOMOPTION_CMD (0x3C0E, the Anvil)     ⇒ NOT a shop — CLOSE the UI, ignore the NPC.
         //   • nothing tracked within the timeout                ⇒ NOT a shop (untracked NPC) — ignore it.
         // Outcome is read back by the caller via ZoneView (ShopOpen+LastShopKind / RandomOptionUtc).
-        // A dual-role NPC (shop + quest giver) first serves a quest CONTINUATION page (e.g. an active
-        // quest's ActionScript "SAY … END"); the real client presses Next on it and the standard bubble
-        // + SHOP button returns — a quest NEVER blocks a shop (operator 2026-07-01). So we ACK such pages
-        // and keep waiting for the shop-open, capping acks so a genuinely stuck page can't spin forever.
-        var lastQuestAck = DateTime.MinValue;
-        var questAcks = 0;
-        for (var attempt = 0; attempt < 2; attempt++)
+        var requestedMenu = false;
+        for (var reclicks = 0; reclicks < 8; reclicks++)
         {
             view?.ResetShopState();
             view?.ClearNpcMenu();
-            view?.ClearQuestScript();   // so a fresh PendingQuest after the click = THIS click's quest dialogue
+            view?.ClearQuestScript();
             await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
             await s.SendAsync(new FiestaPacket(OpActNpcClick, hb), ct);
             if (handle.Position is { } pos)
@@ -1221,9 +1251,8 @@ public sealed class BotManager : IAsyncDisposable
                 System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), pos.Y);
                 await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
             }
-            // Sync wait (~3s) for a definitive reply; answer the NPC menu (0x201C) once when it appears.
-            var acked = false;
-            for (var waited = 0; waited < 3000; waited += 50)
+            requestedMenu = false;
+            for (var waited = 0; waited < 2000; waited += 50)
             {
                 if (view?.ShopOpen == true)
                 {
@@ -1237,37 +1266,37 @@ public sealed class BotManager : IAsyncDisposable
                     handle.Log($"open shop npc h={npcHandle} — RandomOption menu, NOT a shop — closed, ignoring NPC");
                     return ActionResult.Sent;
                 }
-                if (view?.PendingQuest is { } pq && pq.AtUtc > lastQuestAck)
+                if (view?.DequeueQuestStep() is { } step)
                 {
-                    // Dual-role NPC served a quest continuation page. Press Next (ack the SAY page) so the
-                    // standard bubble + shop button returns, then keep waiting for the shop-open. Never ack a
-                    // terminal ACCEPT/DONE (0x06/0x0A) — those aren't Next pages. Cap total acks so a page
-                    // that refuses to advance (e.g. a genuinely unmet turn-in) doesn't loop forever.
-                    lastQuestAck = pq.AtUtc;
-                    if (++questAcks <= 6)
+                    waited = 0; // progress — reset the stall clock, keep waiting on THIS click
+                    if (step.Qsc is 0x06 or 0x0A) continue; // terminal — not ours to act on here
+                    if (DialogHasMenuTag(step.DialogId))
                     {
-                        if (pq.Qsc is not (0x06 or 0x0A))
-                            await AnswerQuestAsync(id, pq.QuestId, pq.Qsc, 1, ct);
-                        view.ClearQuestScript();
-                        acked = false; // a fresh NPC menu may follow the ack — allow acking it
-                        handle.Log($"open shop npc h={npcHandle} — quest continuation page (q{pq.QuestId} qsc=0x{pq.Qsc:X2}) — acked (Next), awaiting shop");
-                        await Task.Delay(50, ct);
-                        continue;
+                        if (!requestedMenu)
+                        {
+                            requestedMenu = true;
+                            await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = menuOption }, ct);
+                            handle.Log($"open shop npc h={npcHandle} — q{step.QuestId} page has [MENU], requesting shop instead of acking it");
+                        }
                     }
-                    handle.Log($"open shop npc h={npcHandle} — quest page didn't clear after {questAcks} acks — deferring");
-                    return ActionResult.Sent;
+                    else
+                    {
+                        await AnswerQuestAsync(id, step.QuestId, step.Qsc, 1, ct);
+                        handle.Log($"open shop npc h={npcHandle} — q{step.QuestId} page has no bypass, acked (Next) to progress");
+                    }
+                    continue;
                 }
-                if (!acked && view?.NpcMenuOpen == true)
+                if (!requestedMenu && view?.NpcMenuOpen == true)
                 {
                     await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = menuOption }, ct);
                     view?.ClearNpcMenu();
-                    acked = true;
+                    requestedMenu = true;
                 }
                 await Task.Delay(50, ct);
             }
-            handle.Log($"open shop npc h={npcHandle} — no shop/menu reply within 3s (attempt {attempt + 1})");
+            handle.Log($"open shop npc h={npcHandle} — no shop reply (re-click {reclicks + 1}/8)");
         }
-        // No tracked reply at all — close anything left open and treat the NPC as not-a-shop.
+        // No tracked reply after repeated re-clicks — close anything left open and treat as not-a-shop.
         await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
         handle.Log($"open shop npc h={npcHandle} — not a shop (timeout/untracked) — ignoring NPC");
         return ActionResult.Sent;
@@ -1401,6 +1430,13 @@ public sealed class BotManager : IAsyncDisposable
         zv?.ClearRewardSelect();
         zv?.ClearNpcMenu();
         zv?.ClearQuestScript();   // drop stale pages so we drain ONLY the burst this click triggers
+        // CLOSE any shop/trade UI still open from a PRECEDING interaction (e.g. buyGear just opened this
+        // same NPC's shop moments ago) before clicking again — same root cause already fixed for
+        // OpenShopAsync (2026-06-23: "the server won't open a 2nd shop while one is open"), just never
+        // applied here. CONFIRMED via a live capture 2026-07-01 (quest 6 hand-in stuck "0 pages acked"
+        // forever): clicking this NPC right after its shop was left open got ZERO response from the
+        // server — no page, no menu, nothing — until the shop was closed first.
+        await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
         await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct);
         // The real client ALWAYS follows NPCCLICK with STOP_REQ (0x2012) reporting the position it
         // halted at to talk — and the server only starts pushing the quest script (0x4401) AFTER that
@@ -1454,7 +1490,7 @@ public sealed class BotManager : IAsyncDisposable
         // got acked ("1 page answered") → QUEST_DONE never fired. Now we dequeue all pages.
         // Ack rule = match the client: ACK SAY pages (and any non-terminal page); do NOT ack the terminal
         // 0x06 (accept-confirm) / 0x0A (done) — those just signal the dialogue concluded.
-        bool rewardSelected = false, concluded = false;
+        bool rewardSelected = false, concluded = false, redirected = false;
         int answered = 0;
         var idle = DateTime.UtcNow.AddSeconds(3.0); // wait for the first page; refreshed as pages arrive
         while (DateTime.UtcNow < idle && answered < maxSteps && !concluded)
@@ -1463,6 +1499,40 @@ public sealed class BotManager : IAsyncDisposable
             if (cur is null) { await Task.Delay(50, ct); continue; }
             idle = DateTime.UtcNow.AddSeconds(2.0); // got a page → keep draining the rest of the burst
             lastSeen = cur.AtUtc;
+            // A page for a DIFFERENT quest than the one we're after is continuation NOISE from some OTHER
+            // active quest at this dual-role NPC — never OUR terminal/reward state regardless of its own
+            // qsc, so check this BEFORE the terminal test.
+            // ROOT-CAUSED 2026-07-01 (ground truth via QuestsLowLevel.pcapng + live packets-IkFresh.log,
+            // and QuestDialog.shn text): whether acking a page releases you from it depends on a PER-PAGE
+            // data flag, not a blanket rule — DialogHasMenuTag checks the dialog TEXT for `[MENU]` (vs
+            // plain `[NEXT]` continue pages, which MUST be acked to progress — "the first page MUST be
+            // acked and the last page will then be the one with the buttons", operator 2026-07-01).
+            // `[MENU]` present → this page offers a bypass into the NPC's menu; DON'T ack it — send
+            // NC_QUEST_SELECT_START_REQ (0x440F, the same packet already used to pick a quest off a
+            // multi-quest ACCEPT menu) to ask for OUR quest instead (once, not per-page — idempotent).
+            // `[MENU]` absent → no bypass available at this exact step; ack it normally (result=1) to
+            // progress the OTHER quest's script, same as a real player forced through a NPC's line before
+            // reaching a page where a choice becomes available.
+            if (questId != 0 && cur.QuestId != questId)
+            {
+                if (cur.Qsc is 0x06 or 0x0A) continue; // someone else's terminal — nothing to act on
+                if (DialogHasMenuTag(cur.DialogId))
+                {
+                    if (!redirected)
+                    {
+                        redirected = true;
+                        var npcId = zv?.MenuNpcId != 0 ? zv!.MenuNpcId : (ushort)(zv?.NearbyNpcs.FirstOrDefault(n => n.Handle == npcHandle)?.MobId ?? 0);
+                        await s.SendAsync(new PROTO_NC_QUEST_SELECT_START_REQ { nNPCID = npcId, nQuestID = questId }, ct);
+                        h.Log($"quest dialogue: npc h={npcHandle} showed q{cur.QuestId} [MENU] page (not acked) — we want q{questId}, SELECT_START npc={npcId}");
+                    }
+                }
+                else
+                {
+                    await AnswerQuestAsync(id, cur.QuestId, cur.Qsc, 1, ct);
+                    h.Log($"quest dialogue: npc h={npcHandle} showed q{cur.QuestId} (no bypass) — acked (Next) to progress toward q{questId}");
+                }
+                continue;
+            }
             if (cur.Qsc is 0x06 or 0x0A) { concluded = true; break; } // ACCEPT/DONE — terminal, no ack
             // On the [SHOW_REWARD] page (the [Complete the Quest] button), pick the reward BEFORE acking it
             // — the real client does ack→SELECT→ack (Quest.pcapng). Acking first = Complete with no reward,

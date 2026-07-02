@@ -363,7 +363,10 @@ public sealed class ZoneEntry
             var off = SkillListHeaderLen + i * SkillBlockLen;
             if (off + 2 > p.Length) break;
             var skillId = (ushort)(p[off] | (p[off + 1] << 8));
-            if (skillId != 0) skills.Add(skillId);
+            // id 0 is a REAL skill (ActiveSkill.ID=0, e.g. "Slice and Dice [01]"/TripleHit01), not a
+            // sentinel — `number` (above) already bounds this loop to real entries only (operator
+            // 2026-07-01 — same bug class as "item id 0 = Leather Boots").
+            skills.Add(skillId);
         }
         return skills;
     }

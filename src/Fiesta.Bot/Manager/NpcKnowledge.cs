@@ -21,13 +21,68 @@ public sealed class NpcKnowledge
     // key = "host|map|npcId" -> kind ("weapon"|"skill"|"item"|"soulstone"|"notshop"|...)
     private readonly ConcurrentDictionary<string, string> _shopKind = new(StringComparer.Ordinal);
 
+    private readonly string _questDeprioPath;
+    private readonly object _questDeprioIoLock = new();
+    // key = "host|questId" -> the character level at which a flee happened while pursuing it.
+    private readonly ConcurrentDictionary<string, int> _questDeprio = new(StringComparer.Ordinal);
+
     public NpcKnowledge(string? dir = null)
     {
         var baseDir = dir
             ?? Environment.GetEnvironmentVariable("BOT_KNOWLEDGE_DIR")
             ?? Path.Combine(AppContext.BaseDirectory, "bot-knowledge");
         _path = Path.Combine(baseDir, "npc-shops.json");
+        _questDeprioPath = Path.Combine(baseDir, "quest-deprio.json");
         Load();
+        LoadQuestDeprio();
+    }
+
+    private static string QKey(string host, int questId) => $"{host}|{questId}";
+
+    /// <summary>The character level at which quest <paramref name="questId"/> was deprioritized (a
+    /// flee happened while pursuing its objective mob), or -1 if never / not currently deprioritized.
+    /// The caller decides when this has expired (operator 2026-07-01: "after 1 level up, reset this") —
+    /// this just stores the raw fact; compare against the CURRENT level to see if it still applies.</summary>
+    public int QuestDeprioritizedAtLevel(string host, int questId) =>
+        _questDeprio.TryGetValue(QKey(host, questId), out var lvl) ? lvl : -1;
+
+    /// <summary>Record (and persist) that a flee happened while pursuing this quest's objective mob, at
+    /// the given character level. Persisted so a rebuild/relog (this project's dev cycle resets Lua
+    /// locals constantly) doesn't forget it and immediately re-trigger the same overwhelming fight.</summary>
+    public void RecordQuestDeprioritized(string host, int questId, int level)
+    {
+        if (string.IsNullOrEmpty(host)) return;
+        var key = QKey(host, questId);
+        if (_questDeprio.TryGetValue(key, out var ex) && ex == level) return; // already recorded, don't re-save
+        _questDeprio[key] = level;
+        SaveQuestDeprio();
+    }
+
+    private void LoadQuestDeprio()
+    {
+        try
+        {
+            if (!File.Exists(_questDeprioPath)) return;
+            var json = File.ReadAllText(_questDeprioPath);
+            var d = JsonSerializer.Deserialize<Dictionary<string, int>>(json);
+            if (d is not null) foreach (var (k, v) in d) _questDeprio[k] = v;
+        }
+        catch { /* a corrupt/missing store just starts empty */ }
+    }
+
+    private void SaveQuestDeprio()
+    {
+        lock (_questDeprioIoLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_questDeprioPath)!);
+                var json = JsonSerializer.Serialize(
+                    new SortedDictionary<string, int>(_questDeprio), new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(_questDeprioPath, json);
+            }
+            catch { /* persistence is best-effort; in-memory still works this session */ }
+        }
     }
 
     private static string Key(string host, string map, int npcId) => $"{host}|{map}|{npcId}";

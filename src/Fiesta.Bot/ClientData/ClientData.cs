@@ -119,7 +119,7 @@ public sealed class ClientData
         if (row is null) return null;
         return new ItemData(itemId, GetStr(row, "Name"), GetInt(row, "UseClass"), GetInt(row, "DemandLv"),
             GetInt(row, "Grade"), GetInt(row, "Equip"), GetStr(row, "ItemUseSkill") == "UseSkill",
-            GetInt(row, "Type"));
+            GetInt(row, "Type"), GetInt(row, "ItemGradeType"));
     }
 
     /// <summary>The display name of a skill id from client <c>ActiveSkill</c> (col "Name").
@@ -382,9 +382,16 @@ public sealed record MobData(int Id, string Name, string InxName, int Level, int
 /// <summary>Shop-eval fields of an <c>ItemInfo</c> row. <see cref="IsScroll"/> = a skill scroll
 /// (USE to learn the skill named the same as the item); otherwise an equip if <see cref="EquipSlot"/>
 /// is a real slot. <see cref="UseClass"/> = the class line that may use it (Fighter 2–7, 0 = all),
-/// <see cref="DemandLv"/> = the level required, <see cref="Grade"/> = rarity tier.</summary>
+/// <see cref="DemandLv"/> = the level required, <see cref="Grade"/> = rarity tier. <see cref="GradeType"/>
+/// (client ItemInfo.shn column <c>ItemGradeType</c>) is the VENDOR-TRASH signal: verified against
+/// server ground truth (ItemInfo table) that every plain smith-bought armor piece (Leather/Chain
+/// Boots/Helmet/Pants, Buckler — the exact "basic starter gear" the bot auto-equips) is
+/// <c>ItemGradeType=0</c>, while every named/event variant (e.g. "Solar Eclipse Leather Boots") is
+/// &gt;=1 — so 0 = ordinary/replaceable gear (safe to sell once outgrown), &gt;=1 = a special/named
+/// drop worth keeping regardless of level (operator 2026-06-26: "dropped 'special' gear is a
+/// DIFFERENT (higher) rarity — never sell those").</summary>
 public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
-    int EquipSlot, bool IsScroll, int Type = 0);
+    int EquipSlot, bool IsScroll, int Type = 0, int GradeType = 0);
 
 /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c>: the
 /// <see cref="Map"/> short-name and the <see cref="CenterX"/>/<see cref="CenterY"/> of its

@@ -236,7 +236,13 @@ public sealed class ZoneView : IDisposable
     // re-fires 0x5007 every tick on an empty reserve forever (880 USE->USEFAIL pairs in one
     // capture) and never realises it must restock. SP_USESUC is 0x500A (distinct).
     private const ushort OpSoulStoneHpUseSuc = 0x5008;
+    private const ushort OpSoulStoneSpUseSuc = 0x500A;
     private const ushort OpSoulStoneUseFail = 0x5006;
+    // Soul-stone BUY fail (0x5005 NC_SOULSTONE_BUYFAIL_ACK {err u16}): the server's definitive
+    // "no" to a 0x5001/0x5002 buy. Observed live 2026-07-01: err=0x0742 when the requested count
+    // would exceed the max reserve (bot believed 0 held, server held 30, cap 37, asked for 37) —
+    // without parsing this the restock loop re-fired the same doomed buy forever (~40 min stuck).
+    private const ushort OpSoulStoneBuyFail = 0x5005;
     // Death/revive (Char dept): DEADMENU 0x104D = server opens the death menu (you died);
     // REVIVE_REQ 0x104E (C->S) = "move to respawn point" (-> nearest town); REVIVESAME 0x104F
     // = revived in place (e.g. a cleric's resurrection — no town trip). Auto-respawn caps at
@@ -485,9 +491,53 @@ public sealed class ZoneView : IDisposable
     /// (or on cooldown), so further <c>UseSoulStoneHpAsync</c> calls are pointless until the bot
     /// restocks. Cleared by a successful HP USE (USESUC 0x5008) or an HP BUY ack (0x5003, reserve
     /// refilled). The driver gates healing on this so it stops spamming 0x5007 on an empty reserve
-    /// and instead goes to a healer to restock. NOTE: 0x5006 is shared HP/SP — for a melee bot
-    /// that never uses SP stones this reliably means "HP reserve empty".</summary>
+    /// and instead goes to a healer to restock.</summary>
     public bool HpStoneDepleted { get; private set; }
+
+    /// <summary>SP analogue of <see cref="HpStoneDepleted"/> (USEFAIL attributed to an SP USE).
+    /// Cleared by SP USESUC (0x500A), an SP BUY ack (0x5004) or a non-zero SP seed.</summary>
+    public bool SpStoneDepleted { get; private set; }
+
+    // USEFAIL (0x5006) carries NO hp/sp marker — but WE know which USE we fired. Each outbound
+    // 0x5007/0x5009 is noted here and its result (0x5008/0x500A/0x5006) pops the oldest pending
+    // entry, so a fail is attributed to the USE that caused it. Before this, EVERY USEFAIL was
+    // assumed to be HP ("a melee bot never uses SP stones") — dead wrong once the proactive SP
+    // top-up shipped: SP USEFAILs (empty SP reserve) zeroed a real 30-charge HP reserve, which
+    // sent the bot on a doomed over-cap restock loop (live 2026-07-01, ~40 min stuck in town).
+    private readonly Queue<(bool Hp, DateTime AtUtc)> _pendingStoneUse = new();
+
+    /// <summary>Note an outbound soul-stone USE (0x5007 hp / 0x5009 sp) so its result packet can
+    /// be attributed to the right pool. Called by BotManager at the send site.</summary>
+    public void NoteStoneUseFired(bool hp)
+    {
+        lock (_pendingStoneUse)
+        {
+            _pendingStoneUse.Enqueue((hp, DateTime.UtcNow));
+            while (_pendingStoneUse.Count > 8) _pendingStoneUse.Dequeue(); // bound stale build-up
+        }
+    }
+
+    /// <summary>Pop the pending-USE kind for an arriving USE result. Null when nothing (recent)
+    /// is pending — e.g. a result for a USE fired before a reconnect.</summary>
+    private bool? PopStoneUseKind()
+    {
+        lock (_pendingStoneUse)
+        {
+            while (_pendingStoneUse.Count > 0)
+            {
+                var (hp, at) = _pendingStoneUse.Dequeue();
+                if (DateTime.UtcNow - at < TimeSpan.FromSeconds(5)) return hp;
+                // stale (reply lost / never came) — skip and keep looking
+            }
+            return null;
+        }
+    }
+
+    /// <summary>Monotonic count of soul-stone BUY failures (0x5005) + the last error code. The
+    /// script correlates a fired buy with these (record the count before firing; it increased =
+    /// THIS buy was refused) instead of waiting forever for a BUY_ACK that will never come.</summary>
+    public int StoneBuyFailCount { get; private set; }
+    public ushort LastStoneBuyFailErr { get; private set; }
 
     public void SeedMaxStones(uint? maxHpStones, uint? maxSpStones)
     {
@@ -503,7 +553,7 @@ public sealed class ZoneView : IDisposable
     public void SeedStones(int? hpStones, int? spStones)
     {
         if (hpStones is { } h && h >= 0) { HpStones = h; if (h > 0) HpStoneDepleted = false; }
-        if (spStones is { } s && s >= 0) SpStones = s;
+        if (spStones is { } s && s >= 0) { SpStones = s; if (s > 0) SpStoneDepleted = false; }
     }
 
     /// <summary>Raised when the bot's own HP changes (HPCHANGE 0x240E), with the new
@@ -545,6 +595,15 @@ public sealed class ZoneView : IDisposable
     /// <summary>When the bot was last hit (UtcMinValue if never).</summary>
     public DateTime LastHitAtUtc { get; private set; } = DateTime.MinValue;
 
+    /// <summary>When the bot last LANDED a hit on something (Attacker==self in a SWING_DAMAGE/
+    /// SOMEONESWING_DAMAGE broadcast) — UtcMinValue if never. Distinct from <see cref="LastHitAtUtc"/>
+    /// (us being hit): a mob that never retaliates (weak/passive, or a facing-bug false negative)
+    /// would never trip <see cref="InCombat"/>, even while we're genuinely damaging it every swing.
+    /// Operator 2026-07-01: "there are packets that show us [the] enemy is taking damage, so keep
+    /// trying so long as any damage happened in the last 15s" — the "un-killable, give up" guard
+    /// must check damage dealt OR received, not just received.</summary>
+    public DateTime LastDamageDealtAtUtc { get; private set; } = DateTime.MinValue;
+
     /// <summary>True while the bot is dead (DEADMENU opened, not yet revived). Behaviours
     /// can wait for an in-place revive (cleric) before respawning to town, or respawn via
     /// <see cref="Manager.BotManager.RespawnAsync"/>; the server auto-respawns after ~2 min.</summary>
@@ -566,6 +625,7 @@ public sealed class ZoneView : IDisposable
             _aggressors[h.Attacker] = DateTime.UtcNow;
             LastHitAtUtc = DateTime.UtcNow;
         }
+        if (SelfHandle is { } me && h.Attacker == me) LastDamageDealtAtUtc = DateTime.UtcNow;
         Damaged?.Invoke(h);
     }
 
@@ -820,7 +880,8 @@ public sealed class ZoneView : IDisposable
     {
         if (skills is null) return;
         var added = 0;
-        foreach (var s in skills) if (s != 0 && _skills.TryAdd(s, 1)) added++;
+        // id 0 is a REAL skill (ActiveSkill.ID=0), not a sentinel — see the OpClientSkill handler's note.
+        foreach (var s in skills) if (_skills.TryAdd(s, 1)) added++;
         if (added > 0)
         {
             _log?.Invoke($"[ZoneView] seeded {added} learned skills: {string.Join(",", _skills.Keys.OrderBy(k => k))}");
@@ -1252,29 +1313,65 @@ public sealed class ZoneView : IDisposable
             {
                 int total = p[0] | (p[1] << 8);
                 if (op == OpSoulStoneHpBuyAck) { HpStones = total; if (total > 0) HpStoneDepleted = false; }
-                else SpStones = total;
+                else { SpStones = total; if (total > 0) SpStoneDepleted = false; }
                 _log?.Invoke($"[ZoneView] soul-stone {(op == OpSoulStoneHpBuyAck ? "HP" : "SP")} BUY ok — reserve now {total}");
             }
         }
-        else if (op == OpSoulStoneHpUseSuc)
+        else if (op == OpSoulStoneBuyFail)
         {
-            // The HP reserve had a charge and it was spent (the HP gain itself comes via HPCHANGE).
-            // A success means we're not depleted; if we had a count, decrement it.
-            HpStoneDepleted = false;
-            if (HpStones is { } n && n > 0) HpStones = n - 1;
+            // NC_SOULSTONE_BUYFAIL_ACK {err u16} — the server REFUSED a stone buy (e.g. err 0x0742 =
+            // requested count would exceed the max reserve). Definitive: no BUY_ACK is coming for
+            // that request. Count + code let the script react instead of re-firing forever.
+            var p = pkt.Payload.Span;
+            LastStoneBuyFailErr = p.Length >= 2 ? (ushort)(p[0] | (p[1] << 8)) : (ushort)0;
+            StoneBuyFailCount++;
+            _log?.Invoke($"[ZoneView] soul-stone BUY FAILED (0x5005) err=0x{LastStoneBuyFailErr:X4} — server refused the buy (count vs reserve/afford mismatch?)");
+        }
+        else if (op == OpSoulStoneHpUseSuc || op == OpSoulStoneSpUseSuc)
+        {
+            // The reserve had a charge and it was spent (the HP/SP gain itself comes via
+            // HPCHANGE/SPCHANGE). A success means that pool isn't depleted; decrement its count.
+            PopStoneUseKind(); // keep the pending queue in sync
+            if (op == OpSoulStoneHpUseSuc)
+            {
+                HpStoneDepleted = false;
+                if (HpStones is { } n && n > 0) HpStones = n - 1;
+            }
+            else
+            {
+                SpStoneDepleted = false;
+                if (SpStones is { } n && n > 0) SpStones = n - 1;
+            }
         }
         else if (op == OpSoulStoneUseFail)
         {
-            // USEFAIL is AMBIGUOUS: a USE also fails at FULL HP ("nothing to restore"), NOT only on
-            // an empty reserve. Only treat it as depletion when we actually needed the heal (HP below
-            // max) — otherwise a USE at full HP would falsely mark the reserve empty and send the bot
-            // to needlessly restock (it can't buy anyway: already at/near cap). (operator-confirmed)
-            bool full = Hp is { } hp && MaxHp > 0 && hp >= MaxHp;
-            if (!full)
+            // USEFAIL (0x5006) is SHARED HP+SP and carries no marker — attribute it to the USE we
+            // actually fired (the pending queue noted at the send site). Misattributing SP fails to
+            // HP zeroed a REAL 30-charge HP reserve live (2026-07-01) → doomed over-cap restock loop.
+            // A USE also fails at FULL HP/SP ("nothing to restore"), so only mark a pool depleted
+            // when that pool was actually below max. (operator-confirmed)
+            bool? kind = PopStoneUseKind();
+            if (kind is null or true)
             {
-                if (!HpStoneDepleted) _log?.Invoke("[ZoneView] soul-stone USE FAILED (0x5006) at non-full HP — reserve empty, need restock");
-                HpStoneDepleted = true;
-                HpStones = 0;
+                bool full = Hp is { } hp && MaxHp > 0 && hp >= MaxHp;
+                if (!full && kind is not null)
+                {
+                    if (!HpStoneDepleted) _log?.Invoke("[ZoneView] soul-stone HP USE FAILED (0x5006) at non-full HP — reserve empty, need restock");
+                    HpStoneDepleted = true;
+                    HpStones = 0;
+                }
+                else if (kind is null)
+                    _log?.Invoke("[ZoneView] soul-stone USE FAILED (0x5006) with no pending USE — ignoring (can't attribute HP vs SP)");
+            }
+            else
+            {
+                bool full = Sp is { } sp && MaxSp > 0 && sp >= MaxSp;
+                if (!full)
+                {
+                    if (!SpStoneDepleted) _log?.Invoke("[ZoneView] soul-stone SP USE FAILED (0x5006) at non-full SP — reserve empty, need restock");
+                    SpStoneDepleted = true;
+                    SpStones = 0;
+                }
             }
         }
         else if (Array.IndexOf(OpShopOpen, op) >= 0)
@@ -1664,7 +1761,12 @@ public sealed class ZoneView : IDisposable
                     var off = SkillListHeaderLen + i * SkillBlockLen;
                     if (off + 2 > p.Length) break;
                     var skillId = (ushort)(p[off] | (p[off + 1] << 8));
-                    if (skillId != 0 && _skills.TryAdd(skillId, 1)) added++;
+                    // id 0 is a REAL skill (e.g. ActiveSkill.ID=0 "Slice and Dice [01]"/TripleHit01), not
+                    // an empty-slot sentinel — the packet's own `number` field already bounds the loop to
+                    // real entries only. Filtering `!= 0` here made hasSkill(0) permanently false even
+                    // after the server confirmed it learned (0x70B), causing an endless re-learn retry
+                    // (operator 2026-07-01 — same bug class as "item id 0 = Leather Boots").
+                    if (_skills.TryAdd(skillId, 1)) added++;
                 }
                 if (added > 0)
                 {
@@ -1707,7 +1809,7 @@ public sealed class ZoneView : IDisposable
             {
                 var skillId = (ushort)(p[0] | (p[1] << 8));
                 var lvl = p.Length >= 3 ? p[2] : (byte)0;
-                if (skillId != 0 && _skills.TryAdd(skillId, 1))
+                if (_skills.TryAdd(skillId, 1))
                 {
                     _log?.Invoke($"[ZoneView] SKILL LEARNED: id={skillId} lv{lvl} (now know {_skills.Count})");
                     SkillsChanged?.Invoke();

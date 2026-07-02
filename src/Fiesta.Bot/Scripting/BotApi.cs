@@ -82,6 +82,10 @@ public sealed class BotApi
         var t = NewTable();
         t["id"] = id; t["name"] = it.Name; t["useClass"] = it.UseClass; t["demandLv"] = it.DemandLv;
         t["grade"] = it.Grade; t["equipSlot"] = it.EquipSlot; t["isScroll"] = it.IsScroll; t["type"] = it.Type;
+        // gradeType 0 = ordinary/replaceable gear (every plain smith-bought item — Leather/Chain Boots,
+        // Chain Helmet/Pants, Buckler — verified ItemGradeType=0); >=1 = a named/special drop (e.g. "Solar
+        // Eclipse Leather Boots") worth keeping. The vendor-trash signal for grey-gear selling.
+        t["gradeType"] = it.GradeType;
         // For a skill scroll, the ACTIVE-skill id it teaches (InxName join), else -1. Lets the driver
         // skip buying a scroll for a skill already learned: if hasSkill(itemInfo(id).scrollSkillId) skip.
         t["scrollSkillId"] = it.IsScroll ? (_mgr.ClientData?.ScrollSkillId(id) ?? -1) : -1;
@@ -110,6 +114,17 @@ public sealed class BotApi
         var map = _handle.CurrentMap;
         if (!string.IsNullOrEmpty(map)) _mgr.Knowledge.RecordShop(_handle.Options.Host, map!, npcId, kind);
     }
+
+    /// <summary>The character level at which quest <paramref name="questId"/> was last deprioritized
+    /// (a flee happened pursuing its objective mob), or -1 if never. PERSISTED (survives relog/restart)
+    /// so a rebuild-cycle doesn't forget it and immediately re-trigger the same overwhelming fight.
+    /// Compare against <see cref="level"/> — once you've gained a level since, treat it as expired
+    /// (operator 2026-07-01: "after 1 level up, reset this").</summary>
+    public int questDeprioritizedAtLevel(int questId) => _mgr.Knowledge.QuestDeprioritizedAtLevel(_handle.Options.Host, questId);
+
+    /// <summary>Record + PERSIST that a flee happened while pursuing this quest's objective mob, at the
+    /// current character level — deprioritizes it to "last resort" until a level-up.</summary>
+    public void recordQuestDeprioritized(int questId, int atLevel) => _mgr.Knowledge.RecordQuestDeprioritized(_handle.Options.Host, questId, atLevel);
 
     /// <summary>The item ids the last-opened merchant sells (from SHOPOPEN/SHOPOPENTABLE). Empty
     /// until a shop is opened. The driver reads this + <see cref="itemInfo"/> to decide what to buy.</summary>
@@ -503,8 +518,35 @@ public sealed class BotApi
     public int hpStonePrice() => (int)(View?.HpStonePrice ?? 0);
     /// <summary>Unit price (cen) of one SP soul-stone charge (0x3C05 shop-open). 0 until opened.</summary>
     public int spStonePrice() => (int)(View?.SpStonePrice ?? 0);
+    /// <summary>SP analogue of <see cref="hpStoneDepleted"/> — gate <see cref="soulstoneSp"/> on
+    /// <c>not bot.spStoneDepleted()</c>. USEFAIL (0x5006) is attributed HP vs SP by correlating to
+    /// the USE the bot actually fired (it carries no marker on the wire).</summary>
+    public bool spStoneDepleted() => View?.SpStoneDepleted ?? false;
+    /// <summary>Current SP soul-stone reserve count, or -1 if unknown. Seeded at zone-enter
+    /// (NC_CHAR_BASE CurSPStone@40), refilled by SP BUY ack (0x5004), decrements on SP USESUC.</summary>
+    public int spStones() => View?.SpStones ?? -1;
+    /// <summary>Max SP soul-stone reserve capacity, or 0 if not seeded.</summary>
+    public int maxSpStones() => (int)(View?.MaxSpStones ?? 0);
+    /// <summary>Monotonic count of soul-stone BUY failures (0x5005 NC_SOULSTONE_BUYFAIL_ACK). Record
+    /// it before firing a buy — if it increased while the BUY_ACK never came, THAT buy was refused
+    /// (e.g. err 0x0742 = count would exceed the max reserve); recompute instead of re-firing.</summary>
+    public int stoneBuyFailCount() => View?.StoneBuyFailCount ?? 0;
+    /// <summary>Error code of the last soul-stone BUY failure (0x5005), 0 if none seen.</summary>
+    public int lastStoneBuyFailErr() => View?.LastStoneBuyFailErr ?? 0;
     public bool dead() => View?.Dead ?? false;
     public bool inCombat() => View?.InCombat ?? false;
+    /// <summary>True if EITHER we were hit OR we landed a hit within the last <paramref name="withinMs"/>
+    /// ms (default 15000) — unlike <see cref="inCombat"/> (us being hit only), this also covers a mob
+    /// that's genuinely taking damage from us but never retaliates (weak/passive, or a facing bug false
+    /// negative). Operator 2026-07-01: the "give up, this mob is un-killable" guard must check damage
+    /// dealt OR received, not just received — a target we're actually damaging is never un-killable.</summary>
+    public bool recentDamage(int withinMs = 15000)
+    {
+        var v = View; if (v is null) return false;
+        var now = DateTime.UtcNow;
+        return (now - v.LastHitAtUtc).TotalMilliseconds < withinMs
+            || (now - v.LastDamageDealtAtUtc).TotalMilliseconds < withinMs;
+    }
     /// <summary>Count of mobs the bot itself landed the killing blow on (REALLYKILL attacker==self).
     /// The real kill signal for quest/XP credit — a mob merely vanishing (despawn / another
     /// player's kill) does NOT count. A grind loop credits a kill when this increments.</summary>
