@@ -334,6 +334,7 @@ public sealed class BotApi
         t["needsClass"] = q.NeedsClass; t["isVisible"] = q.IsVisible;
         t["remoteAcceptable"] = q.IsInstantAccept; t["instantHandIn"] = q.IsInstantHandIn;
         t["region"] = q.Region; t["questType"] = q.QuestType; t["repeatable"] = q.Repeatable;
+        t["exp"] = q.ExpReward;                // turn-in EXP reward (Type-0 reward) — drives exp prioritisation
         t["objectiveMob"] = q.ObjectiveMob;   // mobId to grind for this quest (-1 = meeting quest)
         t["startScript"] = q.StartScript; t["actionScript"] = q.ActionScript; t["finishScript"] = q.FinishScript;
         var npcs = NewTable(); int ni = 1;

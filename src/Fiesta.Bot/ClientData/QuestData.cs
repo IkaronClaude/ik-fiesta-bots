@@ -192,6 +192,14 @@ public sealed record QuestDef(
         get { foreach (var o in Objectives) if (o.Type == 1) return o.Mob; return -1; }
     }
 
+    /// <summary>The EXP this quest awards on turn-in — the reward with Type 0 (verified 2026-07-03:
+    /// reward Type 0 = EXP, Type 1 = Money, Type 2 = Item; q414 type0=108 matched the live hand-in exp).
+    /// Drives exp-based quest prioritisation (do the fattest quests first). 0 if none.</summary>
+    public long ExpReward
+    {
+        get { foreach (var r in Rewards) if (r.Type == 0) return (long)r.Amount; return 0; }
+    }
+
     /// <summary>Can this quest be accepted by clicking/selecting NPC <paramref name="npc"/> with a
     /// char of <paramref name="level"/>? Mirrors the server gate: must be NPC-startable from this NPC,
     /// level window (if gated), prereq done, no trigger-item requirement, class matches. <paramref
