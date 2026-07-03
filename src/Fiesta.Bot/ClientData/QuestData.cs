@@ -82,6 +82,12 @@ public static class QuestData
 
             // --- EndCondition (turn-in gate + objectives) ---
             bool isInstantHandIn = Flag(off + EndCond);          // @88
+            // EndCondition level gate (gherblino EndCondition.cs: NeedsLevel@+1, Level@+2, then Unk6@+3,
+            // then NPCMobList@+4=@92). This is the "reach Level N to COMPLETE" gate (distinct from the
+            // StartCondition accept-level window @27/@28) — e.g. q20001 "reach Lv.20": EndNeedsLevel=true,
+            // EndLevel=20. Without it a 0-objective reach-level quest false-reads as instantly hand-in-ready.
+            bool endNeedsLevel = Flag(off + EndCond + 1);        // @89
+            int endLevel = b[off + EndCond + 2];                 // @90
             // NPCMobList[5] @92 stride 8: need(1) _(1) mobId(u16) action(1) count(1) target(1) _(1).
             // action 0 = the turn-in/reward NPC reference; 1 = Kill, 2 = Find, 3 = Talk.
             var npcs = new List<QuestTarget>();
@@ -154,7 +160,8 @@ public static class QuestData
                 Repeatable: Flag(off + 18), PrereqQuest: prereqQuest,
                 IsVisible: isVisible, IsInstantAccept: isInstantAccept, IsInstantHandIn: isInstantHandIn,
                 NeedsNpc: needsNpc, NeedsItem: needsItem, NeedsItemId: needsItemId, NeedsClass: needsClass,
-                Region: b[off + 16], QuestType: b[off + 17]);
+                Region: b[off + 16], QuestType: b[off + 17],
+                EndNeedsLevel: endNeedsLevel, EndLevel: endLevel);
 
             off += (int)dataLen;
         }
@@ -173,7 +180,7 @@ public sealed record QuestDef(
     bool Repeatable = false, int PrereqQuest = 0,
     bool IsVisible = false, bool IsInstantAccept = false, bool IsInstantHandIn = false,
     bool NeedsNpc = false, bool NeedsItem = false, int NeedsItemId = 0, bool NeedsClass = false,
-    int Region = 0, int QuestType = 0)
+    int Region = 0, int QuestType = 0, bool EndNeedsLevel = false, int EndLevel = 0)
 {
     /// <summary>The npc this quest is turned in at: the first NPC in the turn-in list that isn't the
     /// giver, else the giver (most quests turn in where they started; e.g. q1 lists Julia(29)).</summary>

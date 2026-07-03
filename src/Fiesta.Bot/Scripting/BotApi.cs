@@ -334,6 +334,9 @@ public sealed class BotApi
         var t = NewTable();
         t["id"] = q.Id; t["startNpc"] = q.StartNpc; t["turnInNpc"] = q.TurnInNpc;
         t["minLevel"] = q.MinLevel; t["maxLevel"] = q.MaxLevel; t["isNeedLevel"] = q.IsNeedLevel;
+        // EndCondition "reach Level N to COMPLETE" gate (distinct from the accept-level window above) —
+        // e.g. q20001 reach-20: endNeedsLevel=true, endLevel=20. Gate hand-in on bot.level() >= endLevel.
+        t["endNeedsLevel"] = q.EndNeedsLevel; t["endLevel"] = q.EndLevel;
         t["class"] = q.Class; t["linkedQuest"] = q.LinkedQuest;
         t["needsNpc"] = q.NeedsNpc; t["needsItem"] = q.NeedsItem; t["needsItemId"] = q.NeedsItemId;
         t["needsClass"] = q.NeedsClass; t["isVisible"] = q.IsVisible;
