@@ -31,9 +31,13 @@ XOR_TABLE_PATH=C:/Projects/ik-fiesta-bots/xor-table.hex \
 # poll http://127.0.0.1:5097/health until {"status":"ok"}
 
 # 5. respawn the bot (returns to its logout spot)
+#    ⚠️ ALWAYS pass "Character" — WITHOUT it the login selects the account's default/first
+#    slot, NOT the char you want (fighter1 holds BOTH old IkFresh slot1 AND IkFresh2 slot2;
+#    omitting Character logs into the wrong one). Id is just the manager handle; Character is
+#    the in-game avatar to select. Current target char = IkFresh2.
 curl -s -X POST http://127.0.0.1:5097/api/bots \
   -H 'Content-Type: application/json' \
-  -d '{"Host":"62.171.171.24","LoginPort":9010,"Username":"fighter1","Password":"fighter1","Id":"Bot1208"}'
+  -d '{"Host":"62.171.171.24","LoginPort":9010,"Username":"fighter1","Password":"fighter1","Id":"IkFresh2","Character":"IkFresh2","PacketLog":true}'
 ```
 
 - Lua/C# split: **`.lua` is interpreted at runtime — re-applying the script needs NO rebuild.**

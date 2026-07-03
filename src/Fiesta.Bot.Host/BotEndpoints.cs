@@ -387,6 +387,10 @@ public static class BotEndpoints
             ToResult(await manager.LootAsync(id, req.Handle ?? 0), id, new { id, looted = req.Handle ?? 0 }))
         .WithSummary("Walk to a ground drop and pick it up (nearest if no handle given)");
 
+        group.MapPost("/{id}/inventory-sort", async (string id) =>
+            ToResult(await manager.SortInventoryAsync(id), id, new { id, sorted = true }))
+        .WithSummary("Fire the client's inventory auto-sort (compact+stack the bag — NC_ITEM_AUTO_ARRANGE_INVEN_REQ 0x304A)");
+
         group.MapPost("/{id}/click-npc", async (string id, PickupRequest req) =>
         {
             if (req.Handle is not { } h)

@@ -272,6 +272,11 @@ public sealed class BotApi
     public bool equip(int slot) => Ok(Wait(_mgr.EquipAsync(Id, (byte)slot)));
     public bool pickup(int itemHandle) => Ok(Wait(_mgr.PickupAsync(Id, (ushort)itemHandle)));
     public bool loot(int itemHandle = 0) => Ok(Wait(_mgr.LootAsync(Id, (ushort)itemHandle)));
+    /// <summary>Fire the client's inventory auto-sort (compact + STACK the bag — e.g. merge the
+    /// single quest-reward port scrolls that don't stack by default). Frees slots so pickups/hand-ins
+    /// don't block on a full bag. ⚠️ Blocked while MOUNTED and the bag is locked ~5s during the
+    /// relayout — gate on <c>not bot.mounted()</c> and don't fire other inventory ops right after.</summary>
+    public bool sortInventory() => Ok(Wait(_mgr.SortInventoryAsync(Id)));
     /// <summary>Pick-pacing poll gate (operator 2026-07-02): the server processes ONE item-cell
     /// pick at a time — the driver polls this and fires ONE <see cref="pickup"/> when true
     /// (pick→ack→pick→ack, never a burst). Cleared by firing a pick; set again by its PICK_ACK

@@ -304,6 +304,9 @@ public sealed class ZoneView : IDisposable
     private static readonly ushort OpDropedItem = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_DROPEDITEM_CMD>();
     private static readonly ushort OpMapLogout = PacketRegistry.GetOpcode<PROTO_NC_MAP_LOGOUT_CMD>();
     private static readonly ushort OpPickAck = PacketRegistry.GetOpcode<PROTO_NC_ITEM_PICK_ACK>();
+    // Result of the bot's inventory auto-sort (NC_ITEM_AUTO_ARRANGE_INVEN_ACK, Item 0x304B); the new
+    // bag layout arrives as the ensuing CELLCHANGE burst, already applied by the item model.
+    private static readonly ushort OpSortAck = PacketRegistry.GetOpcode<PROTO_NC_ITEM_AUTO_ARRANGE_INVEN_ACK>();
     // Learned-skill list, sent at zone login (NC_CHAR_CLIENT_SKILL_CMD, Char 0x0F3D):
     // [restempow:1][PartMark:1][nMaxNum:2][chrregnum:4][number:2][SKILLREADBLOCK × number].
     // Each SKILLREADBLOCK is 12 bytes; its leading u16 is the skill id. This is how the bot
@@ -821,6 +824,11 @@ public sealed class ZoneView : IDisposable
     /// IkFresh ran with a completely full bag: every pick returned itemid 0xFFFF, lot 0, error
     /// 0x346. (Contrast 0x341, seen on a SUCCESSFUL pick.)</summary>
     public const ushort PickInventoryFull = 0x346;
+
+    /// <summary>PICK_ACK error code meaning the pick SUCCEEDED (the bag gained the item via the
+    /// accompanying CELLCHANGE) — confirmed in KillAndPickupItems.pcapng: two picks (item 3001, 3004)
+    /// each added to the bag with error 0x341. Not a failure despite the non-zero "error" field.</summary>
+    public const ushort PickSuccess = 0x341;
 
     /// <summary>True when the bag is FULL — set when a pickup fails with <see cref="PickInventoryFull"/>,
     /// cleared on a successful SELL (room freed) or a successful pick. The leveler watches this to break
@@ -1785,10 +1793,24 @@ public sealed class ZoneView : IDisposable
                 // room → clear it.
                 if (r.Error == PickInventoryFull) { if (!BagFull) _log?.Invoke("[ZoneView] BAG FULL (pick ack 0x346) — needs a sell/declutter trip"); BagFull = true; }
                 else if (r.ItemId != 0xFFFF) BagFull = false;
-                _log?.Invoke($"[ZoneView] pick ack: item {r.ItemId} lot {r.Lot} error 0x{r.Error:X}");
+                // 0x341 is the SUCCESS code (the bag gained the item — confirmed in KillAndPickupItems.pcapng),
+                // 0x346 is bag-full; label it so the trace isn't misread as a failure (cost an earlier session).
+                var pickStatus = r.Error switch { PickSuccess => "OK", PickInventoryFull => "BAG FULL", _ => $"0x{r.Error:X}" };
+                _log?.Invoke($"[ZoneView] pick ack: item {r.ItemId} lot {r.Lot} -> {pickStatus}");
                 PickedUp?.Invoke(r);
             }
             catch { /* skip an unparseable pick ack */ }
+        }
+        else if (op == OpSortAck)
+        {
+            // Result of the bot's inventory auto-sort (0x304A). The compacted/stacked layout arrives
+            // as the ensuing CELLCHANGE burst (already applied by the item model); just note the ack.
+            try
+            {
+                var a = pkt.ReadBody<PROTO_NC_ITEM_AUTO_ARRANGE_INVEN_ACK>();
+                _log?.Invoke($"[ZoneView] inventory auto-sorted (ack 0x304B err=0x{a.err:X})");
+            }
+            catch { /* skip an unparseable sort ack */ }
         }
         else if (op == OpClientSkill)
         {

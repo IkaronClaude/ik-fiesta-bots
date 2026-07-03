@@ -1584,6 +1584,18 @@ public sealed class BotManager : IAsyncDisposable
             return s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = itemHandle }, ct);
         });
 
+    /// <summary>Fire the client's inventory "auto sort": NC_ITEM_AUTO_ARRANGE_INVEN_REQ (0x304A,
+    /// empty payload). The server compacts + STACKS the bag (merging non-stacked duplicates like
+    /// quest-reward port scrolls that don't stack by default) and streams the new layout back as a
+    /// burst of NC_ITEM_CELLCHANGE_CMD (0x3001) — which the existing bag model already applies — plus
+    /// an NC_ITEM_AUTO_ARRANGE_INVEN_ACK (0x304B). Verified from AutoSortAndSomeTickets.pcapng.
+    /// ⚠️ The client blocks this while MOUNTED and the inventory is locked ~5s during the relayout, so
+    /// the caller should gate on !mounted and avoid other inventory ops until it settles. Frees bag
+    /// slots to keep pickups/hand-ins from blocking (see the BAG-FULL leveling bottleneck).</summary>
+    public Task<ActionResult> SortInventoryAsync(string id, CancellationToken ct = default)
+        => ActAsync(id, "inventory auto-sort (0x304A)", s =>
+            s.SendAsync(new PROTO_NC_ITEM_AUTO_ARRANGE_INVEN_REQ(), ct));
+
     /// <summary>Drop (or destroy) a bag item onto the ground: NC_ITEM_DROP_REQ (0x3007)
     /// <c>{slot ITEM_INVEN (box&lt;&lt;10|slot), lot u32, loc XY}</c>. Wire format verified from
     /// QuestsNew.pcapng (operator demo, 2026-07-02): a NON-quest item lands on the ground and is
