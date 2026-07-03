@@ -491,6 +491,11 @@ public sealed class BotApi
     /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c> (the table the
     /// real client uses for the quest-log marker): {map, x, y, width, height}, or nil if unknown.
     /// Lets the driver travel to the right field for a kill objective with no server data.</summary>
+    /// <summary>The mob's level from client MobInfo.shn, or -1 if unknown. Used by the leveler to pick a
+    /// SURVIVABLE grind target (avoid mobs at/above the char's level whose dense spawns swarm-kill it) and to
+    /// prefer the highest-value mob it can safely handle.</summary>
+    public int mobLevel(int mobId) => _mgr.ClientData?.Mob(mobId)?.Level ?? -1;
+
     public DynValue mobLocation(int mobId)
     {
         var cd = _mgr.ClientData;
