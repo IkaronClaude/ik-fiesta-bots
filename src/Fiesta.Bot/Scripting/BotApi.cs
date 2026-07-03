@@ -501,19 +501,16 @@ public sealed class BotApi
         var nonZero = all.Where(l => (long)l.Width * l.Height > 0).ToList();
         if (nonZero.Count > 0) all = nonZero;
         if (all.Count == 0) return DynValue.Nil;
-        // Prefer (1) the current map, then (2) a map reachable via an IN-VIEW gate (adjacent —
-        // so travelTo just takes that gate), then (3) the largest patch overall. This stops the
-        // bot trying to route to a far map when the mob also spawns one gate away.
+        // Prefer (1) the current map (hunt here if the mob spawns here), else (2) the LARGEST patch
+        // overall — deterministic / position-INDEPENDENT. The old middle tier ("a map reachable via an
+        // IN-VIEW gate") flipped as the bot moved (different gates in view on each map), so a mob with
+        // spawns on two maps had its target map ping-pong every tick → the RouCos01↔RouN↔RouVal01
+        // map-thrash (exp frozen). A stable pick (+ the Lua travel commitment) fixes that; the largest
+        // patch is the real spawn field (quest-log markers are tiny and already dropped above).
         var cur = _handle.CurrentMap;
         GameData.MobLocation? pick = cur is null ? null : all.FirstOrDefault(l => string.Equals(l.Map, cur, StringComparison.OrdinalIgnoreCase));
-        if (pick is null && View is { } v)
-        {
-            var gateMaps = v.NearbyNpcs.Where(n => n.IsGate && !string.IsNullOrEmpty(n.LinkMap))
-                .Select(n => n.LinkMap).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            pick = all.Where(l => gateMaps.Contains(l.Map))
-                      .OrderByDescending(l => (long)l.Width * l.Height).FirstOrDefault();
-        }
-        pick ??= all.OrderByDescending(l => (long)l.Width * l.Height).First();
+        pick ??= all.OrderByDescending(l => (long)l.Width * l.Height)
+                    .ThenBy(l => l.Map, StringComparer.OrdinalIgnoreCase).First();
         var t = NewTable();
         t["map"] = pick.Map; t["x"] = pick.CenterX; t["y"] = pick.CenterY;
         t["width"] = pick.Width; t["height"] = pick.Height;
