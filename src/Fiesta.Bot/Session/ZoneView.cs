@@ -289,6 +289,11 @@ public sealed class ZoneView : IDisposable
     // 0x2449) carry attacker/defender/damage/resthp for the on_hit script hook.
     private static readonly ushort OpHpChange = PacketRegistry.GetOpcode<PROTO_NC_BAT_HPCHANGE_CMD>();
     private static readonly ushort OpSpChange = PacketRegistry.GetOpcode<PROTO_NC_BAT_SPCHANGE_CMD>();
+    // NC_CHAR_CHANGEPARAMCHANGE_CMD (Char dept, cmd 53): a {paramId u8, value u32} list that carries the
+    // char's MAX HP/SP (paramId 0x10/0x11) + stats (0x12+ = END/DEX/… — the P3). This is the AUTHORITATIVE
+    // MID-ZONE source of MaxHp/MaxSp: it's sent on a level-up (beside the HP/SP refill) and at zone-enter,
+    // so without it MaxHp/MaxSp only refreshed at the next handoff and lagged after a mid-zone level-up.
+    private const ushort OpCharParamChange = 0x1035;
     private static readonly ushort OpSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SWING_DAMAGE_CMD>();
     private static readonly ushort OpSomeoneSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SOMEONESWING_DAMAGE_CMD>();
     // Ground loot: DROPEDITEM (Briefinfo 0x1C0A) broadcasts an item that hit the ground
@@ -1200,6 +1205,30 @@ public sealed class ZoneView : IDisposable
                 var sp = pkt.ReadBody<PROTO_NC_BAT_SPCHANGE_CMD>().sp;
                 Sp = sp;
                 SpChanged?.Invoke(sp);
+            }
+            catch { }
+        }
+        else if (op == OpCharParamChange)
+        {
+            // {count u8}{paramId u8, value u32}* — apply MaxHP(0x10)/MaxSP(0x11) live so they track a
+            // MID-ZONE level-up (verified on the wire: a level-up cluster carried {0x10=250, 0x11=109},
+            // matching the HPCHANGE refill). Other paramIds (0x12+ = END/DEX/… stats) are the P3 — the loop
+            // already iterates them, so surfacing the rest later is a small extension. A partial variant that
+            // omits 0x10/0x11 just leaves MaxHp/MaxSp unchanged.
+            try
+            {
+                var p = pkt.Payload.Span;
+                if (p.Length >= 1)
+                {
+                    int count = p[0], o = 1;
+                    for (int e = 0; e < count && o + 5 <= p.Length; e++, o += 5)
+                    {
+                        byte pid = p[o];
+                        uint val = (uint)(p[o + 1] | (p[o + 2] << 8) | (p[o + 3] << 16) | (p[o + 4] << 24));
+                        if (pid == 0x10 && val > 0 && val != MaxHp) { MaxHp = val; _log?.Invoke($"[ZoneView] MaxHP -> {val} (CHANGEPARAM 0x1035)"); }
+                        else if (pid == 0x11 && val > 0 && val != MaxSp) { MaxSp = val; _log?.Invoke($"[ZoneView] MaxSP -> {val} (CHANGEPARAM 0x1035)"); }
+                    }
+                }
             }
             catch { }
         }
