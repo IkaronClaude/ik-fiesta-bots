@@ -1400,27 +1400,27 @@ public sealed class ZoneView : IDisposable
             // A USE also fails at FULL HP/SP ("nothing to restore"), so only mark a pool depleted
             // when that pool was actually below max. (operator-confirmed)
             bool? kind = PopStoneUseKind();
+            // A USEFAIL is EITHER an empty reserve, OR the stone COOLDOWN, OR firing at full HP/SP (operator
+            // 2026-07-04: do NOT assume empty). The reserve COUNT is authoritative — decremented ONLY on a real
+            // 0x5008/0x500A success — so NEVER zero it here. Zeroing a full reserve on a cooldown-fail was the
+            // 46→0-in-two-fights + bogus cross-map-restock bug. Mark a pool depleted only when its tracked COUNT
+            // actually says empty; otherwise the fail is harmless (the driver just spams again and one lands).
             if (kind is null or true)
             {
-                bool full = Hp is { } hp && MaxHp > 0 && hp >= MaxHp;
-                if (!full && kind is not null)
+                if (kind is not null)
                 {
-                    if (!HpStoneDepleted) _log?.Invoke("[ZoneView] soul-stone HP USE FAILED (0x5006) at non-full HP — reserve empty, need restock");
-                    HpStoneDepleted = true;
-                    HpStones = 0;
+                    bool empty = HpStones is { } n && n <= 0;
+                    if (empty && !HpStoneDepleted) _log?.Invoke("[ZoneView] HP soul-stone reserve EMPTY (0x5006 + count 0) — need restock");
+                    HpStoneDepleted = empty;
                 }
-                else if (kind is null)
+                else
                     _log?.Invoke("[ZoneView] soul-stone USE FAILED (0x5006) with no pending USE — ignoring (can't attribute HP vs SP)");
             }
             else
             {
-                bool full = Sp is { } sp && MaxSp > 0 && sp >= MaxSp;
-                if (!full)
-                {
-                    if (!SpStoneDepleted) _log?.Invoke("[ZoneView] soul-stone SP USE FAILED (0x5006) at non-full SP — reserve empty, need restock");
-                    SpStoneDepleted = true;
-                    SpStones = 0;
-                }
+                bool empty = SpStones is { } n && n <= 0;
+                if (empty && !SpStoneDepleted) _log?.Invoke("[ZoneView] SP soul-stone reserve EMPTY (0x5006 + count 0) — need restock");
+                SpStoneDepleted = empty;
             }
         }
         else if (Array.IndexOf(OpShopOpen, op) >= 0)
