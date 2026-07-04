@@ -662,8 +662,12 @@ public sealed class BotManager : IAsyncDisposable
                 else if (pkt.Opcode == OpPartyJoinCmd) handle.PendingPartyInviter = null; // joined; invite resolved
                 else if (pkt.Opcode == OpFriendConfirmReq)
                 {
-                    // charid = the requester (the player adding the bot); friendid = the bot.
-                    var requester = FiestaText.Decode(pkt.ReadBody<PROTO_NC_FRIEND_SET_CONFIRM_REQ>().charid.n5_name);
+                    // In the CONFIRM_REQ the server swaps to the RECIPIENT's view: charid = us (the bot being
+                    // asked), friendid = the OTHER char (the requester). Verified from the wire (0x5403 bytes:
+                    // field@0="IkFresh2"=self, field@20="Bot2433"=requester). Reading charid gave our OWN name,
+                    // so the confirm echoed ourselves back ("can't add yourself") → friend never linked. Read
+                    // friendid (the requester) so FriendConfirmAsync sends the OTHER char's name back.
+                    var requester = FiestaText.Decode(pkt.ReadBody<PROTO_NC_FRIEND_SET_CONFIRM_REQ>().friendid.n5_name);
                     handle.PendingFriendRequester = requester;
                     handle.Log($"friend request from '{requester}' pending — friendConfirm to answer");
                 }
