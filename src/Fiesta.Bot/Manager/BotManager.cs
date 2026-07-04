@@ -1209,6 +1209,20 @@ public sealed class BotManager : IAsyncDisposable
     private bool DialogHasMenuTag(int dialogId)
         => ClientData?.QuestDialog(dialogId)?.Contains("[MENU]", StringComparison.OrdinalIgnoreCase) ?? false;
 
+    /// <summary>True when quest <paramref name="questId"/> is accepted by pressing a MENU BUTTON rather
+    /// than a plain <c>NC_QUEST_SELECT_START_REQ</c>: its START dialog page carries a <c>[BUTTON]</c> tag
+    /// (e.g. the lvl-20 job-change q60015 = "[Begin the quest][1] [MENU]"). The server REFUSES SELECT_START
+    /// on these with err 2881; the real client instead answers the NPC menu the click opens with
+    /// <c>NC_ACT_NPCMENUOPEN_ACK {ack=1}</c> (select the button). HYPOTHESIS being validated live 2026-07-04
+    /// (operator-approved) — scoped to [BUTTON] start pages so it can't regress normal multi-quest givers,
+    /// which SELECT_START correctly and whose start pages have no [BUTTON].</summary>
+    private bool StartAcceptIsButton(int questId)
+    {
+        if (questId == 0 || ClientData?.Quest(questId) is not { } q) return false;
+        var dlg = ClientData.QuestDialog(q.StartDialogId);
+        return dlg is not null && dlg.Contains("[BUTTON]", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Open a merchant's shop and wait for its sell list. Mirrors the real client
     /// (PurchaseSell.pcapng): NPC-click → the server opens the NPC menu (NPCMENUOPEN_REQ) →
     /// reply NPCMENUOPEN_ACK with <paramref name="menuOption"/> (1 = shop) → the server sends
@@ -1469,12 +1483,22 @@ public sealed class BotManager : IAsyncDisposable
             await Task.Delay(80, ct);
         if (zv?.NpcMenuOpen == true)
         {
-            if (questId != 0)
+            if (questId != 0 && !StartAcceptIsButton(questId))
             {
                 var npcId = zv.MenuNpcId != 0 ? zv.MenuNpcId : (ushort)(zv.NearbyNpcs.FirstOrDefault(n => n.Handle == npcHandle)?.MobId ?? 0);
                 await s.SendAsync(new PROTO_NC_QUEST_SELECT_START_REQ { nNPCID = npcId, nQuestID = questId }, ct);
                 zv.ClearNpcMenu();
                 h.Log($"quest dialogue: SELECT_START npc={npcId} quest={questId} (multi-quest menu)");
+            }
+            else if (questId != 0 && StartAcceptIsButton(questId))
+            {
+                // BUTTON/[MENU]-accept quest (e.g. lvl-20 job-change q60015): SELECT_START is refused 2881;
+                // the real client presses the menu button → NPCMENUOPEN_ACK {ack=1}. Then the server serves
+                // the quest's SAY pages / accepts it, which the drain loop below handles. (operator-approved
+                // hypothesis 2026-07-04; scoped to [BUTTON] start pages.)
+                await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = 1 }, ct);
+                zv.ClearNpcMenu();
+                h.Log($"quest dialogue: BUTTON-accept q{questId} — answered NPC menu (option 1 = the accept button) npc={zv.MenuNpcId}");
             }
             else
             {
@@ -1963,6 +1987,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.PlayerAppeared += p => handle.Emit(new BotEvent(BotEventKind.PlayerAppeared, p));
                 zoneView.PlayerLeft += h => handle.Emit(new BotEvent(BotEventKind.PlayerLeft, h));
                 zoneView.LevelChanged += lvl => { handle.SetLevel(lvl); handle.Log($"level up -> {lvl}"); };
+                zoneView.Promoted += cls => { var old = handle.Class; handle.SetClass(cls); handle.Log($"JOB CHANGE: class {old} -> {cls} (PROMOTE_ACK)"); };
                 zoneView.HpChanged += hp => handle.Emit(new BotEvent(BotEventKind.Hp, hp));
                 zoneView.SpChanged += sp => handle.Emit(new BotEvent(BotEventKind.Sp, sp));
                 zoneView.Damaged += hit => handle.Emit(new BotEvent(BotEventKind.Hit, hit));

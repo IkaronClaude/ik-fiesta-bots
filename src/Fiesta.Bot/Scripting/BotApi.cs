@@ -186,6 +186,16 @@ public sealed class BotApi
     /// if not yet seeded. Lets the leveler see grind progress toward the next level.</summary>
     public double exp() => View?.Exp ?? -1;
 
+    /// <summary>The current character class id. Reflects a live JOB CHANGE (PROMOTE_ACK 0x1059) — the
+    /// leveler reads this to confirm the JCQ succeeded (class changed) and to pick class-appropriate rewards.</summary>
+    public int charClass() => _handle.Class;
+    /// <summary>The class id from the most recent PROMOTE_ACK this session, or -1 if no promotion yet.
+    /// Use to DETECT that a job change just happened (was -1 / old class → new class).</summary>
+    public int promotedClass() => View?.PromotedClass ?? -1;
+    /// <summary>The scenario/instance trigger-area last entered+armed (e.g. "Zone_Mob01"), or "" if not in
+    /// a scenario. The clear-room driver uses this to know it's inside the instance and which room armed.</summary>
+    public string scenarioArea() => View?.LastScenarioArea ?? "";
+
     /// <summary>The raw code from the last SELL_ACK (0x3005): 0x0381 = success, else rejected;
     /// -1 if no sell acked yet this session. Lets the driver verify a sell took.</summary>
     public int lastSellAck() => View?.LastSellAck ?? -1;

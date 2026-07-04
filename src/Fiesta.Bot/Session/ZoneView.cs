@@ -255,6 +255,16 @@ public sealed class ZoneView : IDisposable
     // Without this the bot's Level stays stale at the login value (it's only set from the WM
     // avatar list at login), so eligibleQuests filters on a wrong level and goal-detection (lvl 20) fails.
     private const ushort OpCharLevelChanged = 0x1074;
+    // NC_CHAR_PROMOTE_ACK (Char cmd 89 = 0x1059): {newclass u8}. The server sends this on a JOB CHANGE
+    // (the lvl-20/60/100 class advancement, done at the end of the JCQ turn-in) — the ONE packet that
+    // actually changes our class. Followed by STAT_REMAINPOINT (0x105B) + CHANGEPARAMCHANGE (0x1035).
+    // Ground truth: JCQ.pcapng, Fighter → newclass=2. See scratchpad/JCQ-INDEX.md.
+    private const ushort OpCharPromoteAck = 0x1059;
+    // NC_SCENARIO_AREAENTRY_REQ (Scenario cmd 5 = 0x6C05): {Name8 areaindex}. In a SCENARIO/instance the
+    // server fires this when the player crosses into a named trigger area (e.g. "Zone_Mob01"); the client
+    // MUST echo NC_SCENARIO_AREAENTRY_ACK (0x6C06, same areaindex) to arm that room (server then spawns its
+    // mob wave). Reflexive, like a keepalive. Ground truth: JCQ.pcapng (5 rooms Zone_Mob01..05).
+    private const ushort OpScenarioAreaEntryReq = 0x6C05;
     // NC_BAT_EXPGAIN_CMD (Bat cmd 11 = 0x240B): {expgain u32@0, mobhandle u16@4}. The server credits
     // exp per kill via this delta (it does NOT send an absolute NC_CHAR_EXP_CHANGED here), so we seed
     // the absolute at zone-enter and accumulate these to track live exp progress toward the next level.
@@ -581,6 +591,20 @@ public sealed class ZoneView : IDisposable
     /// <summary>Raised when the bot's OWN level changes (NC_CHAR_LEVEL_CHANGED_CMD for our WM
     /// handle) — carries the new level. BotManager updates BotHandle.Level off this.</summary>
     public event Action<byte>? LevelChanged;
+
+    /// <summary>Raised on a JOB CHANGE (NC_CHAR_PROMOTE_ACK) — carries the new class id. BotManager
+    /// updates BotHandle.Class off this so class-appropriate quest-reward selection and goal-detection
+    /// track the promotion. The last promoted class is also kept in <see cref="PromotedClass"/>.</summary>
+    public event Action<byte>? Promoted;
+    /// <summary>The class id from the most recent NC_CHAR_PROMOTE_ACK this session, or null if we
+    /// haven't seen a promotion (the char-select ClassID on BotHandle remains the baseline).</summary>
+    public byte? PromotedClass { get; private set; }
+
+    /// <summary>The most recent scenario trigger-area we entered + acked (e.g. "Zone_Mob01"), or null if
+    /// not in a scenario/instance. The clear-room driver watches this to know a room's mob wave is armed.</summary>
+    public string? LastScenarioArea { get; private set; }
+    /// <summary>Raised when we auto-ack a scenario AREAENTRY (carries the area name) — a new instance room armed.</summary>
+    public event Action<string>? ScenarioAreaEntered;
 
     public event Action<uint>? HpChanged;
 
@@ -1335,6 +1359,30 @@ public sealed class ZoneView : IDisposable
                     LevelChanged?.Invoke(newLevel);
                 }
             }
+        }
+        else if (op == OpCharPromoteAck)
+        {
+            // JOB CHANGE — {newclass u8}. The linchpin JCQ packet: our class actually changed here.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 1)
+            {
+                byte newclass = p[0];
+                PromotedClass = newclass;
+                _log?.Invoke($"[ZoneView] *** JOB CHANGE (PROMOTE_ACK) -> class {newclass} ***");
+                Promoted?.Invoke(newclass);
+            }
+        }
+        else if (op == OpScenarioAreaEntryReq)
+        {
+            // SCENARIO room trigger — echo the ACK (same areaindex) to arm the mob wave. Reflexive: the real
+            // client always does this, and without it the room never spawns (the JCQ/instance clear stalls).
+            var req = pkt.ReadBody<PROTO_NC_SCENARIO_AREAENTRY_REQ>();
+            int z = Array.IndexOf(req.areaindex.n8_name, (byte)0);
+            var area = System.Text.Encoding.ASCII.GetString(req.areaindex.n8_name, 0, z < 0 ? req.areaindex.n8_name.Length : z);
+            LastScenarioArea = area;
+            _ = _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = req.areaindex }, default);
+            _log?.Invoke($"[ZoneView] SCENARIO area entered: '{area}' — sent AREAENTRY_ACK (arming mob wave)");
+            ScenarioAreaEntered?.Invoke(area);
         }
         else if (op == OpCharReviveOther)
         {
