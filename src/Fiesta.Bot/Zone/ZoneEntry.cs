@@ -225,7 +225,12 @@ public sealed class ZoneEntry
                             int count = (attr == 1 && off + 5 < p.Length) ? p[off + 5]
                                       : (attr == 2 && off + 6 < p.Length) ? (p[off + 5] | (p[off + 6] << 8))
                                       : 1;
-                            if (itemId != 0) { items.Add((box, inven, itemId, count)); logged.Add($"{inven}:{itemId}x{count}"); }
+                            // itemId 0 is the REAL item "Leather Boots", NOT an empty slot. The frame lists
+                            // only OCCUPIED slots (num = the server's item count — verified vs tItem: 48 bag
+                            // items = num 48), so EVERY entry is a real item. The old `itemId != 0` guard
+                            // silently dropped item-0 (e.g. 6 Leather Boots in slots 28-33), making bagFull()/
+                            // free-slot wrong so GET_PLAYER_EMPTY_INVENTORY hand-ins failed. (wire+DB 2026-07-07)
+                            items.Add((box, inven, itemId, count)); logged.Add($"{inven}:{itemId}x{count}");
                             off += 1 + datasize; // entry = datasize-byte + datasize bytes (location(2)+info)
                         }
                         _log($"[Zone] item frame box={box} n={num} ds0={(num > 0 && p.Length > 3 ? p[3] : 0)} items=[{string.Join(",", logged)}]");

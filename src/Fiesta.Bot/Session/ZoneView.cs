@@ -920,7 +920,9 @@ public sealed class ZoneView : IDisposable
         int bag = 0, eq = 0;
         foreach (var (box, inven, itemId, count) in items)
         {
-            if (itemId == 0) continue;
+            // itemId 0 = the REAL item "Leather Boots" (a real occupied slot), NOT empty — the login list
+            // sends only occupied slots, so keep item-0 entries (the old skip lost them → bagFull()/free-slot
+            // wrong → GET_PLAYER_EMPTY_INVENTORY hand-ins failed; wire+DB proof 2026-07-07).
             var slot = (byte)(inven & 0xFF);
             if (box == EquipBox) { _equipment[slot] = itemId; eq++; }
             else if (box == MainBag) { _inventory[slot] = itemId; _invCount[slot] = count; bag++; } // ONLY
