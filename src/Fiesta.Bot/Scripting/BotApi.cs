@@ -98,6 +98,11 @@ public sealed class BotApi
         // Chain Helmet/Pants, Buckler — verified ItemGradeType=0); >=1 = a named/special drop (e.g. "Solar
         // Eclipse Leather Boots") worth keeping. The vendor-trash signal for grey-gear selling.
         t["gradeType"] = it.GradeType;
+        // twoHand = a 2-handed weapon (occupies BOTH hand slots — Equip 10 left + 12 right). Verified in
+        // ItemInfo: 2H axes/greatswords sit in slot 12, bows in slot 10, all with TwoHand=1. shieldAc = an
+        // off-hand shield (Equip 10, ShieldAC>0). The driver uses twoHand to avoid the infinite "equip a
+        // second hand item → server rejects (2H uses both hands) → re-equip" loop. (operator 2026-07-07)
+        t["twoHand"] = it.TwoHand; t["shieldAc"] = it.ShieldAc;
         // For a skill scroll, the ACTIVE-skill id it teaches (InxName join), else -1. Lets the driver
         // skip buying a scroll for a skill already learned: if hasSkill(itemInfo(id).scrollSkillId) skip.
         var scrollSid = it.IsScroll ? (_mgr.ClientData?.ScrollSkillId(id) ?? -1) : -1;

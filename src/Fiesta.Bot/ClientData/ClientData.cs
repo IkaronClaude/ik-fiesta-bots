@@ -124,7 +124,11 @@ public sealed class ClientData
         return new ItemData(itemId, GetStr(row, "Name"), GetInt(row, "UseClass"), GetInt(row, "DemandLv"),
             GetInt(row, "Grade"), GetInt(row, "Equip"), GetStr(row, "ItemUseSkill") == "UseSkill",
             GetInt(row, "Type"), GetInt(row, "ItemGradeType"),
-            GetInt(row, "Class"), GetInt(row, "MaxLot"), GetInt(row, "SellPrice"));
+            GetInt(row, "Class"), GetInt(row, "MaxLot"), GetInt(row, "SellPrice"),
+            // TwoHand=1 → a 2-handed weapon (occupies the weapon AND off-hand slot); ShieldAC>0 → a shield
+            // (off-hand). A shield can't be worn with a 2H weapon — the driver uses these to avoid the
+            // infinite "equip shield → server rejects → re-equip" loop on a 2H wielder (operator 2026-07-07).
+            GetInt(row, "TwoHand") != 0, GetInt(row, "ShieldAC"));
     }
 
     /// <summary>The display name of a skill id from client <c>ActiveSkill</c> (col "Name").
@@ -413,7 +417,7 @@ public sealed record MobData(int Id, string Name, string InxName, int Level, int
 /// DIFFERENT (higher) rarity — never sell those").</summary>
 public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
     int EquipSlot, bool IsScroll, int Type = 0, int GradeType = 0, int ItemClass = 0,
-    int MaxLot = 0, int SellPrice = 0);
+    int MaxLot = 0, int SellPrice = 0, bool TwoHand = false, int ShieldAc = 0);
 
 /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c>: the
 /// <see cref="Map"/> short-name and the <see cref="CenterX"/>/<see cref="CenterY"/> of its
