@@ -906,15 +906,7 @@ public sealed class BotManager : IAsyncDisposable
         // Seed the COMPLETE cross-map web from client nav data once (MapWayPoint/MapLinkPoint) plus the
         // TOWN-PORTAL edges (TownPortal.shn), so routing works to maps the bot has never visited and can
         // choose a portal hop when it's cheaper than hiking the field-gate chain.
-        if (!Graph.Seeded && ClientData is { } cd)
-        {
-            var seedEdges = cd.BuildGateEdges();
-            Graph.Seed(seedEdges);
-            var portalEdges = BuildPortalEdges(cd);
-            Graph.SeedPortals(portalEdges);
-            _bots.TryGetValue(id, out var hh);
-            hh?.Log($"[travel] seeded map graph: {seedEdges.Count} gate edges + {portalEdges.Count} town-portal edges");
-        }
+        SeedGraphIfNeeded(id);
         ObserveGates(id); // fold the bot's in-view gates into the graph (refreshes live handles)
 
         // Cost-gated route: Dijkstra over field gates AND town portals, edge cost = on-map walk distance
@@ -932,6 +924,38 @@ public sealed class BotManager : IAsyncDisposable
         handle.TravelCts = travelCts;
         _ = Task.Run(() => RunTravelAsync(handle, route, unitsPerSec, travelCts), travelCts.Token);
         return (TravelResult.Started, route);
+    }
+
+    /// <summary>Seed the cross-map graph from client nav data (field gates + town portals) once. Idempotent.</summary>
+    private void SeedGraphIfNeeded(string id)
+    {
+        if (Graph.Seeded || ClientData is not { } cd) return;
+        var seedEdges = cd.BuildGateEdges();
+        Graph.Seed(seedEdges);
+        var portalEdges = BuildPortalEdges(cd);
+        Graph.SeedPortals(portalEdges);
+        _bots.TryGetValue(id, out var hh);
+        hh?.Log($"[travel] seeded map graph: {seedEdges.Count} gate edges + {portalEdges.Count} town-portal edges " +
+                $"({Graph.Maps().Count} map nodes)");
+    }
+
+    /// <summary>Compute the cross-map route WITHOUT starting travel — a diagnostic / decision helper for the
+    /// Lua leveler (e.g. skip an epic whose giver-town is unroutable). Seeds the graph + folds in-view gates
+    /// first, exactly like <see cref="TravelTo"/>. <see cref="TravelResult.Started"/> here means "a route
+    /// exists" (nothing is moved).</summary>
+    public (TravelResult Result, IReadOnlyList<GateEdge>? Route) RouteInfo(string id, string destMap)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return (TravelResult.NotFound, null);
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is null) return (TravelResult.NotInZone, null);
+        if (handle.CurrentMap is not { } from) return (TravelResult.NotInZone, null);
+        if (string.Equals(from, destMap, StringComparison.OrdinalIgnoreCase))
+            return (TravelResult.AlreadyThere, Array.Empty<GateEdge>());
+        SeedGraphIfNeeded(id);
+        ObserveGates(id);
+        var startPos = handle.Position is { } sp ? (sp.X, sp.Y) : (0u, 0u);
+        var costed = Graph.RouteCost(from, startPos, destMap, null, (int)handle.Level, StraightLineCost);
+        if (costed is not { Route.Count: > 0 } cr) return (TravelResult.NoRoute, null);
+        return (TravelResult.Started, cr.Route);
     }
 
     /// <summary>Stop an in-progress <see cref="TravelTo"/> (no-op if not travelling).

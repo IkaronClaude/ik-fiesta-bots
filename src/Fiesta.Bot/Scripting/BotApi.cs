@@ -652,6 +652,43 @@ public sealed class BotApi
     public bool walk(double fx, double fy, double tx, double ty) => Ok(Wait(_mgr.WalkAsync(Id, (uint)fx, (uint)fy, (uint)tx, (uint)ty)));
     public bool travelTo(string map) => _mgr.TravelTo(Id, map).Result == BotManager.TravelResult.Started;
     public bool stopTravel() => Ok(_mgr.StopTravel(Id));
+
+    /// <summary>Non-moving route query (diagnostic / decision helper): can the bot route to <paramref name="map"/>
+    /// from where it is? Returns { result=&lt;TravelResult&gt;, ok=bool, hops, portals, maps={..} }.</summary>
+    public DynValue routeTo(string map)
+    {
+        var (res, route) = _mgr.RouteInfo(Id, map);
+        var t = NewTable();
+        t["result"] = res.ToString();
+        t["ok"] = res is BotManager.TravelResult.Started or BotManager.TravelResult.AlreadyThere;
+        if (route is not null)
+        {
+            t["hops"] = route.Count;
+            t["portals"] = route.Count(e => e.IsPortal);
+            var maps = NewTable(); int i = 1;
+            foreach (var e in route) maps[i++] = e.IsPortal ? $"{e.ToMap}(portal)" : e.ToMap;
+            t["maps"] = DynValue.NewTable(maps);
+        }
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>All map nodes currently in the routing graph (seeded client nav + live-observed gates).</summary>
+    public DynValue knownMaps()
+    {
+        var t = NewTable(); int i = 1;
+        foreach (var m in _mgr.Graph.Maps().OrderBy(x => x, StringComparer.OrdinalIgnoreCase)) t[i++] = m;
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Outgoing edges from <paramref name="map"/> in the routing graph — field gates AND town
+    /// portals — as { to=&lt;map&gt;, portal=bool } rows. For diagnosing why a route is/ isn't found.</summary>
+    public DynValue mapEdges(string map)
+    {
+        var t = NewTable(); int i = 1;
+        foreach (var e in _mgr.Graph.EdgesFrom(map)) { var r = NewTable(); r["to"] = e.ToMap; r["portal"] = false; t[i++] = DynValue.NewTable(r); }
+        foreach (var e in _mgr.Graph.PortalEdgesFrom(map)) { var r = NewTable(); r["to"] = e.ToMap; r["portal"] = true; r["minLevel"] = e.MinLevel; t[i++] = DynValue.NewTable(r); }
+        return DynValue.NewTable(t);
+    }
     public bool follow(string name) => Ok(_mgr.Follow(Id, name));
     public bool stopFollow() => Ok(_mgr.StopFollow(Id));
     public bool useGate(int handle) => Ok(Wait(_mgr.UseGateAsync(Id, (ushort)handle)));
