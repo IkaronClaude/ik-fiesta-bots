@@ -150,6 +150,22 @@ public sealed class ClientData
         return SkillIdByInx().TryGetValue(inx, out var id) ? id : -1;
     }
 
+    /// <summary>The prerequisite ACTIVE-skill id a skill must already have learned before it can itself
+    /// be learned — the client <c>ActiveSkill.DemandSk</c> column holds the prereq skill's <c>InxName</c>
+    /// (e.g. Fatal Slash [02] / <c>RedSlash02</c> has <c>DemandSk="RedSlash01"</c> = Fatal Slash [01]).
+    /// Returns 0 if there is no prereq ("-"/empty) or it can't be resolved. Lets the learn-from-bag sweep
+    /// skip a rank-[02] scroll until rank-[01] is learned — the server refuses the out-of-order USE, which
+    /// otherwise loops forever re-using the unlearnable scroll and starves the learnable ones.</summary>
+    public int SkillPrereqId(int skillId)
+    {
+        var t = Table("ActiveSkill");
+        var row = t?.FindByLong("ID", skillId) ?? t?.FindByLong("id", skillId);
+        if (row is null) return 0;
+        var dsk = GetStr(row, "DemandSk");
+        if (string.IsNullOrEmpty(dsk) || dsk == "-") return 0;
+        return SkillIdByInx().TryGetValue(dsk, out var id) ? id : 0;
+    }
+
     private IReadOnlyDictionary<string, int> SkillIdByInx()
     {
         if (_skillIdByInx is { } cached) return cached;

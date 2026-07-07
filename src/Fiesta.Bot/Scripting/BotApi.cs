@@ -96,7 +96,12 @@ public sealed class BotApi
         t["gradeType"] = it.GradeType;
         // For a skill scroll, the ACTIVE-skill id it teaches (InxName join), else -1. Lets the driver
         // skip buying a scroll for a skill already learned: if hasSkill(itemInfo(id).scrollSkillId) skip.
-        t["scrollSkillId"] = it.IsScroll ? (_mgr.ClientData?.ScrollSkillId(id) ?? -1) : -1;
+        var scrollSid = it.IsScroll ? (_mgr.ClientData?.ScrollSkillId(id) ?? -1) : -1;
+        t["scrollSkillId"] = scrollSid;
+        // The PREREQUISITE skill id the taught skill needs first (ActiveSkill DemandSk), or 0 if none.
+        // Gate learn-from-bag on hasSkill(prereq) so a rank-[02] scroll isn't USE'd (and looped forever)
+        // before rank-[01] is learned — the server refuses the out-of-order learn.
+        t["scrollSkillPrereq"] = scrollSid >= 0 ? (_mgr.ClientData?.SkillPrereqId(scrollSid) ?? 0) : 0;
         return DynValue.NewTable(t);
     }
 
