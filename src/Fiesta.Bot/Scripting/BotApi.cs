@@ -69,6 +69,10 @@ public sealed class BotApi
         // Mage 20-25, Joker 27+); ==1 is the Trainee/alchemy/event bucket (Mining, Ride Mover, the
         // event water-balloons) — the cast rotation must skip those. Passives aren't in ActiveSkill.
         t["useClass"] = si.UseClass;
+        // maxWc = the skill's weapon-damage coefficient (ActiveSkill.MaxWC). >0 = deals real damage
+        // (Slice&Dice/Bone Slicer/Fatal Slash); 0 = utility with NO damage (Snearing Kick, Concussive
+        // Charge). The kite-chip rotation casts only maxWc>0 skills so a fled mob keeps bleeding.
+        t["maxWc"] = si.MaxWc;
         return DynValue.NewTable(t);
     }
 
@@ -585,6 +589,15 @@ public sealed class BotApi
         var now = DateTime.UtcNow;
         return (now - v.LastHitAtUtc).TotalMilliseconds < withinMs
             || (now - v.LastDamageDealtAtUtc).TotalMilliseconds < withinMs;
+    }
+    /// <summary>True if WE landed a CONNECTING hit (Damage&gt;0, not a whiff/out-of-range) within the last
+    /// <paramref name="withinMs"/> ms. Lets the kite-chip logic confirm a damage skill actually connected
+    /// (operator 2026-07-07: "check it didn't miss via packets") — a miss/out-of-range leaves this false.</summary>
+    public bool damageDealt(int withinMs = 3000)
+    {
+        var v = View; if (v is null) return false;
+        return v.LastRealDamageDealtAtUtc > DateTime.MinValue
+            && (DateTime.UtcNow - v.LastRealDamageDealtAtUtc).TotalMilliseconds < withinMs;
     }
     /// <summary>Count of mobs the bot itself landed the killing blow on (REALLYKILL attacker==self).
     /// The real kill signal for quest/XP credit — a mob merely vanishing (despawn / another

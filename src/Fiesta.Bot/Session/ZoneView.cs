@@ -648,6 +648,11 @@ public sealed class ZoneView : IDisposable
     /// must check damage dealt OR received, not just received.</summary>
     public DateTime LastDamageDealtAtUtc { get; private set; } = DateTime.MinValue;
 
+    /// <summary>When the bot last landed a CONNECTING hit (Attacker==self AND Damage&gt;0) — distinct from
+    /// <see cref="LastDamageDealtAtUtc"/> which fires on any self-swing including a whiff/out-of-range
+    /// (Damage==0). Lets the driver confirm a kite-chip damage skill actually connected vs missed.</summary>
+    public DateTime LastRealDamageDealtAtUtc { get; private set; } = DateTime.MinValue;
+
     /// <summary>True while the bot is dead (DEADMENU opened, not yet revived). Behaviours
     /// can wait for an in-place revive (cleric) before respawning to town, or respawn via
     /// <see cref="Manager.BotManager.RespawnAsync"/>; the server auto-respawns after ~2 min.</summary>
@@ -669,7 +674,14 @@ public sealed class ZoneView : IDisposable
             _aggressors[h.Attacker] = DateTime.UtcNow;
             LastHitAtUtc = DateTime.UtcNow;
         }
-        if (SelfHandle is { } me && h.Attacker == me) LastDamageDealtAtUtc = DateTime.UtcNow;
+        if (SelfHandle is { } me && h.Attacker == me)
+        {
+            LastDamageDealtAtUtc = DateTime.UtcNow;
+            // A CONNECTING hit (Damage>0) vs a whiff/out-of-range (Damage==0). LastDamageDealtAtUtc fires
+            // on any self-swing; this one only on real damage — so the driver can tell a kite-chip skill
+            // actually landed (operator 2026-07-07: "check it didn't miss via packets") vs it whiffed.
+            if (h.Damage > 0) LastRealDamageDealtAtUtc = DateTime.UtcNow;
+        }
         Damaged?.Invoke(h);
     }
 
