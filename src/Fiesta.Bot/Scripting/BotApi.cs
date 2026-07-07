@@ -759,6 +759,20 @@ public sealed class BotApi
         if (_handle.Position is { } p) t["dist"] = Math.Sqrt(Sq((double)e.X - p.X) + Sq((double)e.Y - p.Y));
         return DynValue.NewTable(t);
     }
+
+    /// <summary>A quest/turn-in NPC's canonical location from client <c>MobCoordinate.shn</c>
+    /// ({map,x,y}), or nil if the NPC isn't in the table. Unlike <see cref="mobLocation"/> this KEEPS
+    /// zero-area POINT rows — a stationary NPC is a point, not a spawn field — so a cross-map hand-in can
+    /// resolve the right map AND walk to the NPC even when it was never roam-learned and isn't in the
+    /// current zone seed. Prefers the current map if the NPC is listed there. Client data (the same table
+    /// the quest-log marker uses) — no server files, no hardcoding. Operator 2026-07-07.</summary>
+    public DynValue npcCoord(int npcId)
+    {
+        var loc = _mgr.ClientData?.MobCoordinate(npcId, _handle.CurrentMap);
+        if (loc is null) return DynValue.Nil;
+        var t = NewTable(); t["map"] = loc.Map; t["x"] = loc.CenterX; t["y"] = loc.CenterY;
+        return DynValue.NewTable(t);
+    }
     /// <summary>Count of NPCs in the current map's seed roster.</summary>
     public int npcSeedCount() => View?.NpcSeedCount ?? 0;
 
