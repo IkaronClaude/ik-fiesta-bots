@@ -193,6 +193,20 @@ public sealed class BotApi
     /// pacing over a drop it can't carry. Cleared on a successful sell or pick.</summary>
     public bool bagFull() => View?.BagFull ?? false;
 
+    /// <summary>Empty bag slots, computed from the (now-complete, item-0-inclusive) inventory model:
+    /// default 48-slot bag (operator 2026-07-07) + 24 if the Old Bag expansion is active (detected by any
+    /// item in slots &gt;=48) minus occupied slots. Unlike <see cref="bagFull"/> (the stale 0x346 pick-fail
+    /// flag) this is an accurate free-slot count — lets a GET_PLAYER_EMPTY_INVENTORY hand-in free space
+    /// FIRST instead of driving a doomed hand-in. TODO: replace the 48 base with the server-seeded bag size
+    /// once that field is decoded (see the P1 inventory ticket).</summary>
+    public int bagFreeSlots()
+    {
+        var inv = View?.Inventory; if (inv is null) return 48;
+        int occHigh = inv.Keys.Count(s => s >= 48);
+        int cap = 48 + (occHigh > 0 ? 24 : 0);
+        return Math.Max(0, cap - inv.Count);
+    }
+
     /// <summary>Current money ("cen"), or -1 if no money packet seen yet. Use to gate buys and to
     /// confirm a sell paid out (money rises after a successful sell).</summary>
     public double money() => View?.Money ?? -1;
