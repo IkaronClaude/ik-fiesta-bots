@@ -657,6 +657,17 @@ public static class BotEndpoints
         catch { return null; }
     });
 
+    // Instance doors loaded from BLOCKINFO_DIR/<Map>.sbi (BYO), cached per map. Empty list for non-instance maps.
+    private static readonly ConcurrentDictionary<string, IReadOnlyList<Fiesta.Bot.Navigation.InstanceDoor>> _doors = new(StringComparer.OrdinalIgnoreCase);
+
+    internal static IReadOnlyList<Fiesta.Bot.Navigation.InstanceDoor> LoadDoors(string map) => _doors.GetOrAdd(map, m =>
+    {
+        var dir = Environment.GetEnvironmentVariable("BLOCKINFO_DIR");
+        if (string.IsNullOrWhiteSpace(dir)) return Array.Empty<Fiesta.Bot.Navigation.InstanceDoor>();
+        try { return Fiesta.Bot.Navigation.InstanceDoors.Load(Path.Combine(dir, m + ".sbi")); }
+        catch { return Array.Empty<Fiesta.Bot.Navigation.InstanceDoor>(); }
+    });
+
     private static IResult ToResult(BotManager.ActionResult result, string id, object ok) => result switch
     {
         BotManager.ActionResult.Sent => Results.Ok(ok),

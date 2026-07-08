@@ -1343,6 +1343,7 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
+                LastScenarioArea = null;
                 MapChanged?.Invoke(h);
             }
         }
@@ -1665,6 +1666,8 @@ public sealed class ZoneView : IDisposable
                 _nearby.Clear();
                 _drops.Clear();  // ground items are per-map too
                 ShopOpenUtc = default;  // any open shop closes when we leave the map
+                LastScenarioArea = null;  // scenario/instance area is per-map — clear on leaving (else the
+                                          // instance driver thinks we're still inside + hoovers field mobs)
                 _log?.Invoke(h.IsCrossServer
                     ? $"[ZoneView] map handoff (cross-server) -> mapId={h.MapId} @({h.X},{h.Y}) via {h.Ip}:{h.Port} wm={h.WmHandle}"
                     : $"[ZoneView] map change (in-band) -> mapId={h.MapId} @({h.X},{h.Y})");

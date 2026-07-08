@@ -43,6 +43,7 @@ if (xorTable is not null)
         {
             // Let navigation actions (follow) pathfind over the BYO block grids.
             GridProvider = BotEndpoints.LoadGrid,
+            DoorProvider = BotEndpoints.LoadDoors,
             ClientData = new Fiesta.Bot.GameData.ClientData(clientDataDir),
         };
     });

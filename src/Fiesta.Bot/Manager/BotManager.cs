@@ -45,6 +45,10 @@ public sealed class BotManager : IAsyncDisposable
     /// callers fall back to straight-line movement.</summary>
     public Func<string, BlockGrid?>? GridProvider { get; set; }
 
+    /// <summary>Per-map instance-door provider (from <c>BLOCKINFO_DIR/&lt;Map&gt;.sbi</c>). Set by the host;
+    /// the Lua instance/JCQ driver reads it (via <c>bot.instanceDoors()</c>) to walk room-to-room.</summary>
+    public Func<string, IReadOnlyList<Fiesta.Bot.Navigation.InstanceDoor>?>? DoorProvider { get; set; }
+
     /// <summary>BYO client game-data reader (SHN tables from the operator's
     /// <c>ressystem</c>). Lets feature code resolve client-visible data — e.g. a skill's
     /// facing arc / cooldown / mana from <c>ActiveSkill</c> — instead of hard-coding it.

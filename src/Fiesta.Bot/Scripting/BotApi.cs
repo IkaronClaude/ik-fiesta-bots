@@ -224,6 +224,21 @@ public sealed class BotApi
     /// a scenario. The clear-room driver uses this to know it's inside the instance and which room armed.</summary>
     public string scenarioArea() => View?.LastScenarioArea ?? "";
 
+    /// <summary>The current map's instance DOORS (room connectors) from its <c>.sbi</c>, each { name, x, y }
+    /// with a WORLD-coord centre. The instance/JCQ clear driver walks door-to-door to traverse the rooms
+    /// when no mob is in view (the blind patrol never found them). Empty if not an instance / no .sbi.</summary>
+    public DynValue instanceDoors()
+    {
+        var t = NewTable();
+        var doors = _handle.CurrentMap is { } map ? _mgr.DoorProvider?.Invoke(map) : null;
+        if (doors is not null)
+        {
+            int i = 1;
+            foreach (var d in doors) { var r = NewTable(); r["name"] = d.Name; r["x"] = d.WorldX; r["y"] = d.WorldY; t[i++] = DynValue.NewTable(r); }
+        }
+        return DynValue.NewTable(t);
+    }
+
     /// <summary>The raw code from the last SELL_ACK (0x3005): 0x0381 = success, else rejected;
     /// -1 if no sell acked yet this session. Lets the driver verify a sell took.</summary>
     public int lastSellAck() => View?.LastSellAck ?? -1;
