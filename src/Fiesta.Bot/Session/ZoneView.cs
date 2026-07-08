@@ -188,6 +188,13 @@ public sealed class ZoneView : IDisposable
     // tells us the position to snap back to. The authoritative source of truth for
     // where we actually are; the client shows "this area is not accessible".
     private const ushort OpActMoveFail = 0x201B;
+    // Abnormal-state set/reset on an entity: NC_BAT_ABSTATESET_CMD (0x2427) / _RESET (0x2428).
+    // Layout [targetHandle u16][abStataIndex u32] (6 bytes). abStataIndex maps to AbState.shn; some
+    // states IMMOBILIZE (stun/root/entangle) — e.g. the JCQ clone roots the player with StaQuestEntangle
+    // (index 290). We track these on SELF so nav knows a MOVEFAIL is a root (don't learn a wall) and
+    // combat knows to WAIT. Set = state applied, Reset = state cleared.
+    private const ushort OpAbStateSet = 0x2427;
+    private const ushort OpAbStateReset = 0x2428;
     // Other players' movement broadcasts: SOMEONE_MOVEWALK (ACT cmd 24) / MOVERUN
     // (cmd 26). Layout [handle u16][from xy(8)][to xy(8)][speed u16][attr]. Briefinfo
     // only gives a player's spawn position; these keep NearbyPlayer.X/Y live as they
@@ -1091,6 +1098,33 @@ public sealed class ZoneView : IDisposable
     /// near us. Null = treat everything as huntable (no client data).</summary>
     public Func<ushort, bool>? IsHuntableMob { get; set; }
 
+    /// <summary>Returns true if an abstate index IMMOBILIZES the target (set by the manager from
+    /// client AbState/SubAbState — see <see cref="GameData.ClientData.IsMoveBlockingAbstate"/>).
+    /// Used to know when a self-abstate is a root/stun so nav won't learn a wall and combat waits.</summary>
+    public Func<uint, bool>? IsMoveBlockingAbstate { get; set; }
+
+    // The abstate indices currently ACTIVE on SELF (added on ABSTATESET, removed on ABSTATERESET for
+    // our own handle). Rooted = any of them immobilizes us. Concurrent set: the read loop writes it,
+    // the nav/combat callers read Rooted.
+    private readonly HashSet<uint> _selfAbstates = new();
+    private readonly object _selfAbstateLock = new();
+
+    /// <summary>True while a movement-blocking abnormal state (stun/root/entangle) is active on the bot
+    /// — the server will MOVEFAIL every move until it clears. Nav uses this to NOT learn the tile as a
+    /// wall (the JCQ grid-poisoning bug), and combat/instance code to WAIT instead of thrashing.</summary>
+    public bool Rooted
+    {
+        get
+        {
+            lock (_selfAbstateLock)
+            {
+                if (_selfAbstates.Count == 0 || IsMoveBlockingAbstate is not { } f) return false;
+                foreach (var a in _selfAbstates) if (f(a)) return true;
+                return false;
+            }
+        }
+    }
+
     private void OnPacket(FiestaPacket pkt)
     {
         var op = pkt.Opcode;
@@ -1126,7 +1160,18 @@ public sealed class ZoneView : IDisposable
                 var attacker = (ushort)(p[2] | (p[3] << 8));
                 bool mine = SelfHandle != 0 && attacker == SelfHandle;
                 LogV($"[ZoneView] REALLYKILL dead={dead} attacker={attacker} self={SelfHandle} mine={mine}");
-                if (_npcs.TryRemove(dead, out _) && mine) { LastKill = dead; KillsByMe++; _log?.Invoke($"[combat] KILLED mob h={dead} (totalKills={KillsByMe})"); }
+                // Retire the dead entity from BOTH maps: regular mobs live in _npcs, but scenario/instance
+                // enemies (the JCQ "shadow" CLONES) are CHARACTERS in _nearby. Without clearing _nearby a
+                // killed clone lingers with a stale position (the "dist 3920" chase-a-corpse bug) and the
+                // kill is never credited (KillsByMe gated on _npcs) — so the instance driver can't tell it
+                // won and move to the next clone/room.
+                bool wasMob = _npcs.TryRemove(dead, out _);
+                bool wasChar = _nearby.TryRemove(dead, out _);
+                if ((wasMob || wasChar) && mine)
+                {
+                    LastKill = dead; KillsByMe++;
+                    _log?.Invoke($"[combat] KILLED {(wasChar && !wasMob ? "clone/char" : "mob")} h={dead} (totalKills={KillsByMe})");
+                }
             }
         }
         else if (op == OpBriefMob)
@@ -1216,6 +1261,29 @@ public sealed class ZoneView : IDisposable
                 var by = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[4..]);
                 LogV($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
                 MoveFailed?.Invoke((bx, by));
+            }
+        }
+        else if (op == OpAbStateSet || op == OpAbStateReset)
+        {
+            // [targetHandle u16][abStataIndex u32]. Track states applied to SELF so nav/combat know when
+            // we're rooted (a movement-blocking abstate → the server MOVEFAILs every move; NOT a wall).
+            var p = pkt.Payload.Span;
+            if (p.Length >= 6)
+            {
+                var target = (ushort)(p[0] | (p[1] << 8));
+                var idx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[2..]);
+                if (SelfHandle is { } self && target == self)
+                {
+                    bool set = op == OpAbStateSet;
+                    bool moveBlock = IsMoveBlockingAbstate?.Invoke(idx) == true;
+                    bool changed;
+                    lock (_selfAbstateLock) changed = set ? _selfAbstates.Add(idx) : _selfAbstates.Remove(idx);
+                    if (changed && moveBlock)
+                        _log?.Invoke($"[ZoneView] ABSTATE {(set ? "SET" : "RESET")} idx={idx} on SELF — MOVE-BLOCKING (rooted={Rooted})");
+                    else
+                        LogV($"[ZoneView] ABSTATE {(set ? "SET" : "RESET")} idx={idx} on SELF (moveBlock={moveBlock})");
+                }
+                else LogV($"[ZoneView] ABSTATE {(op == OpAbStateSet ? "SET" : "RESET")} idx={idx} on h={target}");
             }
         }
         else if (op == OpBatCastFail)
@@ -1344,6 +1412,7 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
+                lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
                 LastScenarioArea = null;
                 MapChanged?.Invoke(h);
             }
@@ -1666,6 +1735,7 @@ public sealed class ZoneView : IDisposable
                 _npcs.Clear(); _npcSeed.Clear();  // entities are per-map; the new map re-broadcasts
                 _nearby.Clear();
                 _drops.Clear();  // ground items are per-map too
+                lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
                 ShopOpenUtc = default;  // any open shop closes when we leave the map
                 LastScenarioArea = null;  // scenario/instance area is per-map — clear on leaving (else the
                                           // instance driver thinks we're still inside + hoovers field mobs)

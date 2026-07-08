@@ -224,6 +224,11 @@ public sealed class BotApi
     /// a scenario. The clear-room driver uses this to know it's inside the instance and which room armed.</summary>
     public string scenarioArea() => View?.LastScenarioArea ?? "";
 
+    /// <summary>True while a movement-blocking abnormal state (stun/root/entangle, e.g. the JCQ clone's
+    /// StaQuestEntangle) is active on the bot — the server MOVEFAILs every move until it clears. The
+    /// instance/combat lua should WAIT (don't cast/approach/walk into it) while this is true.</summary>
+    public bool rooted() => View?.Rooted ?? false;
+
     /// <summary>The current map's instance DOORS (room connectors) from its <c>.sbi</c>, each { name, x, y }
     /// with a WORLD-coord centre. The instance/JCQ clear driver walks door-to-door to traverse the rooms
     /// when no mob is in view (the blind patrol never found them). Empty if not an instance / no .sbi.</summary>

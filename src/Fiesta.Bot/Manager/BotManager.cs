@@ -2075,6 +2075,7 @@ public sealed class BotManager : IAsyncDisposable
                 if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
                 if (ClientData is { } cdata) zoneView.IsHuntableMob = mobId => cdata.IsHuntableEnemy(mobId); // ignore guards
+                if (ClientData is { } cdata2) zoneView.IsMoveBlockingAbstate = idx => cdata2.IsMoveBlockingAbstate(idx); // root/stun → don't learn walls
                 zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);
                 zoneView.SeedMaxStones(entry.MaxHpStone, entry.MaxSpStone); // reserve capacity from [1802]
                 zoneView.SeedStones(entry.CurHpStone, entry.CurSpStone); // real reserve from zone-enter char-info
@@ -2105,6 +2106,16 @@ public sealed class BotManager : IAsyncDisposable
                     // where we got snapped back to (else we'd block the ground we're standing on).
                     handle.SetPosition(pos.X, pos.Y);
                     handle.WalkCts?.Cancel();
+                    // DON'T LEARN A WALL WHILE ROOTED: if a movement-blocking abstate (stun/root/entangle) is
+                    // active, the server MOVEFAILs EVERY move regardless of the tile — that's the root, not an
+                    // obstacle. Learning it poisoned the nav grid with hundreds of false walls (the JCQ
+                    // instance thrash). Resync + abort, but skip the MarkBlocked until the root clears.
+                    if (zoneView.Rooted)
+                    {
+                        Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) while ROOTED (stun/entangle) — NOT learning a wall, waiting out the state");
+                        handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
+                        return;
+                    }
                     // Learn the obstacle: block the tile ~1.5 tiles AHEAD of the snap-back position in the
                     // DIRECTION we were trying to move — that's the cell the server refused. (Block by
                     // direction, not the move endpoint: a smoothed straight run may end on a legit tile it

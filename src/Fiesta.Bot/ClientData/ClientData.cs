@@ -26,6 +26,8 @@ public sealed class ClientData
     private readonly object _questLock = new();
     private IReadOnlyDictionary<string, int>? _skillIdByInx; // ActiveSkill InxName -> skill ID
     private readonly object _skillInxLock = new();
+    private IReadOnlySet<uint>? _moveBlockAbstates; // AbState.AbStataIndex set that immobilizes (stun/root)
+    private readonly object _abstateLock = new();
 
     public ClientData(string dataDir) => _dataDir = dataDir;
 
@@ -189,6 +191,54 @@ public sealed class ClientData
                     if (!string.IsNullOrEmpty(inx)) map[inx] = GetInt(row, "ID");
                 }
             return _skillIdByInx = map;
+        }
+    }
+
+    /// <summary>True if the abstate index (the value carried in NC_BAT_ABSTATESET_CMD /
+    /// NC_BAT_ABSTATERESET_CMD) IMMOBILIZES the target — i.e. the character cannot move while it is
+    /// active (stun / root / entangle / sleep). Derived data-driven from the client SHNs, no baked ids:
+    /// an <c>AbState</c> row (keyed by <c>AbStataIndex</c>) → its <c>SubAbState</c> → the SubAbState row
+    /// whose any <c>ActionIndex*</c> equals the immobilize action (19). This is how the bot knows a
+    /// server MOVEFAIL is caused by a ROOT (so it must NOT learn that tile as a wall — the grid-poisoning
+    /// bug that wedged it in the JCQ instance) and to WAIT rather than thrash. Verified: the JCQ clone
+    /// applies <c>StaQuestEntangle</c> (AbStataIndex 290 → SubStaQuestEntangle, ActionIndexA=19).</summary>
+    public bool IsMoveBlockingAbstate(uint abStataIndex) => MoveBlockAbstates().Contains(abStataIndex);
+
+    private const int ImmobilizeActionIndex = 19;
+
+    private IReadOnlySet<uint> MoveBlockAbstates()
+    {
+        if (_moveBlockAbstates is { } cached) return cached;
+        lock (_abstateLock)
+        {
+            if (_moveBlockAbstates is { } c2) return c2;
+            var set = new HashSet<uint>();
+            var sub = Table("SubAbState");
+            var ab = Table("AbState");
+            if (sub is not null && ab is not null)
+            {
+                // 1) SubAbState InxNames whose any Action*Index == the immobilize action (19).
+                var immobilizeSubs = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var row in sub.Rows)
+                {
+                    var inx = GetStr(row, "InxName");
+                    if (string.IsNullOrEmpty(inx)) continue;
+                    if (GetInt(row, "ActionIndexA") == ImmobilizeActionIndex ||
+                        GetInt(row, "ActionIndexB") == ImmobilizeActionIndex ||
+                        GetInt(row, "ActionIndexC") == ImmobilizeActionIndex ||
+                        GetInt(row, "ActionIndexD") == ImmobilizeActionIndex)
+                        immobilizeSubs.Add(inx);
+                }
+                // 2) AbState rows referencing an immobilize SubAbState → collect their AbStataIndex (the
+                //    value on the wire in ABSTATESET/RESET).
+                foreach (var row in ab.Rows)
+                {
+                    var subName = GetStr(row, "SubAbState");
+                    if (!string.IsNullOrEmpty(subName) && immobilizeSubs.Contains(subName))
+                        set.Add((uint)GetInt(row, "AbStataIndex"));
+                }
+            }
+            return _moveBlockAbstates = set;
         }
     }
 

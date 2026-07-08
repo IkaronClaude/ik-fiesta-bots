@@ -230,6 +230,22 @@ public sealed record QuestDef(
     /// (0) matches.</summary>
     private bool ClassMatches(int charClass) => Class == 0 || charClass == 0 || Class == charClass;
 
+    /// <summary>The dialog text id the START script <c>SAY</c>s (e.g. <c>"SAY 29252 NPC"</c> → 29252),
+    /// or 0. The QuestDialog text for this id carries the accept-page tags (<c>[BUTTON]</c>/<c>[MENU]</c>)
+    /// that decide HOW the quest is accepted: a plain <c>SELECT_START</c> vs pressing a menu button. The
+    /// lvl-20 job-change quest (q60015) SAYs 29252 = "…[BUTTON]=[Begin the quest][1] [MENU]".</summary>
+    public int StartDialogId
+    {
+        get
+        {
+            int i = StartScript.IndexOf("SAY", StringComparison.OrdinalIgnoreCase);
+            if (i < 0) return 0;
+            var rest = StartScript[(i + 3)..].TrimStart();
+            int j = 0; while (j < rest.Length && char.IsDigit(rest[j])) j++;
+            return (j > 0 && int.TryParse(rest[..j], out var n)) ? n : 0;
+        }
+    }
+
     /// <summary>The questId this chains to via a <c>LINK n</c> in any script, or 0 if none.</summary>
     public int LinkedQuest
     {
