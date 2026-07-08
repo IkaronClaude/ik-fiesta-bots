@@ -8,7 +8,8 @@ using FiestaLibReloaded.Networking.Structs;
 namespace Fiesta.Bot.Session;
 
 /// <summary>A player the bot can currently see in zone (from Briefinfo broadcasts).</summary>
-public sealed record NearbyPlayer(ushort Handle, string Name, byte Class, byte Level, uint X, uint Y)
+public sealed record NearbyPlayer(ushort Handle, string Name, byte Class, byte Level, uint X, uint Y,
+    byte Mode = 0, byte Type = 0, byte KQTeamType = 0)
 {
     public DateTime SeenAtUtc { get; init; } = DateTime.UtcNow;
 }
@@ -2019,12 +2020,16 @@ public sealed class ZoneView : IDisposable
     private void AddOrUpdate(PROTO_NC_BRIEFINFO_LOGINCHARACTER_CMD c)
     {
         var name = FiestaText.Decode(c.charid.n5_name);
-        var player = new NearbyPlayer(c.handle, name, c.chrclass, c.Level, c.coord.xy.x, c.coord.xy.y);
+        var player = new NearbyPlayer(c.handle, name, c.chrclass, c.Level, c.coord.xy.x, c.coord.xy.y,
+            c.mode, c.type, c.nKQTeamType);
         var isNew = !_nearby.ContainsKey(c.handle);
         _nearby[c.handle] = player;
         if (isNew)
         {
-            LogV($"[ZoneView] player appeared: {name} (h={c.handle} class={c.chrclass} lvl={c.Level})");
+            // type / nKQTeamType distinguish a real player from a scenario/KQ enemy "character" (the JCQ
+            // promotion "shadow" clones arrive via this same LOGINCHARACTER packet) — log them so we can
+            // classify hostile scenario entities as huntable and fight them via the normal combat path.
+            LogV($"[ZoneView] player appeared: {name} (h={c.handle} class={c.chrclass} lvl={c.Level} mode={c.mode} type={c.type} kqTeam={c.nKQTeamType})");
             PlayerAppeared?.Invoke(player);
         }
     }

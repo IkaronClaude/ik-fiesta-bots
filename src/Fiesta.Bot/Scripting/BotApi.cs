@@ -796,6 +796,36 @@ public sealed class BotApi
     /// "am I overwhelmed?" signal for a flee transition.</summary>
     public int aggressors() => _mgr.AggressorCount(Id);
 
+    /// <summary>The HANDLES of entities currently attacking the bot (from inbound SWING_DAMAGE where the
+    /// bot is the defender, within the combat window). Crucially this includes mobs that arrive as
+    /// scenario OBJECTS / characters — the JCQ promotion instance "shadow" waves come via
+    /// LOGINCHARACTER (0x1C06) + SCENARIO_OBJTYPECHANGE (0x6C0B), NOT via REGENMOB, so they NEVER enter
+    /// <see cref="nearbyMobs"/> — yet they swing at us, so they land here. The instance hoover uses this
+    /// to "fight who hits us" (auto-attack the aggressor handle; it's in melee range since it's hitting
+    /// us) and clear a room that <c>nearbyMobs()</c> reports as empty. Data-driven, reusable for KQs.</summary>
+    public DynValue aggressorHandles()
+    {
+        var t = NewTable();
+        var v = View; if (v is null) return DynValue.NewTable(t);
+        int i = 1;
+        foreach (var h in v.Aggressors) t[i++] = (int)h;
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>World position { x, y } of ANY tracked entity by handle — a mob (<c>_npcs</c>) OR a
+    /// character (<c>_nearby</c>). Nil if the handle isn't in view. Needed because scenario/instance
+    /// enemies (the JCQ "shadow" clones) arrive as CHARACTERS via LOGINCHARACTER and so aren't in
+    /// <see cref="nearbyMobs"/> — the instance hoover uses this to CLOSE range on an aggressor clone
+    /// before auto-attacking it (a swing needs melee range + facing).</summary>
+    public DynValue entityPos(int handle)
+    {
+        var v = View; if (v is null) return DynValue.Nil;
+        var h = (ushort)handle;
+        foreach (var n in v.NearbyNpcs) if (n.Handle == h) { var r = NewTable(); r["x"] = n.X; r["y"] = n.Y; return DynValue.NewTable(r); }
+        foreach (var p in v.NearbyPlayers) if (p.Handle == h) { var r = NewTable(); r["x"] = p.X; r["y"] = p.Y; return DynValue.NewTable(r); }
+        return DynValue.Nil;
+    }
+
     /// <summary>Flee: walk away from the threat by <paramref name="dist"/> units. NON-BLOCKING
     /// (returns immediately), so a survival tick can keep healing while retreating.</summary>
     public bool flee(double dist = 500) => Ok(_mgr.Flee(Id, dist));
@@ -1008,6 +1038,7 @@ public sealed class BotApi
         var row = NewTable();
         row["handle"] = p.Handle; row["name"] = p.Name; row["class"] = p.Class;
         row["level"] = p.Level; row["x"] = p.X; row["y"] = p.Y;
+        row["mode"] = p.Mode; row["type"] = p.Type; row["kqTeam"] = p.KQTeamType;
         return DynValue.NewTable(row);
     }
 

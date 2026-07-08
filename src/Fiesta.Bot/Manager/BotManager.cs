@@ -451,11 +451,16 @@ public sealed class BotManager : IAsyncDisposable
     public Task<ActionResult> StopAttackAsync(string id, CancellationToken ct = default)
         => ActAsync(id, "stop auto-attack", s => s.SendAsync(new FiestaPacket(OpBatBashStop, Array.Empty<byte>()), ct));
 
-    /// <summary>Position of a nearby NPC/mob by zone handle (null if not in view).</summary>
+    /// <summary>Position of a nearby entity by zone handle (null if not in view). Checks mobs
+    /// (<c>_npcs</c>) THEN characters (<c>_nearby</c>): scenario/instance enemies (the JCQ promotion
+    /// "shadow" clones) arrive via LOGINCHARACTER and live in the players map, not the mob map — so
+    /// without this fallback auto-attack couldn't FACE them (FaceAndStop was skipped) and BASHSTART
+    /// produced no swings against them. With it, auto-attack faces + swings any tracked handle.</summary>
     private static (uint X, uint Y)? NpcPos(BotHandle handle, ushort target)
     {
         if (handle.ZoneView is not { } view) return null;
         foreach (var n in view.NearbyNpcs) if (n.Handle == target) return (n.X, n.Y);
+        foreach (var p in view.NearbyPlayers) if (p.Handle == target) return (p.X, p.Y);
         return null;
     }
 
