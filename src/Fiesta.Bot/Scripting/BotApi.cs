@@ -239,6 +239,28 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>A generic "roomba" COVERAGE PATH over the current map's walkability (<c>.shbd</c>): an
+    /// ordered list of world waypoints ({ x, y }) laid on a serpentine lattice of spacing
+    /// <paramref name="stepWorld"/>, snapped to walkable ground. Walk them in order and the bot sweeps
+    /// the whole walkable area — every mob comes into AoI (<c>nearbyMobs()</c>) so the instance/KQ
+    /// hoover can clear it. <paramref name="stepWorld"/> is the sweep spacing (bot-behaviour tuning);
+    /// keep it ≤ the server mob AoI for full coverage (smaller = safe, just more points). Empty if no
+    /// grid for this map. Pure BYO nav geometry — no baked ids/coords.</summary>
+    public DynValue coveragePath(double stepWorld)
+    {
+        var t = NewTable();
+        var grid = _handle.CurrentMap is { } map ? _mgr.GridProvider?.Invoke(map) : null;
+        if (grid is not null && stepWorld > 0)
+        {
+            int i = 1;
+            foreach (var (x, y) in Navigation.CoveragePath.Compute(grid, stepWorld))
+            {
+                var r = NewTable(); r["x"] = x; r["y"] = y; t[i++] = DynValue.NewTable(r);
+            }
+        }
+        return DynValue.NewTable(t);
+    }
+
     /// <summary>The raw code from the last SELL_ACK (0x3005): 0x0381 = success, else rejected;
     /// -1 if no sell acked yet this session. Lets the driver verify a sell took.</summary>
     public int lastSellAck() => View?.LastSellAck ?? -1;
