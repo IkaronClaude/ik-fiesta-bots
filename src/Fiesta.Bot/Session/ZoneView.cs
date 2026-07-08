@@ -273,6 +273,15 @@ public sealed class ZoneView : IDisposable
     // MUST echo NC_SCENARIO_AREAENTRY_ACK (0x6C06, same areaindex) to arm that room (server then spawns its
     // mob wave). Reflexive, like a keepalive. Ground truth: JCQ.pcapng (5 rooms Zone_Mob01..05).
     private const ushort OpScenarioAreaEntryReq = 0x6C05;
+    // NC_SCENARIO_OBJTYPECHANGE_CMD (Scenario cmd 11 = 0x6C0B): {handle u16, type u8}. The scenario script
+    // (ServerSource JobChange1.ps) changes a scripted entity's kind: `change2mob`→type 5 (a fightable MOB),
+    // `change2npc`→type 4 (a non-combatant NPC — the shadow clone once it FLEES/leaves the fight). We didn't
+    // handle this at all, so a clone that turned into an NPC lingered in _nearby as a PHANTOM fightable clone
+    // → the instance driver held/meleed it forever and never moved on to the real wave. (`vanish` removes it
+    // via MAP_LOGOUT 0x1805, which IS handled.) Values derived from JobChange1.ps + JCQ.pcapng (port 9019).
+    private const ushort OpScenarioObjTypeChange = 0x6C0B;
+    private const byte ScenObjTypeMob = 5;   // change2mob → fightable
+    private const byte ScenObjTypeNpc = 4;   // change2npc → non-combatant (clone leaving the fight)
     // NC_BAT_EXPGAIN_CMD (Bat cmd 11 = 0x240B): {expgain u32@0, mobhandle u16@4}. The server credits
     // exp per kill via this delta (it does NOT send an absolute NC_CHAR_EXP_CHANGED here), so we seed
     // the absolute at zone-enter and accumulate these to track live exp progress toward the next level.
@@ -1468,6 +1477,23 @@ public sealed class ZoneView : IDisposable
             _ = _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = req.areaindex }, default);
             _log?.Invoke($"[ZoneView] SCENARIO area entered: '{area}' — sent AREAENTRY_ACK (arming mob wave)");
             ScenarioAreaEntered?.Invoke(area);
+        }
+        else if (op == OpScenarioObjTypeChange)
+        {
+            // A scripted scenario entity changed kind (see const doc). When the shadow clone turns into a
+            // non-combatant NPC (change2npc, type 4) it is FLEEING/leaving — stop treating it as a fightable
+            // clone: drop it from _nearby so the instance driver stops chasing/holding the PHANTOM and the
+            // hoover moves on to the real wave (Kebings/Skeletons/Chiefs). Keep it on `mob` (type 5 = it's a
+            // live fightable enemy). Always log (decode→log) so a new/unknown type value is visible.
+            var b = pkt.ReadBody<PROTO_NC_SCENARIO_OBJTYPECHANGE_CMD>();
+            _log?.Invoke($"[ZoneView] scenario OBJTYPECHANGE h={b.handle} type={b.type}" +
+                (b.type == ScenObjTypeNpc ? " (change2npc → clearing phantom clone)" :
+                 b.type == ScenObjTypeMob ? " (change2mob → fightable)" : " (unknown type)"));
+            if (b.type != ScenObjTypeMob)
+            {
+                if (_nearby.TryRemove(b.handle, out var gone)) PlayerLeft?.Invoke(b.handle);
+                _npcs.TryRemove(b.handle, out _);
+            }
         }
         else if (op == OpCharReviveOther)
         {
