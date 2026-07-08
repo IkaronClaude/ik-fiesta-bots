@@ -1542,6 +1542,11 @@ public sealed class BotManager : IAsyncDisposable
         // got acked ("1 page answered") → QUEST_DONE never fired. Now we dequeue all pages.
         // Ack rule = match the client: ACK SAY pages (and any non-terminal page); do NOT ack the terminal
         // 0x06 (accept-confirm) / 0x0A (done) — those just signal the dialogue concluded.
+        // DERIVE the per-page menu answers from THIS quest's script (dialogId -> correct nResult), so a
+        // puzzle/choice page is answered with the option that reaches ACCEPT — no hardcoding.
+        var menuAnswers = questId != 0 ? DeriveMenuAnswers(questId) : new Dictionary<int, uint>();
+        if (menuAnswers.Count > 0)
+            h.Log($"quest {questId}: derived menu answers {string.Join(",", menuAnswers.Select(kv => $"say{kv.Key}=>{kv.Value}"))}");
         bool rewardSelected = false, concluded = false, redirected = false;
         int answered = 0;
         var idle = DateTime.UtcNow.AddSeconds(3.0); // wait for the first page; refreshed as pages arrive
@@ -1596,11 +1601,89 @@ public sealed class BotManager : IAsyncDisposable
                 rewardSelected = true;
                 h.Log($"quest dialogue: reward-select quest={cur.QuestId} index={rewardIndex} (SHOW_REWARD dlg {cur.DialogId})");
             }
-            await AnswerQuestAsync(id, cur.QuestId, cur.Qsc, result, ct);
+            // Per-page answer, DERIVED from the quest's own script (menuAnswers, keyed by dialogId): a plain
+            // SAY/continue page acks nResult=1 (Next); a MENU page (a SAY immediately followed by an
+            // `IF RESULT==N GOTO MARKx` run) acks the N whose branch traces to ACCEPT. E.g. JCQ q60015 page
+            // SAY 29256 → 4. No hardcoding — the branch that reaches the reward IS the correct puzzle answer
+            // (operator 2026-07-08). Matches the real client (JCQ.pcapng): SAY pages=1, the puzzle page=4.
+            uint pageResult = menuAnswers.TryGetValue((int)cur.DialogId, out var derived) ? derived : 1u;
+            await AnswerQuestAsync(id, cur.QuestId, cur.Qsc, pageResult, ct);
             answered++;
         }
         h.Log($"quest dialogue done (npc h={npcHandle}, {answered} pages acked, concluded={concluded}, rewardSelected={rewardSelected})");
         return ActionResult.Sent;
+    }
+
+    /// <summary>Derive the per-page MENU answers for a quest straight from its OWN script (data-driven, no
+    /// hardcoding). Fiesta quest scripts branch with <c>IF RESULT == N GOTO MARKx</c> runs; the page that
+    /// answer rides on is the <c>SAY &lt;id&gt;</c> immediately before the run. So we map that SAY's dialogId
+    /// → the RESULT whose branch traces to <c>ACCEPT</c> (through the <c>:MARK</c> labels / GOTO / nested
+    /// menus). The correct puzzle option is simply "the one that reaches the reward" (operator 2026-07-08):
+    /// JCQ q60015's <c>SAY 29256</c> → 4 (MARK4 → MARK5 → ACCEPT), the wrong options dead-end at END. Pages
+    /// not in the map default to nResult=1 (plain continue). Parses Start+Doing+Finish scripts.</summary>
+    private Dictionary<int, uint> DeriveMenuAnswers(int questId)
+    {
+        var map = new Dictionary<int, uint>();
+        var q = ClientData?.Quest(questId);
+        if (q is null) return map;
+        foreach (var script in new[] { q.StartScript, q.ActionScript, q.FinishScript })
+            ParseScriptMenus(script, map);
+        return map;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex ReScriptIf =
+        new(@"^IF\s+RESULT\s*==\s*(\d+)\s+GOTO\s+(\w+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    private static readonly System.Text.RegularExpressions.Regex ReScriptGoto =
+        new(@"^GOTO\s+(\w+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    private static readonly System.Text.RegularExpressions.Regex ReScriptSay =
+        new(@"^SAY\s+(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    private static void ParseScriptMenus(string? script, Dictionary<int, uint> map)
+    {
+        if (string.IsNullOrWhiteSpace(script)) return;
+        var lines = script.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        var label = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < lines.Count; i++)
+            if (lines[i].StartsWith(':')) label[lines[i][1..].Trim()] = i;
+
+        // Does the block at :<lbl> reach ACCEPT (following GOTO + nested IF-RESULT menus)? Cycle-guarded.
+        bool BlockReaches(string lbl, HashSet<string> visiting)
+        {
+            if (!visiting.Add(lbl) || !label.TryGetValue(lbl, out var start)) return false;
+            bool reached = false;
+            for (int i = start + 1; i < lines.Count; i++)
+            {
+                var ln = lines[i];
+                if (ln.StartsWith(':') || ln.Equals("END", StringComparison.OrdinalIgnoreCase)) break;
+                if (ln.Equals("ACCEPT", StringComparison.OrdinalIgnoreCase)) { reached = true; break; }
+                var im = ReScriptIf.Match(ln);
+                if (im.Success) { if (BlockReaches(im.Groups[2].Value, visiting)) { reached = true; break; } continue; }
+                var gm = ReScriptGoto.Match(ln);
+                if (gm.Success) { reached = BlockReaches(gm.Groups[1].Value, visiting); break; }
+            }
+            visiting.Remove(lbl);
+            return reached;
+        }
+
+        int lastSayId = 0;
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var sm = ReScriptSay.Match(lines[i]);
+            if (sm.Success) { lastSayId = int.Parse(sm.Groups[1].Value); continue; }
+            if (ReScriptIf.IsMatch(lines[i]) && lastSayId != 0)
+            {
+                uint answer = 0; int j = i;
+                for (; j < lines.Count; j++)
+                {
+                    var rm = ReScriptIf.Match(lines[j]);
+                    if (!rm.Success) break;
+                    if (BlockReaches(rm.Groups[2].Value, new HashSet<string>(StringComparer.OrdinalIgnoreCase)))
+                    { answer = uint.Parse(rm.Groups[1].Value); break; }
+                }
+                if (answer != 0) map[lastSayId] = answer;
+                lastSayId = 0; i = j - 1;
+            }
+        }
     }
 
     /// <summary>Select a quest reward item by index (NC_QUEST_REWARD_SELECT_ITEM_INDEX_CMD) —
