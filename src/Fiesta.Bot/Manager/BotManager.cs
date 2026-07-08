@@ -1113,11 +1113,18 @@ public sealed class BotManager : IAsyncDisposable
         if (grid is not null)
         {
             var path = PathFinder.FindPath(grid, pos.X, pos.Y, tx, ty);
-            wp = path.Count == 0
-                ? new[] { (pos.X, pos.Y), (tx, ty) } // unreachable on the grid — try direct
-                : PathFinder.Simplify(path);
+            if (path.Count == 0)
+            {
+                // Unreachable on the grid (FindPath already snaps a blocked start/goal to nearest
+                // walkable, so empty = genuinely disconnected). Do NOT fall back to a blind straight
+                // line — that walks into the obstacle and MOVEFAILs forever (the field-travel freeze).
+                // Abort so the caller can try another route / the leveler moves on.
+                handle.Log($"[nav] approach to ({tx},{ty}) UNREACHABLE on {handle.CurrentMap} grid — aborting (no blind straight-line)");
+                return;
+            }
+            wp = PathFinder.Simplify(path);
         }
-        else wp = new[] { (pos.X, pos.Y), (tx, ty) };
+        else wp = new[] { (pos.X, pos.Y), (tx, ty) }; // no grid → best-effort direct
 
         // Trim trailing waypoints inside stopShort of the target so we halt short of the gate.
         if (stopShort > 0 && wp.Count > 2)
@@ -1847,6 +1854,7 @@ public sealed class BotManager : IAsyncDisposable
                         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), sx);
                         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), sy);
                         await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
+                        handle.LastMoveTarget = (sx, sy);  // the tile we're trying to enter (for MOVEFAIL learning)
                         handle.SetPosition(sx, sy); // advance tracked position as we walk
                         var stepDist = Math.Sqrt(Math.Pow(sx - cx, 2) + Math.Pow(sy - cy, 2));
                         cx = sx; cy = sy; steps++;
@@ -2089,12 +2097,37 @@ public sealed class BotManager : IAsyncDisposable
                 };
                 zoneView.MoveFailed += pos =>
                 {
-                    // Server rejected a move into an off-grid obstacle: resync to its
-                    // truth and abort the current walk so we stop pushing into it.
+                    // Server rejected a move into an off-grid obstacle: resync to its truth and abort
+                    // the current walk so we stop pushing into it. THEN LEARN it — mark the tile we were
+                    // trying to enter runtime-blocked so the pathfinder routes AROUND it next time,
+                    // instead of re-issuing the same rejected step forever (the MOVEFAIL freeze that
+                    // wedged bots on field maps + in the JCQ instance). Only learn a tile DIFFERENT from
+                    // where we got snapped back to (else we'd block the ground we're standing on).
                     handle.SetPosition(pos.X, pos.Y);
                     handle.WalkCts?.Cancel();
+                    // Learn the obstacle: block the tile ~1.5 tiles AHEAD of the snap-back position in the
+                    // DIRECTION we were trying to move — that's the cell the server refused. (Block by
+                    // direction, not the move endpoint: a smoothed straight run may end on a legit tile it
+                    // merely CLIPPED past, and small paced sub-steps often round to the snap-back tile.)
+                    bool learned = false;
+                    if (handle.LastMoveTarget is { } tgt && handle.CurrentMap is { } map &&
+                        GridProvider?.Invoke(map) is { } grid)
+                    {
+                        double dx = (double)tgt.X - pos.X, dy = (double)tgt.Y - pos.Y;
+                        double len = Math.Sqrt(dx * dx + dy * dy);
+                        if (len > 1)
+                        {
+                            double ahead = BlockGrid.WorldPerTile * 1.5;
+                            var ax = (uint)Math.Max(0, pos.X + dx / len * ahead);
+                            var ay = (uint)Math.Max(0, pos.Y + dy / len * ahead);
+                            var (ttx, tty) = grid.WorldToTile(ax, ay);
+                            grid.MarkBlocked(ttx, tty);
+                            learned = true;
+                            Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) → LEARNED blocked tile ({ttx},{tty}) ahead, re-routing (total {grid.RuntimeBlockedCount})");
+                        }
+                    }
+                    if (!learned) Log($"[nav] move blocked — resynced to ({pos.X},{pos.Y}), walk aborted");
                     handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
-                    Log($"[nav] move blocked — resynced to ({pos.X},{pos.Y}), walk aborted");
                 };
                 zoneView.WalkSpeedChanged += speed => { handle.WalkSpeed = speed; };
                 // Forward the perception events onto the stable per-bot hub so a looping

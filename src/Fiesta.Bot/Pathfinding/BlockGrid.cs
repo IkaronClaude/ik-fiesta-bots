@@ -58,9 +58,33 @@ public sealed class BlockGrid
     public bool IsWalkableTile(int tx, int ty)
     {
         if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return false;
+        if (RtBlocked(tx, ty)) return false; // server-rejected tile (learned from MOVEFAIL)
         var bytePos = 8 + ty * _bytesPerRow + (tx >> 3);
         return ((_data[bytePos] >> (tx & 7)) & 1) == 0; // bit 0 = walkable
     }
+
+    // Runtime "server-blocked" tiles LEARNED from MOVEFAIL: the SHBD says a tile is walkable but the
+    // server rejected a move into it (off-grid obstacle, a scale/edge mismatch, a dynamic block). We add
+    // it here so the pathfinder routes AROUND it instead of re-issuing the same rejected step forever
+    // (the MOVEFAIL-resync freeze). Per-map + cached, so all bots on the map benefit. Adapts our model to
+    // the server's truth rather than papering over the stuck with a retry.
+    private HashSet<int>? _rtBlocked;
+    private readonly object _rtLock = new();
+    private bool RtBlocked(int tx, int ty)
+    {
+        if (_rtBlocked is null) return false;
+        lock (_rtLock) return _rtBlocked.Contains(ty * WidthTiles + tx);
+    }
+    /// <summary>Mark a tile server-blocked (learned from a MOVEFAIL). Idempotent; invalidates the
+    /// clearance field so obstacle inflation re-forms around the new block on next use.</summary>
+    public void MarkBlocked(int tx, int ty)
+    {
+        if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return;
+        lock (_rtLock) { if (!(_rtBlocked ??= new()).Add(ty * WidthTiles + tx)) return; } // already known → no-op
+        _clearance = null; // NEW block → re-inflate obstacle margins around it on next use
+    }
+    /// <summary>Count of learned server-blocked tiles (diagnostics).</summary>
+    public int RuntimeBlockedCount { get { lock (_rtLock) return _rtBlocked?.Count ?? 0; } }
 
     // --- Obstacle inflation (P0 2026-06-30: paths hugged obstacle edges → the straight-run
     // MOVERUN between waypoints clipped an object corner → server MOVEFAIL → bot stuck). We

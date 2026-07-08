@@ -119,6 +119,11 @@ public sealed class BotHandle
 
     internal void SetPosition(uint x, uint y) { lock (_posGate) _pos = (x, y); }
 
+    /// <summary>The target of the most recently issued MOVERUN step (the tile the bot was trying to
+    /// enter). On a MOVEFAIL, this is the tile the server rejected — the nav layer marks it
+    /// runtime-blocked so the pathfinder routes around it (see BlockGrid.MarkBlocked).</summary>
+    public (uint X, uint Y)? LastMoveTarget { get; internal set; }
+
     private volatile object? _selfHandleBox; // ushort? boxed (volatile needs reference)
 
     /// <summary>The bot's own in-zone character handle (from the [1802] login ack).
