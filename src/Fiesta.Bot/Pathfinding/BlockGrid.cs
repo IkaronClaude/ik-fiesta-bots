@@ -86,6 +86,16 @@ public sealed class BlockGrid
     /// <summary>Count of learned server-blocked tiles (diagnostics).</summary>
     public int RuntimeBlockedCount { get { lock (_rtLock) return _rtBlocked?.Count ?? 0; } }
 
+    /// <summary>Forget all MOVEFAIL-learned runtime blocks. Called when a pathfind fails on the
+    /// runtime-augmented grid even though the base <c>.shbd</c> is connected — the accumulated learned
+    /// blocks have wrongly SEVERED a reachable route (grid-poison that bricked cross-map travel). Clearing
+    /// lets the bot re-path over the true static geometry and re-learn only obstacles it actually hits.</summary>
+    public void ClearRuntimeBlocked()
+    {
+        lock (_rtLock) { if (_rtBlocked is null || _rtBlocked.Count == 0) return; _rtBlocked.Clear(); }
+        _clearance = null; // obstacle inflation was built around the (now-gone) blocks → rebuild
+    }
+
     // --- Obstacle inflation (P0 2026-06-30: paths hugged obstacle edges → the straight-run
     // MOVERUN between waypoints clipped an object corner → server MOVEFAIL → bot stuck). We
     // keep the path a few tiles clear of any blocked tile. A tile is 6.25 world units (~10 cm),

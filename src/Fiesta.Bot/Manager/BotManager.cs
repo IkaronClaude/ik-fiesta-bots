@@ -1117,13 +1117,29 @@ public sealed class BotManager : IAsyncDisposable
         if (grid is not null)
         {
             var path = PathFinder.FindPath(grid, pos.X, pos.Y, tx, ty);
+            if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
+            {
+                // Unreachable on the runtime-augmented grid, but we hold learned MOVEFAIL blocks that may have
+                // wrongly SEVERED a route reachable on the base .shbd (grid-poison that bricked cross-map travel:
+                // IkFresh2 looped forever on an EldGbl02→EldCem01 gate the raw grid CONNECTS to). Forget the
+                // learned blocks and retry once — clearing lets the bot re-path the true static geometry.
+                var poisoned = grid.RuntimeBlockedCount;
+                grid.ClearRuntimeBlocked();
+                path = PathFinder.FindPath(grid, pos.X, pos.Y, tx, ty);
+                if (path.Count > 0)
+                    handle.Log($"[nav] approach to ({tx},{ty}) was UNREACHABLE — cleared {poisoned} poisoned learned-blocks, route re-opened");
+            }
             if (path.Count == 0)
             {
-                // Unreachable on the grid (FindPath already snaps a blocked start/goal to nearest
-                // walkable, so empty = genuinely disconnected). Do NOT fall back to a blind straight
-                // line — that walks into the obstacle and MOVEFAILs forever (the field-travel freeze).
-                // Abort so the caller can try another route / the leveler moves on.
-                handle.Log($"[nav] approach to ({tx},{ty}) UNREACHABLE on {handle.CurrentMap} grid — aborting (no blind straight-line)");
+                // Genuinely disconnected on the base grid too (FindPath snaps a blocked start/goal to nearest
+                // walkable, so empty = truly no route). Do NOT fall back to a blind straight line — that walks
+                // into the obstacle and MOVEFAILs forever. Abort so the caller tries another route / moves on.
+                var (stx, sty) = grid.WorldToTile(pos.X, pos.Y);
+                var (gtx, gty) = grid.WorldToTile(tx, ty);
+                handle.Log($"[nav] approach to ({tx},{ty}) UNREACHABLE on {handle.CurrentMap} grid — aborting " +
+                    $"(pos=({pos.X},{pos.Y}) tile=({stx},{sty})walk={grid.IsWalkableTile(stx, sty)} " +
+                    $"goalTile=({gtx},{gty})walk={grid.IsWalkableTile(gtx, gty)} " +
+                    $"grid={grid.WidthTiles}x{grid.HeightTiles} rtBlocked={grid.RuntimeBlockedCount})");
                 return;
             }
             wp = PathFinder.Simplify(path);
