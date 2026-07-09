@@ -1481,6 +1481,9 @@ public sealed class ZoneView : IDisposable
             var area = System.Text.Encoding.ASCII.GetString(req.areaindex.n8_name, 0, z < 0 ? req.areaindex.n8_name.Length : z);
             LastScenarioArea = area;
             InScenarioInstance = true;   // latch: we're inside a scenario instance (survives between-room gaps)
+            // Echo the ACK (same areaindex) — the real client always acks. NOTE (tested 2026-07-09): a ~2s
+            // deferred ack (to mimic the client acking after walking in) did NOT make Zone_Mob02's SkelRegen
+            // fire, so the R2 non-fire is NOT an ack-timing race; it's server-side (see tickets P0). Kept instant.
             _ = _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = req.areaindex }, default);
             _log?.Invoke($"[ZoneView] SCENARIO area entered: '{area}' — sent AREAENTRY_ACK (arming mob wave)");
             ScenarioAreaEntered?.Invoke(area);
