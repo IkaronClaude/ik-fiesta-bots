@@ -620,6 +620,12 @@ public sealed class ZoneView : IDisposable
     /// <summary>The most recent scenario trigger-area we entered + acked (e.g. "Zone_Mob01"), or null if
     /// not in a scenario/instance. The clear-room driver watches this to know a room's mob wave is armed.</summary>
     public string? LastScenarioArea { get; private set; }
+    /// <summary>Latches true once we're inside a scenario instance (any AREAENTRY seen) and stays true across
+    /// between-room gaps where <see cref="LastScenarioArea"/> flips null; reset on map handoff. Nav uses it to
+    /// NOT learn a MOVEFAIL as a permanent wall inside an instance — the block is a dynamic scenario DOOR
+    /// (KQ_Gate4, opens/closes per the script), not a static obstacle, so learning it poisons the grid and the
+    /// bot can never path through once the door opens (the JCQ stuck-at-Door3 grid-poison).</summary>
+    public bool InScenarioInstance { get; private set; }
     /// <summary>Raised when we auto-ack a scenario AREAENTRY (carries the area name) — a new instance room armed.</summary>
     public event Action<string>? ScenarioAreaEntered;
 
@@ -1422,7 +1428,7 @@ public sealed class ZoneView : IDisposable
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
-                LastScenarioArea = null;
+                LastScenarioArea = null; InScenarioInstance = false;
                 MapChanged?.Invoke(h);
             }
         }
@@ -1474,6 +1480,7 @@ public sealed class ZoneView : IDisposable
             int z = Array.IndexOf(req.areaindex.n8_name, (byte)0);
             var area = System.Text.Encoding.ASCII.GetString(req.areaindex.n8_name, 0, z < 0 ? req.areaindex.n8_name.Length : z);
             LastScenarioArea = area;
+            InScenarioInstance = true;   // latch: we're inside a scenario instance (survives between-room gaps)
             _ = _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = req.areaindex }, default);
             _log?.Invoke($"[ZoneView] SCENARIO area entered: '{area}' — sent AREAENTRY_ACK (arming mob wave)");
             ScenarioAreaEntered?.Invoke(area);
@@ -1763,6 +1770,7 @@ public sealed class ZoneView : IDisposable
                 _drops.Clear();  // ground items are per-map too
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
                 ShopOpenUtc = default;  // any open shop closes when we leave the map
+                InScenarioInstance = false;   // left the map → no longer in the instance
                 LastScenarioArea = null;  // scenario/instance area is per-map — clear on leaving (else the
                                           // instance driver thinks we're still inside + hoovers field mobs)
                 _log?.Invoke(h.IsCrossServer

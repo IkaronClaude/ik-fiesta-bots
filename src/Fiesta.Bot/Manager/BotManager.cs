@@ -2116,6 +2116,17 @@ public sealed class BotManager : IAsyncDisposable
                         handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                         return;
                     }
+                    // DON'T LEARN A WALL INSIDE A SCENARIO INSTANCE either: the block is almost always a dynamic
+                    // scenario DOOR (KQ_Gate4) that the script opens/closes per room — learning it as a permanent
+                    // runtime wall poisons the grid so the bot can NEVER path through once the door opens (the JCQ
+                    // stuck-at-Door3 grid-poison). The .shbd already has the real static walls; in an instance,
+                    // just resync + re-route (retry) and let the door open. (Rooted covers the stun case above.)
+                    if (zoneView.InScenarioInstance)
+                    {
+                        Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) in a SCENARIO INSTANCE — NOT learning a wall (likely a closed scenario door), re-routing");
+                        handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
+                        return;
+                    }
                     // Learn the obstacle: block the tile ~1.5 tiles AHEAD of the snap-back position in the
                     // DIRECTION we were trying to move — that's the cell the server refused. (Block by
                     // direction, not the move endpoint: a smoothed straight run may end on a legit tile it
