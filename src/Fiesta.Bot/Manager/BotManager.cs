@@ -48,6 +48,10 @@ public sealed class BotManager : IAsyncDisposable
     /// <summary>Per-map instance-door provider (from <c>BLOCKINFO_DIR/&lt;Map&gt;.sbi</c>). Set by the host;
     /// the Lua instance/JCQ driver reads it (via <c>bot.instanceDoors()</c>) to walk room-to-room.</summary>
     public Func<string, IReadOnlyList<Fiesta.Bot.Navigation.InstanceDoor>?>? DoorProvider { get; set; }
+    /// <summary>Per-map scenario-area provider (from <c>BLOCKINFO_DIR/&lt;Map&gt;.aid</c>). The Lua instance
+    /// driver reads it (via <c>bot.scenarioAreas()</c> / <c>bot.scenarioAreaCenter()</c>) to walk to the
+    /// CURRENT armed area's centre and trigger each room's wave in order.</summary>
+    public Func<string, IReadOnlyList<Fiesta.Bot.Navigation.ScenarioArea>?>? AreaProvider { get; set; }
 
     /// <summary>BYO client game-data reader (SHN tables from the operator's
     /// <c>ressystem</c>). Lets feature code resolve client-visible data — e.g. a skill's

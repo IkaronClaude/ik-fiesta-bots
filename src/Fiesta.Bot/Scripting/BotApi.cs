@@ -244,6 +244,48 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>The current map's scenario trigger AREAS from its <c>.aid</c>, each { name, x, y (centre),
+    /// rx, ry (half-extents) } in world coords, in file order (= the scenario's room sequence). Empty if not
+    /// a scenario map / no .aid.</summary>
+    public DynValue scenarioAreas()
+    {
+        var t = NewTable();
+        var areas = _handle.CurrentMap is { } map ? _mgr.AreaProvider?.Invoke(map) : null;
+        if (areas is not null)
+        {
+            int i = 1;
+            foreach (var a in areas)
+            {
+                var r = NewTable();
+                r["name"] = a.Name; r["x"] = (double)a.CenterX; r["y"] = (double)a.CenterY;
+                r["rx"] = (double)a.HalfX; r["ry"] = (double)a.HalfY;
+                t[i++] = DynValue.NewTable(r);
+            }
+        }
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Centre { x, y, rx, ry, name } of the CURRENTLY ARMED scenario area (its name = the server's
+    /// <c>LastScenarioArea</c>, looked up in the map's <c>.aid</c>), or nil if not in an armed area / no .aid.
+    /// The instance driver walks HERE to trigger the current room's wave — in order, without wandering ahead
+    /// into future rooms and consuming their one-shot <c>AreaEntry</c> interrupts early.</summary>
+    public DynValue scenarioAreaCenter()
+    {
+        var name = View?.LastScenarioArea;
+        if (string.IsNullOrEmpty(name)) return DynValue.Nil;
+        var areas = _handle.CurrentMap is { } map ? _mgr.AreaProvider?.Invoke(map) : null;
+        if (areas is null) return DynValue.Nil;
+        foreach (var a in areas)
+            if (string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                var r = NewTable();
+                r["x"] = (double)a.CenterX; r["y"] = (double)a.CenterY;
+                r["rx"] = (double)a.HalfX; r["ry"] = (double)a.HalfY; r["name"] = a.Name;
+                return DynValue.NewTable(r);
+            }
+        return DynValue.Nil;
+    }
+
     /// <summary>A generic "roomba" COVERAGE PATH over the current map's walkability (<c>.shbd</c>): an
     /// ordered list of world waypoints ({ x, y }) laid on a serpentine lattice of spacing
     /// <paramref name="stepWorld"/>, snapped to walkable ground. Walk them in order and the bot sweeps

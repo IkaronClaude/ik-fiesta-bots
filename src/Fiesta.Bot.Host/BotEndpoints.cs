@@ -668,6 +668,17 @@ public static class BotEndpoints
         catch { return Array.Empty<Fiesta.Bot.Navigation.InstanceDoor>(); }
     });
 
+    // Scenario trigger areas from BLOCKINFO_DIR/<Map>.aid (BYO), cached per map. Empty for non-scenario maps.
+    private static readonly ConcurrentDictionary<string, IReadOnlyList<Fiesta.Bot.Navigation.ScenarioArea>> _areas = new(StringComparer.OrdinalIgnoreCase);
+
+    internal static IReadOnlyList<Fiesta.Bot.Navigation.ScenarioArea> LoadAreas(string map) => _areas.GetOrAdd(map, m =>
+    {
+        var dir = Environment.GetEnvironmentVariable("BLOCKINFO_DIR");
+        if (string.IsNullOrWhiteSpace(dir)) return Array.Empty<Fiesta.Bot.Navigation.ScenarioArea>();
+        try { return Fiesta.Bot.Navigation.ScenarioAreas.Load(Path.Combine(dir, m + ".aid")); }
+        catch { return Array.Empty<Fiesta.Bot.Navigation.ScenarioArea>(); }
+    });
+
     private static IResult ToResult(BotManager.ActionResult result, string id, object ok) => result switch
     {
         BotManager.ActionResult.Sent => Results.Ok(ok),
