@@ -1154,9 +1154,17 @@ public sealed class BotManager : IAsyncDisposable
             wp = wp.Take(keep).ToList();
         }
         WalkPath(id, wp, unitsPerSec);
+        // Wait long enough for the WHOLE path to walk — a valid cross-map route can be thousands of
+        // world units (EldGbl02→gate ≈ 4200u ≈ 60s). A fixed 30s aborts a legit long walk mid-route,
+        // churning re-plans until an upstream stall-timer gives up. Scale the wait to the path length
+        // at the bot's live walk speed (+60% slack for pacing/detours), floored/capped to sane bounds.
+        double pathLen = 0;
+        for (int i = 1; i < wp.Count; i++) pathLen += Dist(wp[i - 1], wp[i].X, wp[i].Y);
+        var speed = handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec;
+        int waitMs = (int)Math.Clamp(pathLen / Math.Max(1, speed) * 1000 * 1.6 + 10000, 30000, 180000);
         await WaitUntilAsync(
             () => (handle.Position is { } p && Dist((p.X, p.Y), tx, ty) <= Math.Max(stopShort, 24)) || handle.WalkCts is null,
-            30000, ct);
+            waitMs, ct);
     }
 
     private static double Dist((uint X, uint Y) a, uint x, uint y)

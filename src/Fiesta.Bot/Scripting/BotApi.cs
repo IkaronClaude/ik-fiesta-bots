@@ -736,6 +736,11 @@ public sealed class BotApi
     public bool walk(double fx, double fy, double tx, double ty) => Ok(Wait(_mgr.WalkAsync(Id, (uint)fx, (uint)fy, (uint)tx, (uint)ty)));
     public bool travelTo(string map) => _mgr.TravelTo(Id, map).Result == BotManager.TravelResult.Started;
     public bool stopTravel() => Ok(_mgr.StopTravel(Id));
+    /// <summary>True while a multi-hop cross-map <see cref="BotManager.TravelAsync"/> is in flight.
+    /// The lua must gate re-issuing travelTo on THIS, not on moving(): at each gate the bot is
+    /// momentarily STOPPED (not moving) while the travel loop waits for the map transition, and a
+    /// moving()-based guard would re-issue travelTo there — cancelling the in-flight gate-use.</summary>
+    public bool traveling() => _handle.TravelCts is { IsCancellationRequested: false };
 
     /// <summary>Non-moving route query (diagnostic / decision helper): can the bot route to <paramref name="map"/>
     /// from where it is? Returns { result=&lt;TravelResult&gt;, ok=bool, hops, portals, maps={..} }.</summary>

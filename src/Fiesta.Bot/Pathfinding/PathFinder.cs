@@ -18,7 +18,7 @@ public static class PathFinder
     // bug that made fully-connected maps like RouCos02 look divided). Bumped 1.5x->2.0x
     // (2026-06-30): the full cross-map RouCos03 route to the Forest-of-Mist gate needed >10M
     // expansions at 1.5x but resolves under ~6M at 2.0x (see the raised FindPath maxExpansions).
-    private const int HeurWeightNum = 2, HeurWeightDen = 1; // 2.0x
+    private const int GreedyWeightNum = 2, GreedyWeightDen = 1; // 2.0x — fast on open maps
 
     /// <param name="margin">Obstacle-inflation border in tiles (P0 2026-06-30): the interior of
     /// the path stays this many tiles clear of any blocked tile so straight runs don't clip an
@@ -29,12 +29,26 @@ public static class PathFinder
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
         int maxExpansions = 8_000_000, int margin = 2)
     {
-        var path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, margin);
+        // Attempt 1: greedy (weighted) heuristic — cheap, explores a corridor toward the goal.
+        var path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, margin, GreedyWeightNum, GreedyWeightDen);
         // Never regress below the old (no-margin) behaviour: if inflation over-constrains a
         // genuinely narrow route to "no path", retry once tight so the bot still gets a route
         // (a slightly-clipping path beats being stranded). Only the inflated attempt is skipped.
         if (path.Count == 0 && margin > 0)
-            path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, 0);
+            path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, 0, GreedyWeightNum, GreedyWeightDen);
+        // Attempt 2 (completeness fallback): the greedy heuristic is INADMISSIBLE, so on a route
+        // whose direct corridor is walled it can burn the whole expansion budget in the wrong
+        // corridor and give up before finding a long detour — a FALSE "no path" on a genuinely
+        // connected map (EldGbl02→EldCem01 gate: greedy exhausts 8M expansions, admissible finds a
+        // 65-wp path in <2s). An ADMISSIBLE (1.0x) heuristic never re-expands a settled tile, so it
+        // is complete within ~reachable-tiles expansions and finds a path whenever one exists. Only
+        // pay this when greedy failed — normal routes still resolve on the cheap first attempt.
+        if (path.Count == 0)
+        {
+            path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, margin, 1, 1);
+            if (path.Count == 0 && margin > 0)
+                path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, 0, 1, 1);
+        }
         // Disc-swept line-of-sight smoothing: the emitted straight runs (one MOVERUN each) are
         // validated by sweeping the player disc (radius = margin tiles) along the line, not just
         // testing the centre — so a run never clips an obstacle corner it passes near. This also
@@ -44,7 +58,7 @@ public static class PathFinder
 
     private static IReadOnlyList<(uint X, uint Y)> FindPathCore(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
-        int maxExpansions, int margin)
+        int maxExpansions, int margin, int heurNum, int heurDen)
     {
         var (sx, sy) = grid.WorldToTile(startX, startY);
         var (gx, gy) = grid.WorldToTile(goalX, goalY);
@@ -71,7 +85,7 @@ public static class PathFinder
         var came = new Dictionary<int, int>();
         var g = new Dictionary<int, int> { [Id(sx, sy)] = 0 };
         var open = new PriorityQueue<(int x, int y), int>();
-        open.Enqueue((sx, sy), Heur(sx, sy, gx, gy));
+        open.Enqueue((sx, sy), Heur(sx, sy, gx, gy, heurNum, heurDen));
 
         var expansions = 0;
         while (open.TryDequeue(out var cur, out _))
@@ -94,7 +108,7 @@ public static class PathFinder
                 if (g.TryGetValue(nid, out var prev) && ng >= prev) continue;
                 g[nid] = ng;
                 came[nid] = Id(cur.x, cur.y);
-                open.Enqueue((nx, ny), ng + Heur(nx, ny, gx, gy));
+                open.Enqueue((nx, ny), ng + Heur(nx, ny, gx, gy, heurNum, heurDen));
             }
         }
         return Array.Empty<(uint, uint)>();
@@ -197,11 +211,11 @@ public static class PathFinder
         return true;
     }
 
-    private static int Heur(int x, int y, int gx, int gy)
+    private static int Heur(int x, int y, int gx, int gy, int weightNum, int weightDen)
     {
         int dx = Math.Abs(x - gx), dy = Math.Abs(y - gy);
         int octile = 10 * (dx + dy) + (14 - 2 * 10) * Math.Min(dx, dy); // octile distance
-        return octile * HeurWeightNum / HeurWeightDen; // weighted (greedier) — see FindPath
+        return octile * weightNum / weightDen; // weight 2.0x = greedy (fast); 1.0x = admissible (complete)
     }
 
     private static List<(uint, uint)> Reconstruct(BlockGrid grid, Dictionary<int, int> came, int goal, int W)
