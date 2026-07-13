@@ -2158,7 +2158,33 @@ public sealed class BotManager : IAsyncDisposable
                     // just resync + re-route (retry) and let the door open. (Rooted covers the stun case above.)
                     if (zoneView.InScenarioInstance)
                     {
-                        Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) in a SCENARIO INSTANCE — NOT learning a wall (likely a closed scenario door), re-routing");
+                        // Learn the rejected cell with a SHORT TTL (not permanent). The block is often a DYNAMIC
+                        // scenario door (KQ_Gate4) that opens later, so a permanent MarkBlocked would poison the
+                        // grid (the bot could never path through once it opens — the old JCQ grid-poison, which
+                        // is why this branch used to just resync+return and then STORM the same rejected step
+                        // ~15×/s forever, burning the 20-min timelimit). TTL-block the cell ~1.5 tiles AHEAD in
+                        // the move direction so the pathfinder routes AROUND it NOW, and it auto-expires (~5s) so
+                        // a reopened door / transient rejection becomes walkable again. If a corridor has no way
+                        // around, the pathfind simply yields no route → the bot WAITS (correct at a closed door)
+                        // until the TTL/door clears — instead of thrashing. Adapts to the server's truth, no poison.
+                        bool learnedTtl = false;
+                        if (handle.LastMoveTarget is { } tgtI && handle.CurrentMap is { } mapI &&
+                            GridProvider?.Invoke(mapI) is { } gridI)
+                        {
+                            double dxI = (double)tgtI.X - pos.X, dyI = (double)tgtI.Y - pos.Y;
+                            double lenI = Math.Sqrt(dxI * dxI + dyI * dyI);
+                            if (lenI > 1)
+                            {
+                                double aheadI = BlockGrid.WorldPerTile * 1.5;
+                                var axI = (uint)Math.Max(0, pos.X + dxI / lenI * aheadI);
+                                var ayI = (uint)Math.Max(0, pos.Y + dyI / lenI * aheadI);
+                                var (ttxI, ttyI) = gridI.WorldToTile(axI, ayI);
+                                gridI.MarkBlockedTtl(ttxI, ttyI, 5000);
+                                learnedTtl = true;
+                                Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) in a SCENARIO INSTANCE → TTL-blocked cell ({ttxI},{ttyI}) 5s (route around; auto-clears for reopening doors; total {gridI.RuntimeBlockedCount})");
+                            }
+                        }
+                        if (!learnedTtl) Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) in a SCENARIO INSTANCE — no move target, resynced");
                         handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                         return;
                     }

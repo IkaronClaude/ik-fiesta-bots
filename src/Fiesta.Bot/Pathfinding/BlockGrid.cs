@@ -68,20 +68,52 @@ public sealed class BlockGrid
     // it here so the pathfinder routes AROUND it instead of re-issuing the same rejected step forever
     // (the MOVEFAIL-resync freeze). Per-map + cached, so all bots on the map benefit. Adapts our model to
     // the server's truth rather than papering over the stuck with a retry.
-    private HashSet<int>? _rtBlocked;
+    // tile index -> EXPIRY tick (Environment.TickCount64). long.MaxValue = permanent (field obstacles);
+    // a finite expiry = a TEMPORARY block (a scenario-instance cell the server rejected that may be a
+    // DYNAMIC scenario door — it must auto-clear so the bot can path through once the door opens, instead
+    // of the permanent-block grid-poison that bricked the JCQ instance).
+    private Dictionary<int, long>? _rtBlocked;
     private readonly object _rtLock = new();
     private bool RtBlocked(int tx, int ty)
     {
         if (_rtBlocked is null) return false;
-        lock (_rtLock) return _rtBlocked.Contains(ty * WidthTiles + tx);
+        int key = ty * WidthTiles + tx;
+        lock (_rtLock)
+        {
+            if (!_rtBlocked.TryGetValue(key, out var expiry)) return false;
+            if (expiry > Environment.TickCount64) return true;
+            _rtBlocked.Remove(key); // expired → forget it (the dynamic block, e.g. a reopened door, is gone)
+            _clearance = null;      // geometry changed → re-inflate obstacle margins on next use
+            return false;
+        }
     }
-    /// <summary>Mark a tile server-blocked (learned from a MOVEFAIL). Idempotent; invalidates the
-    /// clearance field so obstacle inflation re-forms around the new block on next use.</summary>
+    /// <summary>Mark a tile PERMANENTLY server-blocked (learned from a MOVEFAIL on a normal map). Idempotent;
+    /// invalidates the clearance field so obstacle inflation re-forms around the new block on next use.</summary>
     public void MarkBlocked(int tx, int ty)
     {
         if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return;
-        lock (_rtLock) { if (!(_rtBlocked ??= new()).Add(ty * WidthTiles + tx)) return; } // already known → no-op
-        _clearance = null; // NEW block → re-inflate obstacle margins around it on next use
+        bool isNew;
+        lock (_rtLock) { _rtBlocked ??= new(); isNew = !_rtBlocked.ContainsKey(ty * WidthTiles + tx); _rtBlocked[ty * WidthTiles + tx] = long.MaxValue; }
+        if (isNew) _clearance = null; // NEW block → re-inflate obstacle margins around it on next use
+    }
+    /// <summary>Mark a tile server-blocked with a short TTL — for a SCENARIO INSTANCE MOVEFAIL, where the
+    /// rejected cell is often a dynamic scenario door (KQ_Gate4) that opens later. The block lets the
+    /// pathfinder route AROUND the obstacle now, and auto-expires so a reopened door becomes walkable again
+    /// (no permanent grid-poison). Re-hitting the tile refreshes/extends the TTL. Never downgrades a permanent
+    /// block to temporary.</summary>
+    public void MarkBlockedTtl(int tx, int ty, int ttlMs)
+    {
+        if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return;
+        long expiry = Environment.TickCount64 + ttlMs;
+        bool isNew;
+        lock (_rtLock)
+        {
+            _rtBlocked ??= new();
+            int key = ty * WidthTiles + tx;
+            isNew = !_rtBlocked.ContainsKey(key);
+            if (!_rtBlocked.TryGetValue(key, out var cur) || (cur != long.MaxValue && expiry > cur)) _rtBlocked[key] = expiry;
+        }
+        if (isNew) _clearance = null; // NEW block → re-inflate obstacle margins around it on next use
     }
     /// <summary>Count of learned server-blocked tiles (diagnostics).</summary>
     public int RuntimeBlockedCount { get { lock (_rtLock) return _rtBlocked?.Count ?? 0; } }
