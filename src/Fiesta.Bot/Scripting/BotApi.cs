@@ -409,6 +409,10 @@ public sealed class BotApi
     public bool attack(int skill, int target = 0) => Ok(Wait(_mgr.AttackAsync(Id, (ushort)skill, (ushort)target)));
     public bool autoAttack(int target = 0) => Ok(Wait(_mgr.AutoAttackAsync(Id, (ushort)target)));
     public bool stopAttack() => Ok(Wait(_mgr.StopAttackAsync(Id)));
+    /// <summary>Clean logout + re-login in place, re-applying this same script once back in zone (recovery
+    /// for a stuck bot, e.g. a scenario instance whose wave never fired). Fire-and-forget: returns
+    /// immediately; the relog happens after this tick. Call at most once per stuck episode (cooldown).</summary>
+    public bool relog() => _mgr.Relog(Id);
     public bool heal(int skill) => Ok(Wait(_mgr.HealSelfAsync(Id, (ushort)skill)));
     public bool useItem(int slot, int invenType = 9) => Ok(Wait(_mgr.UseItemAsync(Id, (byte)slot, (byte)invenType)));
     public bool equip(int slot) => Ok(Wait(_mgr.EquipAsync(Id, (byte)slot)));

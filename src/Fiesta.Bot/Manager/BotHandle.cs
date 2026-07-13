@@ -49,6 +49,12 @@ public sealed class BotHandle
     public BotSpawnOptions Options { get; }
     public DateTime CreatedAtUtc { get; }
 
+    /// <summary>The last-applied Lua script (name/source/tick) — kept so a self-relog (bot.relog / stuck
+    /// instance recovery) can re-apply the same behaviour after the clean logout + re-spawn.</summary>
+    public string? LastScriptName { get; internal set; }
+    public string? LastScriptSource { get; internal set; }
+    public int LastScriptTickMs { get; internal set; }
+
     public BotPhase Phase => _phase;
     public string? CharName => _charName;
     public string? Error => _error;

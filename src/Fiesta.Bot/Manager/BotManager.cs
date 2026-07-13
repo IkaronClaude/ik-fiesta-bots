@@ -177,6 +177,39 @@ public sealed class BotManager : IAsyncDisposable
         return true;
     }
 
+    /// <summary>Clean logout + re-login IN PLACE (operator 2026-07-14): StopAsync (clean logout) → re-Spawn
+    /// with the same options → re-apply the same Lua script once back in zone. The recovery for a bot that's
+    /// STUCK — e.g. wedged in a scenario instance whose wave never fired and that would otherwise idle until
+    /// the ~20-min server timeout. Fire-and-forget from the caller (the lua's own tick returns first, THEN
+    /// the stop disposes its now-idle script runner). A short settle delay avoids the duplicate-login kick.</summary>
+    public bool Relog(string id)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return false;
+        var opts = handle.Options;
+        var (sname, ssrc, stick) = (handle.LastScriptName, handle.LastScriptSource, handle.LastScriptTickMs);
+        handle.Log("RELOG requested — clean logout → re-login → re-apply script");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await StopAsync(id);
+                await Task.Delay(3000);                    // let the logout settle (avoid dup-login kick)
+                Spawn(opts);
+                if (ssrc is not null)
+                {
+                    for (int i = 0; i < 90; i++)           // wait up to 90s for zone re-entry, then re-apply
+                    {
+                        await Task.Delay(1000);
+                        if (_bots.TryGetValue(id, out var nh) && nh.Phase == BotPhase.InZone)
+                        { ApplyScript(id, sname ?? "level_quest", ssrc, stick <= 0 ? 400 : stick); break; }
+                    }
+                }
+            }
+            catch (Exception ex) { _globalLog?.Invoke($"[{id}] RELOG error: {ex.Message}"); }
+        });
+        return true;
+    }
+
     // ── Behaviour scripting (Lua) ─────────────────────────────────────────────
     /// <summary>Apply a Lua behaviour script to a bot and start looping it. A new apply
     /// replaces any script already running ("new upload &gt; new script"). Returns the
@@ -190,6 +223,7 @@ public sealed class BotManager : IAsyncDisposable
         void ScriptLog(string m) { handle.Log(m); _globalLog?.Invoke($"[{id}] {m}"); }
         var runner = new BotScriptRunner(handle, new BotApi(this, handle), name, source, ScriptLog, handle.Cts.Token, tickMs, trace);
         handle.ScriptRunner = runner;
+        handle.LastScriptName = name; handle.LastScriptSource = source; handle.LastScriptTickMs = tickMs; // for bot.relog re-apply
         handle.Log($"script '{name}' applied ({source.Length} chars, tick={tickMs}ms{(trace ? ", trace" : "")})");
         runner.Start();
         return runner;
