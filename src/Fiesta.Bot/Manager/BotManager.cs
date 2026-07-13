@@ -2185,6 +2185,36 @@ public sealed class BotManager : IAsyncDisposable
                             }
                         }
                         if (!learnedTtl) Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) in a SCENARIO INSTANCE — no move target, resynced");
+                        // PERPENDICULAR-TO-WALL UNSTICK (operator 2026-07-13). When the bot is WEDGED — repeated
+                        // MOVEFAILs at ~the same spot (e.g. a combat approach walking STRAIGHT into a wall, which
+                        // bypasses the pathfinder) — nudge it ~200u PERPENDICULAR to the nearest wall so it slides
+                        // ALONG the wall and frees itself, instead of grinding into it. Gated on a streak so it
+                        // never fires on a normal one-off MOVEFAIL, and throttled so it can't itself become a storm.
+                        bool near = handle.LastMoveFailPos is { } lp &&
+                                    Math.Abs((double)lp.X - pos.X) < 60 && Math.Abs((double)lp.Y - pos.Y) < 60;
+                        handle.MoveFailStreak = near ? handle.MoveFailStreak + 1 : 1;
+                        handle.LastMoveFailPos = pos;
+                        if (handle.MoveFailStreak >= 3 && (DateTime.UtcNow - handle.LastUnstickUtc).TotalMilliseconds > 1500
+                            && handle.CurrentMap is { } umap && GridProvider?.Invoke(umap) is { } ugrid
+                            && ugrid.NearestBlockedDir(pos.X, pos.Y) is { } wall)
+                        {
+                            handle.LastUnstickUtc = DateTime.UtcNow;
+                            const double UNSTICK = 200.0;
+                            // The two directions ALONG the wall (± perpendicular to the wall normal). Pick the one
+                            // whose ~200u destination is walkable (server-side .shbd); prefer it, else try the other.
+                            var opts = new (double dx, double dy)[] { (-wall.dy, wall.dx), (wall.dy, -wall.dx) };
+                            foreach (var o in opts)
+                            {
+                                var ux = (uint)Math.Max(0, pos.X + o.dx * UNSTICK);
+                                var uy = (uint)Math.Max(0, pos.Y + o.dy * UNSTICK);
+                                if (!ugrid.IsWalkableWorld(ux, uy)) continue;
+                                handle.WalkCts?.Cancel(); // stop the wall-grinding walk
+                                _ = WalkAsync(handle.Id, pos.X, pos.Y, ux, uy);
+                                Log($"[nav] UNSTICK: wedged x{handle.MoveFailStreak} @({pos.X},{pos.Y}) — sidestep ⊥wall to ({ux},{uy})");
+                                handle.MoveFailStreak = 0;
+                                break;
+                            }
+                        }
                         handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                         return;
                     }
@@ -2260,17 +2290,21 @@ public sealed class BotManager : IAsyncDisposable
                                 {
                                     try
                                     {
-                                        await WalkAsync(botId, pos.X, pos.Y, nx, ny, ct);
-                                        var sk = handle.LastCastSkill;
-                                        if (sk != 0)
+                                        // APPROACH THE ENEMY BY PATHFINDING (operator 2026-07-13), not the old
+                                        // straight-line step — which walked the bot INTO walls (esp. instance
+                                        // corridors where the target is across a wall) and MOVEFAIL-stormed. Route
+                                        // around obstacles via the .shbd grid; fall back to the straight step only
+                                        // if there's no grid/route. The lua combat rotation re-casts next tick once
+                                        // we're in range (the old inline re-cast raced the async walk).
+                                        var routed = false;
+                                        if (handle.CurrentMap is { } cmap && GridProvider?.Invoke(cmap) is { } cgrid)
                                         {
-                                            if (handle.LastCastTarget == 0)
-                                                await CastGroundAsync(botId, sk, tp.X, tp.Y, ct: ct);
-                                            else
-                                                await CastAsync(botId, sk, tgt, ct: ct);
+                                            var path = PathFinder.FindPath(cgrid, pos.X, pos.Y, tp.X, tp.Y);
+                                            if (path.Count >= 2) { WalkPath(botId, PathFinder.Simplify(path)); routed = true; }
                                         }
+                                        if (!routed) await WalkAsync(botId, pos.X, pos.Y, nx, ny, ct);
                                     }
-                                    catch (Exception ex) { Log($"[combat] out-of-range retry error: {ex.Message}"); }
+                                    catch (Exception ex) { Log($"[combat] out-of-range approach error: {ex.Message}"); }
                                 }, ct);
                             }
                         }

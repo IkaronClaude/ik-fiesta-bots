@@ -59,8 +59,73 @@ public sealed class BlockGrid
     {
         if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return false;
         if (RtBlocked(tx, ty)) return false; // server-rejected tile (learned from MOVEFAIL)
-        var bytePos = 8 + ty * _bytesPerRow + (tx >> 3);
-        return ((_data[bytePos] >> (tx & 7)) & 1) == 0; // bit 0 = walkable
+        if (((_data[8 + ty * _bytesPerRow + (tx >> 3)] >> (tx & 7)) & 1) != 0) return false; // .shbd bit set = blocked
+        if (_erode && ErodedBlocked(tx, ty)) return false; // 1-tile inset for instances (edge-mismatch, below)
+        return true;
+    }
+
+    // Raw STATIC .shbd walkability (NO runtime blocks, NO erosion) — the basis for the erosion mask.
+    private bool StaticWalk(int tx, int ty)
+        => (uint)tx < (uint)WidthTiles && (uint)ty < (uint)HeightTiles
+           && ((_data[8 + ty * _bytesPerRow + (tx >> 3)] >> (tx & 7)) & 1) == 0;
+
+    // --- 1-TILE EROSION (scenario instances). The client .shbd's walkable boundary is ~1-2 tiles WIDER than
+    // the server's collision (proven on Job1_Dn01: the bot hugs a .shbd edge → the server MOVEFAILs that
+    // boundary cell → the storm/drift, and the whole-path margin fallback made it edge-hug everywhere).
+    // Eroding the walkable set by 1 tile (a walkable tile with ANY blocked/OOB 8-neighbour becomes blocked)
+    // insets our paths to sit INSIDE the server's boundary, so the bot stops edge-hugging. Verified the
+    // erosion keeps Job1_Dn01 FULLY connected (entry→Kebings→skeletons→Door4→Chiefs). Built from the static
+    // .shbd only (stable, computed once); runtime TTL-blocks still layer on top in IsWalkableTile.
+    private bool _erode;
+    private HashSet<int>? _eroded;
+    private bool ErodedBlocked(int tx, int ty) => (_eroded ??= BuildEroded()).Contains(ty * WidthTiles + tx);
+    private HashSet<int> BuildEroded()
+    {
+        var set = new HashSet<int>();
+        for (int ty = 0; ty < HeightTiles; ty++)
+            for (int tx = 0; tx < WidthTiles; tx++)
+            {
+                if (!StaticWalk(tx, ty)) continue;
+                bool edge = false;
+                for (int dy = -1; dy <= 1 && !edge; dy++)
+                    for (int dx = -1; dx <= 1; dx++)
+                        if (!StaticWalk(tx + dx, ty + dy)) { edge = true; break; }
+                if (edge) set.Add(ty * WidthTiles + tx);
+            }
+        return set;
+    }
+    /// <summary>Enable 1-tile erosion of the walkable area — for scenario-instance maps whose .shbd is wider
+    /// than the server collision (stops the bot hugging edges the server rejects). Idempotent; the static
+    /// erosion mask is built lazily on first use. Invalidates the clearance field (obstacle inflation was
+    /// built on the un-eroded set).</summary>
+    public void EnableErosion()
+    {
+        if (_erode) return;
+        _erode = true;
+        _clearance = null;
+    }
+    /// <summary>True if erosion has been enabled on this grid (diagnostics).</summary>
+    public bool IsEroded => _erode;
+
+    /// <summary>Unit world-direction from (worldX,worldY) toward the NEAREST blocked/OOB tile within
+    /// ~<paramref name="radiusTiles"/> tiles, or null if none near. The bot is wedged against that wall;
+    /// walking PERPENDICULAR to this (±90°) slides ALONG the wall to unstick (operator 2026-07-13). Uses
+    /// the STATIC .shbd (the real geometry), not runtime/eroded blocks.</summary>
+    public (double dx, double dy)? NearestBlockedDir(uint worldX, uint worldY, int radiusTiles = 8)
+    {
+        var (cx, cy) = WorldToTile(worldX, worldY);
+        int bestD2 = int.MaxValue, bx = 0, by = 0; bool found = false;
+        for (int dy = -radiusTiles; dy <= radiusTiles; dy++)
+            for (int dx = -radiusTiles; dx <= radiusTiles; dx++)
+            {
+                if (dx == 0 && dy == 0) continue;
+                if (StaticWalk(cx + dx, cy + dy)) continue; // walkable → not a wall
+                int d2 = dx * dx + dy * dy;
+                if (d2 < bestD2) { bestD2 = d2; bx = dx; by = dy; found = true; }
+            }
+        if (!found) return null;
+        double len = Math.Sqrt(bx * bx + by * by);
+        return (bx / len, by / len);
     }
 
     // Runtime "server-blocked" tiles LEARNED from MOVEFAIL: the SHBD says a tile is walkable but the
@@ -187,7 +252,7 @@ public sealed class BlockGrid
     /// <summary>Walkable AND at least <paramref name="margin"/> tiles clear of the nearest
     /// blocked/out-of-bounds tile (Chebyshev). <paramref name="margin"/> ≤ 0 is just
     /// <see cref="IsWalkableTile"/>. Used by the pathfinder to keep routes off obstacle edges.</summary>
-    public bool IsPathable(int tx, int ty, int margin)
+    public bool IsPathable(int tx, int ty, double margin)
     {
         if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return false;
         if (margin <= 0) return IsWalkableTile(tx, ty);

@@ -27,38 +27,44 @@ public static class PathFinder
     /// ~6.25 world units, so margin 2 ≈ 12.5 units ≈ 20 cm — safe for narrow gates.</param>
     public static IReadOnlyList<(uint X, uint Y)> FindPath(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
-        int maxExpansions = 8_000_000, int margin = 2)
+        int maxExpansions = 8_000_000, double margin = 2)
     {
-        // Attempt 1: greedy (weighted) heuristic — cheap, explores a corridor toward the goal.
-        var path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, margin, GreedyWeightNum, GreedyWeightDen);
-        // Never regress below the old (no-margin) behaviour: if inflation over-constrains a
-        // genuinely narrow route to "no path", retry once tight so the bot still gets a route
-        // (a slightly-clipping path beats being stranded). Only the inflated attempt is skipped.
-        if (path.Count == 0 && margin > 0)
-            path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, 0, GreedyWeightNum, GreedyWeightDen);
-        // Attempt 2 (completeness fallback): the greedy heuristic is INADMISSIBLE, so on a route
-        // whose direct corridor is walled it can burn the whole expansion budget in the wrong
-        // corridor and give up before finding a long detour — a FALSE "no path" on a genuinely
-        // connected map (EldGbl02→EldCem01 gate: greedy exhausts 8M expansions, admissible finds a
-        // 65-wp path in <2s). An ADMISSIBLE (1.0x) heuristic never re-expands a settled tile, so it
-        // is complete within ~reachable-tiles expansions and finds a path whenever one exists. Only
-        // pay this when greedy failed — normal routes still resolve on the cheap first attempt.
-        if (path.Count == 0)
+        // Use the HIGHEST obstacle-inflation margin that yields a path, stepping DOWN only as needed
+        // (operator 2026-07-13): 2 → 1.5 → 1 → 0.5 → 0. A high margin keeps the route CENTERED, off the
+        // .shbd edges — which matters in scenario instances where the client .shbd is ~1-2 tiles WIDER
+        // than the server collision, so an edge-hugging route (the old jump-straight-to-margin-0
+        // fallback) rides cells the server MOVEFAILs → the storm. We relax the margin only where a
+        // genuinely narrow pinch needs it; because this runs per-pathfind, the NEXT route past the pinch
+        // independently returns to the highest that works (= "back up to 2 once past it"). Greedy first
+        // (cheap), then admissible (complete), each sweeping the descending margins.
+        double[] steps = margin >= 2 ? new[] { 2.0, 1.5, 1.0, 0.5, 0.0 }
+                        : margin > 0 ? new[] { margin, 0.0 }
+                        : new[] { 0.0 };
+        double used = 0;
+        IReadOnlyList<(uint X, uint Y)> path = System.Array.Empty<(uint, uint)>();
+        foreach (var m in steps)
         {
-            path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, margin, 1, 1);
-            if (path.Count == 0 && margin > 0)
-                path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, 0, 1, 1);
+            path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, m, GreedyWeightNum, GreedyWeightDen);
+            if (path.Count > 0) { used = m; break; }
         }
-        // Disc-swept line-of-sight smoothing: the emitted straight runs (one MOVERUN each) are
-        // validated by sweeping the player disc (radius = margin tiles) along the line, not just
-        // testing the centre — so a run never clips an obstacle corner it passes near. This also
-        // opportunistically shortens the path (fewer, longer clear runs). See SmoothLineOfSight.
-        return SmoothLineOfSight(grid, path, margin);
+        // Completeness fallback: the greedy heuristic is INADMISSIBLE, so on a route whose direct
+        // corridor is walled it can burn the whole expansion budget in the wrong corridor and give up —
+        // a FALSE "no path" on a genuinely connected map (EldGbl02→EldCem01: greedy exhausts 8M, admissible
+        // finds a 65-wp path in <2s). An ADMISSIBLE (1.0x) heuristic is complete within ~reachable-tiles.
+        // Only pay this when greedy failed at every margin.
+        if (path.Count == 0)
+            foreach (var m in steps)
+            {
+                path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, m, 1, 1);
+                if (path.Count > 0) { used = m; break; }
+            }
+        // Disc-swept line-of-sight smoothing at the margin we actually pathed with (see SmoothLineOfSight).
+        return SmoothLineOfSight(grid, path, used);
     }
 
     private static IReadOnlyList<(uint X, uint Y)> FindPathCore(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
-        int maxExpansions, int margin, int heurNum, int heurDen)
+        int maxExpansions, double margin, int heurNum, int heurDen)
     {
         var (sx, sy) = grid.WorldToTile(startX, startY);
         var (gx, gy) = grid.WorldToTile(goalX, goalY);
@@ -77,7 +83,7 @@ public static class PathFinder
         // (Chebyshev) of the start/goal tile — the exemption that lets the path leave a tight
         // start pocket and approach a goal that legitimately hugs an obstacle. Never passes
         // through a genuinely blocked tile (IsPathable(...,0) == IsWalkableTile).
-        int esc = Math.Max(1, margin);
+        int esc = Math.Max(1, (int)Math.Ceiling(margin));
         bool NearEnd(int x, int y) =>
             (Math.Max(Math.Abs(x - sx), Math.Abs(y - sy)) <= esc ||
              Math.Max(Math.Abs(x - gx), Math.Abs(y - gy)) <= esc) && grid.IsWalkableTile(x, y);
@@ -163,12 +169,12 @@ public static class PathFinder
     /// (and an <c>esc</c>-tile pocket around each) are margin-exempt so a run that legitimately hugs
     /// a wall at either end is still allowed (matches the pathfinder's own exemption).</summary>
     private static IReadOnlyList<(uint X, uint Y)> SmoothLineOfSight(
-        BlockGrid grid, IReadOnlyList<(uint X, uint Y)> path, int margin)
+        BlockGrid grid, IReadOnlyList<(uint X, uint Y)> path, double margin)
     {
         if (path.Count <= 2 || margin <= 0) return path;
         var sTile = grid.WorldToTile(path[0].X, path[0].Y);
         var gTile = grid.WorldToTile(path[^1].X, path[^1].Y);
-        int esc = Math.Max(1, margin);
+        int esc = Math.Max(1, (int)Math.Ceiling(margin));
         bool Passable(int x, int y) => grid.IsPathable(x, y, margin) ||
             ((Math.Max(Math.Abs(x - sTile.X), Math.Abs(y - sTile.Y)) <= esc ||
               Math.Max(Math.Abs(x - gTile.X), Math.Abs(y - gTile.Y)) <= esc) && grid.IsWalkableTile(x, y));

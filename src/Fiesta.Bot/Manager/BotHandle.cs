@@ -124,6 +124,14 @@ public sealed class BotHandle
     /// runtime-blocked so the pathfinder routes around it (see BlockGrid.MarkBlocked).</summary>
     public (uint X, uint Y)? LastMoveTarget { get; internal set; }
 
+    /// <summary>MOVEFAIL-streak tracking for the perpendicular-to-wall UNSTICK (operator 2026-07-13): the
+    /// snap-back position of the last MOVEFAIL and how many in a row landed at ~the same spot. When the bot
+    /// is wedged against a wall (repeated MOVEFAILs at one position, e.g. walking straight into it), the nav
+    /// layer nudges it perpendicular to the wall to slide free.</summary>
+    public (uint X, uint Y)? LastMoveFailPos { get; internal set; }
+    public int MoveFailStreak { get; internal set; }
+    public DateTime LastUnstickUtc { get; internal set; }
+
     private volatile object? _selfHandleBox; // ushort? boxed (volatile needs reference)
 
     /// <summary>The bot's own in-zone character handle (from the [1802] login ack).
