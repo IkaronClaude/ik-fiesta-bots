@@ -244,6 +244,26 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>Live scenario corridor DOOR states from <c>NC_SCENARIO_DOORSTATE_CMD</c> (0x6C09), each
+    /// { handle, state (raw byte), x, y (last-known door pos or nil) }. The instance driver correlates these
+    /// to the static <c>instanceDoors()</c> centres (nearest) to know which corridor door is open/closed RIGHT
+    /// NOW → wait at a closed door instead of thrashing into it. Empty until the server sends door states.</summary>
+    public DynValue doorStates()
+    {
+        var t = NewTable();
+        int i = 1;
+        if (View is { } v)
+            foreach (var d in v.DoorStates)
+            {
+                var r = NewTable();
+                r["handle"] = (double)d.Handle; r["state"] = (double)d.State;
+                if (d.X is { } x) r["x"] = (double)x;
+                if (d.Y is { } y) r["y"] = (double)y;
+                t[i++] = DynValue.NewTable(r);
+            }
+        return DynValue.NewTable(t);
+    }
+
     /// <summary>The current map's scenario trigger AREAS from its <c>.aid</c>, each { name, x, y (centre),
     /// rx, ry (half-extents) } in world coords, in file order (= the scenario's room sequence). Empty if not
     /// a scenario map / no .aid.</summary>

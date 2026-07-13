@@ -97,6 +97,12 @@ public sealed record ServerMenuOption(byte Reply, string Text);
 /// lossy in-view (<c>_npcs</c>) cache for navigation.</summary>
 public sealed record NpcSeedEntry(int MobId, uint X, uint Y, bool IsGate, string? LinkMap);
 
+/// <summary>A scenario corridor DOOR's runtime state, from <c>NC_SCENARIO_DOORSTATE_CMD</c> (0x6C09).
+/// <paramref name="State"/> is the raw state byte off the wire; <paramref name="X"/>/<paramref name="Y"/> is the
+/// door entity's last-known position (from <c>_npcs</c> when the state changed), or null if the handle wasn't
+/// in view. Used by the instance nav to wait at a closed door instead of thrashing into it.</summary>
+public sealed record DoorState(ushort Handle, byte State, uint? X, uint? Y);
+
 /// <summary>A combat hit broadcast: <paramref name="Attacker"/> hit
 /// <paramref name="Defender"/> for <paramref name="Damage"/>, leaving the defender at
 /// <paramref name="RestHp"/>. Decoded from SWING_DAMAGE (our swing) and
@@ -282,6 +288,15 @@ public sealed class ZoneView : IDisposable
     private const ushort OpScenarioObjTypeChange = 0x6C0B;
     private const byte ScenObjTypeMob = 5;   // change2mob → fightable
     private const byte ScenObjTypeNpc = 4;   // change2npc → non-combatant (clone leaving the fight)
+    // NC_SCENARIO_DOORSTATE_CMD (Scenario cmd 9 = 0x6C09): {door u16 (entity HANDLE), doorstate u8}. The
+    // JCQ instance (JobChange1.ps) is NOT open rooms — it's a LINEAR CORRIDOR gated by KQ_Gate4 DOORS the
+    // script opens/closes per phase (`doorbuild`/`dooropen`/`doorclose`). This CMD is how the server tells
+    // the client a door's state changed. We didn't decode it at all → the bot had ZERO runtime knowledge of
+    // which corridor door is shut, so it kept pathing INTO a closed door and MOVEFAIL-thrashed to death
+    // (the "wedge at (3726,3244) = closed Door3" JCQ blocker). Decode + track state-by-handle + correlate to
+    // a position (via _npcs) so the nav can wait at a closed door instead of thrashing. State byte: observed
+    // on the wire (log it), infer open/closed from the script's dooropen/doorclose ordering.
+    private const ushort OpScenarioDoorState = 0x6C09;
     // NC_BAT_EXPGAIN_CMD (Bat cmd 11 = 0x240B): {expgain u32@0, mobhandle u16@4}. The server credits
     // exp per kill via this delta (it does NOT send an absolute NC_CHAR_EXP_CHANGED here), so we seed
     // the absolute at zone-enter and accumulate these to track live exp progress toward the next level.
@@ -371,6 +386,13 @@ public sealed class ZoneView : IDisposable
     // map-change, NOT pruned on BRIEFINFODELETE (NPCs are static). SOURCE OF TRUTH for NPC + gate
     // positions — navigation (quest giver / merchant / gate / cross-map hop) reads from HERE.
     private readonly ConcurrentDictionary<int, NpcSeedEntry> _npcSeed = new();
+    // Scenario DOOR state, keyed by the door entity HANDLE (from 0x6C09 NC_SCENARIO_DOORSTATE_CMD). Value =
+    // last-seen {state byte, last-known position}. Position is captured from _npcs at the time the door state
+    // changed (doors spawn as tracked entities); if the handle isn't in _npcs the position is null and only
+    // the state is known. Cleared on map handoff. Nav reads this (via bot.doorStates) to avoid pathing into a
+    // CLOSED corridor door. Data-driven — no baked door coords (the .sbi gives static centres; this gives
+    // which of them is open/closed RIGHT NOW).
+    private readonly ConcurrentDictionary<ushort, DoorState> _doorStates = new();
     private readonly ConcurrentDictionary<byte, ushort> _inventory = new(); // bag slot -> itemId
     private readonly ConcurrentDictionary<byte, int> _invCount = new();      // bag slot -> stack count
     private readonly ConcurrentDictionary<byte, ushort> _equipment = new(); // equip slot -> itemId
@@ -431,6 +453,10 @@ public sealed class ZoneView : IDisposable
     /// <summary>NPCs/mobs currently in view (handle → id/coord), from the zone's MOB
     /// briefinfo. The runtime source for walk-to-NPC and gate location.</summary>
     public IReadOnlyCollection<NearbyNpc> NearbyNpcs => _npcs.Values.ToArray();
+
+    /// <summary>Live scenario corridor DOOR states (0x6C09), keyed by door handle. The instance nav reads
+    /// these (via bot.doorStates) to hold at a closed door instead of MOVEFAIL-thrashing through it.</summary>
+    public IReadOnlyCollection<DoorState> DoorStates => _doorStates.Values.ToArray();
 
     /// <summary>✅ (x,y) of an NPC by mobId from the authoritative map-enter SEED (bulk 0x1C09 at infinite
     /// range) — the source of truth for "where is NPC X on this map." null if the seed has no such NPC on
@@ -1527,6 +1553,21 @@ public sealed class ZoneView : IDisposable
                 _npcs.TryRemove(b.handle, out _);
             }
         }
+        else if (op == OpScenarioDoorState)
+        {
+            // A scenario corridor DOOR changed state (open/close). Decode + track by handle, correlate to a
+            // position via _npcs (doors are tracked entities), and LOG it so the R2/R3 door choreography is
+            // finally visible on the tail (the previous "MOVEFAIL — likely a closed scenario door" was a GUESS;
+            // now we KNOW which door + where + open/closed). The instance nav reads DoorStates to hold at a
+            // closed door instead of thrashing through it. State byte is raw off the wire (logged so we can pin
+            // the open/closed value against JobChange1.ps's dooropen/doorclose ordering).
+            var b = pkt.ReadBody<PROTO_NC_SCENARIO_DOORSTATE_CMD>();
+            uint? dx = null, dy = null;
+            if (_npcs.TryGetValue(b.door, out var dn)) { dx = dn.X; dy = dn.Y; }
+            else if (_doorStates.TryGetValue(b.door, out var prev)) { dx = prev.X; dy = prev.Y; } // keep last-known pos
+            _doorStates[b.door] = new DoorState(b.door, b.doorstate, dx, dy);
+            _log?.Invoke($"[ZoneView] SCENARIO DOOR h={b.door} state={b.doorstate} @({dx?.ToString() ?? "?"},{dy?.ToString() ?? "?"})");
+        }
         else if (op == OpCharReviveOther)
         {
             if (Dead) _log?.Invoke("[ZoneView] revived (cross-server) — REVIVEOTHER not fully wired");
@@ -1798,6 +1839,7 @@ public sealed class ZoneView : IDisposable
                 InScenarioInstance = false;   // left the map → no longer in the instance
                 LastScenarioArea = null;  // scenario/instance area is per-map — clear on leaving (else the
                                           // instance driver thinks we're still inside + hoovers field mobs)
+                _doorStates.Clear();  // corridor doors are per-instance-run; a re-entry rebuilds them
                 _log?.Invoke(h.IsCrossServer
                     ? $"[ZoneView] map handoff (cross-server) -> mapId={h.MapId} @({h.X},{h.Y}) via {h.Ip}:{h.Port} wm={h.WmHandle}"
                     : $"[ZoneView] map change (in-band) -> mapId={h.MapId} @({h.X},{h.Y})");
