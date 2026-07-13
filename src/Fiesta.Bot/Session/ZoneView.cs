@@ -628,6 +628,12 @@ public sealed class ZoneView : IDisposable
     public bool InScenarioInstance { get; private set; }
     /// <summary>Raised when we auto-ack a scenario AREAENTRY (carries the area name) — a new instance room armed.</summary>
     public event Action<string>? ScenarioAreaEntered;
+    /// <summary>(areaName,(x,y)) → is the point inside that scenario area's <c>.aid</c> box? Set by the manager.
+    /// Used to HOLD the AREAENTRY_ACK until we're genuinely INSIDE the room. Proven on the wire 2026-07-13: the
+    /// server fires the room's interrupt (SkelRegen) on an ACK whose position is inside the area — the bot was
+    /// reflexive-acking Zone_Mob02 from ROOM 1 (x≈1546, before Door2@2098) so it never fired; the real client
+    /// walks in and acks from x≈3110 (inside). Ack-from-inside = the fix.</summary>
+    public Func<string, (uint X, uint Y), bool>? IsInsideScenarioArea { get; set; }
 
     public event Action<uint>? HpChanged;
 
@@ -1481,12 +1487,28 @@ public sealed class ZoneView : IDisposable
             var area = System.Text.Encoding.ASCII.GetString(req.areaindex.n8_name, 0, z < 0 ? req.areaindex.n8_name.Length : z);
             LastScenarioArea = area;
             InScenarioInstance = true;   // latch: we're inside a scenario instance (survives between-room gaps)
-            // Echo the ACK (same areaindex) — the real client always acks. NOTE (tested 2026-07-09): a ~2s
-            // deferred ack (to mimic the client acking after walking in) did NOT make Zone_Mob02's SkelRegen
-            // fire, so the R2 non-fire is NOT an ack-timing race; it's server-side (see tickets P0). Kept instant.
-            _ = _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = req.areaindex }, default);
-            _log?.Invoke($"[ZoneView] SCENARIO area entered: '{area}' — sent AREAENTRY_ACK (arming mob wave)");
             ScenarioAreaEntered?.Invoke(area);
+            // HOLD THE ACK UNTIL WE'RE INSIDE THE AREA (proven on the wire 2026-07-13). The server sends the
+            // AREAENTRY_REQ early — as R1 completes / the room door opens — when the player is still OUTSIDE the
+            // room (bot got it at x≈1546, before Door2@2098). It fires the room's interrupt (SkelRegen) on the
+            // ACK *only when that ACK's position is genuinely inside the area*. The old reflexive instant-ack
+            // (from room 1) therefore never triggered R2. The real client walks in first and acks from x≈3110
+            // (inside). So: wait until our position is inside the .aid box, THEN ack. The lua drives the walk-in.
+            var ackArea = req.areaindex;
+            _ = Task.Run(async () =>
+            {
+                var deadline = DateTime.UtcNow.AddSeconds(60);
+                bool inside = false;
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (IsInsideScenarioArea is null) { inside = true; break; }         // no geometry → old behaviour
+                    if (SelfPositionProvider?.Invoke() is { } p && IsInsideScenarioArea(area, p)) { inside = true; break; }
+                    await Task.Delay(150).ConfigureAwait(false);
+                }
+                await _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = ackArea }, default).ConfigureAwait(false);
+                var pos = SelfPositionProvider?.Invoke();
+                _log?.Invoke($"[ZoneView] SCENARIO area '{area}' — {(inside ? "INSIDE" : "TIMEOUT(outside)")} @{pos} → sent AREAENTRY_ACK (arming wave)");
+            });
         }
         else if (op == OpScenarioObjTypeChange)
         {

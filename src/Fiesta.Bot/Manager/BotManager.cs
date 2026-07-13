@@ -2102,6 +2102,13 @@ public sealed class BotManager : IAsyncDisposable
                 handle.ZoneView = zoneView;
                 if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
+                zoneView.IsInsideScenarioArea = (areaName, pos) =>          // hold AREAENTRY_ACK until inside the .aid box
+                {
+                    if (handle.CurrentMap is not { } m || AreaProvider?.Invoke(m) is not { } areas) return true; // no data → ack now
+                    var a = areas.FirstOrDefault(ar => string.Equals(ar.Name, areaName, StringComparison.OrdinalIgnoreCase));
+                    if (a is null) return true;
+                    return Math.Abs(pos.X - a.CenterX) <= a.HalfX && Math.Abs(pos.Y - a.CenterY) <= a.HalfY;
+                };
                 if (ClientData is { } cdata) zoneView.IsHuntableMob = mobId => cdata.IsHuntableEnemy(mobId); // ignore guards
                 if (ClientData is { } cdata2) zoneView.IsMoveBlockingAbstate = idx => cdata2.IsMoveBlockingAbstate(idx); // root/stun → don't learn walls
                 zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);
