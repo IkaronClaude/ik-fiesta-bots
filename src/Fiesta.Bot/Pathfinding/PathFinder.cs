@@ -19,11 +19,6 @@ public static class PathFinder
     // (2026-06-30): the full cross-map RouCos03 route to the Forest-of-Mist gate needed >10M
     // expansions at 1.5x but resolves under ~6M at 2.0x (see the raised FindPath maxExpansions).
     private const int GreedyWeightNum = 2, GreedyWeightDen = 1; // 2.0x — fast on open maps
-    // Tight-corridor centering: destination cells with wall-clearance below CenterTarget tiles pay
-    // (CenterTarget - clearance) * CenterWeight extra cost, pulling the route onto the corridor centerline
-    // (off the .shbd edge the server MOVEFAILs). CenterTarget ~4 tiles ≈ 25 world units of wall clearance; a
-    // wall-adjacent step (clr 1) costs 10+18=28 vs 10 centred, so the path detours up to ~3 tiles to stay centred.
-    private const int CenterTarget = 4, CenterWeight = 6;
 
     /// <param name="margin">Obstacle-inflation border in tiles (P0 2026-06-30): the interior of
     /// the path stays this many tiles clear of any blocked tile so straight runs don't clip an
@@ -114,15 +109,6 @@ public static class PathFinder
                     continue;
 
                 int step = (dx != 0 && dy != 0) ? 14 : 10; // ~10 ortho, ~14 diagonal
-                // TIGHT-CORRIDOR CENTERING (tick 41): add a cost that rises as the destination cell gets closer
-                // to a wall, so the OPTIMAL route rides the corridor's high-clearance spine (its middle) for as
-                // long as possible instead of hugging a .shbd edge. The client .shbd's walkable border is ~1-2
-                // tiles WIDER than the server collision, so an edge-hugging path steps onto cells the server
-                // MOVEFAILs → the storm/wedge + position desync (tick 23/39/40). Staying centred never touches
-                // that mismatched border. Cells with clearance >= CenterTarget are free; nearer ones pay
-                // (CenterTarget - clearance) * CenterWeight. Heuristic stays admissible (step cost only grows).
-                int clr = grid.ClearanceAt(nx, ny);
-                if (clr < CenterTarget) step += (CenterTarget - clr) * CenterWeight;
                 int ng = curG + step;
                 int nid = Id(nx, ny);
                 if (g.TryGetValue(nid, out var prev) && ng >= prev) continue;
