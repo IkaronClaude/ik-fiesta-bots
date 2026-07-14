@@ -2331,9 +2331,14 @@ public sealed class BotManager : IAsyncDisposable
                             // swings land (server-follow), like the real client (which never chases a mob into a
                             // corner). Field combat (not in an instance) always approaches. ScenarioHoldRange is
                             // pure behaviour tuning (a "close enough that aggro will reach me" gap), not a game fact.
-                            if (zoneView.InScenarioInstance && dist < ScenarioHoldRange)
+                            if (zoneView.InScenarioInstance && (dist < ScenarioHoldRange || handle.MoveFailStreak >= 2))
                             {
-                                Log($"[combat] cast out of range (0x{reason:X4}) in instance, target NEAR ({dist:F0}u < {ScenarioHoldRange:F0}u) — HOLDING, not approaching (aggro/server-follow closes the gap; avoids the corner-jam)");
+                                // HOLD if EITHER we're already in melee (dist < ScenarioHoldRange) OR the approach is
+                                // WEDGED (MoveFailStreak ≥ 2 = we've MOVEFAILed repeatedly at this spot, e.g. chasing a
+                                // straggler skeleton standing AT a wall). Don't chase a mob into a wall — stop, hold,
+                                // autoAttack; the aggroing mob comes to us (tick 43: fixes the R2 last-straggler wedge).
+                                var why = dist < ScenarioHoldRange ? $"in melee ({dist:F0}u)" : $"WEDGED approaching (streak {handle.MoveFailStreak})";
+                                Log($"[combat] cast out of range (0x{reason:X4}) in instance, {why} — HOLDING + autoAttack, letting the aggroing mob come (not chasing into a wall)");
                             }
                             else
                             {
