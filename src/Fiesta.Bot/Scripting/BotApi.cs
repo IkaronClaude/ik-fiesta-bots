@@ -828,6 +828,11 @@ public sealed class BotApi
         return Ok(_mgr.WalkPath(Id, PathFinder.Simplify(path)));
     }
 
+    /// <summary>Face (x,y) and STOP, committing the bot's position to the server (MOVERUN+STOP, exactly what
+    /// the real client sends on arrival). Use to force the server to register a scenario AreaEntry cross when
+    /// the bot is inside a trigger box but no AREAENTRY_REQ has arrived (the Zone_Mob05 finale).</summary>
+    public bool commitStop(double x, double y) => Ok(Wait(_mgr.CommitStopAsync(Id, (uint)x, (uint)y)));
+
     public bool partyInvite(string name) => Ok(Wait(_mgr.PartyInviteAsync(Id, name)));
     public bool partyAccept(string name = null) => Ok(Wait(_mgr.PartyAcceptAsync(Id, name)));
     public bool partyDecline(string name = null) => Ok(Wait(_mgr.PartyDeclineAsync(Id, name)));

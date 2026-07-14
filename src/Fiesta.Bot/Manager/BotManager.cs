@@ -420,6 +420,20 @@ public sealed class BotManager : IAsyncDisposable
         handle.SetPosition(faceX, faceY);
     }
 
+    /// <summary>Face (<paramref name="x"/>,<paramref name="y"/>) and STOP — a public wrapper over
+    /// <see cref="FaceAndStopAsync"/>. The MOVERUN+STOP commits the bot's position to the SERVER (the real
+    /// client does exactly this on arrival). Used to make the server register a scenario AreaEntry cross when
+    /// the bot is physically inside a trigger box but its server-side position hasn't committed there — the
+    /// Zone_Mob05 finale: the bot reaches the box client-side but no AREAENTRY_REQ arrives until it STOPs
+    /// (decoded from JCQ.pcapng: player runs into the box then sends NC_ACT_STOP_REQ → server fires the REQ).</summary>
+    public async Task<ActionResult> CommitStopAsync(string id, uint x, uint y, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        await FaceAndStopAsync(handle, s, x, y, ct);
+        return ActionResult.Sent;
+    }
+
     /// <summary>Cast a heal skill on yourself (cast target = own handle). The client's
     /// "a heal lands on me even with an enemy targeted" is a client-side redirect, so
     /// the bot self-targets explicitly — otherwise the server heals the enemy/ally in
