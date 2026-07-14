@@ -914,12 +914,13 @@ public sealed class BotManager : IAsyncDisposable
     // If a click from range doesn't transition, we close to the exact coord and retry.
     private const double GateApproachDist = 60.0;
     // In a scenario instance, an out-of-range cast target CLOSER than this is NOT client-approached — hold +
-    // autoAttack (the aggroing wave / server-follow closes the small gap). Farther = approach. NOTE (tick 41):
-    // tried lowering 350→35 so the bot approaches the R2 skeletons — but a skeleton standing AT a wall made the
-    // approach walk to the wall cell → re-wedge (centering fixes the ROUTE but the GOAL is still at the edge).
-    // Kept at 350. The real remaining blocker is separate: the bot's attacks don't reliably LAND/kill instance
-    // mobs even in melee (0x0FCA cast-fail at point-blank + autoAttack not finishing them) — P1, combat not nav.
-    private const double ScenarioHoldRange = 350.0;
+    // autoAttack (already in melee). Farther = approach to melee. Set to 40 (tick 41): the bot must CLOSE to the
+    // scenario mobs or its autoAttack never swings (it was appearing only as DEFENDER, never attacker → 0 kills).
+    // Paired with ScenarioMeleeStop so the approach STOPS melee-short of the mob (doesn't chase into a wall).
+    private const double ScenarioHoldRange = 40.0;
+    // How far SHORT of the target the instance combat-approach stops — closes into swing range without pathing
+    // onto the mob's (possibly wall-adjacent) cell. Slightly under ScenarioHoldRange so once we arrive we HOLD + swing.
+    private const double ScenarioMeleeStop = 30.0;
     // How close a NearbyNpc must be to a town-portal's known coord to be taken as the portal NPC.
     private const double PortalNpcRadius = 250.0;
 
@@ -2336,8 +2337,18 @@ public sealed class BotManager : IAsyncDisposable
                             }
                             else
                             {
-                                Log($"[combat] cast FAILED — out of range (0x{reason:X4}), approaching target");
-                                var step = Math.Min(dist - 1, MaxStepFor(120.0));
+                                // APPROACH but STOP at melee range (tick 41): walk to a point ~ScenarioMeleeStop
+                                // SHORT of the target along the bot→target line, NOT the target's exact cell. Two
+                                // bugs this fixes: (1) a skeleton standing AT a wall made pathing to its cell wedge
+                                // the bot in the wall (centering fixes the ROUTE but the GOAL was still at the edge);
+                                // (2) with the old 350 hold the bot never closed, so autoAttack produced 0 swings —
+                                // the bot appeared only as DEFENDER in SWING_START, never attacker → 0 skeleton kills.
+                                // Stopping melee-short closes into swing range without touching the wall.
+                                Log($"[combat] cast out of range (0x{reason:X4}) — approaching to melee (dist {dist:F0}u)");
+                                var goalDist = Math.Max(0.0, dist - ScenarioMeleeStop);
+                                var gx = (uint)Math.Round(pos.X + dx / dist * goalDist);
+                                var gy = (uint)Math.Round(pos.Y + dy / dist * goalDist);
+                                var step = Math.Min(goalDist, MaxStepFor(120.0));
                                 if (step > 0)
                                 {
                                     var nx = (uint)Math.Round(pos.X + dx / dist * step);
@@ -2346,16 +2357,13 @@ public sealed class BotManager : IAsyncDisposable
                                     {
                                         try
                                         {
-                                            // APPROACH THE ENEMY BY PATHFINDING (operator 2026-07-13), not the old
-                                            // straight-line step — which walked the bot INTO walls (esp. instance
-                                            // corridors where the target is across a wall) and MOVEFAIL-stormed. Route
-                                            // around obstacles via the .shbd grid; fall back to the straight step only
-                                            // if there's no grid/route. The lua combat rotation re-casts next tick once
-                                            // we're in range (the old inline re-cast raced the async walk).
+                                            // Route around obstacles via the .shbd grid (now corridor-centered);
+                                            // fall back to the straight step only if there's no grid/route. Goal is
+                                            // the melee-short point, so we never path onto the mob's (possibly wall) cell.
                                             var routed = false;
                                             if (handle.CurrentMap is { } cmap && GridProvider?.Invoke(cmap) is { } cgrid)
                                             {
-                                                var path = PathFinder.FindPath(cgrid, pos.X, pos.Y, tp.X, tp.Y);
+                                                var path = PathFinder.FindPath(cgrid, pos.X, pos.Y, gx, gy);
                                                 if (path.Count >= 2) { WalkPath(botId, PathFinder.Simplify(path)); routed = true; }
                                             }
                                             if (!routed) await WalkAsync(botId, pos.X, pos.Y, nx, ny, ct);
