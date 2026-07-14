@@ -652,6 +652,9 @@ public sealed class ZoneView : IDisposable
     /// (KQ_Gate4, opens/closes per the script), not a static obstacle, so learning it poisons the grid and the
     /// bot can never path through once the door opens (the JCQ stuck-at-Door3 grid-poison).</summary>
     public bool InScenarioInstance { get; private set; }
+    // Count of REGENMOB (0x1C08) received — a monotonic "a wave just spawned" signal the AREAENTRY_ACK re-send
+    // loop watches to know the room's interrupt armed (stop re-sending).
+    private long _scenarioRegenCount;
     /// <summary>Raised when we auto-ack a scenario AREAENTRY (carries the area name) — a new instance room armed.</summary>
     public event Action<string>? ScenarioAreaEntered;
     /// <summary>(areaName,(x,y)) → is the point inside that scenario area's <c>.aid</c> box? Set by the manager.
@@ -1245,6 +1248,7 @@ public sealed class ZoneView : IDisposable
         }
         else if (op == OpRegenMob)
         {
+            System.Threading.Interlocked.Increment(ref _scenarioRegenCount); // wave-armed signal for the AREAENTRY_ACK re-send loop
             AddOrUpdateNpc(pkt.Payload.Span, 0); // single record, no count prefix
         }
         else if (op == OpMoverRideOn)
@@ -1514,26 +1518,37 @@ public sealed class ZoneView : IDisposable
             LastScenarioArea = area;
             InScenarioInstance = true;   // latch: we're inside a scenario instance (survives between-room gaps)
             ScenarioAreaEntered?.Invoke(area);
-            // HOLD THE ACK UNTIL WE'RE INSIDE THE AREA (proven on the wire 2026-07-13). The server sends the
-            // AREAENTRY_REQ early — as R1 completes / the room door opens — when the player is still OUTSIDE the
-            // room (bot got it at x≈1546, before Door2@2098). It fires the room's interrupt (SkelRegen) on the
-            // ACK *only when that ACK's position is genuinely inside the area*. The old reflexive instant-ack
-            // (from room 1) therefore never triggered R2. The real client walks in first and acks from x≈3110
-            // (inside). So: wait until our position is inside the .aid box, THEN ack. The lua drives the walk-in.
+            // ROOT CAUSE (operator + JCQMany diff, 2026-07-14): the server fires the room's interrupt (SkelRegen)
+            // on the ACK using the player's SERVER-side position. The bot MOVEFAIL-storms entering the area, so its
+            // server position lags OUTSIDE the trigger while the client thinks it's inside — a single ack from that
+            // desynced moment doesn't fire (the R2 intermittency + "bot does something different"; the real client
+            // never MOVEFAILs so its one ack always lands server-valid). FIX: RE-SEND the ACK every ~500ms while our
+            // (MOVEFAIL-resynced) position is INSIDE the .aid box, so an ack lands on a tick where the SERVER agrees
+            // we're inside → the server re-checks position per ack. Stop once a REGENMOB arrives (wave armed) or ~15s.
             var ackArea = req.areaindex;
+            var reqAt = DateTime.UtcNow;
+            var regenBase = System.Threading.Interlocked.Read(ref _scenarioRegenCount);
             _ = Task.Run(async () =>
             {
-                var deadline = DateTime.UtcNow.AddSeconds(60);
-                bool inside = false;
-                while (DateTime.UtcNow < deadline)
+                // RE-SEND the ACK, NO position gate. The REQ itself only fires when the server detects us crossing
+                // the trigger (near Door2, x≈2251 — WEST of our .aid box, so the old "inside the .aid box" gate was
+                // both wrong and too deep: the bot's slow MOVEFAIL-nav took ~50s to reach the box, past the loop's
+                // window → 0 acks sent). The server re-checks OUR SERVER-side position on each ACK; MOVEFAILs keep
+                // shoving us back before the trigger, so a single ack from a desynced moment misses. Spamming the
+                // ack every 500ms up to 90s means one lands on a tick where the server agrees we're past the
+                // trigger → SkelRegen fires. Stop the instant a REGENMOB arrives (wave armed). Harmless for R1 (its
+                // wave arms in ~1s → loop breaks immediately). (Operator idea 2026-07-14: send multiple times.)
+                int sends = 0;
+                while (DateTime.UtcNow - reqAt < TimeSpan.FromSeconds(90))
                 {
-                    if (IsInsideScenarioArea is null) { inside = true; break; }         // no geometry → old behaviour
-                    if (SelfPositionProvider?.Invoke() is { } p && IsInsideScenarioArea(area, p)) { inside = true; break; }
-                    await Task.Delay(150).ConfigureAwait(false);
+                    if (System.Threading.Interlocked.Read(ref _scenarioRegenCount) > regenBase)
+                    { _log?.Invoke($"[ZoneView] SCENARIO '{area}' — wave armed (REGENMOB) after {sends} ACK(s)"); break; }
+                    await _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = ackArea }, default).ConfigureAwait(false);
+                    sends++;
+                    if (sends == 1 || sends % 10 == 0)
+                        _log?.Invoke($"[ZoneView] SCENARIO area '{area}' → AREAENTRY_ACK send #{sends} @{SelfPositionProvider?.Invoke()} (re-send until wave arms)");
+                    await Task.Delay(500).ConfigureAwait(false);
                 }
-                await _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = ackArea }, default).ConfigureAwait(false);
-                var pos = SelfPositionProvider?.Invoke();
-                _log?.Invoke($"[ZoneView] SCENARIO area '{area}' — {(inside ? "INSIDE" : "TIMEOUT(outside)")} @{pos} → sent AREAENTRY_ACK (arming wave)");
             });
         }
         else if (op == OpScenarioObjTypeChange)
