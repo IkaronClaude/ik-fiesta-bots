@@ -913,6 +913,10 @@ public sealed class BotManager : IAsyncDisposable
     // effect within its range, no need to stand on the tile (verified Portals.pcapng).
     // If a click from range doesn't transition, we close to the exact coord and retry.
     private const double GateApproachDist = 60.0;
+    // In a scenario instance, an out-of-range cast target CLOSER than this is NOT client-approached — the bot
+    // holds + autoAttacks and lets the aggroing wave / server-follow close the small gap (avoids the tight-
+    // geometry corner-jam, tick 30). Farther targets ARE approached (a genuine corridor traverse, e.g. R1).
+    private const double ScenarioHoldRange = 350.0;
     // How close a NearbyNpc must be to a town-portal's known coord to be taken as the portal NPC.
     private const double PortalNpcRadius = 250.0;
 
@@ -2305,7 +2309,6 @@ public sealed class BotManager : IAsyncDisposable
                     }
                     else if (reason == ZoneView.CastFailReason.OutOfRange)
                     {
-                        Log($"[combat] cast FAILED — out of range (0x{reason:X4}), approaching target");
                         var tgt = handle.LastCastTarget;
                         var npcPos = tgt != 0 ? NpcPos(handle, tgt) : null;
                         if (npcPos is { } tp && handle.Position is { } pos)
@@ -2315,31 +2318,48 @@ public sealed class BotManager : IAsyncDisposable
                             double dx = (double)tp.X - pos.X;
                             double dy = (double)tp.Y - pos.Y;
                             var dist = Math.Sqrt(dx * dx + dy * dy);
-                            var step = Math.Min(dist - 1, MaxStepFor(120.0));
-                            if (step > 0)
+                            // In a SCENARIO INSTANCE, only client-approach a FAR target (a genuine traverse — e.g.
+                            // R1 walking ~1000u+ down the corridor to the fled clone / the Kebings). For a NEAR
+                            // target already in the fight (e.g. the R2 skeletons ~48u away), do NOT walk: the tight
+                            // instance geometry MOVEFAILs the last few tiles, so the bot wedges in a corner against
+                            // a wall/closed door and the ⊥-unstick ping-pongs forever, landing 0 hits (tick 30
+                            // corner-jam). Instead HOLD + autoAttack — the aggroing wave closes the small gap and
+                            // swings land (server-follow), like the real client (which never chases a mob into a
+                            // corner). Field combat (not in an instance) always approaches. ScenarioHoldRange is
+                            // pure behaviour tuning (a "close enough that aggro will reach me" gap), not a game fact.
+                            if (zoneView.InScenarioInstance && dist < ScenarioHoldRange)
                             {
-                                var nx = (uint)Math.Round(pos.X + dx / dist * step);
-                                var ny = (uint)Math.Round(pos.Y + dy / dist * step);
-                                _ = Task.Run(async () =>
+                                Log($"[combat] cast out of range (0x{reason:X4}) in instance, target NEAR ({dist:F0}u < {ScenarioHoldRange:F0}u) — HOLDING, not approaching (aggro/server-follow closes the gap; avoids the corner-jam)");
+                            }
+                            else
+                            {
+                                Log($"[combat] cast FAILED — out of range (0x{reason:X4}), approaching target");
+                                var step = Math.Min(dist - 1, MaxStepFor(120.0));
+                                if (step > 0)
                                 {
-                                    try
+                                    var nx = (uint)Math.Round(pos.X + dx / dist * step);
+                                    var ny = (uint)Math.Round(pos.Y + dy / dist * step);
+                                    _ = Task.Run(async () =>
                                     {
-                                        // APPROACH THE ENEMY BY PATHFINDING (operator 2026-07-13), not the old
-                                        // straight-line step — which walked the bot INTO walls (esp. instance
-                                        // corridors where the target is across a wall) and MOVEFAIL-stormed. Route
-                                        // around obstacles via the .shbd grid; fall back to the straight step only
-                                        // if there's no grid/route. The lua combat rotation re-casts next tick once
-                                        // we're in range (the old inline re-cast raced the async walk).
-                                        var routed = false;
-                                        if (handle.CurrentMap is { } cmap && GridProvider?.Invoke(cmap) is { } cgrid)
+                                        try
                                         {
-                                            var path = PathFinder.FindPath(cgrid, pos.X, pos.Y, tp.X, tp.Y);
-                                            if (path.Count >= 2) { WalkPath(botId, PathFinder.Simplify(path)); routed = true; }
+                                            // APPROACH THE ENEMY BY PATHFINDING (operator 2026-07-13), not the old
+                                            // straight-line step — which walked the bot INTO walls (esp. instance
+                                            // corridors where the target is across a wall) and MOVEFAIL-stormed. Route
+                                            // around obstacles via the .shbd grid; fall back to the straight step only
+                                            // if there's no grid/route. The lua combat rotation re-casts next tick once
+                                            // we're in range (the old inline re-cast raced the async walk).
+                                            var routed = false;
+                                            if (handle.CurrentMap is { } cmap && GridProvider?.Invoke(cmap) is { } cgrid)
+                                            {
+                                                var path = PathFinder.FindPath(cgrid, pos.X, pos.Y, tp.X, tp.Y);
+                                                if (path.Count >= 2) { WalkPath(botId, PathFinder.Simplify(path)); routed = true; }
+                                            }
+                                            if (!routed) await WalkAsync(botId, pos.X, pos.Y, nx, ny, ct);
                                         }
-                                        if (!routed) await WalkAsync(botId, pos.X, pos.Y, nx, ny, ct);
-                                    }
-                                    catch (Exception ex) { Log($"[combat] out-of-range approach error: {ex.Message}"); }
-                                }, ct);
+                                        catch (Exception ex) { Log($"[combat] out-of-range approach error: {ex.Message}"); }
+                                    }, ct);
+                                }
                             }
                         }
                     }
