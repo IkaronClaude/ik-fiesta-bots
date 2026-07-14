@@ -913,9 +913,12 @@ public sealed class BotManager : IAsyncDisposable
     // effect within its range, no need to stand on the tile (verified Portals.pcapng).
     // If a click from range doesn't transition, we close to the exact coord and retry.
     private const double GateApproachDist = 60.0;
-    // In a scenario instance, an out-of-range cast target CLOSER than this is NOT client-approached — the bot
-    // holds + autoAttacks and lets the aggroing wave / server-follow close the small gap (avoids the tight-
-    // geometry corner-jam, tick 30). Farther targets ARE approached (a genuine corridor traverse, e.g. R1).
+    // In a scenario instance, an out-of-range cast target CLOSER than this is NOT client-approached — hold +
+    // autoAttack (the aggroing wave / server-follow closes the small gap). Farther = approach. NOTE (tick 41):
+    // tried lowering 350→35 so the bot approaches the R2 skeletons — but a skeleton standing AT a wall made the
+    // approach walk to the wall cell → re-wedge (centering fixes the ROUTE but the GOAL is still at the edge).
+    // Kept at 350. The real remaining blocker is separate: the bot's attacks don't reliably LAND/kill instance
+    // mobs even in melee (0x0FCA cast-fail at point-blank + autoAttack not finishing them) — P1, combat not nav.
     private const double ScenarioHoldRange = 350.0;
     // How close a NearbyNpc must be to a town-portal's known coord to be taken as the portal NPC.
     private const double PortalNpcRadius = 250.0;

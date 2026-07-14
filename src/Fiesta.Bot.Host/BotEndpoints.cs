@@ -653,6 +653,11 @@ public static class BotEndpoints
         var dir = Environment.GetEnvironmentVariable("BLOCKINFO_DIR");
         if (string.IsNullOrWhiteSpace(dir)) return null;
         var path = Path.Combine(dir, m + ".shbd");
+        // NOTE: erosion (EnableErosion for .aid maps) was tried tick 34/40 to fix the instance edge-hug MOVEFAIL
+        // wedge — it clears R1 fine (the "erosion broke R1" call was a mis-attribution) but did NOT fix the R2
+        // wave wedge on its own (the bot still overshot toward the closed Door3). Superseded by tick-41
+        // tight-corridor CENTERING in the pathfinder (a soft cost pulling routes onto the corridor spine — a
+        // cleaner fix that doesn't remove cells). Erosion left OFF; re-add here if centering proves insufficient.
         try { return File.Exists(path) ? BlockGrid.Load(path) : null; }
         catch { return null; }
     });

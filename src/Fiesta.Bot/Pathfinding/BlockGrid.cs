@@ -261,6 +261,13 @@ public sealed class BlockGrid
         return Clearance()[ty * WidthTiles + tx] > margin;
     }
 
+    /// <summary>Chebyshev distance (in tiles, capped at 63) from tile (tx,ty) to the nearest blocked/OOB
+    /// tile — i.e. how far this cell is from the nearest wall. 0 = OOB/blocked, 1 = wall-adjacent, higher =
+    /// more centered. The pathfinder adds a cost that rises as this FALLS, so routes ride the corridor's
+    /// high-clearance spine instead of hugging a .shbd edge the server MOVEFAILs (tick 41 tight-corridor centering).</summary>
+    public int ClearanceAt(int tx, int ty)
+        => (uint)tx < (uint)WidthTiles && (uint)ty < (uint)HeightTiles ? Clearance()[ty * WidthTiles + tx] : 0;
+
     /// <summary>World coordinate of a tile's centre (for issuing move packets).</summary>
     public (uint X, uint Y) TileToWorld(int tx, int ty)
         => ((uint)((tx + 0.5) * WorldPerTile), (uint)((ty + 0.5) * WorldPerTile));
