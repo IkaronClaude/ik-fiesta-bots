@@ -1641,9 +1641,17 @@ public sealed class ZoneView : IDisposable
                 //     sends AREAENTRY_REQ 'Zone_Mob05' while we're still EAST fighting the Chiefs (self@5293,5194,
                 //     in Zone_Mob04); the old loop spammed acks from there and hit a hard 90s cutoff BEFORE we
                 //     killed the Chiefs and reached Zone_Mob05 → LightOn never got an ack from inside → never fired.
+                //     ARRIVED = shove-free (settled at a server-valid position) AND actually INSIDE this area's
+                //     .aid box (else "shove-free" opens anywhere the bot pauses — e.g. it acked Zone_Mob02 from
+                //     1703,3140, still in Zone_Mob01, ~1300u short). The box check makes the ack fire ONLY from
+                //     inside the trigger, so the finale ack for Zone_Mob05 waits until we've killed the Chiefs and
+                //     walked west INTO Zone_Mob05 — not from the Chief area where the REQ first arrived. The 5-min
+                //     window is plenty; no IsInsideScenarioArea data (non-scenario) → box check passes (true).
                 while (DateTime.UtcNow - reqAt < TimeSpan.FromMinutes(5) && CurrentMapId == mapAtReq)
                 {
-                    if (DateTime.UtcNow - _lastSignificantMoveFailUtc > TimeSpan.FromMilliseconds(900)) break; // arrived
+                    bool shoveFree = DateTime.UtcNow - _lastSignificantMoveFailUtc > TimeSpan.FromMilliseconds(900);
+                    bool insideBox = SelfPositionProvider?.Invoke() is { } p && (IsInsideScenarioArea?.Invoke(area, p) ?? true);
+                    if (shoveFree && insideBox) break; // arrived + parked INSIDE the trigger box
                     await Task.Delay(300).ConfigureAwait(false);
                 }
                 if (CurrentMapId != mapAtReq) return; // left the instance while travelling
