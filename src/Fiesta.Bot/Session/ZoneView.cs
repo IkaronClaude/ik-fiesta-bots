@@ -388,6 +388,17 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<ushort, NearbyNpc> _npcs = new();   // ⚠ view-scoped (pruned by
     // BRIEFINFODELETE as you move). Use ONLY for live in-view things (combat targets, the nearby gate
     // HANDLE to click). For "where is NPC X on this map" use _npcSeed (below), not this.
+    // STICKY recently-seen mob cache (2026-07-15) — the fix for the instance AoI-flicker combat stall
+    // ([[fiesta-instance-roomba-coverage]]): in Job1_Dn01 a mob melee-hits us then 159ms later sends
+    // MAP_LOGOUT 0x1805 (leaves our AoI) then REGENs — the constant blink meant the bot DROPPED the target
+    // every flicker (BRIEFINFODELETE/MAP_LOGOUT hard-removed it), so it re-acquired/re-faced/re-cast slower
+    // than the flicker interval → 0 kills, casts fail out-of-range 0x0FCA on the departed handle. Fix: an
+    // AoI-leave (BriefDelete/MapLogout) moves a mob HERE (last pos + a short expiry) instead of dropping it,
+    // so combat keeps holding the target through the blink; a re-appear (AddOrUpdateNpc) or a real death
+    // (REALLYKILL) removes it. NearbyNpcs returns _npcs ∪ non-expired _recentNpcs. Value = (npc, expiryTick).
+    private readonly ConcurrentDictionary<ushort, (NearbyNpc Npc, long Expiry)> _recentNpcs = new();
+    private const int RecentNpcTtlMs = 4000; // long enough to bridge the ~200ms flicker; short enough that a
+                                             // genuinely-departed mob is dropped fast (no chasing a ghost).
     // ✅ THE NPC SEED — the single authoritative full-map roster, keyed by mobId, holding position + the
     // gate flag + link-destination map. Populated by the bulk 0x1C09 NC_BRIEFINFO_MOB_CMD on map-enter
     // (ALL NPCs+gates at infinite range, as on the minimap) and any later 0x1C09/REGENMOB. Cleared on
@@ -467,7 +478,36 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>NPCs/mobs currently in view (handle → id/coord), from the zone's MOB
     /// briefinfo. The runtime source for walk-to-NPC and gate location.</summary>
-    public IReadOnlyCollection<NearbyNpc> NearbyNpcs => _npcs.Values.ToArray();
+    public IReadOnlyCollection<NearbyNpc> NearbyNpcs
+    {
+        get
+        {
+            // Live in-view mobs PLUS recently-seen ones still within their sticky TTL (bridges the instance
+            // AoI-flicker so combat can hold a target through the blink). Expired entries are pruned here.
+            if (_recentNpcs.IsEmpty) return _npcs.Values.ToArray();
+            long now = Environment.TickCount64;
+            var result = new Dictionary<ushort, NearbyNpc>();
+            foreach (var kv in _recentNpcs)
+            {
+                if (kv.Value.Expiry <= now) { _recentNpcs.TryRemove(kv.Key, out _); continue; }
+                result[kv.Key] = kv.Value.Npc;
+            }
+            foreach (var kv in _npcs) result[kv.Key] = kv.Value; // live entries win over stale sticky ones
+            return result.Values.ToArray();
+        }
+    }
+
+    /// <summary>A mob leaving our AoI (BRIEFINFODELETE / MAP_LOGOUT — NOT death) → move it to the sticky
+    /// recently-seen cache instead of dropping it, so combat holds the target through an instance flicker.
+    /// Only real combat mobs are stickied (not gates or static NPCs); the removal from <c>_npcs</c> already
+    /// happened via the caller's TryRemove. A re-appear or a REALLYKILL death evicts it.</summary>
+    private void StashRecentNpc(ushort hnd, NearbyNpc npc)
+    {
+        if (npc.Flag == 1) return;                              // a gate, not a combat target
+        if (IsHuntableMob is { } huntable && !huntable(npc.MobId)) return; // a static/friendly NPC
+        _recentNpcs[hnd] = (npc, Environment.TickCount64 + RecentNpcTtlMs);
+        LogV($"[ZoneView] mob h={hnd} id={npc.MobId} left AoI — stickied {RecentNpcTtlMs}ms (flicker bridge)");
+    }
 
     /// <summary>Live scenario corridor DOOR states (0x6C09), keyed by door handle. The instance nav reads
     /// these (via bot.doorStates) to hold at a closed door instead of MOVEFAIL-thrashing through it.</summary>
@@ -1220,7 +1260,7 @@ public sealed class ZoneView : IDisposable
                 LogV($"[ZoneView] player left: {gone.Name} (h={hnd})");
                 PlayerLeft?.Invoke(hnd);
             }
-            _npcs.TryRemove(hnd, out _); // the same delete also retires NPCs/mobs
+            if (_npcs.TryRemove(hnd, out var goneNpc)) StashRecentNpc(hnd, goneNpc); // sticky-hold mobs through AoI flicker
         }
         else if (op == OpReallyKill)
         {
@@ -1241,8 +1281,9 @@ public sealed class ZoneView : IDisposable
                 // kill is never credited (KillsByMe gated on _npcs) — so the instance driver can't tell it
                 // won and move to the next clone/room.
                 bool wasMob = _npcs.TryRemove(dead, out _);
+                bool wasRecent = _recentNpcs.TryRemove(dead, out _); // died while flickered-out of view → evict sticky copy
                 bool wasChar = _nearby.TryRemove(dead, out _);
-                if ((wasMob || wasChar) && mine)
+                if ((wasMob || wasRecent || wasChar) && mine)
                 {
                     LastKill = dead; KillsByMe++;
                     _log?.Invoke($"[combat] KILLED {(wasChar && !wasMob ? "clone/char" : "mob")} h={dead} (totalKills={KillsByMe})");
@@ -1498,7 +1539,7 @@ public sealed class ZoneView : IDisposable
             {
                 _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
+                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
                 LastScenarioArea = null; InScenarioInstance = false;
                 MapChanged?.Invoke(h);
@@ -1913,7 +1954,7 @@ public sealed class ZoneView : IDisposable
             if (handoff is { } h)
             {
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _npcSeed.Clear();  // entities are per-map; the new map re-broadcasts
+                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear();  // entities are per-map; the new map re-broadcasts
                 _nearby.Clear();
                 _drops.Clear();  // ground items are per-map too
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
@@ -2093,7 +2134,7 @@ public sealed class ZoneView : IDisposable
                 LogV($"[ZoneView] player left (logout): {gonePlayer.Name} (h={hnd})");
                 PlayerLeft?.Invoke(hnd);
             }
-            _npcs.TryRemove(hnd, out _);
+            if (_npcs.TryRemove(hnd, out var goneNpc)) StashRecentNpc(hnd, goneNpc); // sticky-hold mobs through AoI flicker
         }
         else if (op == OpPickAck)
         {
@@ -2314,6 +2355,7 @@ public sealed class ZoneView : IDisposable
         var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap, team);
         var isNew = !_npcs.ContainsKey(handle);
         _npcs[handle] = npc;
+        _recentNpcs.TryRemove(handle, out _); // back in view (live) → drop the sticky flicker-bridge copy
         // THE SEED: record every NPC/gate by mobId (the bulk 0x1C09 on map-enter populates this fully).
         // Authoritative roster, kept until map change — the navigation source of truth.
         _npcSeed[mobid] = new NpcSeedEntry(mobid, x, y, flag == 1, linkMap);
