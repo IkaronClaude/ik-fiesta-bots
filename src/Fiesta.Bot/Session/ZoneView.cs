@@ -728,6 +728,16 @@ public sealed class ZoneView : IDisposable
     private long _scenarioRegenCount;
     /// <summary>Raised when we auto-ack a scenario AREAENTRY (carries the area name) — a new instance room armed.</summary>
     public event Action<string>? ScenarioAreaEntered;
+    // Scenario areas we've ARRIVED IN and ACKED (name → 1). Since the ack only fires once we're shove-free =
+    // parked at a server-valid position INSIDE the trigger (no desync — we detect MOVEFAILs), the moment we
+    // send the first ack for area A is the authoritative "we entered + handled A" signal (operator 2026-07-15:
+    // "treat sending the acks as the real completion, the moment the first one is sent" + "when you ACK inside
+    // area A count A as done"). The instance driver's visited-set consumes THIS (via bot.scenarioAckedAreas)
+    // instead of the flaky proximity / LastScenarioArea-flip heuristic that mis-marked co-armed areas. Cleared
+    // on map handoff.
+    private readonly ConcurrentDictionary<string, byte> _scenarioAckedAreas = new();
+    /// <summary>Scenario areas we've arrived-in and acked this instance run (authoritative "area done" set).</summary>
+    public IReadOnlyCollection<string> ScenarioAckedAreas => _scenarioAckedAreas.Keys.ToArray();
     /// <summary>(areaName,(x,y)) → is the point inside that scenario area's <c>.aid</c> box? Set by the manager.
     /// Used to HOLD the AREAENTRY_ACK until we're genuinely INSIDE the room. Proven on the wire 2026-07-13: the
     /// server fires the room's interrupt (SkelRegen) on an ACK whose position is inside the area — the bot was
@@ -1552,7 +1562,7 @@ public sealed class ZoneView : IDisposable
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
-                LastScenarioArea = null; InScenarioInstance = false;
+                LastScenarioArea = null; InScenarioInstance = false; _scenarioAckedAreas.Clear();
                 MapChanged?.Invoke(h);
             }
         }
@@ -1620,7 +1630,6 @@ public sealed class ZoneView : IDisposable
             // we're inside → the server re-checks position per ack. Stop once a REGENMOB arrives (wave armed) or ~15s.
             var ackArea = req.areaindex;
             var reqAt = DateTime.UtcNow;
-            var regenBase = System.Threading.Interlocked.Read(ref _scenarioRegenCount);
             var mapAtReq = CurrentMapId;
             _ = Task.Run(async () =>
             {
@@ -1634,20 +1643,22 @@ public sealed class ZoneView : IDisposable
                 //     killed the Chiefs and reached Zone_Mob05 → LightOn never got an ack from inside → never fired.
                 while (DateTime.UtcNow - reqAt < TimeSpan.FromMinutes(5) && CurrentMapId == mapAtReq)
                 {
-                    if (System.Threading.Interlocked.Read(ref _scenarioRegenCount) > regenBase)
-                    { _log?.Invoke($"[ZoneView] SCENARIO '{area}' — wave armed before we needed to ack"); return; }
                     if (DateTime.UtcNow - _lastSignificantMoveFailUtc > TimeSpan.FromMilliseconds(900)) break; // arrived
                     await Task.Delay(300).ConfigureAwait(false);
                 }
                 if (CurrentMapId != mapAtReq) return; // left the instance while travelling
-                // (2) ARRIVED → fire up to 10 acks, 1s apart (operator 2026-07-15). One lands on a tick where the
-                //     server agrees we're inside the trigger → the interrupt (SkelRegen / LightOff / LightOn)
-                //     dispatches. Stop early the instant the wave/interrupt arms (REGENMOB).
-                _log?.Invoke($"[ZoneView] SCENARIO area '{area}' — ARRIVED (shove-free) @{SelfPositionProvider?.Invoke()} → sending 10 ACKs @1s");
+                // (2) ARRIVED inside the trigger (shove-free = server-valid position, no desync since we detect
+                //     MOVEFAILs). SENDING the ack IS the completion — the server dispatches area A's interrupt on
+                //     it, and we mark A DONE the moment the first ack goes out (operator 2026-07-15: "treat sending
+                //     the acks (with retries) as the real completion, the moment the first one is sent"; "when you
+                //     ACK inside area A count A as done"). We do NOT wait for/gate on a REGENMOB (unreliable — a
+                //     global counter that cross-contaminates areas, and some interrupts (AnotherKebing/LightOn)
+                //     don't REGEN). The remaining acks are just delivery retries (harmless if the interrupt already
+                //     ran — the server ignores a duplicate AreaEntry for an area we're already inside).
+                _scenarioAckedAreas[area] = 1;   // AUTHORITATIVE "area done" (the instance driver reads this)
+                _log?.Invoke($"[ZoneView] SCENARIO area '{area}' — ARRIVED + ACKED (done) @{SelfPositionProvider?.Invoke()} → sending 10 ACKs @1s (retries)");
                 for (int i = 1; i <= 10; i++)
                 {
-                    if (System.Threading.Interlocked.Read(ref _scenarioRegenCount) > regenBase)
-                    { _log?.Invoke($"[ZoneView] SCENARIO '{area}' — wave armed (REGENMOB) after {i - 1} ACK(s)"); break; }
                     await _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = ackArea }, default).ConfigureAwait(false);
                     await Task.Delay(1000).ConfigureAwait(false);
                 }
@@ -1984,6 +1995,7 @@ public sealed class ZoneView : IDisposable
                                           // instance driver thinks we're still inside + hoovers field mobs)
                 _doorStates.Clear();  // corridor doors are per-instance-run; a re-entry rebuilds them
                 _doorNames.Clear(); _doorStateByName.Clear(); // handle→name + name→state overlay seeds, likewise
+                _scenarioAckedAreas.Clear(); // acked-areas "done" set is per-instance-run; a re-entry starts fresh
                 _log?.Invoke(h.IsCrossServer
                     ? $"[ZoneView] map handoff (cross-server) -> mapId={h.MapId} @({h.X},{h.Y}) via {h.Ip}:{h.Port} wm={h.WmHandle}"
                     : $"[ZoneView] map change (in-band) -> mapId={h.MapId} @({h.X},{h.Y})");

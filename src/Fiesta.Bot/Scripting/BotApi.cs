@@ -224,6 +224,17 @@ public sealed class BotApi
     /// a scenario. The clear-room driver uses this to know it's inside the instance and which room armed.</summary>
     public string scenarioArea() => View?.LastScenarioArea ?? "";
 
+    /// <summary>The scenario areas we've ARRIVED-IN and ACKED this instance run — the authoritative "area done"
+    /// set (a landed ack only happens from a shove-free position INSIDE the trigger). The instance driver's
+    /// visited-set reads THIS to advance rooms, instead of the flaky proximity / LastScenarioArea-flip
+    /// heuristic that mis-marked co-armed areas (Zone_Mob03+Zone_Mob04). Returns a { name = true } table.</summary>
+    public DynValue scenarioAckedAreas()
+    {
+        var t = NewTable();
+        if (View is { } v) foreach (var a in v.ScenarioAckedAreas) t[a] = true;
+        return DynValue.NewTable(t);
+    }
+
     /// <summary>True while a movement-blocking abnormal state (stun/root/entangle, e.g. the JCQ clone's
     /// StaQuestEntangle) is active on the bot — the server MOVEFAILs every move until it clears. The
     /// instance/combat lua should WAIT (don't cast/approach/walk into it) while this is true.</summary>
