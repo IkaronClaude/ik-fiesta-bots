@@ -352,6 +352,11 @@ public sealed class ZoneView : IDisposable
     private const ushort OpCharParamChange = 0x1035;
     private static readonly ushort OpSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SWING_DAMAGE_CMD>();
     private static readonly ushort OpSomeoneSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SOMEONESWING_DAMAGE_CMD>();
+    // OUR OWN level-up broadcast (operator 2026-07-15): NC_BAT_LEVELUP_CMD (Bat cmd 12 = 0x240C) fires when we
+    // level (kill-levelup AND GM &levelup) — {level u8 @0, mobhandle u16 @1, newparam CHAR_PARAMETER_DATA @3}.
+    // Previously undecoded → the tracked level stayed STALE until a relog re-read the WM avatar list (the whole
+    // reason a GM'd-to-20 char still read level 1). Now decode level@0 + fire LevelChanged so it tracks live.
+    private static readonly ushort OpBatLevelup = PacketRegistry.GetOpcode<PROTO_NC_BAT_LEVELUP_CMD>();
     // Ground loot: DROPEDITEM (Briefinfo 0x1C0A) broadcasts an item that hit the ground
     // (mob death or a player drop); MAP_LOGOUT (Map 0x1805) is the universal "this handle
     // left view" — for a ground item that means it was picked (by anyone) or despawned, so
@@ -1622,6 +1627,21 @@ public sealed class ZoneView : IDisposable
                     _log?.Invoke($"[ZoneView] LEVEL UP -> {newLevel}");
                     LevelChanged?.Invoke(newLevel);
                 }
+            }
+        }
+        else if (op == OpBatLevelup)
+        {
+            // OUR OWN level-up (NC_BAT_LEVELUP_CMD 0x240C): new level is the first byte. Fires on a kill-levelup
+            // AND on a GM &levelup — the packet the bot previously ignored, so the tracked level went stale until
+            // a relog. Decode + log it (operator 2026-07-15) so bot.level() is live; drives level-band quest
+            // selection + the JCQ level gate without a relog. (newparam CHAR_PARAMETER_DATA @3 = full stats — a
+            // later decode can seed maxHP/stats from it; the level alone fixes the reported blocker.)
+            var p = pkt.Payload.Span;
+            if (p.Length >= 1 && p[0] > 0)
+            {
+                byte newLevel = p[0];
+                _log?.Invoke($"[ZoneView] LEVEL UP (NC_BAT_LEVELUP 0x240C) -> {newLevel}");
+                LevelChanged?.Invoke(newLevel);
             }
         }
         else if (op == OpCharPromoteAck)
