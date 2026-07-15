@@ -716,6 +716,9 @@ public sealed class BotApi
     public int lastStoneBuyFailErr() => View?.LastStoneBuyFailErr ?? 0;
     public bool dead() => View?.Dead ?? false;
     public bool inCombat() => View?.InCombat ?? false;
+    /// <summary>Learned effective attack range (max distance a swing of ours has connected at) — 0 until the
+    /// first connecting hit. Measured from the wire since no client file / PDB carries it (operator 2026-07-15).</summary>
+    public double learnedRange() => View?.LearnedMeleeRange ?? 0;
     /// <summary>True if EITHER we were hit OR we landed a hit within the last <paramref name="withinMs"/>
     /// ms (default 15000) — unlike <see cref="inCombat"/> (us being hit only), this also covers a mob
     /// that's genuinely taking damage from us but never retaliates (weak/passive, or a facing bug false

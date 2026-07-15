@@ -792,6 +792,14 @@ public sealed class ZoneView : IDisposable
     /// (Damage==0). Lets the driver confirm a kite-chip damage skill actually connected vs missed.</summary>
     public DateTime LastRealDamageDealtAtUtc { get; private set; } = DateTime.MinValue;
 
+    /// <summary>LEARNED effective attack range (operator 2026-07-15): the max distance at which our OWN swing
+    /// has CONNECTED (SWING_DAMAGE Attacker==self, Damage&gt;0). The real weapon range is not in any client
+    /// file (ItemInfo has WeaponType but no range column; no client PDB) — so we measure it from the wire, the
+    /// golden-rule way. 0 until the first connecting hit. Feeds the combat standoff so the bot stops at real
+    /// weapon range instead of overlapping the mob at ~1u (the 0x0FCA "out of range" wedge). For a melee char
+    /// every swing is ~weapon range so the max ≈ the range; a clamp excludes any long-range skill damage.</summary>
+    public double LearnedMeleeRange { get; private set; }
+
     /// <summary>True while the bot is dead (DEADMENU opened, not yet revived). Behaviours
     /// can wait for an in-place revive (cleric) before respawning to town, or respawn via
     /// <see cref="Manager.BotManager.RespawnAsync"/>; the server auto-respawns after ~2 min.</summary>
@@ -819,7 +827,29 @@ public sealed class ZoneView : IDisposable
             // A CONNECTING hit (Damage>0) vs a whiff/out-of-range (Damage==0). LastDamageDealtAtUtc fires
             // on any self-swing; this one only on real damage — so the driver can tell a kite-chip skill
             // actually landed (operator 2026-07-07: "check it didn't miss via packets") vs it whiffed.
-            if (h.Damage > 0) LastRealDamageDealtAtUtc = DateTime.UtcNow;
+            if (h.Damage > 0)
+            {
+                LastRealDamageDealtAtUtc = DateTime.UtcNow;
+                // LEARN THE ATTACK RANGE from the wire (operator 2026-07-15): the distance at which our swing
+                // CONNECTS is the effective weapon range. Read self + defender positions at this moment; the max
+                // connecting distance ≈ the range. Clamp excludes garbage / long-range skill damage (melee ≪ 150u).
+                if (SelfPositionProvider?.Invoke() is { } sp)
+                {
+                    double dx = double.NaN, dy = double.NaN;
+                    if (_npcs.TryGetValue(h.Defender, out var dn)) { dx = dn.X; dy = dn.Y; }
+                    else if (_nearby.TryGetValue(h.Defender, out var dp)) { dx = dp.X; dy = dp.Y; }
+                    if (!double.IsNaN(dx))
+                    {
+                        var ddx = (double)sp.X - dx; var ddy = (double)sp.Y - dy;
+                        var dist = Math.Sqrt(ddx * ddx + ddy * ddy);
+                        if (dist > 0 && dist < 150 && dist > LearnedMeleeRange + 0.5)
+                        {
+                            LearnedMeleeRange = dist;
+                            _log?.Invoke($"[combat] LEARNED attack-range ↑ {dist:F0}u (connecting swing on h={h.Defender}, dmg={h.Damage}) — new session max");
+                        }
+                    }
+                }
+            }
         }
         Damaged?.Invoke(h);
     }
