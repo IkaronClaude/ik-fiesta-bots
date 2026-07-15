@@ -653,12 +653,21 @@ public static class BotEndpoints
         var dir = Environment.GetEnvironmentVariable("BLOCKINFO_DIR");
         if (string.IsNullOrWhiteSpace(dir)) return null;
         var path = Path.Combine(dir, m + ".shbd");
-        // NOTE: erosion (EnableErosion for .aid maps) was tried tick 34/40 to fix the instance edge-hug MOVEFAIL
-        // wedge — it clears R1 fine (the "erosion broke R1" call was a mis-attribution) but did NOT fix the R2
-        // wave wedge on its own (the bot still overshot toward the closed Door3). Superseded by tick-41
-        // tight-corridor CENTERING in the pathfinder (a soft cost pulling routes onto the corridor spine — a
-        // cleaner fix that doesn't remove cells). Erosion left OFF; re-add here if centering proves insufficient.
-        try { return File.Exists(path) ? BlockGrid.Load(path) : null; }
+        try
+        {
+            if (!File.Exists(path)) return null;
+            var grid = BlockGrid.Load(path);
+            // EROSION for scenario-instance maps (2026-07-15). The bot-vs-client compare + MOVEFAIL-desync logging
+            // proved the finale failure is a nav collision mismatch: the instance .shbd walkable border is ~1 tile
+            // WIDER than the SERVER collision, so our path clips cells the server MOVEFAILs → the bot can never
+            // hold a stable position inside a trigger box → e.g. Zone_Mob04's LightOff (fires on the ack re-
+            // checking server-pos) never dispatches. The real client runs the SAME map with 0 MOVEFAIL. Erode the
+            // walkable area 1 tile to match the server so the path never clips → clean run. Data-driven: only maps
+            // WITH a .aid (= scenario instances) are eroded; field maps keep the operator's relaxed nav untouched.
+            // BuildEroded keeps the instance FULLY connected (entry→Kebings→skeletons→Door4→Chiefs).
+            if (File.Exists(Path.Combine(dir, m + ".aid"))) grid.EnableErosion();
+            return grid;
+        }
         catch { return null; }
     });
 
