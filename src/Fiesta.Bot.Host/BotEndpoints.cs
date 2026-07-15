@@ -665,7 +665,11 @@ public static class BotEndpoints
             // walkable area 1 tile to match the server so the path never clips → clean run. Data-driven: only maps
             // WITH a .aid (= scenario instances) are eroded; field maps keep the operator's relaxed nav untouched.
             // BuildEroded keeps the instance FULLY connected (entry→Kebings→skeletons→Door4→Chiefs).
-            if (File.Exists(Path.Combine(dir, m + ".aid"))) grid.EnableErosion();
+            // REVERTED 2026-07-15: 1-tile erosion made instance nav WORSE (R2 MOVEFAIL 33→88, bot pinned 10min,
+            // can't reach the skeleton wave) — it over-constrains the corridors so combat-approach clips even more.
+            // The MOVEFAILs are NOT a simple edge-inset (the Zone_Mob04 439u Y-gap is over-navigation into a
+            // server-blocked region past the trigger, not a 1-tile border). Erosion is the wrong lever. Left OFF.
+            // if (File.Exists(Path.Combine(dir, m + ".aid"))) grid.EnableErosion();
             return grid;
         }
         catch { return null; }
