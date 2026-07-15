@@ -2354,6 +2354,14 @@ public sealed class BotManager : IAsyncDisposable
                             double dx = (double)tp.X - pos.X;
                             double dy = (double)tp.Y - pos.Y;
                             var dist = Math.Sqrt(dx * dx + dy * dy);
+                            // Standoff thresholds derived from the LEARNED attack range (operator 2026-07-15): measured
+                            // from the wire (ZoneView.LearnedMeleeRange ≈ 48u for this fighter; an archer's is far larger),
+                            // so the standoff is correct for ANY class/weapon instead of the baked 30/20. Fall back to the
+                            // tuned consts until the first connecting hit teaches us the real range.
+                            var learnedRange = zoneView.LearnedMeleeRange;
+                            var meleeStop = learnedRange > 0 ? learnedRange * 0.70 : ScenarioMeleeStop;  // final standoff (stop this short of the target)
+                            var holdRange = learnedRange > 0 ? learnedRange * 0.85 : ScenarioHoldRange;  // within this → hold + autoAttack
+                            var tooClose = learnedRange > 0 ? learnedRange * 0.40 : ScenarioTooClose;    // closer than this → step back
                             // In a SCENARIO INSTANCE, only client-approach a FAR target (a genuine traverse — e.g.
                             // R1 walking ~1000u+ down the corridor to the fled clone / the Kebings). For a NEAR
                             // target already in the fight (e.g. the R2 skeletons ~48u away), do NOT walk: the tight
@@ -2363,31 +2371,31 @@ public sealed class BotManager : IAsyncDisposable
                             // swings land (server-follow), like the real client (which never chases a mob into a
                             // corner). Field combat (not in an instance) always approaches. ScenarioHoldRange is
                             // pure behaviour tuning (a "close enough that aggro will reach me" gap), not a game fact.
-                            if (zoneView.InScenarioInstance && dist < ScenarioTooClose && dist > 0.5)
+                            if (zoneView.InScenarioInstance && dist < tooClose && dist > 0.5)
                             {
                                 // TOO CLOSE → STEP BACK (operator 2026-07-15): we're basically on top of the mob
-                                // (~1u), where the swing/cast fails 0x0FCA. Holding here loops forever (0 kills).
-                                // Back off along the target→bot line to ScenarioMeleeStop so swings land like the
-                                // real client (which stops at weapon range, never overlaps). Walking cancels
-                                // BASHSTART → the lua re-issues autoAttack on arrival at the standoff.
+                                // (~1u), where the CAST fails 0x0FCA. Holding here loops forever. Back off along the
+                                // target→bot line to meleeStop so the cast (and swing) land like the real client
+                                // (which stops at weapon range, never overlaps). Walking cancels BASHSTART → the lua
+                                // re-issues autoAttack on arrival at the standoff.
                                 var backX = -dx / dist; var backY = -dy / dist;   // unit vector AWAY from the target
-                                var backDist = ScenarioMeleeStop - dist;           // how far to retreat
+                                var backDist = meleeStop - dist;                   // how far to retreat
                                 var nx = (uint)Math.Round(pos.X + backX * backDist);
                                 var ny = (uint)Math.Round(pos.Y + backY * backDist);
-                                Log($"[combat] cast out of range (0x{reason:X4}) in instance, TOO CLOSE ({dist:F0}u) — stepping BACK to ~{ScenarioMeleeStop:F0}u standoff (1u overlap breaks the swing; real client stops at weapon range)");
+                                Log($"[combat] cast out of range (0x{reason:X4}) in instance, TOO CLOSE ({dist:F0}u) — stepping BACK to ~{meleeStop:F0}u standoff (learnedRange={learnedRange:F0}u; 1u overlap breaks the cast)");
                                 _ = Task.Run(async () =>
                                 {
                                     try { await WalkAsync(botId, pos.X, pos.Y, nx, ny, ct); }
                                     catch (Exception ex) { Log($"[combat] step-back error: {ex.Message}"); }
                                 }, ct);
                             }
-                            else if (zoneView.InScenarioInstance && (dist < ScenarioHoldRange || handle.MoveFailStreak >= 2))
+                            else if (zoneView.InScenarioInstance && (dist < holdRange || handle.MoveFailStreak >= 2))
                             {
-                                // HOLD if EITHER we're already in melee (dist < ScenarioHoldRange) OR the approach is
+                                // HOLD if EITHER we're already in melee (dist < holdRange) OR the approach is
                                 // WEDGED (MoveFailStreak ≥ 2 = we've MOVEFAILed repeatedly at this spot, e.g. chasing a
                                 // straggler skeleton standing AT a wall). Don't chase a mob into a wall — stop, hold,
                                 // autoAttack; the aggroing mob comes to us (tick 43: fixes the R2 last-straggler wedge).
-                                var why = dist < ScenarioHoldRange ? $"in melee ({dist:F0}u)" : $"WEDGED approaching (streak {handle.MoveFailStreak})";
+                                var why = dist < holdRange ? $"in melee ({dist:F0}u)" : $"WEDGED approaching (streak {handle.MoveFailStreak})";
                                 Log($"[combat] cast out of range (0x{reason:X4}) in instance, {why} — HOLDING + autoAttack, letting the aggroing mob come (not chasing into a wall)");
                             }
                             else
@@ -2399,8 +2407,8 @@ public sealed class BotManager : IAsyncDisposable
                                 // (2) with the old 350 hold the bot never closed, so autoAttack produced 0 swings —
                                 // the bot appeared only as DEFENDER in SWING_START, never attacker → 0 skeleton kills.
                                 // Stopping melee-short closes into swing range without touching the wall.
-                                Log($"[combat] cast out of range (0x{reason:X4}) — approaching to melee (dist {dist:F0}u)");
-                                var goalDist = Math.Max(0.0, dist - ScenarioMeleeStop);
+                                Log($"[combat] cast out of range (0x{reason:X4}) — approaching to melee (dist {dist:F0}u, stop {meleeStop:F0}u, learnedRange {learnedRange:F0}u)");
+                                var goalDist = Math.Max(0.0, dist - meleeStop);
                                 var gx = (uint)Math.Round(pos.X + dx / dist * goalDist);
                                 var gy = (uint)Math.Round(pos.Y + dy / dist * goalDist);
                                 var step = Math.Min(goalDist, MaxStepFor(120.0));
