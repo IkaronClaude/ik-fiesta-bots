@@ -670,6 +670,12 @@ public static class BotEndpoints
             // The MOVEFAILs are NOT a simple edge-inset (the Zone_Mob04 439u Y-gap is over-navigation into a
             // server-blocked region past the trigger, not a 1-tile border). Erosion is the wrong lever. Left OFF.
             // if (File.Exists(Path.Combine(dir, m + ".aid"))) grid.EnableErosion();
+            // DYNAMIC SCENARIO-DOOR COLLISION (2026-07-15): attach the .sbi door overlays so the pathfinder
+            // matches the SERVER's door-aware collision (the .shbd is baked all-doors-open; a closed door is a
+            // wall only the overlay knows). This is the root fix for the JCQ instance-nav MOVEFAIL storm —
+            // replaces the erosion experiment (wrong lever). Door STATES are pushed live from ZoneView.
+            try { grid.AttachDoors(Fiesta.Bot.Pathfinding.DoorCollision.Load(Path.Combine(dir, m + ".sbi"))); }
+            catch { /* no .sbi / malformed → grid runs .shbd-only, unchanged */ }
             return grid;
         }
         catch { return null; }

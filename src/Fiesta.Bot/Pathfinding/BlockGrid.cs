@@ -59,9 +59,66 @@ public sealed class BlockGrid
     {
         if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return false;
         if (RtBlocked(tx, ty)) return false; // server-rejected tile (learned from MOVEFAIL)
+        // DYNAMIC DOOR OVERLAY (scenario instances): inside a scenario door's box, the CURRENT door state
+        // (open/closed, tracked live from 0x1C0F/0x6C09) fully determines walkability via the .sbi bitmap —
+        // it OVERRIDES the static .shbd, because the .shbd is baked all-doors-open and a closed door is a wall
+        // the server enforces but the .shbd can't show. This is the missing collision layer that caused the
+        // JCQ MOVEFAIL storm. Empty/null on field maps (no .sbi) → zero cost, base behaviour unchanged.
+        if (_doorForced is { } df && df.TryGetValue(ty * WidthTiles + tx, out bool doorBlocked))
+            return !doorBlocked; // overlay is authoritative within a known-state door box
         if (((_data[8 + ty * _bytesPerRow + (tx >> 3)] >> (tx & 7)) & 1) != 0) return false; // .shbd bit set = blocked
         if (_erode && ErodedBlocked(tx, ty)) return false; // 1-tile inset for instances (edge-mismatch, below)
         return true;
+    }
+
+    // --- DYNAMIC SCENARIO DOOR COLLISION (2026-07-15). Root fix for the JCQ Job1_Dn01 instance-nav MOVEFAIL
+    // storm: the static .shbd is baked with every door OPEN, so the pathfinder saw closed doors (Door02/Door03
+    // sealed at instance start, doors that shut behind you, Door4 closing at LightOff) as passable and routed
+    // straight into server-enforced walls. The .sbi carries, per door, a tile box + TWO walkability bitmaps
+    // (bitmap[doorstate]); applying bitmap[current-state] over each door box makes our collision match the
+    // server's exactly — the same door-aware nav the real client runs at 0 MOVEFAIL.
+    private DoorCollision? _doorCol;
+    // tile index -> is-blocked, for every tile inside a KNOWN-state door box (overlay wins over the .shbd there).
+    private Dictionary<int, bool>? _doorForced;
+    private string _doorSig = ""; // signature of the last-applied door-state map, to skip redundant rebuilds
+
+    /// <summary>Attach this map's scenario-door collision (from its <c>.sbi</c>). No-op after the first call.
+    /// Field maps without a <c>.sbi</c> pass null and keep pure-<c>.shbd</c> behaviour.</summary>
+    public void AttachDoors(DoorCollision? doors) => _doorCol ??= doors;
+
+    /// <summary>True if this grid has scenario-door overlays to apply (an instance map with a <c>.sbi</c>).</summary>
+    public bool HasDoors => _doorCol is { Doors.Count: > 0 };
+
+    /// <summary>Apply the CURRENT scenario-door states (name → doorstate byte, 0 closed / 1 open) to the grid,
+    /// rebuilding the per-tile door overlay so pathfinding routes exactly like the client. Cheap-skips when the
+    /// state map is unchanged. Doors absent from <paramref name="states"/> keep no override (fall through to the
+    /// baked <c>.shbd</c>). Invalidates the clearance field (walkability changed).</summary>
+    public void SetDoorStates(IReadOnlyDictionary<string, byte> states)
+    {
+        if (_doorCol is not { } col) return;
+        // Signature = doors we have overlays for, in a stable order, with their current state (unknown = 'x').
+        var sig = string.Join(",", col.Doors.Select(d => $"{d.Name}:{(states.TryGetValue(d.Name, out var s) ? s : (byte)255)}"));
+        if (sig == _doorSig) return;
+        _doorSig = sig;
+
+        var forced = new Dictionary<int, bool>();
+        foreach (var d in col.Doors)
+        {
+            if (!states.TryGetValue(d.Name, out var st)) continue; // state unknown → defer to base .shbd
+            for (int ly = 0; ly < d.Height; ly++)
+            {
+                int ty = d.StartY + ly;
+                if ((uint)ty >= (uint)HeightTiles) continue;
+                for (int lx = 0; lx < d.Width; lx++)
+                {
+                    int tx = d.StartX + lx;
+                    if ((uint)tx >= (uint)WidthTiles) continue;
+                    forced[ty * WidthTiles + tx] = d.BlockedLocal(st, lx, ly);
+                }
+            }
+        }
+        _doorForced = forced.Count > 0 ? forced : null;
+        _clearance = null; // door walkability changed → obstacle-inflation margins must rebuild
     }
 
     // Raw STATIC .shbd walkability (NO runtime blocks, NO erosion) — the basis for the erosion mask.

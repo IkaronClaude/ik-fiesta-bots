@@ -2156,6 +2156,17 @@ public sealed class BotManager : IAsyncDisposable
                 // opt-in via spawn options.
                 using var zoneView = new ZoneView(zoneSession, Log, handle.Log);
                 handle.ZoneView = zoneView;
+                // DYNAMIC SCENARIO-DOOR COLLISION (2026-07-15): push live door states into the map's pathfinding
+                // grid so closed doors become walls in our collision — matching the server, killing the JCQ
+                // instance MOVEFAIL storm. Field maps have no .sbi (HasDoors false) → no-op. Single-instance
+                // assumption: the shared per-map grid carries one bot's door state; re-entry re-seeds it via
+                // BUILDDOOR. (Concurrent bots in separate instances of the SAME map would need per-session grids
+                // — filed P2; not a current scenario.)
+                zoneView.DoorStatesByNameChanged += states =>
+                {
+                    if (handle.CurrentMap is { } dmap && GridProvider?.Invoke(dmap) is { HasDoors: true } dgrid)
+                        dgrid.SetDoorStates(states);
+                };
                 if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
                 zoneView.IsInsideScenarioArea = (areaName, pos) =>          // hold AREAENTRY_ACK until inside the .aid box

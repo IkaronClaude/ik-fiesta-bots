@@ -298,6 +298,13 @@ public sealed class ZoneView : IDisposable
     // a position (via _npcs) so the nav can wait at a closed door instead of thrashing. State byte: observed
     // on the wire (log it), infer open/closed from the script's dooropen/doorclose ordering.
     private const ushort OpScenarioDoorState = 0x6C09;
+    // NC_BRIEFINFO_BUILDDOOR_CMD (Briefinfo cmd 15 = 0x1C0F): {handle u16, mobid u16, coord, doorstate u8,
+    // Name8 blockindex ("Door04"), scale u16}. Sent on zone-enter for EACH scenario door — the authoritative
+    // link between a door's entity HANDLE, its .sbi block NAME, and its INITIAL open/closed state (e.g.
+    // Job1_Dn01: Door02=0 closed, Door03=0 closed, Door04=1 open). We decode it to seed the by-name door
+    // state that drives the pathfinding overlay (BlockGrid.SetDoorStates) — without it the grid can't know
+    // which .sbi door a later 0x6C09 handle refers to, nor the initial states before any 0x6C09 fires.
+    private const ushort OpBriefInfoBuildDoor = 0x1C0F;
     // NC_BAT_EXPGAIN_CMD (Bat cmd 11 = 0x240B): {expgain u32@0, mobhandle u16@4}. The server credits
     // exp per kill via this delta (it does NOT send an absolute NC_CHAR_EXP_CHANGED here), so we seed
     // the absolute at zone-enter and accumulate these to track live exp progress toward the next level.
@@ -394,6 +401,13 @@ public sealed class ZoneView : IDisposable
     // CLOSED corridor door. Data-driven — no baked door coords (the .sbi gives static centres; this gives
     // which of them is open/closed RIGHT NOW).
     private readonly ConcurrentDictionary<ushort, DoorState> _doorStates = new();
+    // Scenario door HANDLE -> .sbi block NAME ("Door04"), from 0x1C0F BUILDDOOR. Bridges a 0x6C09 DOORSTATE
+    // (handle-keyed) to the .sbi door box so the pathfinding overlay knows which door changed. Cleared on map handoff.
+    private readonly ConcurrentDictionary<ushort, string> _doorNames = new();
+    // Scenario door NAME -> current doorstate byte (0 closed / 1 open). Seeded by BUILDDOOR, updated by DOORSTATE.
+    // The pathfinder reads this (via DoorStatesByNameChanged → BlockGrid.SetDoorStates) so closed doors become
+    // walls in our collision, matching the server. Cleared on map handoff.
+    private readonly ConcurrentDictionary<string, byte> _doorStateByName = new();
     private readonly ConcurrentDictionary<byte, ushort> _inventory = new(); // bag slot -> itemId
     private readonly ConcurrentDictionary<byte, int> _invCount = new();      // bag slot -> stack count
     private readonly ConcurrentDictionary<byte, ushort> _equipment = new(); // equip slot -> itemId
@@ -458,6 +472,16 @@ public sealed class ZoneView : IDisposable
     /// <summary>Live scenario corridor DOOR states (0x6C09), keyed by door handle. The instance nav reads
     /// these (via bot.doorStates) to hold at a closed door instead of MOVEFAIL-thrashing through it.</summary>
     public IReadOnlyCollection<DoorState> DoorStates => _doorStates.Values.ToArray();
+
+    /// <summary>Live scenario door states keyed by <c>.sbi</c> block NAME ("Door04") → doorstate byte (0
+    /// closed / 1 open), from 0x1C0F BUILDDOOR (initial) + 0x6C09 DOORSTATE (updates). The pathfinding
+    /// door-collision overlay consumes this so closed doors become walls in our grid, matching the server.</summary>
+    public IReadOnlyDictionary<string, byte> DoorStatesByName => new Dictionary<string, byte>(_doorStateByName);
+
+    /// <summary>Raised whenever a scenario door's state changes (BUILDDOOR seed or DOORSTATE update), carrying
+    /// the full current name→state snapshot. The manager wires this to <c>BlockGrid.SetDoorStates</c> so the
+    /// pathfinder's collision tracks the doors live (the fix for the JCQ instance MOVEFAIL storm).</summary>
+    public event Action<IReadOnlyDictionary<string, byte>>? DoorStatesByNameChanged;
 
     /// <summary>✅ (x,y) of an NPC by mobId from the authoritative map-enter SEED (bulk 0x1C09 at infinite
     /// range) — the source of truth for "where is NPC X on this map." null if the seed has no such NPC on
@@ -1585,6 +1609,23 @@ public sealed class ZoneView : IDisposable
                 _npcs.TryRemove(b.handle, out _);
             }
         }
+        else if (op == OpBriefInfoBuildDoor)
+        {
+            // A scenario DOOR spawned (0x1C0F) — the authoritative handle→name→initial-state link. Seed the
+            // by-name state that drives the pathfinding door overlay, so closed doors are walls from the very
+            // first tick (before any 0x6C09), and later handle-keyed DOORSTATEs can resolve their .sbi door.
+            var bd = pkt.ReadBody<PROTO_NC_BRIEFINFO_BUILDDOOR_CMD>();
+            int z = Array.IndexOf(bd.blockindex.n8_name, (byte)0);
+            var name = System.Text.Encoding.ASCII.GetString(bd.blockindex.n8_name, 0,
+                z < 0 ? bd.blockindex.n8_name.Length : z);
+            if (!string.IsNullOrEmpty(name))
+            {
+                _doorNames[bd.handle] = name;
+                _doorStateByName[name] = bd.doorstate;
+                _log?.Invoke($"[ZoneView] SCENARIO DOOR BUILD '{name}' h={bd.handle} state={bd.doorstate} ({(bd.doorstate == 0 ? "CLOSED" : "open")}) — seeded nav overlay");
+                DoorStatesByNameChanged?.Invoke(DoorStatesByName);
+            }
+        }
         else if (op == OpScenarioDoorState)
         {
             // A scenario corridor DOOR changed state (open/close). Decode + track by handle, correlate to a
@@ -1598,7 +1639,16 @@ public sealed class ZoneView : IDisposable
             if (_npcs.TryGetValue(b.door, out var dn)) { dx = dn.X; dy = dn.Y; }
             else if (_doorStates.TryGetValue(b.door, out var prev)) { dx = prev.X; dy = prev.Y; } // keep last-known pos
             _doorStates[b.door] = new DoorState(b.door, b.doorstate, dx, dy);
-            _log?.Invoke($"[ZoneView] SCENARIO DOOR h={b.door} state={b.doorstate} @({dx?.ToString() ?? "?"},{dy?.ToString() ?? "?"})");
+            // Update the by-NAME state (bridged via the BUILDDOOR handle→name map) → drives the nav overlay so a
+            // door that just closed becomes a wall in our collision (matching the server), state 0=closed 1=open.
+            if (_doorNames.TryGetValue(b.door, out var dname))
+            {
+                _doorStateByName[dname] = b.doorstate;
+                _log?.Invoke($"[ZoneView] SCENARIO DOOR '{dname}' h={b.door} state={b.doorstate} ({(b.doorstate == 0 ? "CLOSED" : "open")}) @({dx?.ToString() ?? "?"},{dy?.ToString() ?? "?"}) — nav overlay updated");
+                DoorStatesByNameChanged?.Invoke(DoorStatesByName);
+            }
+            else
+                _log?.Invoke($"[ZoneView] SCENARIO DOOR h={b.door} state={b.doorstate} @({dx?.ToString() ?? "?"},{dy?.ToString() ?? "?"}) (name not yet known — no BUILDDOOR seen)");
         }
         else if (op == OpCharReviveOther)
         {
@@ -1872,6 +1922,7 @@ public sealed class ZoneView : IDisposable
                 LastScenarioArea = null;  // scenario/instance area is per-map — clear on leaving (else the
                                           // instance driver thinks we're still inside + hoovers field mobs)
                 _doorStates.Clear();  // corridor doors are per-instance-run; a re-entry rebuilds them
+                _doorNames.Clear(); _doorStateByName.Clear(); // handle→name + name→state overlay seeds, likewise
                 _log?.Invoke(h.IsCrossServer
                     ? $"[ZoneView] map handoff (cross-server) -> mapId={h.MapId} @({h.X},{h.Y}) via {h.Ip}:{h.Port} wm={h.WmHandle}"
                     : $"[ZoneView] map change (in-band) -> mapId={h.MapId} @({h.X},{h.Y})");
