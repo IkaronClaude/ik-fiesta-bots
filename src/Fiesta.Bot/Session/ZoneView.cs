@@ -1647,14 +1647,23 @@ public sealed class ZoneView : IDisposable
                 //     inside the trigger, so the finale ack for Zone_Mob05 waits until we've killed the Chiefs and
                 //     walked west INTO Zone_Mob05 — not from the Chief area where the REQ first arrived. The 5-min
                 //     window is plenty; no IsInsideScenarioArea data (non-scenario) → box check passes (true).
-                while (DateTime.UtcNow - reqAt < TimeSpan.FromMinutes(5) && CurrentMapId == mapAtReq)
+                const int ArriveTimeoutMin = 5;
+                bool arrived = false;
+                while (DateTime.UtcNow - reqAt < TimeSpan.FromMinutes(ArriveTimeoutMin) && CurrentMapId == mapAtReq)
                 {
                     bool shoveFree = DateTime.UtcNow - _lastSignificantMoveFailUtc > TimeSpan.FromMilliseconds(900);
                     bool insideBox = SelfPositionProvider?.Invoke() is { } p && (IsInsideScenarioArea?.Invoke(area, p) ?? true);
-                    if (shoveFree && insideBox) break; // arrived + parked INSIDE the trigger box
+                    if (shoveFree && insideBox) { arrived = true; break; } // arrived + parked INSIDE the trigger box
                     await Task.Delay(300).ConfigureAwait(false);
                 }
                 if (CurrentMapId != mapAtReq) return; // left the instance while travelling
+                if (!arrived)
+                {
+                    // TIMEOUT — we never got shove-free INSIDE area A's box within the window. This should NEVER
+                    // happen on a healthy run; if it fires, the bot is nav-stuck short of the trigger (a wall / an
+                    // unreachable box) or the window is too small. Scream it so we don't silently stall the instance.
+                    _log?.Invoke($"[ZoneView] ⛔ CRITICAL: AreaEntry ack for '{area}' TIMED OUT after {ArriveTimeoutMin}min — never arrived shove-free INSIDE its box (nav stuck short of the trigger? box unreachable?). Consider increasing the window or fixing nav. Acking from here as a last resort.");
+                }
                 // (2) ARRIVED inside the trigger (shove-free = server-valid position, no desync since we detect
                 //     MOVEFAILs). SENDING the ack IS the completion — the server dispatches area A's interrupt on
                 //     it, and we mark A DONE the moment the first ack goes out (operator 2026-07-15: "treat sending
