@@ -935,6 +935,13 @@ public sealed class BotManager : IAsyncDisposable
     // How far SHORT of the target the instance combat-approach stops — closes into swing range without pathing
     // onto the mob's (possibly wall-adjacent) cell. Slightly under ScenarioHoldRange so once we arrive we HOLD + swing.
     private const double ScenarioMeleeStop = 30.0;
+    // TOO CLOSE (operator 2026-07-15): standing on top of a mob (~1u, from autoAttack's server-follow dragging us
+    // onto its cell) makes BOTH the swing and the cast fail 0x0FCA "out of range" — the real client stops at
+    // weapon range (~a WeaponType-keyed const, e.g. archers reach far) and NEVER overlaps. So when we're closer
+    // than this, STEP BACK to ScenarioMeleeStop instead of holding at 1u forever (the instance combat-reach wedge:
+    // 5 mobs at 1u, 3 aggressors, 0 kills for minutes). Pure movement tuning, not a game fact. (P1: learn the exact
+    // range dynamically by probing the swing-success distance / reading it off the equipped WeaponType.)
+    private const double ScenarioTooClose = 20.0;
     // How close a NearbyNpc must be to a town-portal's known coord to be taken as the portal NPC.
     private const double PortalNpcRadius = 250.0;
 
@@ -2356,7 +2363,25 @@ public sealed class BotManager : IAsyncDisposable
                             // swings land (server-follow), like the real client (which never chases a mob into a
                             // corner). Field combat (not in an instance) always approaches. ScenarioHoldRange is
                             // pure behaviour tuning (a "close enough that aggro will reach me" gap), not a game fact.
-                            if (zoneView.InScenarioInstance && (dist < ScenarioHoldRange || handle.MoveFailStreak >= 2))
+                            if (zoneView.InScenarioInstance && dist < ScenarioTooClose && dist > 0.5)
+                            {
+                                // TOO CLOSE → STEP BACK (operator 2026-07-15): we're basically on top of the mob
+                                // (~1u), where the swing/cast fails 0x0FCA. Holding here loops forever (0 kills).
+                                // Back off along the target→bot line to ScenarioMeleeStop so swings land like the
+                                // real client (which stops at weapon range, never overlaps). Walking cancels
+                                // BASHSTART → the lua re-issues autoAttack on arrival at the standoff.
+                                var backX = -dx / dist; var backY = -dy / dist;   // unit vector AWAY from the target
+                                var backDist = ScenarioMeleeStop - dist;           // how far to retreat
+                                var nx = (uint)Math.Round(pos.X + backX * backDist);
+                                var ny = (uint)Math.Round(pos.Y + backY * backDist);
+                                Log($"[combat] cast out of range (0x{reason:X4}) in instance, TOO CLOSE ({dist:F0}u) — stepping BACK to ~{ScenarioMeleeStop:F0}u standoff (1u overlap breaks the swing; real client stops at weapon range)");
+                                _ = Task.Run(async () =>
+                                {
+                                    try { await WalkAsync(botId, pos.X, pos.Y, nx, ny, ct); }
+                                    catch (Exception ex) { Log($"[combat] step-back error: {ex.Message}"); }
+                                }, ct);
+                            }
+                            else if (zoneView.InScenarioInstance && (dist < ScenarioHoldRange || handle.MoveFailStreak >= 2))
                             {
                                 // HOLD if EITHER we're already in melee (dist < ScenarioHoldRange) OR the approach is
                                 // WEDGED (MoveFailStreak ≥ 2 = we've MOVEFAILed repeatedly at this spot, e.g. chasing a
