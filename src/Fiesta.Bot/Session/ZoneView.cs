@@ -195,6 +195,12 @@ public sealed class ZoneView : IDisposable
     // where we actually are; the client shows "this area is not accessible".
     private const ushort OpActMoveFail = 0x201B;
     private DateTime _lastMoveFailLog = DateTime.MinValue;   // throttle for the NOTE-level MOVEFAIL desync diag
+    // Time of the last SIGNIFICANT MOVEFAIL (a real shove-back, not a <64u micro-correction). The scenario
+    // AreaEntry re-send-ack gates on this: it only ACKs once we've been shove-free for a moment = we've
+    // actually ARRIVED and parked at the trigger at a server-valid position (operator 2026-07-15: "only start
+    // the ack spam once near/inside, as confirmed by lack of movefail" — acking while still navigating there
+    // is pointless, and the old 90s hard timer expired before the bot even reached the finale trigger).
+    private DateTime _lastSignificantMoveFailUtc = DateTime.MinValue;
     // Abnormal-state set/reset on an entity: NC_BAT_ABSTATESET_CMD (0x2427) / _RESET (0x2428).
     // Layout [targetHandle u16][abStataIndex u32] (6 bytes). abStataIndex maps to AbState.shn; some
     // states IMMOBILIZE (stun/root/entangle) — e.g. the JCQ clone roots the player with StaQuestEntangle
@@ -1381,11 +1387,16 @@ public sealed class ZoneView : IDisposable
                 // + the delta, at NOTE (throttled), so we can SEE whether the self-heal actually keeps them in
                 // sync — and, in a scenario instance, HOW FAR the server thinks we are from where we believe.
                 var believed = SelfPositionProvider?.Invoke();
+                var deltaU = believed is { } bd ? Math.Sqrt(Math.Pow((double)bx - bd.X, 2) + Math.Pow((double)by - bd.Y, 2)) : 1e9;
+                // A real shove-back (delta >= 64u, or unknown) = we're still navigating, NOT parked at the
+                // trigger. Sub-64u corrections are just the server settling us in place; they don't count as
+                // "still moving" for the AreaEntry ack gate (else the ack never fires where the server holds us
+                // a few units off the exact centre). Drives the re-send-ack's "have we arrived?" check.
+                if (deltaU >= 64) _lastSignificantMoveFailUtc = DateTime.UtcNow;
                 if (InScenarioInstance && DateTime.UtcNow - _lastMoveFailLog > TimeSpan.FromMilliseconds(700))
                 {
                     _lastMoveFailLog = DateTime.UtcNow;
-                    var delta = believed is { } b2 ? Math.Sqrt(Math.Pow((double)bx - b2.X, 2) + Math.Pow((double)by - b2.Y, 2)) : -1;
-                    _log?.Invoke($"[ZoneView] MOVEFAIL desync — believed @{believed}, server snapped to ({bx},{by}), delta={delta:F0} (area='{LastScenarioArea}')");
+                    _log?.Invoke($"[ZoneView] MOVEFAIL desync — believed @{believed}, server snapped to ({bx},{by}), delta={deltaU:F0} (area='{LastScenarioArea}')");
                 }
                 else LogV($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
                 MoveFailed?.Invoke((bx, by));
@@ -1610,26 +1621,35 @@ public sealed class ZoneView : IDisposable
             var ackArea = req.areaindex;
             var reqAt = DateTime.UtcNow;
             var regenBase = System.Threading.Interlocked.Read(ref _scenarioRegenCount);
+            var mapAtReq = CurrentMapId;
             _ = Task.Run(async () =>
             {
-                // RE-SEND the ACK, NO position gate. The REQ itself only fires when the server detects us crossing
-                // the trigger (near Door2, x≈2251 — WEST of our .aid box, so the old "inside the .aid box" gate was
-                // both wrong and too deep: the bot's slow MOVEFAIL-nav took ~50s to reach the box, past the loop's
-                // window → 0 acks sent). The server re-checks OUR SERVER-side position on each ACK; MOVEFAILs keep
-                // shoving us back before the trigger, so a single ack from a desynced moment misses. Spamming the
-                // ack every 500ms up to 90s means one lands on a tick where the server agrees we're past the
-                // trigger → SkelRegen fires. Stop the instant a REGENMOB arrives (wave armed). Harmless for R1 (its
-                // wave arms in ~1s → loop breaks immediately). (Operator idea 2026-07-14: send multiple times.)
-                int sends = 0;
-                while (DateTime.UtcNow - reqAt < TimeSpan.FromSeconds(90))
+                // (1) WAIT until we've ARRIVED and parked at the trigger — no significant MOVEFAIL for ~900ms =
+                //     the server has settled us at a stable, server-valid position (operator 2026-07-15: "only
+                //     start the ack spam once near/inside, as confirmed by lack of movefail"). Acking while still
+                //     navigating there is pointless — the server re-checks OUR server position on each ack, so an
+                //     ack from outside the trigger fires nothing. WHY the old design failed the FINALE: the server
+                //     sends AREAENTRY_REQ 'Zone_Mob05' while we're still EAST fighting the Chiefs (self@5293,5194,
+                //     in Zone_Mob04); the old loop spammed acks from there and hit a hard 90s cutoff BEFORE we
+                //     killed the Chiefs and reached Zone_Mob05 → LightOn never got an ack from inside → never fired.
+                while (DateTime.UtcNow - reqAt < TimeSpan.FromMinutes(5) && CurrentMapId == mapAtReq)
                 {
                     if (System.Threading.Interlocked.Read(ref _scenarioRegenCount) > regenBase)
-                    { _log?.Invoke($"[ZoneView] SCENARIO '{area}' — wave armed (REGENMOB) after {sends} ACK(s)"); break; }
+                    { _log?.Invoke($"[ZoneView] SCENARIO '{area}' — wave armed before we needed to ack"); return; }
+                    if (DateTime.UtcNow - _lastSignificantMoveFailUtc > TimeSpan.FromMilliseconds(900)) break; // arrived
+                    await Task.Delay(300).ConfigureAwait(false);
+                }
+                if (CurrentMapId != mapAtReq) return; // left the instance while travelling
+                // (2) ARRIVED → fire up to 10 acks, 1s apart (operator 2026-07-15). One lands on a tick where the
+                //     server agrees we're inside the trigger → the interrupt (SkelRegen / LightOff / LightOn)
+                //     dispatches. Stop early the instant the wave/interrupt arms (REGENMOB).
+                _log?.Invoke($"[ZoneView] SCENARIO area '{area}' — ARRIVED (shove-free) @{SelfPositionProvider?.Invoke()} → sending 10 ACKs @1s");
+                for (int i = 1; i <= 10; i++)
+                {
+                    if (System.Threading.Interlocked.Read(ref _scenarioRegenCount) > regenBase)
+                    { _log?.Invoke($"[ZoneView] SCENARIO '{area}' — wave armed (REGENMOB) after {i - 1} ACK(s)"); break; }
                     await _session.SendAsync(new PROTO_NC_SCENARIO_AREAENTRY_ACK { areaindex = ackArea }, default).ConfigureAwait(false);
-                    sends++;
-                    if (sends == 1 || sends % 10 == 0)
-                        _log?.Invoke($"[ZoneView] SCENARIO area '{area}' → AREAENTRY_ACK send #{sends} @{SelfPositionProvider?.Invoke()} (re-send until wave arms)");
-                    await Task.Delay(500).ConfigureAwait(false);
+                    await Task.Delay(1000).ConfigureAwait(false);
                 }
             });
         }
