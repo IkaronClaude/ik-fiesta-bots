@@ -194,6 +194,7 @@ public sealed class ZoneView : IDisposable
     // tells us the position to snap back to. The authoritative source of truth for
     // where we actually are; the client shows "this area is not accessible".
     private const ushort OpActMoveFail = 0x201B;
+    private DateTime _lastMoveFailLog = DateTime.MinValue;   // throttle for the NOTE-level MOVEFAIL desync diag
     // Abnormal-state set/reset on an entity: NC_BAT_ABSTATESET_CMD (0x2427) / _RESET (0x2428).
     // Layout [targetHandle u16][abStataIndex u32] (6 bytes). abStataIndex maps to AbState.shn; some
     // states IMMOBILIZE (stun/root/entangle) — e.g. the JCQ clone roots the player with StaQuestEntangle
@@ -1310,7 +1311,18 @@ public sealed class ZoneView : IDisposable
             {
                 var bx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p);
                 var by = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[4..]);
-                LogV($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
+                // DIAGNOSTIC (operator 2026-07-15: "movefail sends the client pos back → should self-heal;
+                // something's fishy"): log the bot's BELIEVED position vs the server's authoritative snap-back
+                // + the delta, at NOTE (throttled), so we can SEE whether the self-heal actually keeps them in
+                // sync — and, in a scenario instance, HOW FAR the server thinks we are from where we believe.
+                var believed = SelfPositionProvider?.Invoke();
+                if (InScenarioInstance && DateTime.UtcNow - _lastMoveFailLog > TimeSpan.FromMilliseconds(700))
+                {
+                    _lastMoveFailLog = DateTime.UtcNow;
+                    var delta = believed is { } b2 ? Math.Sqrt(Math.Pow((double)bx - b2.X, 2) + Math.Pow((double)by - b2.Y, 2)) : -1;
+                    _log?.Invoke($"[ZoneView] MOVEFAIL desync — believed @{believed}, server snapped to ({bx},{by}), delta={delta:F0} (area='{LastScenarioArea}')");
+                }
+                else LogV($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
                 MoveFailed?.Invoke((bx, by));
             }
         }
@@ -1517,6 +1529,11 @@ public sealed class ZoneView : IDisposable
             var area = System.Text.Encoding.ASCII.GetString(req.areaindex.n8_name, 0, z < 0 ? req.areaindex.n8_name.Length : z);
             LastScenarioArea = area;
             InScenarioInstance = true;   // latch: we're inside a scenario instance (survives between-room gaps)
+            // DIAGNOSTIC (operator 2026-07-15): log WHERE we are when the server sends each AreaEntry REQ — the
+            // server sends it when IT detects us crossing the trigger, so this is the server-agreed cross point.
+            // Compare to the .aid box + the ack self-positions to see if the walk-in interrupt (e.g. Zone_Mob04
+            // LightOff) should have fired. If REQ fires but LightOff doesn't, the cross was seen — look elsewhere.
+            _log?.Invoke($"[ZoneView] SCENARIO AREAENTRY_REQ '{area}' — server saw us cross; self@{SelfPositionProvider?.Invoke()}");
             ScenarioAreaEntered?.Invoke(area);
             // ROOT CAUSE (operator + JCQMany diff, 2026-07-14): the server fires the room's interrupt (SkelRegen)
             // on the ACK using the player's SERVER-side position. The bot MOVEFAIL-storms entering the area, so its
