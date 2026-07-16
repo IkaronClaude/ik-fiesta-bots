@@ -838,7 +838,31 @@ public sealed class BotApi
         if (_mgr.GridProvider?.Invoke(map) is not { } grid) return false;
         if (_handle.Position is not { } pos) return false;
         var path = PathFinder.FindPath(grid, pos.X, pos.Y, (uint)x, (uint)y);
-        if (path.Count == 0) return false;
+        if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
+        {
+            // UNREACHABLE on the runtime-augmented grid, but learned MOVEFAIL blocks may have wrongly SEVERED a
+            // route the raw .shbd CONNECTS (grid-poison — the same failure ApproachAsync clears; it bricked the
+            // hand-in walk to an off-view NPC on EldGbl02 where 184 learned blocks accumulated). Everything IS
+            // walkable, so an empty path here is almost always self-poison, not real geometry: forget the learned
+            // blocks and retry once so we re-path the true static geometry.
+            var poisoned = grid.RuntimeBlockedCount;
+            grid.ClearRuntimeBlocked();
+            path = PathFinder.FindPath(grid, pos.X, pos.Y, (uint)x, (uint)y);
+            if (path.Count > 0)
+                _handle.Log($"[nav] walkTo ({(uint)x},{(uint)y}) was UNREACHABLE — cleared {poisoned} poisoned learned-blocks, route re-opened");
+        }
+        if (path.Count == 0)
+        {
+            // Truly no route even on the clean grid (FindPath snaps a blocked start/goal to nearest walkable, so
+            // empty = genuinely disconnected). Log the walkability of both ends so a real .shbd/geometry gap is
+            // visible as a BUG to fix (operator: everything is navvable) — never silently skip.
+            var (stx, sty) = grid.WorldToTile(pos.X, pos.Y);
+            var (gtx, gty) = grid.WorldToTile((uint)x, (uint)y);
+            _handle.Log($"[nav] walkTo ({(uint)x},{(uint)y}) UNREACHABLE on {map} — " +
+                $"start=({stx},{sty})walk={grid.IsWalkableTile(stx, sty)} goal=({gtx},{gty})walk={grid.IsWalkableTile(gtx, gty)} " +
+                $"grid={grid.WidthTiles}x{grid.HeightTiles}");
+            return false;
+        }
         return Ok(_mgr.WalkPath(Id, PathFinder.Simplify(path)));
     }
 
