@@ -344,6 +344,19 @@ public sealed class BotManager : IAsyncDisposable
         handle.LastCastSkill = skill;
         handle.LastCastTarget = target;
         var (needFace, needStop) = ResolveFaceStop(skill, stopFirst);
+        // SKILL-CAST THROUGHPUT in an instance (P0 tick 78, boss-fight DPS): FaceAndStop's tiny MOVERUN step
+        // MOVEFAILs in tight instance geometry and BREAKS the facing the auto-attack's server-follow had already
+        // set — so the one-shot skill cast is rejected 0x0FCA while the streamed swings land (CONFIRMED on the
+        // wire: JcqFresh boss fight = only 0x242B BASHSTART, every Bone Slicer/Fatal Slash cast 0x0FCA → the bot
+        // loses its burst DPS and can't out-DPS the ~5000-HP boss). If we've landed a CONNECTING hit in the last
+        // ~2.5s we're already stopped (BASHSTART holds position) AND faced, so cast WITHOUT the disruptive
+        // face-step. Instance-scoped + gated on real damage dealt → field casts keep the proven face+stop.
+        if (handle.ZoneView is { } zv && zv.InScenarioInstance
+            && zv.LastRealDamageDealtAtUtc > DateTime.MinValue
+            && (DateTime.UtcNow - zv.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500)
+        {
+            needFace = false; needStop = false;
+        }
         await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
