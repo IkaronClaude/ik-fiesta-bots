@@ -88,7 +88,8 @@ public sealed class ClientData
             MaxHp: GetInt(row, "MaxHP"),
             IsNpc: GetInt(row, "IsNPC") != 0,
             IsPlayerSide: GetInt(row, "IsPlayerSide") != 0,
-            Type: GetInt(row, "Type"));
+            Type: GetInt(row, "Type"),
+            GradeType: GetInt(row, "GradeType"));   // 0 = normal mob; >=1 = named boss/elite (e.g. Mara GradeType 1)
     }
 
     /// <summary>Resolve a map id to its short name (e.g. 17 → "Urg") from the client
@@ -452,7 +453,7 @@ public sealed class ClientData
 /// "Gate_Town"), plus <see cref="Level"/>/<see cref="MaxHp"/> and whether it's an
 /// <see cref="IsNpc"/> (vs a monster) — enough to label/triage what the bot sees.</summary>
 public sealed record MobData(int Id, string Name, string InxName, int Level, int MaxHp, bool IsNpc,
-    bool IsPlayerSide = false, int Type = 0);
+    bool IsPlayerSide = false, int Type = 0, int GradeType = 0);
 
 /// <summary>Shop-eval fields of an <c>ItemInfo</c> row. <see cref="IsScroll"/> = a skill scroll
 /// (USE to learn the skill named the same as the item); otherwise an equip if <see cref="EquipSlot"/>

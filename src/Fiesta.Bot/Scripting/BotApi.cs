@@ -653,6 +653,16 @@ public sealed class BotApi
     /// prefer the highest-value mob it can safely handle.</summary>
     public int mobLevel(int mobId) => _mgr.ClientData?.Mob(mobId)?.Level ?? -1;
 
+    /// <summary>The mob's max HP from client MobInfo.shn, or -1 if unknown. Named bosses have HP far above their
+    /// level-peers (Mara L19 = 5458 HP vs ~500-800 normal) — used with <see cref="mobGrade"/> to flag "too hard".</summary>
+    public int mobMaxHp(int mobId) => _mgr.ClientData?.Mob(mobId)?.MaxHp ?? -1;
+
+    /// <summary>The mob's MobInfo.shn GradeType: 0 = normal grindable mob, >=1 = a NAMED BOSS/ELITE (e.g. Mara =
+    /// GradeType 1, a lvl-19 5458-HP mini-boss that needs ~lvl-25 + gear/buffs/party to solo). The leveler
+    /// deprioritizes quests whose kill-target is a boss so it never burns the session soloing an unwinnable mob.
+    /// -1 if unknown.</summary>
+    public int mobGrade(int mobId) => _mgr.ClientData?.Mob(mobId)?.GradeType ?? -1;
+
     public DynValue mobLocation(int mobId)
     {
         var cd = _mgr.ClientData;
