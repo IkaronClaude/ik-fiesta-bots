@@ -350,6 +350,11 @@ public sealed class ZoneView : IDisposable
     // MID-ZONE source of MaxHp/MaxSp: it's sent on a level-up (beside the HP/SP refill) and at zone-enter,
     // so without it MaxHp/MaxSp only refreshed at the next handoff and lagged after a mid-zone level-up.
     private const ushort OpCharParamChange = 0x1035;
+    // Stat-point allocation (CHAR dept 4). The bot spends its unspent points (fighter = full END) for tankiness.
+    private static readonly ushort OpStatRemainPoint = PacketRegistry.GetOpcode<PROTO_NC_CHAR_STAT_REMAINPOINT_CMD>(); // 0x105B {byte remain}
+    private static readonly ushort OpStatIncSuc = PacketRegistry.GetOpcode<PROTO_NC_CHAR_STAT_INCPOINTSUC_ACK>();       // 0x105F {byte stat}
+    private const ushort OpStatIncFail = 0x1061;   // NC_CHAR_STAT_INCPOINTFAIL_ACK (cmd 97) — client-facing fail
+    private static string StatName(byte s) => s switch { 0 => "STR", 1 => "END", 2 => "DEX", 3 => "INT", 4 => "MP", _ => $"?{s}" };
     private static readonly ushort OpSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SWING_DAMAGE_CMD>();
     private static readonly ushort OpSomeoneSwingDamage = PacketRegistry.GetOpcode<PROTO_NC_BAT_SOMEONESWING_DAMAGE_CMD>();
     // OUR OWN level-up broadcast (operator 2026-07-15): NC_BAT_LEVELUP_CMD (Bat cmd 12 = 0x240C) fires when we
@@ -924,6 +929,11 @@ public sealed class ZoneView : IDisposable
     /// master / smith / item merchant / soul-stone healer). Lets the driver classify an NPC's
     /// service by what it sends when clicked — no hardcoded NPC ids. Unknown until a shop opens.</summary>
     public ShopKind LastShopKind { get; private set; } = ShopKind.Unknown;
+
+    /// <summary>Unspent stat points (NC_CHAR_STAT_REMAINPOINT_CMD 0x105B). -1 until the server tells us — it's
+    /// sent on login AND after each spend, so a levels-1..N backlog surfaces immediately at zone-enter. The
+    /// driver spends these (fighter = full END) for tankiness; decremented on each INCPOINTSUC_ACK.</summary>
+    public int FreeStatPoints { get; private set; } = -1;
 
     /// <summary>Reset the shop/menu-open signals to "nothing opened" — called BEFORE each open attempt
     /// so the result reflects ONLY the current NPC click (a proper sync request→response), never a
@@ -2408,6 +2418,27 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] chat <{name ?? $"h{handle}"}>: {text}");
                 ChatReceived?.Invoke(msg);
             }
+        }
+        else if (op == OpStatRemainPoint)
+        {
+            // NC_CHAR_STAT_REMAINPOINT_CMD {byte remain} — unspent stat points. Sent on login + after each spend.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 1) { FreeStatPoints = p[0]; _log?.Invoke($"[ZoneView] STAT remain points = {FreeStatPoints}"); }
+        }
+        else if (op == OpStatIncSuc)
+        {
+            // NC_CHAR_STAT_INCPOINTSUC_ACK {byte stat} — a point was added to `stat`. Server echoes the stat it
+            // incremented; decrement our tracked pool (the server also re-sends REMAINPOINT to confirm).
+            var p = pkt.Payload.Span;
+            byte stat = p.Length >= 1 ? p[0] : (byte)0xFF;
+            if (FreeStatPoints > 0) FreeStatPoints--;
+            _log?.Invoke($"[ZoneView] STAT +1 {StatName(stat)} (byte {stat}) — remain now {FreeStatPoints}");
+        }
+        else if (op == OpStatIncFail)
+        {
+            var p = pkt.Payload.Span;
+            int err = p.Length >= 2 ? (p[^2] | (p[^1] << 8)) : -1;
+            _log?.Invoke($"[ZoneView] STAT inc FAIL err=0x{err:X4} (remain {FreeStatPoints})");
         }
     }
 

@@ -430,6 +430,14 @@ public sealed class BotApi
     public bool relog() => _mgr.Relog(Id);
     public bool heal(int skill) => Ok(Wait(_mgr.HealSelfAsync(Id, (ushort)skill)));
     public bool useItem(int slot, int invenType = 9) => Ok(Wait(_mgr.UseItemAsync(Id, (byte)slot, (byte)invenType)));
+
+    /// <summary>Unspent stat points the server told us about (NC_CHAR_STAT_REMAINPOINT_CMD). -1 = not yet known.
+    /// Sent on login + after each spend, so a levels-1..N backlog shows up at zone-enter.</summary>
+    public int freeStatPoints() => View?.FreeStatPoints ?? -1;
+
+    /// <summary>Spend ONE stat point on <paramref name="stat"/> (0=STR,1=END,2=DEX,3=INT,4=MP). The driver
+    /// allocates the fighter's points to END (byte 1) for tankiness.</summary>
+    public bool incStat(int stat) => Ok(Wait(_mgr.IncStatAsync(Id, (byte)stat)));
     public bool equip(int slot) => Ok(Wait(_mgr.EquipAsync(Id, (byte)slot)));
     public bool pickup(int itemHandle) => Ok(Wait(_mgr.PickupAsync(Id, (ushort)itemHandle)));
     public bool loot(int itemHandle = 0) => Ok(Wait(_mgr.LootAsync(Id, (ushort)itemHandle)));

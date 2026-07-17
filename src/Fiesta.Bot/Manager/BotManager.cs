@@ -1817,6 +1817,13 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, $"use item slot={slot} type={invenType}",
             s => s.SendAsync(new PROTO_NC_ITEM_USE_REQ { invenslot = slot, invenType = invenType }, ct));
 
+    /// <summary>Spend ONE unspent stat point on stat <paramref name="stat"/> (0=STR,1=END,2=DEX,3=INT,4=MP —
+    /// CHARSTATDISTSTR order). Sends NC_CHAR_STAT_INCPOINT_REQ (0x105C); the server replies INCPOINTSUC_ACK
+    /// (0x105F) + a fresh REMAINPOINT (0x105B), both tracked in ZoneView.</summary>
+    public Task<ActionResult> IncStatAsync(string id, byte stat, CancellationToken ct = default)
+        => ActAsync(id, $"inc stat {stat}",
+            s => s.SendAsync(new PROTO_NC_CHAR_STAT_INCPOINT_REQ { stat = stat }, ct));
+
     /// <summary>Equip the inventory item at <paramref name="slot"/> (the server
     /// derives the target equipment slot from the item itself).</summary>
     public Task<ActionResult> EquipAsync(string id, byte slot, CancellationToken ct = default)
