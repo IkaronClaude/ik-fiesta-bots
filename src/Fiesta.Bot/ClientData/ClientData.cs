@@ -105,6 +105,26 @@ public sealed class ClientData
         return string.IsNullOrEmpty(n) ? null : n;
     }
 
+    private HashSet<string>? _insideMaps;
+    /// <summary>True if the map (by MapName) is an INDOOR/dungeon/instance map — MapInfo.shn <c>InSide=1</c>
+    /// (e.g. RouTemDn01 "Luminous Stone 1"); field/town maps are InSide=0. A solo field-leveling char must not
+    /// route into a dungeon's dense packs to hunt a quest mob (operator 2026-07-16 "prefer field over dungeon").
+    /// Built once from MapInfo. False if unknown.</summary>
+    public bool MapInside(string? mapName)
+    {
+        if (string.IsNullOrEmpty(mapName)) return false;
+        if (_insideMaps is null)
+        {
+            _insideMaps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var t = Table("MapInfo");
+            if (t != null)
+                foreach (var row in t.Rows)
+                    if (GetInt(row, "InSide") != 0)
+                    { var n2 = GetStr(row, "MapName"); if (!string.IsNullOrEmpty(n2)) _insideMaps.Add(n2); }
+        }
+        return _insideMaps.Contains(mapName);
+    }
+
     /// <summary>The display name of an item id (e.g. for a shop list) from client
     /// <c>ItemInfo</c>. Empty if missing.</summary>
     public string ItemName(int itemId)
@@ -305,8 +325,8 @@ public sealed class ClientData
     {
         var t = Table("MobCoordinate");
         if (t is null) return null;
-        MobLocation? best = null, onPrefer = null;
-        long bestArea = -1, preferArea = -1;
+        MobLocation? best = null, onPrefer = null, bestField = null, onPreferField = null;
+        long bestArea = -1, preferArea = -1, bestFieldArea = -1, preferFieldArea = -1;
         foreach (var row in t.Rows)
         {
             if (GetInt(row, "Mob_ID") != mobId) continue;
@@ -315,13 +335,22 @@ public sealed class ClientData
             long area = (long)GetInt(row, "Width") * GetInt(row, "Height");
             var loc = new MobLocation(mobId, map, GetInt(row, "CenterX"), GetInt(row, "CenterY"),
                 GetInt(row, "Width"), GetInt(row, "Height"));
+            bool onCur = preferMap != null && string.Equals(map, preferMap, StringComparison.OrdinalIgnoreCase);
             // Prefer the largest spawn ON THE CURRENT MAP (if the mob lives here, grind here
             // instead of traveling to a bigger patch elsewhere); else the largest overall.
-            if (preferMap != null && string.Equals(map, preferMap, StringComparison.OrdinalIgnoreCase)
-                && area > preferArea) { preferArea = area; onPrefer = loc; }
+            if (onCur && area > preferArea) { preferArea = area; onPrefer = loc; }
             if (area > bestArea) { bestArea = area; best = loc; }
+            // FIELD-OVER-DUNGEON (operator 2026-07-16): a solo field-leveling char must hunt the sparse FIELD
+            // spawn, never a dense dungeon/instance pack (MapInfo InSide=1, e.g. RouTemDn01 — packs of 6 that
+            // net-negative death-loop the bot). Track the best FIELD (InSide=0) spawn separately and prefer it;
+            // fall back to a dungeon spawn only when the mob has NO field spawn at all.
+            if (!MapInside(map))
+            {
+                if (onCur && area > preferFieldArea) { preferFieldArea = area; onPreferField = loc; }
+                if (area > bestFieldArea) { bestFieldArea = area; bestField = loc; }
+            }
         }
-        return onPrefer ?? best;
+        return onPreferField ?? bestField ?? onPrefer ?? best;
     }
 
     /// <summary>All maps a mob spawns on (the largest spawn patch per map), from

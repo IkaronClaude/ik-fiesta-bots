@@ -962,6 +962,11 @@ public sealed class BotApi
     public double? x() => _handle.Position?.X;
     public double? y() => _handle.Position?.Y;
     public string? map() => _handle.CurrentMap;
+
+    /// <summary>True if a map (by name; defaults to the current map) is an INDOOR/dungeon/instance map
+    /// (MapInfo.shn InSide=1, e.g. RouTemDn01). The leveler prefers hunting field spawns and treats a
+    /// dungeon-only quest mob as instance content (operator 2026-07-16 "prefer field over dungeon").</summary>
+    public bool mapInside(string mapName = null) => _mgr.ClientData?.MapInside(mapName ?? _handle.CurrentMap) ?? false;
     public int? selfHandle() => _handle.SelfHandle;
     public bool mounted() => View?.IsMounted ?? false;
     public double walkSpeed() => _handle.WalkSpeed;
