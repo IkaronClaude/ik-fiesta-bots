@@ -2302,6 +2302,21 @@ public sealed class BotManager : IAsyncDisposable
                                 break;
                             }
                         }
+                        // LAST-RESORT WEDGE RECOVERY (2026-07-16): if the ⊥-unstick can't free the bot (boxed in /
+                        // no walkable sidestep) the MOVEFAIL streak keeps climbing while MarkBlocked piles up poison
+                        // every step — the accumulated learned-blocks eventually SEVER every route → a hard wedge
+                        // that previously only a RELOG fixed (live: JcqFresh frozen ~10min on Eld, streak+poison to
+                        // 20). At a high streak, clear the runtime-blocked grid so the bot re-paths on the clean
+                        // .shbd (the in-code relog): it WALKED to this spot so the base geometry connects; genuine
+                        // obstacles simply re-learn as they're hit. Streak resets to 0 → self-throttling.
+                        if (handle.MoveFailStreak >= 8 && handle.CurrentMap is { } wmap
+                            && GridProvider?.Invoke(wmap) is { } wgrid && wgrid.RuntimeBlockedCount > 0)
+                        {
+                            var poisoned = wgrid.RuntimeBlockedCount;
+                            wgrid.ClearRuntimeBlocked();
+                            handle.MoveFailStreak = 0;
+                            Log($"[nav] WEDGE RECOVERY: MOVEFAIL-wedged x8+ @({pos.X},{pos.Y}) — cleared {poisoned} poisoned runtime-blocks, re-pathing on the clean .shbd");
+                        }
                         handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                         return;
                     }
