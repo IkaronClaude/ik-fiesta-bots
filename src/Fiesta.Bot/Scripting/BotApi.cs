@@ -73,6 +73,10 @@ public sealed class BotApi
         // (Slice&Dice/Bone Slicer/Fatal Slash); 0 = utility with NO damage (Snearing Kick, Concussive
         // Charge). The kite-chip rotation casts only maxWc>0 skills so a fled mob keeps bleeding.
         t["maxWc"] = si.MaxWc;
+        // stun = the skill applies a STUN abnormal-state (ActiveSkill StaName*, e.g. Concussive Charge =
+        // StaBattleBlowStun). The leveler casts a stun on the target when it kites to heal on low HP, so the
+        // frozen mob can't chase/hit while the bot creates space (operator "stun and kite on low hp").
+        t["stun"] = si.Stun;
         return DynValue.NewTable(t);
     }
 

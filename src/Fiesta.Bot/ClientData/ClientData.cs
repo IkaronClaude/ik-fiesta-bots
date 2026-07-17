@@ -67,7 +67,15 @@ public sealed class ClientData
             // MaxWC = the skill's weapon-damage coefficient. >0 = a real damage skill (Slice&Dice/Bone
             // Slicer/Fatal Slash); 0 = a utility/no-damage skill (Snearing Kick, Concussive Charge). Lets
             // the driver pick DAMAGE skills for the kite-chip so a fled mob keeps bleeding vs regenerating.
-            MaxWc: GetInt(row, "MaxWC"));
+            MaxWc: GetInt(row, "MaxWC"),
+            // STUN: does any abnormal-state effect (StaNameA..D) apply a STUN? A stun skill (Concussive Charge =
+            // StaBattleBlowStun, 100%) freezes the target so the bot can safely kite+heal on low HP (operator
+            // "stun and kite on low hp"). Detected by the "Stun" substring in the state name — data-driven, NO
+            // hardcoded skill id. MaxWc is 0 for these (utility), so they were never in the damage rotation.
+            Stun: GetStr(row, "StaNameA").Contains("Stun", System.StringComparison.OrdinalIgnoreCase)
+               || GetStr(row, "StaNameB").Contains("Stun", System.StringComparison.OrdinalIgnoreCase)
+               || GetStr(row, "StaNameC").Contains("Stun", System.StringComparison.OrdinalIgnoreCase)
+               || GetStr(row, "StaNameD").Contains("Stun", System.StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>Look up a mob/NPC by its id in the client <c>MobInfo</c> table and project
@@ -517,4 +525,4 @@ public sealed record PortalDest(int Index, int GroupNo, string Map, int MinLevel
 /// facing requirement. <see cref="IsMovingSkill"/> = castable while moving (no STOP needed).
 /// <see cref="DelayTimeMs"/> = cooldown (ms). <see cref="Range"/> = cast range (0 = melee).
 /// <see cref="Sp"/> = mana cost.</summary>
-public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0);
+public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false);
