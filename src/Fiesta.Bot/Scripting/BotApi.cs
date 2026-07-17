@@ -872,9 +872,31 @@ public sealed class BotApi
             // visible as a BUG to fix (operator: everything is navvable) — never silently skip.
             var (stx, sty) = grid.WorldToTile(pos.X, pos.Y);
             var (gtx, gty) = grid.WorldToTile((uint)x, (uint)y);
+            bool startUnwalkable = !grid.IsWalkableTile(stx, sty);
             _handle.Log($"[nav] walkTo ({(uint)x},{(uint)y}) UNREACHABLE on {map} — " +
-                $"start=({stx},{sty})walk={grid.IsWalkableTile(stx, sty)} goal=({gtx},{gty})walk={grid.IsWalkableTile(gtx, gty)} " +
+                $"start=({stx},{sty})walk={startUnwalkable} goal=({gtx},{gty})walk={grid.IsWalkableTile(gtx, gty)} " +
                 $"grid={grid.WidthTiles}x{grid.HeightTiles}");
+            // BLIND-MOVE ESCAPE (2026-07-17): the .shbd marks the bot's OWN tile unwalkable, but the SERVER has it
+            // standing here and lets it move — a client-grid accuracy gap FindPath can't route out of (it snaps to
+            // a nearest-walkable tile on a DISCONNECTED .shbd island). Issue a SHORT CAPPED MOVERUN toward the
+            // target: the SERVER governs walkability, so it either MOVES the bot onto real walkable ground (escaping
+            // the wedge that otherwise only a RELOG fixed — variant 3 of the nav-wedge P0) or MOVEFAILs harmlessly
+            // (a real obstacle → the MOVEFAIL handler learns it). Gated on startUnwalkable so it never fires in
+            // normal nav (where the start IS walkable), keeping the blast radius tiny.
+            if (startUnwalkable)
+            {
+                double dx = x - pos.X, dy = y - pos.Y;
+                double len = System.Math.Sqrt(dx * dx + dy * dy);
+                if (len > 1)
+                {
+                    const double ESCAPE = 160.0;
+                    var ex = (uint)System.Math.Max(0, pos.X + dx / len * ESCAPE);
+                    var ey = (uint)System.Math.Max(0, pos.Y + dy / len * ESCAPE);
+                    _handle.Log($"[nav] walkTo: start tile UNWALKABLE (.shbd gap) — BLIND-MOVE escape toward ({ex},{ey}) [server governs walkability]");
+                    _ = _mgr.WalkAsync(Id, pos.X, pos.Y, ex, ey);
+                    return true;
+                }
+            }
             return false;
         }
         return Ok(_mgr.WalkPath(Id, PathFinder.Simplify(path)));
