@@ -457,6 +457,10 @@ public sealed class ZoneView : IDisposable
     private void LogV(string m) { if (_logLevel is not null) _logLevel(BotLogLevel.Verbose, m); else _log?.Invoke(m); }
 
     /// <summary>Raised when a player enters (or refreshes in) view.</summary>
+    /// <summary>Resolves a quest id → human name for logging (set from ClientData.QuestName). "q{id}" if null.</summary>
+    public Func<int, string>? QuestNameResolver { get; set; }
+    private string QName(int id) => QuestNameResolver?.Invoke(id) ?? $"q{id}";
+
     public event Action<NearbyPlayer>? PlayerAppeared;
 
     /// <summary>Raised when a tracked handle leaves view.</summary>
@@ -2095,7 +2099,7 @@ public sealed class ZoneView : IDisposable
                 {
                     int qid = p[1 + i * 4 + 2] | (p[1 + i * 4 + 3] << 8);
                     _questProgress.AddOrUpdate(qid, 1, (_, v) => v + 1);
-                    _log?.Invoke($"[ZoneView] QUEST_MOB_KILL quest={qid} credited (total {_questProgress[qid]})");
+                    _log?.Invoke($"[ZoneView] QUEST_MOB_KILL quest={QName(qid)} credited (total {_questProgress[qid]})");
                 }
             }
         }

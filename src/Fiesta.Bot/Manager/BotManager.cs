@@ -2182,6 +2182,7 @@ public sealed class BotManager : IAsyncDisposable
                 // status/say surface and any behavior read from it. The buff behavior is
                 // opt-in via spawn options.
                 using var zoneView = new ZoneView(zoneSession, Log, handle.Log);
+                zoneView.QuestNameResolver = qid => ClientData?.QuestName(qid) ?? $"q{qid}";  // log quest NAMES, not bare ids
                 handle.ZoneView = zoneView;
                 // DYNAMIC SCENARIO-DOOR COLLISION (2026-07-15): push live door states into the map's pathfinding
                 // grid so closed doors become walls in our collision — matching the server, killing the JCQ

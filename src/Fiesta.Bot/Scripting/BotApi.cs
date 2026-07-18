@@ -501,7 +501,7 @@ public sealed class BotApi
         var q = _mgr.ClientData?.Quest(id);
         if (q is null) return DynValue.Nil;
         var t = NewTable();
-        t["id"] = q.Id; t["startNpc"] = q.StartNpc; t["turnInNpc"] = q.TurnInNpc;
+        t["id"] = q.Id; t["name"] = _mgr.ClientData?.QuestDialog(q.Title) ?? ""; t["startNpc"] = q.StartNpc; t["turnInNpc"] = q.TurnInNpc;
         t["minLevel"] = q.MinLevel; t["maxLevel"] = q.MaxLevel; t["isNeedLevel"] = q.IsNeedLevel;
         // EndCondition "reach Level N to COMPLETE" gate (distinct from the accept-level window above) —
         // e.g. q20001 reach-20: endNeedsLevel=true, endLevel=20. Gate hand-in on bot.level() >= endLevel.
@@ -528,6 +528,11 @@ public sealed class BotApi
 
     /// <summary>Resolve a quest dialog/title id to its text (QuestDialog.shn). Empty if unknown.</summary>
     public string questDialog(int id) => _mgr.ClientData?.QuestDialog(id) ?? "";
+
+    /// <summary>The human NAME of a quest for LOGGING (QuestData title id → QuestDialog.shn text), formatted
+    /// "Name(q{id})" so the name leads but the id stays greppable. "q{id}" if the name is unknown. Operator
+    /// 2026-07-18: NEVER log a bare quest id — use this in every quest log line.</summary>
+    public string questName(int id) => _mgr.ClientData?.QuestName(id) ?? $"q{id}";
 
     /// <summary>True if the character has completed this quest (from the login QUEST_DONE state).</summary>
     public bool questDone(int id) => View?.IsQuestDone(id) ?? false;

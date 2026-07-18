@@ -323,6 +323,16 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Dialog");
     }
 
+    /// <summary>The human NAME of a quest for LOGGING — QuestData title id → QuestDialog.shn text — formatted
+    /// "Name(q{id})" so the name leads but the id stays greppable. "q{id}" if unknown. Operator 2026-07-18:
+    /// never log a bare quest id.</summary>
+    public string QuestName(int questId)
+    {
+        var q = Quest(questId);
+        var n = q is not null ? QuestDialog(q.Title) : "";
+        return string.IsNullOrEmpty(n) ? $"q{questId}" : $"{n}(q{questId})";
+    }
+
     /// <summary>Where a mob type lives, from the client <c>MobCoordinate.shn</c> (the table the
     /// real client uses to draw the quest-log minimap marker): map name + spawn-area centre. A
     /// mob can have several rows (multiple spawn patches); we pick the one with the largest
