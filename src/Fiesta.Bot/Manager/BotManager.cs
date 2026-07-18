@@ -2159,11 +2159,25 @@ public sealed class BotManager : IAsyncDisposable
             // StartMap is only a fallback (e.g. for a just-created character).
             var currentMap = string.IsNullOrWhiteSpace(sel.LoginMap) ? opt.StartMap : sel.LoginMap;
             var firstEntry = true;
+            int burstRetries = 0; const int MaxBurstRetries = 3;
             while (true)
             {
                 handle.SetPhase(BotPhase.EnteringZone);
                 handle.ZoneSession = null; // no live zone link during (re)connect
                 var entry = await zoneEntry.EnterAsync(zoneEp, zoneWmHandle, sel.Name, ct, tap);
+                // BURST login (no explicit [1802]): position/HP were NOT seeded → nav broken (can't find gates)
+                // → the freeze/stone-starve death-loop (operator 2026-07-18). A proper MAP_LOGIN_ACK reliably
+                // arrives on retry, so re-enter the zone (capped) rather than run blind. After the cap, accept it
+                // (degrades to the previous behaviour — never worse). Reset once a clean login lands.
+                if (entry.WasBurst && burstRetries < MaxBurstRetries)
+                {
+                    burstRetries++;
+                    Log($"[nav] BURST login (no [1802], char-info unseeded) — retry {burstRetries}/{MaxBurstRetries} for a clean login");
+                    entry.Conn.Dispose();
+                    await Task.Delay(1500, ct);
+                    continue;   // re-enter the zone for a proper MAP_LOGIN_ACK
+                }
+                if (!entry.WasBurst) burstRetries = 0;
                 var zoneConn = entry.Conn;
                 if (entry.SpawnX is { } spx && entry.SpawnY is { } spy) handle.SetPosition(spx, spy);
                 if (entry.CharHandle is { } selfH) handle.SetSelfHandle(selfH);

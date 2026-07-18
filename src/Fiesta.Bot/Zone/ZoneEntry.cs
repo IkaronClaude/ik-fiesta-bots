@@ -359,7 +359,7 @@ public sealed class ZoneEntry
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel);
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel, WasBurst: via.Contains("burst"));
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
@@ -421,7 +421,11 @@ public sealed record ZoneEntryResult(
     IReadOnlyList<ushort>? ReadQuests = null,
     int? CurHpStone = null, int? CurSpStone = null,
     uint? MaxHpStone = null, uint? MaxSpStone = null,
-    ulong? Cen = null, ulong? Exp = null, byte? Level = null);
+    ulong? Cen = null, ulong? Exp = null, byte? Level = null,
+    // True when login completed WITHOUT the explicit [1802] MAP_LOGIN_ACK ("burst") → position/HP were NOT
+    // seeded (null) and the bot's nav is broken (can't find gates). The caller retries the zone-entry to get a
+    // clean login instead of running blind. (operator 2026-07-18 — root of the freeze/stone-starve death loop.)
+    bool WasBurst = false);
 
 public sealed class ZoneEntryException : Exception
 {
