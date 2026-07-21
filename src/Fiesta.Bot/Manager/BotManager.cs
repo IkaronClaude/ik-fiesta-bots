@@ -2381,7 +2381,17 @@ public sealed class BotManager : IAsyncDisposable
                     // DIRECTION we were trying to move — that's the cell the server refused. (Block by
                     // direction, not the move endpoint: a smoothed straight run may end on a legit tile it
                     // merely CLIPPED past, and small paced sub-steps often round to the snap-back tile.)
-                    bool learned = false;
+                    // DATA-DRIVEN POISON GATE (2026-07-21): ONLY learn a wall when that ahead cell is a REAL
+                    // static .shbd obstacle (a corner the straight run clipped). If it's OPEN GROUND
+                    // (.shbd-walkable), the server refused a move the MAP says is fine → a TRANSIENT state, not
+                    // a wall: an unclassified stun/root (see the loud ABSTATE log), a combat attack-lock (the
+                    // server holds you mid-swing), or a move-spam desync. The measuring stick proved these
+                    // rejected moves sit in open ground, walkable in BOTH .shbd AND the reversed .bdt — so
+                    // MarkBlocking them is the false-wall grid-poison that severs routes → the hilly-map WEDGE.
+                    // Transient states clear on their own; resync + abort + re-path like the real client, which
+                    // never poisons its nav grid and never wedges. Genuine off-grid clips (static-blocked cell)
+                    // still learn, so real obstacle-avoidance is unchanged.
+                    bool handled = false;
                     if (handle.LastMoveTarget is { } tgt && handle.CurrentMap is { } map &&
                         GridProvider?.Invoke(map) is { } grid)
                     {
@@ -2393,12 +2403,19 @@ public sealed class BotManager : IAsyncDisposable
                             var ax = (uint)Math.Max(0, pos.X + dx / len * ahead);
                             var ay = (uint)Math.Max(0, pos.Y + dy / len * ahead);
                             var (ttx, tty) = grid.WorldToTile(ax, ay);
-                            grid.MarkBlocked(ttx, tty);
-                            learned = true;
-                            Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) → LEARNED blocked tile ({ttx},{tty}) ahead, re-routing (total {grid.RuntimeBlockedCount})");
+                            handled = true;
+                            if (!grid.IsStaticWalkableWorld(ax, ay))
+                            {
+                                grid.MarkBlocked(ttx, tty);
+                                Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) → LEARNED blocked tile ({ttx},{tty}) ahead (real .shbd obstacle), re-routing (total {grid.RuntimeBlockedCount})");
+                            }
+                            else
+                            {
+                                Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) on OPEN GROUND (ahead ({ttx},{tty}) is .shbd-walkable) — transient state (stun/attack-lock/desync), NOT poisoning; resync+re-path (rooted={zoneView.Rooted})");
+                            }
                         }
                     }
-                    if (!learned) Log($"[nav] move blocked — resynced to ({pos.X},{pos.Y}), walk aborted");
+                    if (!handled) Log($"[nav] move blocked — resynced to ({pos.X},{pos.Y}), walk aborted");
                     handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                 };
                 zoneView.WalkSpeedChanged += speed => { handle.WalkSpeed = speed; };
