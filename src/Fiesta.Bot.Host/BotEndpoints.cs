@@ -676,6 +676,11 @@ public static class BotEndpoints
             // replaces the erosion experiment (wrong lever). Door STATES are pushed live from ZoneView.
             try { grid.AttachDoors(Fiesta.Bot.Pathfinding.DoorCollision.Load(Path.Combine(dir, m + ".sbi"))); }
             catch { /* no .sbi / malformed → grid runs .shbd-only, unchanged */ }
+            // COMPANION .bdt (2026-07-21): attach the reverse-engineered 50-unit quadtree collision for the
+            // measuring-stick diagnostic (compare .shbd vs .bdt at live MOVEFAIL points). Read-only; does not
+            // change pathfinding yet. Null/absent on flat maps → grid runs .shbd-only, unchanged.
+            try { grid.AttachBdt(Fiesta.Bot.Pathfinding.BdtGrid.Load(Path.Combine(dir, m + ".bdt"))); }
+            catch { /* no .bdt / malformed → no companion, unchanged */ }
             return grid;
         }
         catch { return null; }

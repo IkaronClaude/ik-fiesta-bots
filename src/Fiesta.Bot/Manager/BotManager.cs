@@ -2342,6 +2342,41 @@ public sealed class BotManager : IAsyncDisposable
                         handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                         return;
                     }
+                    // MEASURING STICK (2026-07-21): on a FIELD MOVEFAIL, compare our .shbd walkability against
+                    // the reverse-engineered .bdt (50-unit quadtree, a server-collision candidate) ALONG the
+                    // rejected ray. The server snapped us back to `pos` (last-good) and refused the move toward
+                    // `LastMoveTarget`, so the true blocked boundary lies between them. Log shbd/bdt at each step
+                    // (UPPER=walkable, lower=blocked; S/s=.shbd, B/b=.bdt, -=no .bdt) so we can read off which grid
+                    // transitions walkable→blocked where the server actually stopped us. Diagnostic only; no
+                    // behaviour change. Only maps WITH a .bdt (terrain) log this (flat maps: shbd==server, no mystery).
+                    if (handle.LastMoveTarget is { } mt && handle.CurrentMap is { } cmap &&
+                        GridProvider?.Invoke(cmap) is { } cg && cg.HasBdt)
+                    {
+                        double mdx = (double)mt.X - pos.X, mdy = (double)mt.Y - pos.Y;
+                        double mlen = Math.Sqrt(mdx * mdx + mdy * mdy);
+                        if (mlen > 1)
+                        {
+                            var sb = new System.Text.StringBuilder();
+                            // Sample the rejected ray (and ~2 tiles PAST the target) every 3 units — fine enough to
+                            // catch a single-tile (6.25u) wall a straight-line MOVERUN could clip. STATIC shbd only
+                            // (bypass our runtime poison, which would masquerade as a real wall). S/s=.shbd
+                            // walkable/blocked, B/b=.bdt walkable/blocked, -=no .bdt. Compact: only print each
+                            // sample whose S or B state DIFFERS from the previous, plus the endpoints.
+                            char ps = '?', pb = '?';
+                            double end = mlen + BlockGrid.WorldPerTile * 2;
+                            for (double t = 0; t <= end + 0.1; t += 3.0)
+                            {
+                                var sx = (uint)Math.Max(0, pos.X + mdx / mlen * t);
+                                var sy = (uint)Math.Max(0, pos.Y + mdy / mlen * t);
+                                char s = cg.IsStaticWalkableWorld(sx, sy) ? 'S' : 's';
+                                char bd = cg.BdtWalkableWorld(sx, sy) is bool bw ? (bw ? 'B' : 'b') : '-';
+                                if (s != ps || bd != pb || t == 0 || t > end - 3.0)
+                                    sb.Append($" {t:F0}:{s}{bd}");
+                                ps = s; pb = bd;
+                            }
+                            Log($"[measure] MOVEFAIL pos=({pos.X},{pos.Y}) tgt=({mt.X},{mt.Y}) len={mlen:F0} ray{sb}");
+                        }
+                    }
                     // Learn the obstacle: block the tile ~1.5 tiles AHEAD of the snap-back position in the
                     // DIRECTION we were trying to move — that's the cell the server refused. (Block by
                     // direction, not the move endpoint: a smoothed straight run may end on a legit tile it

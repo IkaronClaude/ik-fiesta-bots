@@ -86,6 +86,18 @@ public sealed class BlockGrid
     /// Field maps without a <c>.sbi</c> pass null and keep pure-<c>.shbd</c> behaviour.</summary>
     public void AttachDoors(DoorCollision? doors) => _doorCol ??= doors;
 
+    // --- COMPANION .bdt (server-collision candidate, reverse-engineered 2026-07-21). A 50-unit quadtree
+    // walkability grid the server MAY enforce instead of / on top of the finer .shbd. Attached read-only for
+    // the "measuring stick" diagnostic (compare our .shbd vs the .bdt at live MOVEFAIL points). Not yet wired
+    // into IsWalkableTile — first prove it predicts the server's rejections. Null on flat maps (no .bdt).
+    private BdtGrid? _bdt;
+    /// <summary>Attach this map's <c>.bdt</c> quadtree collision. No-op after the first call / on null.</summary>
+    public void AttachBdt(BdtGrid? bdt) => _bdt ??= bdt;
+    /// <summary>True if this map has a <c>.bdt</c> (terrain/hill map).</summary>
+    public bool HasBdt => _bdt is not null;
+    /// <summary>Is world (x,y) walkable per the <c>.bdt</c> quadtree? Null when the map has no <c>.bdt</c>.</summary>
+    public bool? BdtWalkableWorld(uint worldX, uint worldY) => _bdt?.IsWalkableWorld(worldX, worldY);
+
     /// <summary>True if this grid has scenario-door overlays to apply (an instance map with a <c>.sbi</c>).</summary>
     public bool HasDoors => _doorCol is { Doors.Count: > 0 };
 
@@ -125,6 +137,12 @@ public sealed class BlockGrid
     private bool StaticWalk(int tx, int ty)
         => (uint)tx < (uint)WidthTiles && (uint)ty < (uint)HeightTiles
            && ((_data[8 + ty * _bytesPerRow + (tx >> 3)] >> (tx & 7)) & 1) == 0;
+
+    /// <summary>Raw STATIC <c>.shbd</c> walkability at world (x,y) — the baked map bit ONLY, with NO runtime
+    /// MOVEFAIL-poison, NO erosion, NO door overlay. Use this for the measuring-stick diagnostic so learned
+    /// runtime blocks don't masquerade as real map walls.</summary>
+    public bool IsStaticWalkableWorld(uint worldX, uint worldY)
+        => StaticWalk((int)(worldX / WorldPerTile), (int)(worldY / WorldPerTile));
 
     // --- 1-TILE EROSION (scenario instances). The client .shbd's walkable boundary is ~1-2 tiles WIDER than
     // the server's collision (proven on Job1_Dn01: the bot hugs a .shbd edge → the server MOVEFAILs that
