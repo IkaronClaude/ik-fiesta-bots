@@ -208,6 +208,13 @@ public sealed class ZoneView : IDisposable
     // combat knows to WAIT. Set = state applied, Reset = state cleared.
     private const ushort OpAbStateSet = 0x2427;
     private const ushort OpAbStateReset = 0x2428;
+    // NC_BRIEFINFO_ABSTATE_CHANGE_CMD (0x1C18) / _LIST_CMD (0x1C19): the PERCEPTION channel for abnormal
+    // states — and the ONLY channel that carries SELF abstates (stun/root/buffs). Layout: [handle u16] then
+    // one (0x1C18) or count× (0x1C19) ABSTATE_INFORMATION = [abStataIndex u32][restKeeptime u32 ms][strength
+    // u32]. Previously UNHANDLED → a mob stun on the bot was invisible and never set Rooted → nav poisoned
+    // the grid on the resulting all-walkable MOVEFAILs (the hilly-map wedge). We now consume both for self.
+    private const ushort OpBriefAbstateChange = 0x1C18;
+    private const ushort OpBriefAbstateChangeList = 0x1C19;
     // Other players' movement broadcasts: SOMEONE_MOVEWALK (ACT cmd 24) / MOVERUN
     // (cmd 26). Layout [handle u16][from xy(8)][to xy(8)][speed u16][attr]. Briefinfo
     // only gives a player's spawn position; these keep NearbyPlayer.X/Y live as they
@@ -1283,10 +1290,16 @@ public sealed class ZoneView : IDisposable
     /// Used to know when a self-abstate is a root/stun so nav won't learn a wall and combat waits.</summary>
     public Func<uint, bool>? IsMoveBlockingAbstate { get; set; }
 
-    // The abstate indices currently ACTIVE on SELF (added on ABSTATESET, removed on ABSTATERESET for
-    // our own handle). Rooted = any of them immobilizes us. Concurrent set: the read loop writes it,
-    // the nav/combat callers read Rooted.
-    private readonly HashSet<uint> _selfAbstates = new();
+    // The abstate indices currently ACTIVE on SELF → EXPIRY tick (Environment.TickCount64). Fed by BOTH
+    // abstate channels: NC_BAT_ABSTATESET/RESET (0x2427/0x2428, no duration → expiry long.MaxValue, cleared
+    // only by an explicit RESET) AND NC_BRIEFINFO_ABSTATE_CHANGE/_LIST (0x1C18/0x1C19), which is the ONLY
+    // channel that carries SELF abstates (stun/root/buffs) and was previously UNHANDLED — the silent
+    // hilly-map wedge: a mob stun arrived here, nav never saw Rooted, and poisoned the grid on the
+    // all-walkable MOVEFAILs. BRIEFINFO carries a restKeeptime (ms), so we set a finite expiry → a stun
+    // auto-clears even if we miss its reset. Rooted counts only STILL-ACTIVE, move-blocking entries (so
+    // constant self-buffs like StaImmortal/newbie buffs never falsely root). Concurrent: read loop writes,
+    // nav/combat read.
+    private readonly Dictionary<uint, long> _selfAbstates = new();
     private readonly object _selfAbstateLock = new();
 
     /// <summary>True while a movement-blocking abnormal state (stun/root/entangle) is active on the bot
@@ -1296,13 +1309,48 @@ public sealed class ZoneView : IDisposable
     {
         get
         {
+            if (IsMoveBlockingAbstate is not { } f) return false;
+            long now = Environment.TickCount64;
             lock (_selfAbstateLock)
             {
-                if (_selfAbstates.Count == 0 || IsMoveBlockingAbstate is not { } f) return false;
-                foreach (var a in _selfAbstates) if (f(a)) return true;
+                foreach (var kv in _selfAbstates) if (kv.Value > now && f(kv.Key)) return true;
                 return false;
             }
         }
+    }
+
+    /// <summary>Snapshot of the abstate indices currently active (unexpired) on the bot (for loud logging).</summary>
+    public uint[] SelfAbstateSnapshot()
+    {
+        long now = Environment.TickCount64;
+        lock (_selfAbstateLock) return _selfAbstates.Where(kv => kv.Value > now).Select(kv => kv.Key).ToArray();
+    }
+
+    /// <summary>Record a SELF abstate change from any channel and LOG IT LOUD (operator 2026-07-21). A SET
+    /// with a restKeeptime (BRIEFINFO) gets a finite expiry; a SET without one (BAT) stays until RESET. Only
+    /// move-blocking (SHN action-19) abstates count toward <see cref="Rooted"/>, so ordinary buffs don't
+    /// falsely immobilise us. Move-blocking changes always log at NOTE so a stun/root is impossible to miss.</summary>
+    private void SelfAbstate(uint idx, uint restKeeptimeMs, bool active, string src)
+    {
+        bool moveBlock = IsMoveBlockingAbstate?.Invoke(idx) == true;
+        long now = Environment.TickCount64;
+        bool changed;
+        lock (_selfAbstateLock)
+        {
+            if (active)
+            {
+                changed = !_selfAbstates.ContainsKey(idx);
+                _selfAbstates[idx] = restKeeptimeMs > 0 ? now + restKeeptimeMs : long.MaxValue;
+            }
+            else changed = _selfAbstates.Remove(idx);
+        }
+        var msg = $"[ZoneView] ABSTATE {(active ? "SET" : "RESET")} idx={idx} on SELF via {src}" +
+                  $"{(moveBlock ? " — MOVE-BLOCKING (stun/root)" : "")}" +
+                  $"{(active && restKeeptimeMs > 0 ? $" keeptime={restKeeptimeMs}ms" : "")}" +
+                  $" (moveBlock={moveBlock}, rooted={Rooted})";
+        // Loud on any move-blocking change (a stun/root is critical) and on any first SET/RESET; quiet on
+        // the periodic BRIEFINFO refreshes of an already-tracked buff (avoids log spam without hiding CC).
+        if (moveBlock || changed) _log?.Invoke(msg); else LogV(msg);
     }
 
     private void OnPacket(FiestaPacket pkt)
@@ -1463,25 +1511,52 @@ public sealed class ZoneView : IDisposable
         }
         else if (op == OpAbStateSet || op == OpAbStateReset)
         {
-            // [targetHandle u16][abStataIndex u32]. Track states applied to SELF so nav/combat know when
-            // we're rooted (a movement-blocking abstate → the server MOVEFAILs every move; NOT a wall).
+            // NC_BAT_ABSTATESET/RESET: [targetHandle u16][abStataIndex u32] (no duration). Combat channel;
+            // for SELF, feed the tracker (no keeptime → active until an explicit RESET).
             var p = pkt.Payload.Span;
             if (p.Length >= 6)
             {
                 var target = (ushort)(p[0] | (p[1] << 8));
                 var idx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[2..]);
                 if (SelfHandle is { } self && target == self)
-                {
-                    bool set = op == OpAbStateSet;
-                    bool moveBlock = IsMoveBlockingAbstate?.Invoke(idx) == true;
-                    bool changed;
-                    lock (_selfAbstateLock) changed = set ? _selfAbstates.Add(idx) : _selfAbstates.Remove(idx);
-                    if (changed && moveBlock)
-                        _log?.Invoke($"[ZoneView] ABSTATE {(set ? "SET" : "RESET")} idx={idx} on SELF — MOVE-BLOCKING (rooted={Rooted})");
-                    else
-                        LogV($"[ZoneView] ABSTATE {(set ? "SET" : "RESET")} idx={idx} on SELF (moveBlock={moveBlock})");
-                }
+                    SelfAbstate(idx, 0, op == OpAbStateSet, "BAT");
                 else LogV($"[ZoneView] ABSTATE {(op == OpAbStateSet ? "SET" : "RESET")} idx={idx} on h={target}");
+            }
+        }
+        else if (op == OpBriefAbstateChange)
+        {
+            // NC_BRIEFINFO_ABSTATE_CHANGE_CMD: [handle u16] + ABSTATE_INFORMATION [idx u32][restKeeptime u32
+            // ms][strength u32]. THE self-abstate channel (stun/root/buffs). active = keeptime>0 (a change to
+            // keeptime 0 = the state ended). NOTE: FiestaLib's ABSTATE_INFORMATION.Read skips idx as "unsupported
+            // padding", so parse the raw bytes here to keep the index.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 14)
+            {
+                var target = (ushort)(p[0] | (p[1] << 8));
+                var idx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[2..]);
+                var keep = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[6..]);
+                if (SelfHandle is { } self && target == self) SelfAbstate(idx, keep, keep > 0, "BRIEF");
+                else LogV($"[ZoneView] ABSTATE CHANGE idx={idx} keep={keep}ms on h={target}");
+            }
+        }
+        else if (op == OpBriefAbstateChangeList)
+        {
+            // NC_BRIEFINFO_ABSTATE_CHANGE_LIST_CMD: [handle u16][count u8] + count× ABSTATE_INFORMATION
+            // (12 bytes each). The full current abstate list for an entity; for SELF, upsert each.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 3)
+            {
+                var target = (ushort)(p[0] | (p[1] << 8));
+                int count = p[2];
+                bool self = SelfHandle is { } sh && target == sh;
+                int off = 3;
+                for (int i = 0; i < count && off + 12 <= p.Length; i++, off += 12)
+                {
+                    var idx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[off..]);
+                    var keep = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[(off + 4)..]);
+                    if (self) SelfAbstate(idx, keep, keep > 0, "BRIEF_LIST");
+                    else LogV($"[ZoneView] ABSTATE LIST idx={idx} keep={keep}ms on h={target}");
+                }
             }
         }
         else if (op == OpBatCastFail)
