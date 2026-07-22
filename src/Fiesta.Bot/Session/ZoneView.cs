@@ -1185,6 +1185,13 @@ public sealed class ZoneView : IDisposable
     /// while the bot lands kills, which is how the driver detects a stuck quest to abandon.</summary>
     public int QuestProgress(int id) => _questProgress.TryGetValue(id, out var n) ? n : 0;
 
+    /// <summary>Reset a quest's credited-kill progress to 0. The progress counter (0x440D credits) only ever
+    /// counts UP and — until now — only reset on GIVE_UP (0x4413), never on a HAND-IN. So a REPEATABLE that just
+    /// handed in (and re-accepted server-side to 0/N) kept a stale N/N here, which stranded it: the leveler read
+    /// it as both "done" (not grindable) AND "ready to hand in" (re-attempt loop) → frozen. The leveler calls
+    /// this on a CONCLUDED hand-in (bot.dialogConcluded) so the re-accepted repeatable is grindable again.</summary>
+    public void ResetQuestProgress(int id) => _questProgress[id] = 0;
+
     /// <summary>Quest ids the character can accept right now — the server's available list from
     /// the login QUEST_READ burst (0x10CE). This is the authoritative orange-! set (the client
     /// derives the marker from it); the driver accepts from here rather than guessing from

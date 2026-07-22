@@ -466,6 +466,10 @@ public sealed class BotApi
     /// the accept/hand-in actually completed on the wire. Use after a hand-in to detect success even when a
     /// REPEATABLE re-accepted (leaving bot.questProgress stale at N/N so questReadyToHandin would loop).</summary>
     public bool dialogConcluded() => _handle.LastDialogConcluded;
+    /// <summary>Reset a quest's credited-kill progress to 0 (the 0x440D counter only counts up + only reset on
+    /// GIVE_UP). Call on a CONCLUDED repeatable hand-in so the re-accepted quest is grindable again instead of
+    /// staying stale at N/N (which stranded the quest — see ResetQuestProgress).</summary>
+    public void resetQuestProgress(int id) => View?.ResetQuestProgress(id);
     public bool selectReward(int questId, int index) => Ok(Wait(_mgr.SelectQuestRewardAsync(Id, (ushort)questId, (uint)index)));
 
     /// <summary>The character's ClassName ClassID (1=Fighter, 6=Cleric, …). 0 until selected.</summary>
