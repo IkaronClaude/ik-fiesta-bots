@@ -193,13 +193,26 @@ public sealed class BotHandle
     internal volatile string? PendingDestMap;
 
     private int _mapChangeSeq;
+    private long _lastMapChangeTicks = -1;
 
     /// <summary>Monotonic counter bumped once per map transition (gate / town portal,
     /// in-band or cross-server). The travel loop snapshots it before taking a gate and
     /// waits for it to advance — a transition-agnostic "did the warp land?" signal that
     /// survives the cross-server reconnect (which swaps the ZoneView out).</summary>
     public int MapChangeSeq => Volatile.Read(ref _mapChangeSeq);
-    internal void BumpMapChange() => Interlocked.Increment(ref _mapChangeSeq);
+    internal void BumpMapChange()
+    {
+        Interlocked.Increment(ref _mapChangeSeq);
+        Volatile.Write(ref _lastMapChangeTicks, Environment.TickCount64);
+    }
+
+    /// <summary>Milliseconds since the last map transition began (BumpMapChange), or a large
+    /// number if none yet. Used to gate gate-EDGE learning: during/just after a transition the
+    /// ZoneView can briefly carry the NEW map's gates while <see cref="CurrentMap"/> hasn't
+    /// settled — learning then mis-attributes them to the old map (the bogus RouVal02->Eld
+    /// edge). Callers skip <c>ObserveGate</c> until this exceeds a settle window.</summary>
+    public long MsSinceMapChange =>
+        Volatile.Read(ref _lastMapChangeTicks) is var t && t < 0 ? long.MaxValue : Environment.TickCount64 - t;
 
     /// <summary>The Lua behaviour script currently looping on this bot, if any. Set by
     /// <see cref="Manager.BotManager.ApplyScript"/>; torn down on stop / replace. The

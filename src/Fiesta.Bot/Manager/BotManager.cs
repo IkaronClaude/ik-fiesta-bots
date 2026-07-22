@@ -921,10 +921,22 @@ public sealed class BotManager : IAsyncDisposable
     /// <see cref="Graph"/> (auto-discovery): each in-view gate becomes an edge from
     /// the bot's current map to the gate's destination. No-op until the bot knows its
     /// current map and is in zone. Returns the number of gate edges observed.</summary>
+    // Don't LEARN gate edges until the map has settled after a transition (operator 2026-07-22): during/just
+    // after a map switch the ZoneView can briefly carry the NEW map's gates while handle.CurrentMap hasn't caught
+    // up, so ObserveGate mis-attributes them to the OLD map — e.g. EldCem01's Eld-gate @(11829,1135) learned as a
+    // bogus RouVal02->Eld edge that then breaks all Eld-bound routing from RouVal02. Safe to skip: the graph is
+    // fully SEEDED up-front from ClientData.BuildGateEdges (all real cross-map links), so learning only refreshes
+    // live handles / adds un-seeded gates — never needed for routing — and the travel loop re-resolves the live
+    // gate handle from the view anyway. A gate genuinely on the current map is re-learned on the next settled call.
+    private const long GateLearnSettleMs = 2500;
+
     public int ObserveGates(string id)
     {
         if (!_bots.TryGetValue(id, out var handle)) return 0;
         if (handle.CurrentMap is not { } fromMap || handle.ZoneView is not { } view) return 0;
+        // Block learning while the map is still settling after a transition (prevents the stale-CurrentMap
+        // mis-attribution / bogus cross-map edges). Routing is unaffected (seeded graph).
+        if (handle.MsSinceMapChange < GateLearnSettleMs) return 0;
         var n = 0;
         foreach (var gate in view.NearbyNpcs)
         {
