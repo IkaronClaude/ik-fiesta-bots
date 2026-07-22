@@ -181,21 +181,43 @@ public sealed class BlockGrid
     public const int SbiClosedThreshold = 6;
     private readonly Dictionary<string, HashSet<int>> _sbiFailTiles = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Record a MOVEFAIL at world (wx,wy) against the field .sbi doors. See the strategy note above.
-    /// Returns NotInDoor (fall through to the normal poison gate), Poisoned (tile poisoned, keep trying), or
-    /// DoorClosed (the whole door is now walled — re-path will route around).</summary>
-    public SbiMoveFail NoteMoveFailInSbiDoor(uint wx, uint wy)
+    /// <summary>Record a MOVEFAIL against the field .sbi doors. CRUCIAL (operator 2026-07-22): a MOVEFAIL's
+    /// <paramref name="fromX"/>,<paramref name="fromY"/> is where the server SNAPPED US BACK — the wall's OUTER
+    /// face, usually still OUTSIDE the door box. The wall itself lies along the attempted segment toward
+    /// <paramref name="toX"/>,<paramref name="toY"/> (which lands INSIDE the door). So SWEEP the whole from→to
+    /// segment and act on the first state0-wall tile it crosses. Returns NotInDoor (fall through to the normal
+    /// poison gate), Poisoned (tile poisoned, keep trying), or DoorClosed (the whole door is now walled).</summary>
+    public SbiMoveFail NoteMoveFailInSbiDoor(uint fromX, uint fromY, uint toX, uint toY)
+    {
+        if (_doorCol is null) return SbiMoveFail.NotInDoor;
+        double dx = (double)toX - fromX, dy = (double)toY - fromY;
+        double len = Math.Sqrt(dx * dx + dy * dy);
+        if (len < 0.1) return TryDoorMoveFailAt(toX, toY);
+        for (double t = 0; t <= len; t += 3.0) // sample every ~3u — fine enough to catch a single-tile wall
+        {
+            var r = TryDoorMoveFailAt((uint)Math.Max(0, fromX + dx / len * t), (uint)Math.Max(0, fromY + dy / len * t));
+            if (r != SbiMoveFail.NotInDoor) return r;
+        }
+        return TryDoorMoveFailAt(toX, toY);
+    }
+
+    // One sampled point of the swept MOVEFAIL segment: if world (wx,wy) is a state0-WALL tile of a field door
+    // (blocked when closed, open when open — i.e. the actual courtyard wall, not the interior/edge), poison it and
+    // count it; once >SbiClosedThreshold distinct wall tiles of one door have failed, mark the WHOLE door closed.
+    private SbiMoveFail TryDoorMoveFailAt(uint wx, uint wy)
     {
         if (_doorCol is not { } col) return SbiMoveFail.NotInDoor;
         foreach (var d in col.Doors)
         {
-            // WORLD-box containment (raw map-tile bounds → world) — convention-independent for the hit test.
             double x0 = d.StartX * WorldPerTile, x1 = (d.EndX + 1) * WorldPerTile;
             double y0 = d.StartY * WorldPerTile, y1 = (d.EndY + 1) * WorldPerTile;
-            if (wx < x0 || wx >= x1 || wy < y0 || wy >= y1) continue;
+            if (wx < x0 || wx >= x1 || wy < y0 || wy >= y1) continue; // not in this door's box
             if (_learnedDoorStates.TryGetValue(d.Name, out var known) && known == 0) return SbiMoveFail.DoorClosed;
-            if (_packetDoorStates.ContainsKey(d.Name)) return SbiMoveFail.NotInDoor; // packet-authoritative (instance) — don't learn
+            if (_packetDoorStates.ContainsKey(d.Name)) continue; // packet-authoritative (instance) — don't learn this door
             var (tx, ty) = WorldToTile(wx, wy);
+            int lx = tx - d.StartX - ShbdTileShift, ly = ty - d.StartY - ShbdTileShift; // raw .sbi-local bitmap index
+            if ((uint)lx >= (uint)d.Width || (uint)ly >= (uint)d.Height) continue;
+            if (!d.BlockedLocal(0, lx, ly) || d.BlockedLocal(1, lx, ly)) continue; // only a state0-only WALL tile counts
             if (!_sbiFailTiles.TryGetValue(d.Name, out var set)) { set = new HashSet<int>(); _sbiFailTiles[d.Name] = set; }
             set.Add(ty * WidthTiles + tx);
             if (set.Count > SbiClosedThreshold)

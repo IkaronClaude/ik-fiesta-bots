@@ -2412,7 +2412,7 @@ public sealed class BotManager : IAsyncDisposable
                             // FIELD .sbi DOOR (Eld "Puzzle God"): its closed-state is never on the wire, so learn it
                             // from MOVEFAILs inside the door box — >N distinct failed tiles ⇒ the whole door is closed
                             // (operator-confirmed 2026-07-22; the real client bounces the same way). Reset on re-entry.
-                            var sbi = grid.NoteMoveFailInSbiDoor(ax, ay);
+                            var sbi = grid.NoteMoveFailInSbiDoor(pos.X, pos.Y, tgt.X, tgt.Y);
                             if (sbi == BlockGrid.SbiMoveFail.DoorClosed)
                             {
                                 Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) inside a field .sbi door → >{BlockGrid.SbiClosedThreshold} distinct tiles failed = door CLOSED (Eld 'Puzzle God'): walled the whole courtyard, re-pathing AROUND it");
