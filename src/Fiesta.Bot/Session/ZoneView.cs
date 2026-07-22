@@ -422,6 +422,16 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<ushort, (NearbyNpc Npc, long Expiry)> _recentNpcs = new();
     private const int RecentNpcTtlMs = 4000; // long enough to bridge the ~200ms flicker; short enough that a
                                              // genuinely-departed mob is dropped fast (no chasing a ghost).
+
+    // LEARNED per-mob EXP (2026-07-21): the EXPGAIN packet carries {gain, mobHandle}, and a just-killed mob is
+    // still in _recentNpcs, so we can attribute each kill's exp to its MobId. Mob exp is NOT in MobInfo.shn
+    // (no Exp column) and must NOT be hardcoded — so LEARN it from the wire. Lets the leveler value a quest by
+    // the exp of the mobs it actually makes you kill (e.g. the Silver Slime "Poor Merchant" repeatable: 112
+    // reward but ~1179 exp/kill) instead of only the turn-in reward — the fat-repeatable ranking the code's
+    // line-1252 DIAG was hunting. mobId → (total exp, kill count); average = total/kills.
+    private readonly ConcurrentDictionary<int, (long Total, int Kills)> _mobExp = new();
+    /// <summary>Learned average exp per kill for a mob id (from EXPGAIN), or 0 if never killed one yet.</summary>
+    public long MobExpAvg(int mobId) => _mobExp.TryGetValue(mobId, out var v) && v.Kills > 0 ? v.Total / v.Kills : 0;
     // ✅ THE NPC SEED — the single authoritative full-map roster, keyed by mobId, holding position + the
     // gate flag + link-destination map. Populated by the bulk 0x1C09 NC_BRIEFINFO_MOB_CMD on map-enter
     // (ALL NPCs+gates at infinite range, as on the minimap) and any later 0x1C09/REGENMOB. Cleared on
@@ -1700,7 +1710,21 @@ public sealed class ZoneView : IDisposable
                 long gain = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(0, 4));
                 SessionExpGained += gain;
                 if (Exp >= 0) Exp += gain;
-                _logLevel?.Invoke(BotLogLevel.Info, $"[exp] +{gain} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session +{SessionExpGained})");
+                // Attribute this kill's exp to the MOB that gave it (handle @4) so the leveler can learn per-mob
+                // exp (decode → log). The mob just died → resolve its MobId from _npcs, else the _recentNpcs stash.
+                string mobTag = "";
+                if (p.Length >= 6)
+                {
+                    ushort mh = (ushort)(p[4] | (p[5] << 8));
+                    int mobId = _npcs.TryGetValue(mh, out var live) ? live.MobId
+                              : _recentNpcs.TryGetValue(mh, out var re) ? re.Npc.MobId : -1;
+                    if (mobId >= 0 && gain > 0)
+                    {
+                        var acc = _mobExp.AddOrUpdate(mobId, (gain, 1), (_, cur) => (cur.Total + gain, cur.Kills + 1));
+                        mobTag = $" from mob{mobId} (avg {acc.Total / acc.Kills}/kill over {acc.Kills})";
+                    }
+                }
+                _logLevel?.Invoke(BotLogLevel.Info, $"[exp] +{gain} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session +{SessionExpGained}){mobTag}");
             }
         }
         else if (op == OpCharLevelChanged)

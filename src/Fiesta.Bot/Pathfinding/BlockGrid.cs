@@ -68,6 +68,10 @@ public sealed class BlockGrid
             return !doorBlocked; // overlay is authoritative within a known-state door box
         if (((_data[8 + ty * _bytesPerRow + (tx >> 3)] >> (tx & 7)) & 1) != 0) return false; // .shbd bit set = blocked
         if (_erode && ErodedBlocked(tx, ty)) return false; // 1-tile inset for instances (edge-mismatch, below)
+        // NOTE (2026-07-22): tried intersecting with the .bdt here (walkable = shbd AND bdt) after live Eld
+        // evidence that the server blocks a shbd-walkable/bdt-blocked cell. REVERTED: the .bdt at 50u is too
+        // coarse — it over-blocks legit quest-mob targets → walkTo UNREACHABLE loops. A correct .bdt-aware
+        // fix needs a finer bdt read (sub-50u) + leveler handling of UNREACHABLE (skip target). See tickets.md.
         return true;
     }
 

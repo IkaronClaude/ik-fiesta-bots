@@ -218,6 +218,12 @@ public sealed class BotApi
     /// if not yet seeded. Lets the leveler see grind progress toward the next level.</summary>
     public double exp() => View?.Exp ?? -1;
 
+    /// <summary>Learned average exp-per-kill for a mob id (from EXPGAIN packets), or 0 if we've never killed
+    /// one. Lets the leveler value a quest by the exp of the mobs it makes you kill (mob exp isn't in
+    /// MobInfo.shn and must not be hardcoded) — e.g. rank the Silver Slime repeatable by ~1179/kill, not its
+    /// 112 turn-in reward.</summary>
+    public long mobExp(int mobId) => View?.MobExpAvg(mobId) ?? 0;
+
     /// <summary>The current character class id. Reflects a live JOB CHANGE (PROMOTE_ACK 0x1059) — the
     /// leveler reads this to confirm the JCQ succeeded (class changed) and to pick class-appropriate rewards.</summary>
     public int charClass() => _handle.Class;
