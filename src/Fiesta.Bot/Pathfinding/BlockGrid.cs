@@ -25,6 +25,19 @@ public sealed class BlockGrid
     /// <summary>World units per tile (50 world per map-unit ÷ 8 tiles per map-unit).</summary>
     public const double WorldPerTile = 6.25;
 
+    // ── SHBD 1-TILE ORIGIN SHIFT (operator + godmode wall-hug trace, 2026-07-22) ──────────────────────────
+    // The .shbd blocked-bit at array index (i,j) physically represents the world cell one tile OVER in each
+    // axis: its true span is [(i-1)*6.25, i*6.25), NOT [i*6.25, (i+1)*6.25). Reading it the naive way put every
+    // wall ~1 tile off, so the pathfinder routed the bot into cells the server rejects (the recurring hilly-map
+    // MOVEFAIL wedge). PROVEN: overlaying an 805-point godmode wall-hug trace on RouVal02.shbd, the naive read
+    // has 98.3% of the (walkable, bot-stood-there) trace points landing inside "blocked" tiles; shifting the
+    // world→tile lookup by +1 in BOTH axes drops that to 0.4% (a clean corner-convention off-by-one; the
+    // "non-uniform 4–25u offset" chased earlier was an artifact of variable step size + the server not
+    // grid-aligning you on a MOVEFAIL). The fix lives entirely in the world↔tile conversion: index (i,j) now
+    // means world-centre ((i-0.5)*6.25), so WorldToTile adds +1 and TileToWorld subtracts a half-tile origin.
+    // The pathfinder still works purely in index space; only the physical placement of indices moves.
+    private const int ShbdTileShift = 1;
+
     private readonly byte[] _data;
     private readonly int _bytesPerRow;
 
@@ -53,7 +66,7 @@ public sealed class BlockGrid
 
     /// <summary>Is the tile at world (x,y) walkable? Out-of-bounds = blocked.</summary>
     public bool IsWalkableWorld(uint worldX, uint worldY)
-        => IsWalkableTile((int)(worldX / WorldPerTile), (int)(worldY / WorldPerTile));
+        => IsWalkableTile((int)(worldX / WorldPerTile) + ShbdTileShift, (int)(worldY / WorldPerTile) + ShbdTileShift);
 
     public bool IsWalkableTile(int tx, int ty)
     {
@@ -146,7 +159,7 @@ public sealed class BlockGrid
     /// MOVEFAIL-poison, NO erosion, NO door overlay. Use this for the measuring-stick diagnostic so learned
     /// runtime blocks don't masquerade as real map walls.</summary>
     public bool IsStaticWalkableWorld(uint worldX, uint worldY)
-        => StaticWalk((int)(worldX / WorldPerTile), (int)(worldY / WorldPerTile));
+        => StaticWalk((int)(worldX / WorldPerTile) + ShbdTileShift, (int)(worldY / WorldPerTile) + ShbdTileShift);
 
     // --- 1-TILE EROSION (scenario instances). The client .shbd's walkable boundary is ~1-2 tiles WIDER than
     // the server's collision (proven on Job1_Dn01: the bot hugs a .shbd edge → the server MOVEFAILs that
@@ -347,10 +360,11 @@ public sealed class BlockGrid
     public int ClearanceAt(int tx, int ty)
         => (uint)tx < (uint)WidthTiles && (uint)ty < (uint)HeightTiles ? Clearance()[ty * WidthTiles + tx] : 0;
 
-    /// <summary>World coordinate of a tile's centre (for issuing move packets).</summary>
+    /// <summary>World coordinate of a tile's centre (for issuing move packets). Index (i,j) means world-centre
+    /// ((i-0.5)*6.25) per the ShbdTileShift correction, so the inverse of WorldToTile round-trips.</summary>
     public (uint X, uint Y) TileToWorld(int tx, int ty)
-        => ((uint)((tx + 0.5) * WorldPerTile), (uint)((ty + 0.5) * WorldPerTile));
+        => ((uint)((tx - ShbdTileShift + 0.5) * WorldPerTile), (uint)((ty - ShbdTileShift + 0.5) * WorldPerTile));
 
     public (int X, int Y) WorldToTile(uint worldX, uint worldY)
-        => ((int)(worldX / WorldPerTile), (int)(worldY / WorldPerTile));
+        => ((int)(worldX / WorldPerTile) + ShbdTileShift, (int)(worldY / WorldPerTile) + ShbdTileShift);
 }
