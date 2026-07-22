@@ -1125,6 +1125,15 @@ public sealed class BotManager : IAsyncDisposable
                     || GateTo(handle, expected) is not { } gate)
                 {
                     handle.Log($"[travel] hop {hop + 1}/{route.Count}: no gate to '{expected}' in view near ({edge.GateX},{edge.GateY}) — aborting");
+                    // The edge is BOGUS/stale: we walked to its stored coord ON THIS MAP but the gate to `expected`
+                    // isn't there (coord off-grid / no gate NPC). A mis-learned edge like RouVal02->Eld carrying
+                    // EldCem01's Eld-gate coord (11829,1135) makes Dijkstra pick a non-existent 1-hop over the real
+                    // RouVal02->EldCem01->Eld and permanently breaks the trip (the NPC->map hand-in P1). PRUNE it so
+                    // the next route finds the real path. Guarded: field gates only, and only when we're actually ON
+                    // the edge's source map (never prune on a wrong-map desync); re-learned by ObserveGate if it was real.
+                    if (!edge.IsPortal && string.Equals(handle.CurrentMap, edge.FromMap, StringComparison.OrdinalIgnoreCase)
+                        && Graph.RemoveEdge(edge.FromMap, edge.ToMap))
+                        handle.Log($"[travel] PRUNED bogus gate edge {edge.FromMap} -> {edge.ToMap} @({edge.GateX},{edge.GateY}) (gate not there) — will re-route");
                     return;
                 }
                 handle.Log($"[travel] hop {hop + 1}/{route.Count}: -> {expected} via gate h={gate.Handle} @({gate.X},{gate.Y})");

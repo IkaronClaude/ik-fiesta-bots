@@ -70,6 +70,20 @@ public sealed class MapGraph
     public IReadOnlyCollection<GateEdge> EdgesFrom(string fromMap) =>
         _edges.TryGetValue(fromMap, out var d) ? d.Values.ToArray() : Array.Empty<GateEdge>();
 
+    /// <summary>Prune a field-gate edge that was proven BOGUS at runtime — the travel loop walked to the
+    /// edge's stored gate coord on <paramref name="fromMap"/> but the gate to <paramref name="toMap"/> was
+    /// NOT there (coord off the map's walkable grid / no gate NPC in view after the wait). A stale/mis-learned
+    /// edge (e.g. RouVal02-&gt;Eld carrying EldCem01's Eld-gate coord (11829,1135), which made Dijkstra pick a
+    /// non-existent 1-hop over the real RouVal02-&gt;EldCem01-&gt;Eld) permanently breaks all travel to that dest.
+    /// Removing it lets the next route find the real multi-hop path; if the edge was actually valid (a transient
+    /// nav miss), it's re-learned by <see cref="ObserveGate"/> the next time the bot is on that map and sees the
+    /// gate. Returns true if an edge was removed. (operator 2026-07-22 — confirmed root of the NPC-&gt;map hand-in P1.)</summary>
+    public bool RemoveEdge(string fromMap, string toMap)
+    {
+        if (string.IsNullOrWhiteSpace(fromMap) || string.IsNullOrWhiteSpace(toMap)) return false;
+        return _edges.TryGetValue(fromMap, out var d) && d.TryRemove(toMap, out _);
+    }
+
     // fromMap -> town-portal edges out of it (parallel to _edges so a field gate AND a portal to
     // the SAME destination map can coexist). Seeded once from TownPortal.shn via SeedPortals.
     private readonly ConcurrentDictionary<string, List<GateEdge>> _portalEdges =
