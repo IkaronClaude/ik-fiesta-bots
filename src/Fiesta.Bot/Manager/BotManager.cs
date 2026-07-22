@@ -2084,6 +2084,11 @@ public sealed class BotManager : IAsyncDisposable
         log($"[nav] now on {name} (mapId={h.MapId}) at ({h.X},{h.Y})" +
             (h.IsCrossServer ? $" — cross-server handoff to {h.Ip}:{h.Port}, reconnecting" : " (in-band)"));
 
+        // FIELD .sbi door learning is PER-VISIT — reset it on every map entry (operator 2026-07-22): the Eld
+        // "Puzzle God" door may have opened/closed while we were off the map, so a stale learned-closed would wall
+        // a now-open courtyard. Only touches maps with a .sbi (HasDoors); instance doors re-seed from BUILDDOOR.
+        if (name is { } nm && GridProvider?.Invoke(nm) is { HasDoors: true } doorGrid) doorGrid.ResetDoorLearning();
+
         // In-band LINKSAME: re-send MAP_LOGINCOMPLETE so the server spawns us into the
         // new map and starts broadcasting its entities (mobs/NPCs/players). Without it
         // the bot sits in the destination invisible to the world (no mob packets). The
@@ -2404,7 +2409,19 @@ public sealed class BotManager : IAsyncDisposable
                             var ay = (uint)Math.Max(0, pos.Y + dy / len * ahead);
                             var (ttx, tty) = grid.WorldToTile(ax, ay);
                             handled = true;
-                            if (!grid.IsStaticWalkableWorld(ax, ay))
+                            // FIELD .sbi DOOR (Eld "Puzzle God"): its closed-state is never on the wire, so learn it
+                            // from MOVEFAILs inside the door box — >N distinct failed tiles ⇒ the whole door is closed
+                            // (operator-confirmed 2026-07-22; the real client bounces the same way). Reset on re-entry.
+                            var sbi = grid.NoteMoveFailInSbiDoor(ax, ay);
+                            if (sbi == BlockGrid.SbiMoveFail.DoorClosed)
+                            {
+                                Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) inside a field .sbi door → >{BlockGrid.SbiClosedThreshold} distinct tiles failed = door CLOSED (Eld 'Puzzle God'): walled the whole courtyard, re-pathing AROUND it");
+                            }
+                            else if (sbi == BlockGrid.SbiMoveFail.Poisoned)
+                            {
+                                Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) inside a field .sbi door box → poisoned tile ({ttx},{tty}); probing whether the door is closed (re-path, will wall the whole door at >{BlockGrid.SbiClosedThreshold})");
+                            }
+                            else if (!grid.IsStaticWalkableWorld(ax, ay))
                             {
                                 grid.MarkBlocked(ttx, tty);
                                 Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) → LEARNED blocked tile ({ttx},{tty}) ahead (real .shbd obstacle), re-routing (total {grid.RuntimeBlockedCount})");

@@ -118,29 +118,48 @@ public sealed class BlockGrid
     /// <summary>True if this grid has scenario-door overlays to apply (an instance map with a <c>.sbi</c>).</summary>
     public bool HasDoors => _doorCol is { Doors.Count: > 0 };
 
-    /// <summary>Apply the CURRENT scenario-door states (name → doorstate byte, 0 closed / 1 open) to the grid,
-    /// rebuilding the per-tile door overlay so pathfinding routes exactly like the client. Cheap-skips when the
-    /// state map is unchanged. Doors absent from <paramref name="states"/> keep no override (fall through to the
-    /// baked <c>.shbd</c>). Invalidates the clearance field (walkability changed).</summary>
+    // Door states from two sources, MERGED into the overlay (packet WINS over learned):
+    //   • _packetDoorStates  — scenario-instance doors, seeded/updated by 0x1C0F/0x6C09 (authoritative).
+    //   • _learnedDoorStates — FIELD .sbi doors whose state is NEVER sent to a late-joiner (the Eld "Puzzle God":
+    //     even the REAL client can't know a door is already-closed on entry — it also tries and MOVEFAILs).
+    //     Learned from MOVEFAILs inside the door box (see NoteMoveFailInSbiDoor); reset on map re-entry.
+    private Dictionary<string, byte> _packetDoorStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, byte> _learnedDoorStates = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Apply the CURRENT scenario-door states from PACKETS (name → doorstate byte, 0 closed / 1 open) —
+    /// wired to 0x1C0F/0x6C09. Merged with MOVEFAIL-learned field-door states; packet states win.</summary>
     public void SetDoorStates(IReadOnlyDictionary<string, byte> states)
     {
+        if (_doorCol is null) return;
+        _packetDoorStates = new Dictionary<string, byte>(states, StringComparer.OrdinalIgnoreCase);
+        RebuildDoorOverlay();
+    }
+
+    // Rebuild the per-tile door overlay from the merged door states (packet ?? learned). The .sbi door box tiles
+    // are in raw map-tile coords; the .shbd read is +ShbdTileShift, so the overlay is placed at StartX+lx+shift to
+    // line up with IsWalkableTile's shifted index space (same correction as WorldToTile). Cheap-skips on no change.
+    private void RebuildDoorOverlay()
+    {
         if (_doorCol is not { } col) return;
-        // Signature = doors we have overlays for, in a stable order, with their current state (unknown = 'x').
-        var sig = string.Join(",", col.Doors.Select(d => $"{d.Name}:{(states.TryGetValue(d.Name, out var s) ? s : (byte)255)}"));
+        byte StateOf(string name) =>
+            _packetDoorStates.TryGetValue(name, out var ps) ? ps :
+            _learnedDoorStates.TryGetValue(name, out var ls) ? ls : (byte)255;
+        var sig = string.Join(",", col.Doors.Select(d => $"{d.Name}:{StateOf(d.Name)}"));
         if (sig == _doorSig) return;
         _doorSig = sig;
 
         var forced = new Dictionary<int, bool>();
         foreach (var d in col.Doors)
         {
-            if (!states.TryGetValue(d.Name, out var st)) continue; // state unknown → defer to base .shbd
+            byte st = StateOf(d.Name);
+            if (st == 255) continue; // state unknown → defer to base .shbd
             for (int ly = 0; ly < d.Height; ly++)
             {
-                int ty = d.StartY + ly;
+                int ty = d.StartY + ly + ShbdTileShift;
                 if ((uint)ty >= (uint)HeightTiles) continue;
                 for (int lx = 0; lx < d.Width; lx++)
                 {
-                    int tx = d.StartX + lx;
+                    int tx = d.StartX + lx + ShbdTileShift;
                     if ((uint)tx >= (uint)WidthTiles) continue;
                     forced[ty * WidthTiles + tx] = d.BlockedLocal(st, lx, ly);
                 }
@@ -148,6 +167,58 @@ public sealed class BlockGrid
         }
         _doorForced = forced.Count > 0 ? forced : null;
         _clearance = null; // door walkability changed → obstacle-inflation margins must rebuild
+    }
+
+    // ── FIELD .sbi DOOR STATE LEARNED FROM MOVEFAIL (operator-confirmed 2026-07-22) ────────────────────────────
+    // The Eld "Puzzle God" walls a courtyard by closing an Eld.sbi door — but that state is NOT sent to a client
+    // that enters after the door closed (verified: no 0x1C0F/0x6C09, and the REAL client ALSO bounces off it). So
+    // the ONLY signal is the server's MOVEFAIL. Strategy: on a MOVEFAIL inside a door box, POISON that tile; once
+    // >SbiClosedThreshold DISTINCT tiles inside ONE door have MOVEFAILed, the door is clearly CLOSED → mark the
+    // WHOLE door state0 so the pathfinder routes around the courtyard (through the state0 opening) instead of
+    // bouncing tile-by-tile. If the door is OPEN we simply never accumulate the threshold (few/no MOVEFAILs there).
+    // MUST reset on map re-entry (ResetDoorLearning) — the door may have opened while we were off the map.
+    public enum SbiMoveFail { NotInDoor, Poisoned, DoorClosed }
+    public const int SbiClosedThreshold = 6;
+    private readonly Dictionary<string, HashSet<int>> _sbiFailTiles = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Record a MOVEFAIL at world (wx,wy) against the field .sbi doors. See the strategy note above.
+    /// Returns NotInDoor (fall through to the normal poison gate), Poisoned (tile poisoned, keep trying), or
+    /// DoorClosed (the whole door is now walled — re-path will route around).</summary>
+    public SbiMoveFail NoteMoveFailInSbiDoor(uint wx, uint wy)
+    {
+        if (_doorCol is not { } col) return SbiMoveFail.NotInDoor;
+        foreach (var d in col.Doors)
+        {
+            // WORLD-box containment (raw map-tile bounds → world) — convention-independent for the hit test.
+            double x0 = d.StartX * WorldPerTile, x1 = (d.EndX + 1) * WorldPerTile;
+            double y0 = d.StartY * WorldPerTile, y1 = (d.EndY + 1) * WorldPerTile;
+            if (wx < x0 || wx >= x1 || wy < y0 || wy >= y1) continue;
+            if (_learnedDoorStates.TryGetValue(d.Name, out var known) && known == 0) return SbiMoveFail.DoorClosed;
+            if (_packetDoorStates.ContainsKey(d.Name)) return SbiMoveFail.NotInDoor; // packet-authoritative (instance) — don't learn
+            var (tx, ty) = WorldToTile(wx, wy);
+            if (!_sbiFailTiles.TryGetValue(d.Name, out var set)) { set = new HashSet<int>(); _sbiFailTiles[d.Name] = set; }
+            set.Add(ty * WidthTiles + tx);
+            if (set.Count > SbiClosedThreshold)
+            {
+                _learnedDoorStates[d.Name] = 0; // CLOSED — apply the whole state0 wall
+                RebuildDoorOverlay();
+                return SbiMoveFail.DoorClosed;
+            }
+            MarkBlocked(tx, ty); // individual poison; re-path avoids it, exploring more of the wall
+            return SbiMoveFail.Poisoned;
+        }
+        return SbiMoveFail.NotInDoor;
+    }
+
+    /// <summary>Reset MOVEFAIL-learned field-door state on MAP RE-ENTRY — the door may have opened while we were
+    /// off the map, so a stale "closed" would wall a now-open courtyard. Also clears runtime poison (transient,
+    /// re-learned per visit). Packet-driven instance doors are untouched (BUILDDOOR re-seeds them on entry).</summary>
+    public void ResetDoorLearning()
+    {
+        _learnedDoorStates.Clear();
+        _sbiFailTiles.Clear();
+        ClearRuntimeBlocked();
+        RebuildDoorOverlay();
     }
 
     // Raw STATIC .shbd walkability (NO runtime blocks, NO erosion) — the basis for the erosion mask.
