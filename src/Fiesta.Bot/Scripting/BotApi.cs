@@ -462,6 +462,10 @@ public sealed class BotApi
     /// <summary>Drive a whole quest dialogue with one NPC (accept or turn-in): click it and
     /// ACK every server-pushed script page until the dialogue ends. <c>result</c>=1 accepts.</summary>
     public bool doQuest(int npcHandle, int result = 1, int rewardIndex = -1, int questId = 0) => Ok(Wait(_mgr.DriveQuestDialogueAsync(Id, (ushort)npcHandle, (uint)result, rewardIndex, questId: (ushort)questId)));
+    /// <summary>True if the LAST doQuest drive CONCLUDED (reached the Qsc 0x06/0x0A terminal for our quest) — i.e.
+    /// the accept/hand-in actually completed on the wire. Use after a hand-in to detect success even when a
+    /// REPEATABLE re-accepted (leaving bot.questProgress stale at N/N so questReadyToHandin would loop).</summary>
+    public bool dialogConcluded() => _handle.LastDialogConcluded;
     public bool selectReward(int questId, int index) => Ok(Wait(_mgr.SelectQuestRewardAsync(Id, (ushort)questId, (uint)index)));
 
     /// <summary>The character's ClassName ClassID (1=Fighter, 6=Cleric, …). 0 until selected.</summary>

@@ -1730,6 +1730,7 @@ public sealed class BotManager : IAsyncDisposable
             await AnswerQuestAsync(id, cur.QuestId, cur.Qsc, pageResult, ct);
             answered++;
         }
+        h.LastDialogConcluded = concluded; // let the leveler know the accept/hand-in reached its terminal page
         h.Log($"quest dialogue done (npc h={npcHandle}, {answered} pages acked, concluded={concluded}, rewardSelected={rewardSelected})");
         return ActionResult.Sent;
     }

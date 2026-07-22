@@ -49,6 +49,12 @@ public sealed class BotHandle
     public BotSpawnOptions Options { get; }
     public DateTime CreatedAtUtc { get; }
 
+    /// <summary>Whether the LAST quest-dialogue drive (DriveQuestDialogueAsync) reached its terminal page
+    /// (Qsc 0x06 ACCEPT / 0x0A DONE) for OUR quest — i.e. the accept/hand-in actually CONCLUDED on the wire.
+    /// The leveler reads this after a hand-in drive to know the hand-in succeeded even when a REPEATABLE quest
+    /// immediately re-accepted (so bot.questProgress reads a stale 10/10 and questReadyToHandin loops).</summary>
+    public bool LastDialogConcluded { get; internal set; }
+
     /// <summary>The last-applied Lua script (name/source/tick) — kept so a self-relog (bot.relog / stuck
     /// instance recovery) can re-apply the same behaviour after the clean logout + re-spawn.</summary>
     public string? LastScriptName { get; internal set; }
