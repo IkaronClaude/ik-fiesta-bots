@@ -912,6 +912,28 @@ public sealed class BotApi
             // normal nav (where the start IS walkable), keeping the blast radius tiny.
             if (startUnwalkable)
             {
+                // Escape toward the NEAREST WALKABLE .shbd tile — NOT blindly toward the target. A gate can land us
+                // in a .shbd-gap pocket whose only walkable opening faces AWAY from the target; the old toward-target
+                // MOVERUN then MOVEFAILs forever and we WEDGE (live 2026-07-23: RouVal02 gate-arrival @(11278,11270),
+                // 4+ min frozen, exp stalled — blind-move toward the quest mob was walled). Ring-search outward for
+                // the closest walkable ground and MOVERUN toward it — the SERVER governs walkability, so a move onto
+                // real ground pops us out of the gap. Falls back to the old toward-target hop if none found nearby.
+                (uint X, uint Y)? esc = null;
+                for (int r = 1; r <= 16 && esc is null; r++)
+                    for (int ddx = -r; ddx <= r && esc is null; ddx++)
+                        for (int ddy = -r; ddy <= r; ddy++)
+                        {
+                            if (System.Math.Max(System.Math.Abs(ddx), System.Math.Abs(ddy)) != r) continue; // ring perimeter
+                            int nx = stx + ddx, ny = sty + ddy;
+                            if (nx < 0 || ny < 0 || nx >= grid.WidthTiles || ny >= grid.HeightTiles) continue;
+                            if (grid.IsWalkableTile(nx, ny)) { esc = grid.TileToWorld(nx, ny); break; }
+                        }
+                if (esc is { } e)
+                {
+                    _handle.Log($"[nav] walkTo: start tile UNWALKABLE (.shbd gap) — BLIND-MOVE escape toward nearest walkable ({e.X},{e.Y}) [server governs walkability]");
+                    _ = _mgr.WalkAsync(Id, pos.X, pos.Y, e.X, e.Y);
+                    return true;
+                }
                 double dx = x - pos.X, dy = y - pos.Y;
                 double len = System.Math.Sqrt(dx * dx + dy * dy);
                 if (len > 1)
@@ -919,7 +941,7 @@ public sealed class BotApi
                     const double ESCAPE = 160.0;
                     var ex = (uint)System.Math.Max(0, pos.X + dx / len * ESCAPE);
                     var ey = (uint)System.Math.Max(0, pos.Y + dy / len * ESCAPE);
-                    _handle.Log($"[nav] walkTo: start tile UNWALKABLE (.shbd gap) — BLIND-MOVE escape toward ({ex},{ey}) [server governs walkability]");
+                    _handle.Log($"[nav] walkTo: start tile UNWALKABLE — BLIND-MOVE toward target ({ex},{ey}) [no walkable tile nearby]");
                     _ = _mgr.WalkAsync(Id, pos.X, pos.Y, ex, ey);
                     return true;
                 }
