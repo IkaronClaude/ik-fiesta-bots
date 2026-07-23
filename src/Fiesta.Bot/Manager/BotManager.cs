@@ -744,13 +744,7 @@ public sealed class BotManager : IAsyncDisposable
                     handle.Log($"party invite from '{inviter}' pending — acceptParty/declineParty to answer");
                 }
                 else if (pkt.Opcode == OpPartyJoinCmd) handle.PendingPartyInviter = null; // joined; invite resolved
-                else if (pkt.Opcode == OpPartyMemberList) ParsePartyRoster(handle, pkt.Payload.Span);
-                else if (pkt.Opcode == OpPartyMemberInform || pkt.Opcode == OpPartyMemberClass || pkt.Opcode == OpPartyMemberLocation)
-                    // Not arriving on formation (they come during play / on MEMBERINFOREQ) and the wire layouts differ
-                    // from the idealized PDB structs — so RAW-LOG to pin them from a live capture before parsing (the
-                    // "observe first" discipline; verified needed after MEMBER_LIST's PDB layout was wrong). Once a
-                    // capture shows the real bytes, parse into PartyMember Hp/MaxHp/Class/Level/X/Y.
-                    handle.Log($"[party] RAW op0x{pkt.Opcode:X4} {pkt.Payload.Length}B: {System.Convert.ToHexString(pkt.Payload.Span)}");
+                else if (IsPartyMemberStateOpcode(pkt.Opcode)) HandlePartyMemberState(handle, pkt.Opcode, pkt.Payload.Span);
                 else if (pkt.Opcode == OpPartyLeaveCmd || pkt.Opcode == OpPartyDismissCmd)
                 { handle.PartyMembers.Clear(); handle.Log("[party] left/dismissed — roster CLEARED"); }
                 else if (pkt.Opcode == OpFriendConfirmReq)
@@ -789,6 +783,36 @@ public sealed class BotManager : IAsyncDisposable
         foreach (var gone in handle.PartyMembers.Keys.Where(k => !seen.Contains(k)).ToList())
             handle.PartyMembers.TryRemove(gone, out _);
         handle.Log($"[party] MEMBER_LIST roster ({count}): {string.Join(", ", handle.PartyMembers.Keys)}");
+    }
+
+    private static bool IsPartyMemberStateOpcode(ushort op) =>
+        op == OpPartyMemberInform || op == OpPartyMemberClass || op == OpPartyMemberLocation;
+
+    // Parse the live member-state packets. WIRE LAYOUTS confirmed from a live co-moving 2-bot party capture
+    // (2026-07-23) — all match the PDB (only MEMBER_LIST differed, handled separately):
+    //   MEMBERINFORM(50): [count u8] then count × { Name5(20) hp(u32) sp(u32) lp(u32) } (32B) — LIVE hp/sp (cleric-heal).
+    //   MEMBERCLASS(51):  [count u8] then count × { Name5(20) class(u8) level(u8) maxhp(u32) maxsp(u32) maxlp(u32) inform(u8) } (35B).
+    //   MEMBERLOCATION(73): [count u8] then count × { Name5(20) x(u32) y(u32) } (28B) — member positions (regroup/shared-kill).
+    // These arrive ZONE-side for co-located members (broadcast as they move/fight); the handler is on both links.
+    private static void HandlePartyMemberState(BotHandle handle, ushort op, ReadOnlySpan<byte> body)
+    {
+        if (body.Length < 1) return;
+        static uint U32(ReadOnlySpan<byte> b, int o) => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(b.Slice(o, 4));
+        int count = body[0], off = 1;
+        int sz = op == OpPartyMemberInform ? 32 : op == OpPartyMemberClass ? 35 : 28; // 50 / 51 / 73
+        for (int i = 0; i < count && off + sz <= body.Length; i++, off += sz)
+        {
+            var name = FiestaText.Decode(body.Slice(off, 20).ToArray());
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            var m = handle.PartyMembers.GetOrAdd(name, n => new BotHandle.PartyMember { Name = n });
+            if (op == OpPartyMemberInform) { m.Hp = U32(body, off + 20); m.Sp = U32(body, off + 24); }
+            else if (op == OpPartyMemberClass)
+            {
+                m.ChrClass = body[off + 20]; m.Level = body[off + 21];
+                m.MaxHp = U32(body, off + 22); m.MaxSp = U32(body, off + 26);
+            }
+            else { m.X = U32(body, off + 20); m.Y = U32(body, off + 24); } // MEMBERLOCATION(73)
+        }
     }
 
     /// <summary>Invite <paramref name="targetName"/> to a party (WM link).</summary>
@@ -2259,6 +2283,21 @@ public sealed class BotManager : IAsyncDisposable
                     linkTag: "zone", logInbound: opt.LogInbound);
                 handle.ZoneSession = zoneSession;
                 if (handle.PacketLog is { } plz) zoneSession.PacketTap = plz.Tap; // re-attach packet log across handoff
+                // Party MEMBER-STATE also flows ZONE-side for CO-LOCATED members: live HP (MEMBERINFORM 50) and
+                // positions (MEMBERLOCATION 73) broadcast on the field link to same-zone party members — the WM link
+                // only carries the roster (MEMBER_LIST 9) + formation (verified 2026-07-23: 50/73 never hit WM during
+                // play). Subscribe the zone link too so we capture them when partied with someone in the same zone.
+                // This runs per map handoff, so it re-subscribes automatically. 50/51/73 are raw-logged (ZONE RAW) to
+                // pin their real wire layouts from a co-located capture before parsing into PartyMember Hp/X/Y.
+                zoneSession.PacketReceived += pkt =>
+                {
+                    try
+                    {
+                        if (pkt.Opcode == OpPartyMemberList) ParsePartyRoster(handle, pkt.Payload.Span);
+                        else if (IsPartyMemberStateOpcode(pkt.Opcode)) HandlePartyMemberState(handle, pkt.Opcode, pkt.Payload.Span);
+                    }
+                    catch { /* ignore an unparseable zone party frame */ }
+                };
 
                 // Perception model (nearby players + chat) is always on — cheap, and the
                 // status/say surface and any behavior read from it. The buff behavior is
