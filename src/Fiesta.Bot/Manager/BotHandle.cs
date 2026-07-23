@@ -108,6 +108,22 @@ public sealed class BotHandle
     /// operator friend the bot and have it accept on its own. Cleared once answered.</summary>
     public string? PendingFriendRequester { get; set; }
 
+    /// <summary>Live party roster, keyed by member char-name — the FOUNDATION for TEAMWORK coordination
+    /// (cleric team-heal reads Hp/MaxHp, composition reads ChrClass/Level, regroup/shared-kill read X/Y).
+    /// Populated from the WM party member-state packets: NC_PARTY_MEMBER_LIST_CMD(9)/MEMBERINFORM_CMD(50)
+    /// carry name+hp/sp; MEMBERCLASS_CMD(51) carries class/level/maxhp/maxsp; MEMBERLOCATION_CMD(73) carries
+    /// positions (layout TBD — pinned from a 2-bot capture). Cleared on party leave/dismiss. Thread-safe
+    /// (written on the WM read thread, read on the Lua tick).</summary>
+    public sealed class PartyMember
+    {
+        public string Name = "";
+        public byte ChrClass, Level;
+        public uint Hp, MaxHp, Sp, MaxSp;
+        public uint X, Y;
+    }
+    public System.Collections.Concurrent.ConcurrentDictionary<string, PartyMember> PartyMembers { get; } =
+        new(System.StringComparer.OrdinalIgnoreCase);
+
     internal CancellationTokenSource Cts { get; }
     internal Task? RunTask { get; set; }
 

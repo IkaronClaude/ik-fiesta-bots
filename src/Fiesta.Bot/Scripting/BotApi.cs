@@ -961,6 +961,25 @@ public sealed class BotApi
     public bool partyDecline(string name = null) => Ok(Wait(_mgr.PartyDeclineAsync(Id, name)));
     public string pendingInvite() => _handle.PendingPartyInviter ?? "";
     public bool partyChat(string text) => Ok(Wait(_mgr.PartyChatAsync(Id, text)));
+
+    /// <summary>The live party roster (from the WM party member-state packets) — an array of tables
+    /// { name, class, level, hp, maxhp, sp, maxsp, x, y }. The TEAMWORK foundation: a cleric heals the
+    /// lowest hp/maxhp member, composition picks by class/level, regroup/shared-kill use x/y (x/y are 0
+    /// until MEMBERLOCATION(73)'s layout is pinned). Empty table if not in a party.</summary>
+    public DynValue partyMembers()
+    {
+        var t = NewTable(); int i = 1;
+        foreach (var m in _handle.PartyMembers.Values)
+        {
+            var mt = NewTable();
+            mt["name"] = m.Name; mt["class"] = (int)m.ChrClass; mt["level"] = (int)m.Level;
+            mt["hp"] = (double)m.Hp; mt["maxhp"] = (double)m.MaxHp;
+            mt["sp"] = (double)m.Sp; mt["maxsp"] = (double)m.MaxSp;
+            mt["x"] = (double)m.X; mt["y"] = (double)m.Y;
+            t[i++] = DynValue.NewTable(mt);
+        }
+        return DynValue.NewTable(t);
+    }
     public bool friendAdd(string name) => Ok(Wait(_mgr.FriendAddAsync(Id, name)));
     public bool friendConfirm(string name, bool accept) => Ok(Wait(_mgr.FriendConfirmAsync(Id, name, accept)));
     public bool friendDelete(string name) => Ok(Wait(_mgr.FriendDeleteAsync(Id, name)));

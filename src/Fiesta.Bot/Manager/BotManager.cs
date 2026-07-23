@@ -713,6 +713,16 @@ public sealed class BotManager : IAsyncDisposable
     // name passed in (and so an invite doesn't sit unanswered, wedging the party state).
     private const ushort OpPartyJoinPropose = (ushort)(((int)ProtocolCommand.Party << 10) | 3); // 0x3803
     private const ushort OpPartyJoinCmd = (ushort)(((int)ProtocolCommand.Party << 10) | 8); // 0x3808 (joined)
+    // Party MEMBER-STATE (the TEAMWORK foundation). Layouts from the PDB extract (all-structs.json):
+    //   MEMBER_LIST(9)/MEMBERINFORM(50): [count u8] then count × { Name5(20) hp(u32) sp(u32) lp(u32) } (32B/member)
+    //   MEMBERCLASS(51): [count u8] then count × { Name5(20) class(u8) level(u8) maxhp(u32) maxsp(u32) maxlp(u32) inform(u8) } (35B)
+    //   MEMBERLOCATION(73): [count u8] then count × <unnamed> (positions) — layout raw-logged to pin from a 2-bot capture.
+    private const ushort OpPartyMemberList     = (ushort)(((int)ProtocolCommand.Party << 10) | 9);  // 0x3809 roster + hp
+    private const ushort OpPartyMemberInform   = (ushort)(((int)ProtocolCommand.Party << 10) | 50); // 0x3832 live hp/sp
+    private const ushort OpPartyMemberClass    = (ushort)(((int)ProtocolCommand.Party << 10) | 51); // 0x3833 class/level/max
+    private const ushort OpPartyMemberLocation = (ushort)(((int)ProtocolCommand.Party << 10) | 73); // 0x3849 positions
+    private const ushort OpPartyLeaveCmd       = (ushort)(((int)ProtocolCommand.Party << 10) | 12); // 0x380C we left
+    private const ushort OpPartyDismissCmd     = (ushort)(((int)ProtocolCommand.Party << 10) | 31); // 0x381F party disbanded
     // Incoming friend request: the server asks the bot to confirm with
     // NC_FRIEND_SET_CONFIRM_REQ (Friend dept 0x15, cmd 3 → 0x5403) carrying the requester's
     // name (charid). We track it so the bot can auto-confirm (an operator friends the bot and
@@ -734,6 +744,15 @@ public sealed class BotManager : IAsyncDisposable
                     handle.Log($"party invite from '{inviter}' pending — acceptParty/declineParty to answer");
                 }
                 else if (pkt.Opcode == OpPartyJoinCmd) handle.PendingPartyInviter = null; // joined; invite resolved
+                else if (pkt.Opcode == OpPartyMemberList) ParsePartyRoster(handle, pkt.Payload.Span);
+                else if (pkt.Opcode == OpPartyMemberInform || pkt.Opcode == OpPartyMemberClass || pkt.Opcode == OpPartyMemberLocation)
+                    // Not arriving on formation (they come during play / on MEMBERINFOREQ) and the wire layouts differ
+                    // from the idealized PDB structs — so RAW-LOG to pin them from a live capture before parsing (the
+                    // "observe first" discipline; verified needed after MEMBER_LIST's PDB layout was wrong). Once a
+                    // capture shows the real bytes, parse into PartyMember Hp/MaxHp/Class/Level/X/Y.
+                    handle.Log($"[party] RAW op0x{pkt.Opcode:X4} {pkt.Payload.Length}B: {System.Convert.ToHexString(pkt.Payload.Span)}");
+                else if (pkt.Opcode == OpPartyLeaveCmd || pkt.Opcode == OpPartyDismissCmd)
+                { handle.PartyMembers.Clear(); handle.Log("[party] left/dismissed — roster CLEARED"); }
                 else if (pkt.Opcode == OpFriendConfirmReq)
                 {
                     // In the CONFIRM_REQ the server swaps to the RECIPIENT's view: charid = us (the bot being
@@ -749,6 +768,28 @@ public sealed class BotManager : IAsyncDisposable
             }
             catch { /* ignore an unparseable WM frame */ }
         };
+
+    // Parse NC_PARTY_MEMBER_LIST_CMD(9). WIRE FORMAT (captured live 2026-07-23 — DIFFERS from the idealized PDB
+    // MEMBER_INFO struct, which claimed name+hp+sp+lp): [count u8] then count × { Name5(20B) + 2 bytes }. The 2
+    // trailing bytes are constant (01 02) across members — likely a member index/flag; NO hp here (hp/class arrive
+    // via MEMBERINFORM/MEMBERCLASS during play). So MEMBER_LIST = the ROSTER: add/prune members by name.
+    private static void ParsePartyRoster(BotHandle handle, ReadOnlySpan<byte> body)
+    {
+        if (body.Length < 1) return;
+        int count = body[0], off = 1; const int SZ = 22;
+        var seen = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < count && off + SZ <= body.Length; i++, off += SZ)
+        {
+            var name = FiestaText.Decode(body.Slice(off, 20).ToArray());
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            seen.Add(name);
+            handle.PartyMembers.GetOrAdd(name, n => new BotHandle.PartyMember { Name = n });
+        }
+        // prune anyone no longer in the roster (someone left/was kicked)
+        foreach (var gone in handle.PartyMembers.Keys.Where(k => !seen.Contains(k)).ToList())
+            handle.PartyMembers.TryRemove(gone, out _);
+        handle.Log($"[party] MEMBER_LIST roster ({count}): {string.Join(", ", handle.PartyMembers.Keys)}");
+    }
 
     /// <summary>Invite <paramref name="targetName"/> to a party (WM link).</summary>
     public Task<ActionResult> PartyInviteAsync(string id, string targetName, CancellationToken ct = default)
