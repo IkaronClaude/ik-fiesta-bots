@@ -1,10 +1,11 @@
 name: build-bot-host-image
 
-# Build + push the 24/7 bot-host container image to GHCR on every push to main.
-# The cluster (Argo app fiesta-bot-host, ns bots) pulls
-# ghcr.io/ikaronclaude/fiesta-bot-host:<tag>; deploy by bumping the tag in
-# gitops-ikaron workloads/fiesta-bots/bots.yaml to the pushed sha. Uses the
-# repo's GITHUB_TOKEN (packages: write) — no external registry creds needed.
+# CI/CD for the 24/7 bot host (Argo app fiesta-bot-host, ns fiesta).
+# On push to main: build ./Dockerfile, push ghcr.io/<owner>/fiesta-bot-host:<sha>,
+# then bump the image tag in the gitops repo so Argo deploys it.
+# The GHCR package must be linked to this repo (so GITHUB_TOKEN can push) — done
+# by the operator 2026-07-28. The manifest-update job needs an ARGO_REPO_PAT secret
+# (a PAT with write access to Ikaron/gitops).
 
 on:
   push:
@@ -16,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,7 +27,9 @@ jobs:
         with:
           submodules: recursive   # lib/FiestaLib-Reloaded is a submodule the build needs
 
-      - uses: docker/setup-buildx-action@v3
+      - name: Lower-case owner
+        run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
+        env: { OWNER: '${{ github.repository_owner }}' }
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -35,22 +38,41 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image metadata (sha + latest tags)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/fiesta-bot-host
-          tags: |
-            type=sha,format=long,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ghcr.io/${{ env.OWNER_LC }}/fiesta-bot-host:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  update-manifest:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Lower-case owner
+        run: echo "OWNER_LC=${OWNER,,}" >> "$GITHUB_ENV"
+        env: { OWNER: '${{ github.repository_owner }}' }
+
+      - name: Checkout gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: Ikaron/gitops
+          token: ${{ secrets.ARGO_REPO_PAT }}
+          path: gitops
+
+      - name: Bump image tag in the bots manifest
+        run: |
+          sed -i "s|image: ghcr.io/.*fiesta-bot-host:.*|image: ghcr.io/${OWNER_LC}/fiesta-bot-host:${{ github.sha }}|g" \
+            gitops/workloads/fiesta-bots/bots.yaml
+
+      - name: Commit + push
+        run: |
+          cd gitops
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add workloads/fiesta-bots/bots.yaml
+          git diff --cached --quiet || git commit -m "chore(deploy): fiesta-bot-host image -> ${{ github.sha }} [skip ci]"
+          git push
