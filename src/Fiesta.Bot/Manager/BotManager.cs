@@ -2238,7 +2238,12 @@ public sealed class BotManager : IAsyncDisposable
             handle.WmSession = wmSession;
             if (handle.PacketLog is { } plw) wmSession.PacketTap = plw.Tap; // re-attach packet log if enabled
             TrackPartyInvites(handle, wmSession); // capture incoming party invites (the inviter)
-            var wmRun = wmSession.RunAsync(ct);
+            // The WM read loop gets its OWN linked CTS so an UNEXPECTED zone-only drop (server kick / net blip,
+            // where the bot-wide ct is NOT cancelled) can cancel it during teardown — otherwise `await wmRun`
+            // below hangs forever on the still-open WM socket, wedging the whole lifecycle (GHOST-FIX P0,
+            // operator 2026-07-28; see the teardown block after the zone loop).
+            using var wmCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var wmRun = wmSession.RunAsync(wmCts.Token);
 
             // Zone (re-)entry loop. A normal stop/kick breaks out; a cross-server
             // handoff (NC_MAP_LINKOTHER) re-enters with the new endpoint + WM handle
@@ -2686,10 +2691,34 @@ public sealed class BotManager : IAsyncDisposable
                 break;
             }
 
-            // The zone loop ended for real (stop/kick). Wind down the WM link too.
-            try { await wmRun; } catch (OperationCanceledException) { }
+            // The zone loop ended. Distinguish an INTENTIONAL stop (StopAsync set phase→Stopping, or the
+            // bot-wide ct was cancelled) from an UNEXPECTED drop (server kicked just the ZONE link while the
+            // WM link is still open and ct is NOT cancelled — phase is therefore still InZone).
+            //
+            // GHOST-FIX (P0, operator 2026-07-28): on an unexpected drop a bare `await wmRun` HUNG here forever
+            // (WM socket still open, ct not cancelled) → SetPhase(Stopped) never ran → phase stuck InZone (the
+            // status page lied "healthy") → the leveler kept ticking against the DISPOSED zone conn (`SemaphoreSlim`
+            // ObjectDisposed spam) → and the never-logged-out WM link left a GHOST char session on the server.
+            // Fix: stop the leveler, cleanly LOG OUT the still-open WM link (server drops the char → NO ghost),
+            // cancel its read loop so we don't hang, then auto-relog to resume leveling.
+            var unexpected = !ct.IsCancellationRequested && handle.Phase == BotPhase.InZone;
+            if (unexpected)
+            {
+                handle.ScriptRunner?.Dispose(); handle.ScriptRunner = null; // stop the leveler ticking on a dead link
+                using (var wmLogoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+                    try { await wmSession.LogoutAsync(logoutReady: false, wmLogoutCts.Token); } catch { }
+                wmCts.Cancel(); // unblock the WM read loop if the server didn't close it after our quit
+            }
+            try { await wmRun.WaitAsync(TimeSpan.FromSeconds(6)); }
+            catch (TimeoutException) { Log("wm read loop didn't end within 6s of teardown — forcing"); wmCts.Cancel(); }
+            catch (OperationCanceledException) { }
             handle.SetPhase(BotPhase.Stopped);
             Log($"sessions ended — wm: {wmSession.State.DisconnectReason}");
+            if (unexpected)
+            {
+                Log("*** unexpected disconnect (zone link dropped; WM cleanly logged out — no ghost) — AUTO-RELOG to resume ***");
+                Relog(handle.Id);
+            }
         }
         catch (OperationCanceledException)
         {
