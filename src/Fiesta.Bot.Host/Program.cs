@@ -1,6 +1,7 @@
 // ik-fiesta-bots host — ASP.NET minimal API + multi-bot manager.
 // Health + Swagger + the bot control surface (spawn/list/status/stop). Behaviors
 // (buff/party/gear) land on top of the running BotSessions. See PROJECT_PLAN.md.
+using System.Security.Cryptography;
 using Fiesta.Bot.Accounts;
 using Fiesta.Bot.Host;
 using Fiesta.Bot.Manager;
@@ -70,6 +71,34 @@ if (provisionerError is null)
 builder.Services.AddSingleton<ScriptStore>();
 
 var app = builder.Build();
+
+// Bearer-token auth for the control API. CRITICAL now the host is exposed on a public IP:
+// without this, anyone can list/spawn/stop/drive bots. Enforced on /api/* ONLY when a
+// BOT_API_TOKEN is configured (the cluster sets it via the bot-secrets secret); unset = open,
+// so the local dev host stays frictionless. /health + the OpenAPI docs stay open.
+var botApiToken = Environment.GetEnvironmentVariable("BOT_API_TOKEN");
+if (!string.IsNullOrWhiteSpace(botApiToken))
+{
+    var expected = $"Bearer {botApiToken}";
+    app.Use(async (ctx, next) =>
+    {
+        if (ctx.Request.Path.StartsWithSegments("/api")
+            && !CryptographicOperations.FixedTimeEquals(
+                   System.Text.Encoding.UTF8.GetBytes(ctx.Request.Headers.Authorization.ToString()),
+                   System.Text.Encoding.UTF8.GetBytes(expected)))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await ctx.Response.WriteAsJsonAsync(new { error = "Unauthorized. Provide 'Authorization: Bearer <token>'." });
+            return;
+        }
+        await next();
+    });
+    app.Logger.LogInformation("Control API auth ENABLED (BOT_API_TOKEN set) — /api/* requires a Bearer token.");
+}
+else
+{
+    app.Logger.LogWarning("Control API auth DISABLED (no BOT_API_TOKEN) — /api/* is OPEN. Fine for local dev; DO NOT expose publicly.");
+}
 
 app.MapOpenApi();
 app.UseSwaggerUI(o => o.SwaggerEndpoint("/openapi/v1.json", "ik-fiesta-bot API"));
