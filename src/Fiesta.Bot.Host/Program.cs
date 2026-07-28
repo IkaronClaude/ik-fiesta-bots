@@ -170,5 +170,24 @@ gameData.MapGet("/skill/{skillId:int}", (int skillId) =>
 })
 .WithSummary("Read an ActiveSkill row's combat fields (facing/cooldown/range/mana) from BYO client data");
 
+// GRACEFUL SHUTDOWN (tickets.md P3): on SIGTERM (a deploy/pod restart), cleanly LOG OUT every running
+// bot before the process exits. StopAsync sends the game quit frames (LOGOUTREADY+quit, WM quit, 3s cap
+// each) — which makes the server DROP the zone session immediately. Without this, a hard pod-kill leaves
+// the connection dropped-but-not-closed → the server holds a GHOST session for many minutes → the respawn
+// gets `cancelled before zone entry`. Bounded to ~20s to stay inside the pod's terminationGracePeriod (30s).
+{
+    var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
+    var shutdownMgr = app.Services.GetService<BotManager>();
+    lifetime.ApplicationStopping.Register(() =>
+    {
+        var bots = shutdownMgr?.List().ToList();
+        if (bots is not { Count: > 0 }) return;
+        app.Logger.LogInformation("Shutdown: cleanly logging out {Count} bot(s) to avoid ghost sessions…", bots.Count);
+        try { Task.WhenAll(bots.Select(b => shutdownMgr!.StopAsync(b.Id))).Wait(TimeSpan.FromSeconds(20)); }
+        catch (Exception ex) { app.Logger.LogWarning(ex, "Shutdown: bot logout hit an error (continuing)."); }
+        app.Logger.LogInformation("Shutdown: bot logout complete.");
+    });
+}
+
 app.Run();
 return 0;
