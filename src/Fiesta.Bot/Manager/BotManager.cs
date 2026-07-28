@@ -2674,7 +2674,20 @@ public sealed class BotManager : IAsyncDisposable
                     : $"*** {sel.Name} RE-ENTERED ZONE ({zoneEp}, {currentMap}) after cross-server handoff ***");
                 firstEntry = false;
 
-                await zoneSession.RunAsync(zoneCts.Token);
+                // Run the zone read loop, but ALSO watch the WM read loop: if the WM link dies FIRST while the
+                // zone is still alive (GHOST-FIX P0 gap, operator 2026-07-28 "ensure the stuck condition can no
+                // longer happen"), `wmRun` completing would otherwise go unnoticed — the bot would limp on InZone
+                // with a dead WM link (the zone validates against a live WM → a lingering half-open WM = a ghost
+                // + the bot never reconnects). So when wmRun ends unexpectedly (not our teardown-cancel, not a
+                // bot-wide stop), cancel the zone session too → it flows into the same teardown + auto-relog below.
+                var zoneRun = zoneSession.RunAsync(zoneCts.Token);
+                if (await Task.WhenAny(zoneRun, wmRun) == wmRun
+                    && !ct.IsCancellationRequested && !wmCts.IsCancellationRequested)
+                {
+                    Log($"WM link ended ({wmSession.State.DisconnectReason}) while zone alive — cancelling zone to reconnect");
+                    zoneCts.Cancel();
+                }
+                await zoneRun; // let the zone loop finish (naturally, or via the cancel above)
 
                 // A captured cross-server handoff (and not a real stop) means reconnect
                 // to the carried endpoint with its WM handle and re-enter the zone.
