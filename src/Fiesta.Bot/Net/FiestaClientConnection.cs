@@ -56,7 +56,27 @@ public sealed class FiestaClientConnection : IDisposable
     {
         var tcp = new TcpClient();
         await tcp.ConnectAsync(host, port, ct);
+        EnableKeepAlive(tcp.Client);
         return new FiestaClientConnection(tcp, xorTable);
+    }
+
+    /// <summary>
+    /// GHOST-FIX (P0, operator 2026-07-28): turn on TCP keepalive so the OS detects a DEAD PEER in
+    /// bounded time. Without it, a HALF-OPEN socket — a hard pod-kill / node failure / network partition
+    /// that never delivers a FIN — leaves <see cref="ReadPacketAsync"/> blocked in <c>ReadAsync</c> for the
+    /// OS default (~2h on Linux). The read loop then never ends → the bot lifecycle can't tear down or
+    /// auto-relog → the exact "couldn't even request a real reconnect with a real connection" wedge the
+    /// operator flagged (and a server-side GHOST session lingers). With keepalive the read faults in ~60s
+    /// (30s idle + 3×10s probes) → EndOfStream/SocketException → clean teardown → auto-relog (a FRESH login
+    /// makes the server drop any stale session). Best-effort: the fine-grained knobs aren't on every
+    /// platform, so each is guarded independently (the coarse KeepAlive flag still applies with OS defaults).
+    /// </summary>
+    private static void EnableKeepAlive(Socket s)
+    {
+        try { s.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true); } catch { }
+        try { s.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 30); } catch { }      // idle secs before the first probe
+        try { s.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 10); } catch { }  // secs between probes
+        try { s.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3); } catch { } // dead after this many unanswered probes
     }
 
     /// <summary>
