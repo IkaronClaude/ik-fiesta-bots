@@ -80,18 +80,53 @@ public sealed class ClientData
             // GreatHeal01-05 in ActiveSkill.shn — 197 skills carry it). This is the DATA-DRIVEN way to
             // categorise a heal (operator 2026-07-23: don't string-match the skill NAME). A direct heal.
             Heal: GetInt(row, "EffectType") == 5,
-            // HEAL-OVER-TIME: a skill that applies a healing ABSTATE (StaNameA..D naming a heal state, e.g.
-            // StaMultiHeal / *DotHeal). Same StaName-substring pattern as Stun, EXCLUDING the anti-heal
-            // debuff "CantHeal" (StaRockCantHeal blocks healing — not a heal). Safe because the caller
-            // filters over the bot's OWN learned skills, so boss/mob heal-abstates never enter the picture.
-            HealOverTime: HasHealState(GetStr(row, "StaNameA")) || HasHealState(GetStr(row, "StaNameB"))
-                       || HasHealState(GetStr(row, "StaNameC")) || HasHealState(GetStr(row, "StaNameD")));
+            // HEAL-OVER-TIME: a skill that applies a healing ABSTATE — decided by the abstate's STAT EFFECT,
+            // NOT its name (operator 2026-07-23: name-matching "Heal" sucks; go by stats). Resolve each
+            // StaNameA..D → AbState.shn → its SubAbState → and check whether that SubAbState applies the
+            // HP-RECOVER-OVER-TIME action (SubAbState ActionIndex == 30). VERIFIED via the real priest HoT:
+            // Restore → StaRestore, and the party HoT MultiProtect → StaMultiHeal, both resolve to a
+            // SubAbState with ActionIndexB=30 (subType 29); the poison DoT StaNorthPoison uses ActionIndex 27
+            // (HP damage) — so 30 cleanly means "recovers HP over time". Boss self-heals (KarenDotHeal etc.)
+            // also use 30, but they never enter the picture: the caller filters over the bot's OWN learned skills.
+            HealOverTime: IsHealOverTimeState(GetStr(row, "StaNameA")) || IsHealOverTimeState(GetStr(row, "StaNameB"))
+                       || IsHealOverTimeState(GetStr(row, "StaNameC")) || IsHealOverTimeState(GetStr(row, "StaNameD")));
     }
 
-    // True if an abstate name denotes healing-over-time ("Heal") but NOT the anti-heal debuff ("CantHeal").
-    private static bool HasHealState(string sta)
-        => sta.Contains("Heal", System.StringComparison.OrdinalIgnoreCase)
-        && !sta.Contains("CantHeal", System.StringComparison.OrdinalIgnoreCase);
+    // The SubAbState "action" index that means RECOVER HP OVER TIME (per-tick HP add). Empirically the heal
+    // discriminator: all heal abstates (StaRestore/StaMultiHeal/*DotHeal) carry it; the poison DoT uses 27.
+    private const int HpRecoverOverTimeAction = 30;
+    private HashSet<string>? _healOverTimeStates; // AbState InxNames whose SubAbState recovers HP over time
+
+    /// <summary>True if <paramref name="staName"/> is an abnormal-state that HEALS OVER TIME — resolved by
+    /// its actual stat effect (AbState → SubAbState → ActionIndex == HpRecoverOverTimeAction), not its name.
+    /// Built once from AbState.shn + SubAbState.shn (both client-side).</summary>
+    private bool IsHealOverTimeState(string? staName)
+    {
+        if (string.IsNullOrEmpty(staName) || staName == "-") return false;
+        if (_healOverTimeStates is null)
+            lock (_abstateLock)
+                if (_healOverTimeStates is null)
+                {
+                    var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var sub = Table("SubAbState");
+                    var ab = Table("AbState");
+                    if (sub != null && ab != null)
+                    {
+                        // SubAbState InxNames that apply the HP-recover-over-time action (any ActionIndexA..D).
+                        var recoverSubs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var r in sub.Rows)
+                            if (GetInt(r, "ActionIndexA") == HpRecoverOverTimeAction || GetInt(r, "ActionIndexB") == HpRecoverOverTimeAction
+                             || GetInt(r, "ActionIndexC") == HpRecoverOverTimeAction || GetInt(r, "ActionIndexD") == HpRecoverOverTimeAction)
+                            { var n = GetStr(r, "InxName"); if (!string.IsNullOrEmpty(n)) recoverSubs.Add(n); }
+                        // AbStates whose SubAbState is one of those → the heal-over-time states.
+                        foreach (var r in ab.Rows)
+                            if (recoverSubs.Contains(GetStr(r, "SubAbState")))
+                            { var n = GetStr(r, "InxName"); if (!string.IsNullOrEmpty(n)) set.Add(n); }
+                    }
+                    _healOverTimeStates = set;
+                }
+        return _healOverTimeStates.Contains(staName);
+    }
 
     /// <summary>Look up a mob/NPC by its id in the client <c>MobInfo</c> table and project
     /// the display fields — the bot reports only numeric <c>mobId</c>s from briefinfo, so
