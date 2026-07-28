@@ -75,8 +75,23 @@ public sealed class ClientData
             Stun: GetStr(row, "StaNameA").Contains("Stun", System.StringComparison.OrdinalIgnoreCase)
                || GetStr(row, "StaNameB").Contains("Stun", System.StringComparison.OrdinalIgnoreCase)
                || GetStr(row, "StaNameC").Contains("Stun", System.StringComparison.OrdinalIgnoreCase)
-               || GetStr(row, "StaNameD").Contains("Stun", System.StringComparison.OrdinalIgnoreCase));
+               || GetStr(row, "StaNameD").Contains("Stun", System.StringComparison.OrdinalIgnoreCase),
+            // HEAL: EffectType==5 is the client's "heal applied" effect (verified over ALL Heal01-20 +
+            // GreatHeal01-05 in ActiveSkill.shn — 197 skills carry it). This is the DATA-DRIVEN way to
+            // categorise a heal (operator 2026-07-23: don't string-match the skill NAME). A direct heal.
+            Heal: GetInt(row, "EffectType") == 5,
+            // HEAL-OVER-TIME: a skill that applies a healing ABSTATE (StaNameA..D naming a heal state, e.g.
+            // StaMultiHeal / *DotHeal). Same StaName-substring pattern as Stun, EXCLUDING the anti-heal
+            // debuff "CantHeal" (StaRockCantHeal blocks healing — not a heal). Safe because the caller
+            // filters over the bot's OWN learned skills, so boss/mob heal-abstates never enter the picture.
+            HealOverTime: HasHealState(GetStr(row, "StaNameA")) || HasHealState(GetStr(row, "StaNameB"))
+                       || HasHealState(GetStr(row, "StaNameC")) || HasHealState(GetStr(row, "StaNameD")));
     }
+
+    // True if an abstate name denotes healing-over-time ("Heal") but NOT the anti-heal debuff ("CantHeal").
+    private static bool HasHealState(string sta)
+        => sta.Contains("Heal", System.StringComparison.OrdinalIgnoreCase)
+        && !sta.Contains("CantHeal", System.StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Look up a mob/NPC by its id in the client <c>MobInfo</c> table and project
     /// the display fields — the bot reports only numeric <c>mobId</c>s from briefinfo, so
@@ -535,4 +550,4 @@ public sealed record PortalDest(int Index, int GroupNo, string Map, int MinLevel
 /// facing requirement. <see cref="IsMovingSkill"/> = castable while moving (no STOP needed).
 /// <see cref="DelayTimeMs"/> = cooldown (ms). <see cref="Range"/> = cast range (0 = melee).
 /// <see cref="Sp"/> = mana cost.</summary>
-public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false);
+public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false);

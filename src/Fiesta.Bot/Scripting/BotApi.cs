@@ -77,6 +77,10 @@ public sealed class BotApi
         // StaBattleBlowStun). The leveler casts a stun on the target when it kites to heal on low HP, so the
         // frozen mob can't chase/hit while the bot creates space (operator "stun and kite on low hp").
         t["stun"] = si.Stun;
+        // heal = EffectType==5 (client "heal applied") → the DATA-DRIVEN heal categorization (no name-match).
+        // healOverTime = applies a healing abstate (StaName* "Heal", not "CantHeal"). A cleric derives its
+        // ally-heal skill from these two flags over its OWN learned skills (operator 2026-07-23).
+        t["heal"] = si.Heal; t["healOverTime"] = si.HealOverTime;
         return DynValue.NewTable(t);
     }
 
