@@ -115,6 +115,24 @@ app.MapGet("/health", () => Results.Ok(new
    .WithTags("Meta")
    .WithSummary("Liveness probe");
 
+// --- Public bot status: a super-simple live view for bots.ikaron.uk (P1, operator 2026-07-28).
+// NOT under /api, so it needs no token — it exposes only non-sensitive summary fields (level, map,
+// class, phase, hp), never creds or control. Page polls /status.json. (TODO follow-ups: class-name
+// mapping via ClientData, party grouping + non-bot players — tracked in tickets.md.)
+var statusMgr = app.Services.GetService<BotManager>();
+app.MapGet("/status.json", () =>
+{
+    var bots = statusMgr?.List().Select(b =>
+    {
+        var s = b.Snapshot();
+        return new { id = s.Id, character = s.Character, level = s.Level, cls = s.Class,
+                     map = s.Map, phase = s.Phase, dead = s.Dead, hp = s.Hp, maxHp = s.MaxHp };
+    }) ?? Enumerable.Empty<object>();
+    return Results.Ok(bots);
+}).WithTags("Meta").WithSummary("Public bot status (no auth)");
+
+app.MapGet("/", () => Results.Content(StatusPage.Html, "text/html; charset=utf-8")).ExcludeFromDescription();
+
 app.MapBotEndpoints(app.Services.GetService<BotManager>(), xorError);
 app.MapAccountEndpoints(app.Services.GetService<ApiAccountProvisioner>(), provisionerError);
 app.MapScriptEndpoints(app.Services.GetService<BotManager>(),
