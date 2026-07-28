@@ -993,7 +993,13 @@ public sealed record SpawnBotRequest
             Slot = Slot,
             Character = string.IsNullOrWhiteSpace(Character) ? null : Character,
             CreateSpec = createSpec,
-            DataDir = string.IsNullOrWhiteSpace(DataDir) ? "Z:/ClientProd2/ressystem" : DataDir!,
+            // Per-bot ressystem dir for the [1801] zone-entry checksums. Precedence: the spawn's own
+            // DataDir → the CLIENT_DATA_DIR env (how the in-cluster host points at the NFS-mounted client
+            // data) → the local dev-machine default. Without the env fallback, an in-cluster spawn that
+            // omits DataDir hit the (nonexistent) Z: path and couldn't enter a zone.
+            DataDir = !string.IsNullOrWhiteSpace(DataDir) ? DataDir!
+                : Environment.GetEnvironmentVariable("CLIENT_DATA_DIR") is { Length: > 0 } cdd ? cdd
+                : "Z:/ClientProd2/ressystem",
             WmPortFallback = WmPortFallback ?? 9013,
             Id = string.IsNullOrWhiteSpace(Id) ? null : Id,
             Buff = Buff ? new BuffConfig
