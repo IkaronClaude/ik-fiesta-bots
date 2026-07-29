@@ -322,6 +322,17 @@ public sealed class ZoneView : IDisposable
     // exp per kill via this delta (it does NOT send an absolute NC_CHAR_EXP_CHANGED here), so we seed
     // the absolute at zone-enter and accumulate these to track live exp progress toward the next level.
     private const ushort OpBatExpGain = 0x240B;
+    // NC_BAT_EXPLOST_CMD (Bat cmd 17 = 0x2411): the exp PENALTY on death — {explost u32@0}.
+    // This is the "missing exp packet" behind the phantom "relog lost exp" (operator 2026-07-29:
+    // exp persistence works; the drops are deaths we weren't decoding). Subtract it live so a
+    // mid-session death is reflected immediately (not only after the next zone-enter re-seed), and
+    // LOG it so a death's exp cost is visible/attributable instead of appearing as a mystery loss.
+    private const ushort OpBatExpLost = (ushort)(((int)ProtocolCommand.Bat << 10) | 17);
+    // NC_CHAR_EXP_CHANGED_CMD (Char cmd 115 = 0x1073): an AUTHORITATIVE absolute exp value —
+    // {wmhandle u16@0, CharNo u32@2, CurrentExp u64@6}. The server sends this on some exp-change
+    // events (not at zone-enter — hence the seed). Whenever it arrives it is ground truth, so set
+    // Exp = CurrentExp (self-correcting: any delta drift from EXPGAIN/EXPLOST is resynced here).
+    private const ushort OpCharExpChanged = (ushort)(((int)ProtocolCommand.Char << 10) | 115);
     // NC_BAT_SKILLBASH_CAST_FAIL_ACK (Bat cmd 52 = 0x2434): the server rejected a
     // skill cast. Payload is a 2-byte LE u16 reason code. Known codes (empirically
     // captured):
@@ -998,6 +1009,9 @@ public sealed class ZoneView : IDisposable
     public long Exp { get; private set; } = -1;
     /// <summary>Experience gained since this zone session started (Σ of EXPGAIN credits) — progress rate.</summary>
     public long SessionExpGained { get; private set; }
+    /// <summary>Experience LOST to deaths this zone session (Σ of EXPLOST penalties) — so the "phantom
+    /// relog exp loss" is now an explicit, attributable figure (operator 2026-07-29).</summary>
+    public long SessionExpLost { get; private set; }
     /// <summary>Seed the absolute exp from the zone-enter char-info (NC_CHAR_BASE Experience).</summary>
     public void SeedExp(long exp) => Exp = exp;
 
@@ -1732,6 +1746,36 @@ public sealed class ZoneView : IDisposable
                     }
                 }
                 _logLevel?.Invoke(BotLogLevel.Info, $"[exp] +{gain} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session +{SessionExpGained}){mobTag}");
+            }
+        }
+        else if (op == OpBatExpLost)
+        {
+            // {explost u32@0} — exp PENALTY (death). Track it live so a mid-session death shows in
+            // Exp immediately, and LOG it LOUD (Note) so the previously-"phantom" exp loss is now
+            // an attributable event. Also track the running session loss for the grind-rate picture.
+            var p = pkt.Payload.Span;
+            if (p.Length >= 4)
+            {
+                long lost = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(0, 4));
+                SessionExpLost += lost;
+                if (Exp >= 0) Exp = Math.Max(0, Exp - lost);
+                _logLevel?.Invoke(BotLogLevel.Note, $"[exp] DEATH -{lost} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session lost {SessionExpLost})");
+            }
+        }
+        else if (op == OpCharExpChanged)
+        {
+            // {wmhandle u16@0, CharNo u32@2, CurrentExp u64@6} — AUTHORITATIVE absolute exp. Whenever
+            // the server sends this it is ground truth (e.g. on death/quest-reward/level events), so
+            // RESYNC Exp to it — this self-corrects any drift from the EXPGAIN/EXPLOST deltas. Log the
+            // delta so a resync that diverged from our tracked value is visible (a decode gap to chase).
+            var p = pkt.Payload.Span;
+            if (p.Length >= 14)
+            {
+                long cur = (long)System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(p.Slice(6, 8));
+                long prev = Exp;
+                Exp = cur;
+                string d = prev >= 0 ? (cur - prev >= 0 ? $"+{cur - prev}" : (cur - prev).ToString()) : "seed";
+                _logLevel?.Invoke(BotLogLevel.Info, $"[exp] SERVER-SET {cur} (was {(prev >= 0 ? prev.ToString() : "?")}, {d})");
             }
         }
         else if (op == OpCharLevelChanged)
