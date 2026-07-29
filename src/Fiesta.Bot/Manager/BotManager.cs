@@ -2204,6 +2204,16 @@ public sealed class BotManager : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Delay between confirming a cross-server zone handoff (NC_MAP_LINKOTHER) and opening the
+    /// connection to the new zone server. The WM tells the destination zone "expect this client"
+    /// as part of the switch; connecting BEFORE that notification lands races the WM and the zone
+    /// drops us (the intermittent "zone link breaks on a gate" under cluster load, operator
+    /// 2026-07-29 — a real client is expected to hit this ~1-in-50 gate uses; more often ⇒ this
+    /// race). A couple of seconds lets the WM→zone handoff settle. Pure bot-behaviour timing.
+    /// </summary>
+    private const int CrossServerHandoffSettleMs = 2000;
+
     private async Task RunBotAsync(BotHandle handle)
     {
         var opt = handle.Options;
@@ -2713,7 +2723,11 @@ public sealed class BotManager : IAsyncDisposable
                     zoneEp = new FiestaEndpoint(ip, ho.Port);
                     zoneWmHandle = ho.WmHandle;
                     currentMap = handle.CurrentMap ?? currentMap;
-                    Log($"[nav] reconnecting to zone {zoneEp} (wm={zoneWmHandle}) for cross-server handoff");
+                    // Let the WM→destination-zone handoff settle before we connect (see
+                    // CrossServerHandoffSettleMs): connecting too fast races the WM's "expect this
+                    // client" notification and the new zone drops us — the intermittent gate-break.
+                    Log($"[nav] reconnecting to zone {zoneEp} (wm={zoneWmHandle}) for cross-server handoff — settling {CrossServerHandoffSettleMs}ms for WM");
+                    await Task.Delay(CrossServerHandoffSettleMs, ct);
                     continue;
                 }
 
