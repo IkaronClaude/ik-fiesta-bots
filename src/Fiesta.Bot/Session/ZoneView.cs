@@ -862,6 +862,16 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[combat] START vs mob h={h.Attacker}");
             _aggressors[h.Attacker] = DateTime.UtcNow;
             LastHitAtUtc = DateTime.UtcNow;
+            // DAMAGE-TAKEN SAMPLE for the survivability model (operator 2026-07-29): every incoming hit,
+            // labeled by the attacker's stable MobId (resolve live→recent→0), is a data point to fit
+            // `damage = f(mob_attack, our DEF) − 30_END_flat`. Pair with the [stats] DEF logged at zone-enter.
+            // Info level (per-hit progress, not Note-headline). Damage==0 = a whiff/no-connect → skip.
+            if (h.Damage > 0)
+            {
+                int atkMob = _npcs.TryGetValue(h.Attacker, out var an) ? an.MobId
+                           : _recentNpcs.TryGetValue(h.Attacker, out var ar) ? ar.Npc.MobId : 0;
+                _logLevel?.Invoke(BotLogLevel.Info, $"[dmgtaken] mob={atkMob} dmg={h.Damage} resthp={h.RestHp} h={h.Attacker}");
+            }
         }
         if (SelfHandle is { } me && h.Attacker == me)
         {
