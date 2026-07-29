@@ -329,6 +329,17 @@ public sealed class ZoneEntry
                         maxSpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(166, 4));
                         _log($"[Zone] maxHPStone={maxHpStone} maxSPStone={maxSpStone}");
                     }
+                    // CHAR combat/defense stats — same CHAR_PARAMETER_DATA block, u32 LE at fixed body offsets
+                    // (verified 2026-07-29 by matching Bot7170's screenshot values AND cross-checked vs the known
+                    // MaxHp@146 above). These are the DEFENDER side of the damage-survivability model (mob dps vs
+                    // DEF/M.Def + dodge). Decode→log now; ZoneView/BotApi exposure + the survivability calc follow.
+                    // See memory [[fiesta-combat-damage-model]] for the full offset map.
+                    if (span.Length >= 130)
+                    {
+                        static uint U(ReadOnlySpan<byte> s, int o) => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(s.Slice(o, 4));
+                        _log($"[stats] STR={U(span, 0x16)} END={U(span, 0x1E)} DEX={U(span, 0x26)} INT={U(span, 0x2E)} SPR={U(span, 0x3E)} | " +
+                             $"Dmg={U(span, 0x46)}~{U(span, 0x4E)} DEF={U(span, 0x56)} Aim={U(span, 0x5E)} Evasion={U(span, 0x66)} M.Dmg={U(span, 0x6E)} M.Def={U(span, 0x7E)}");
+                    }
                     return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
