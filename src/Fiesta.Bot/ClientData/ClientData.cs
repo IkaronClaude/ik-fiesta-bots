@@ -92,6 +92,18 @@ public sealed class ClientData
                        || IsHealOverTimeState(GetStr(row, "StaNameC")) || IsHealOverTimeState(GetStr(row, "StaNameD")));
     }
 
+    /// <summary>The English class name for a <c>ClassName.shn</c> <c>ClassID</c> (e.g. 1→"Fighter",
+    /// 6→"Cleric", plus promotion tiers), or null if the table/id isn't found. For the bots.ikaron.uk
+    /// status page (operator P1 2026-07-28) so it shows a class NAME, not the raw ClassID. ClassName.shn
+    /// columns: ClassID(Byte), acPrefix, acEngName, acLocalName — acEngName is the English display name.</summary>
+    public string? ClassName(int classId)
+    {
+        var row = Table("ClassName")?.FindByLong("ClassID", classId);
+        if (row is null) return null;
+        var name = GetStr(row, "acEngName");
+        return string.IsNullOrWhiteSpace(name) ? null : name;
+    }
+
     // The SubAbState "action" index that means RECOVER HP OVER TIME (per-tick HP add). Empirically the heal
     // discriminator: all heal abstates (StaRestore/StaMultiHeal/*DotHeal) carry it; the poison DoT uses 27.
     private const int HpRecoverOverTimeAction = 30;

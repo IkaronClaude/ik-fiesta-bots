@@ -125,7 +125,10 @@ app.MapGet("/status.json", () =>
     var bots = statusMgr?.List().Select(b =>
     {
         var s = b.Snapshot();
+        // clsName: resolve the ClassName.shn ClassID → English name for the status page (operator P1);
+        // clients render clsName and fall back to the raw cls if the client data isn't loaded.
         return new { id = s.Id, character = s.Character, level = s.Level, cls = s.Class,
+                     clsName = s.Class is { } cid ? statusMgr?.ClientData?.ClassName(cid) : null,
                      map = s.Map, phase = s.Phase, dead = s.Dead, hp = s.Hp, maxHp = s.MaxHp };
     }) ?? Enumerable.Empty<object>();
     return Results.Ok(bots);

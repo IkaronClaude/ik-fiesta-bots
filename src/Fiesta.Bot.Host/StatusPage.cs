@@ -42,7 +42,7 @@ internal static class StatusPage
         ? bots.map(b => `<tr class="${b.dead ? "dead" : ""}">`
             + `<td>${esc(b.character || b.id)}</td>`
             + `<td>${b.level ?? "-"}</td>`
-            + `<td>${b.cls ?? "-"}</td>`
+            + `<td>${esc(b.clsName || b.cls) || "-"}</td>`
             + `<td>${esc(b.map || "-")}</td>`
             + `<td class="pill">${esc(b.phase || "-")}</td>`
             + `<td>${b.hp != null ? b.hp + (b.maxHp ? "/" + b.maxHp : "") : "-"}</td></tr>`).join("")
