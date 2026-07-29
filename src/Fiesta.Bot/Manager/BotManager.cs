@@ -193,16 +193,33 @@ public sealed class BotManager : IAsyncDisposable
             try
             {
                 await StopAsync(id);
-                await Task.Delay(3000);                    // let the logout settle (avoid dup-login kick)
-                Spawn(opts);
-                if (ssrc is not null)
+                // BOUNDED RETRY (tickets.md P1, 2026-07-29): a TRANSIENT re-login failure — observed live as
+                // `SocketException: Resource temporarily unavailable` on the zone-connect under cluster load,
+                // right after CHAR_LOGIN_ACK — leaves the bot phase=Failed. The re-login is off a CLEAN WM logout
+                // (the auto-relog path logged the old session out first), so it leaves NO ghost and a retry is
+                // safe (verified: one manual respawn recovered immediately). So instead of sitting Failed until the
+                // next cron, retry the spawn a few times with backoff. Capped + loudly logged so a persistent
+                // failure can't hot-loop (if it ever does, that's a different bug — see the ghost tickets).
+                const int maxAttempts = 4;
+                for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
-                    for (int i = 0; i < 90; i++)           // wait up to 90s for zone re-entry, then re-apply
+                    if (attempt == 1) await Task.Delay(3000);                 // let the logout settle (avoid dup-login kick)
+                    else { try { await StopAsync(id); } catch { } await Task.Delay(5000); }  // clean up the Failed handle, back off
+                    Spawn(opts);
+                    var reachedZone = false;
+                    for (int i = 0; i < 90; i++)           // wait up to 90s for zone re-entry
                     {
                         await Task.Delay(1000);
-                        if (_bots.TryGetValue(id, out var nh) && nh.Phase == BotPhase.InZone)
-                        { ApplyScript(id, sname ?? "level_quest", ssrc, stick <= 0 ? 400 : stick); break; }
+                        if (!_bots.TryGetValue(id, out var nh)) break;        // handle gone (external stop) — abort
+                        if (nh.Phase == BotPhase.InZone)
+                        {
+                            if (ssrc is not null) ApplyScript(id, sname ?? "level_quest", ssrc, stick <= 0 ? 400 : stick);
+                            reachedZone = true; break;
+                        }
+                        if (nh.Phase == BotPhase.Failed) break;               // transient re-login failure → retry
                     }
+                    if (reachedZone) return;
+                    _globalLog?.Invoke($"[{id}] RELOG attempt {attempt}/{maxAttempts} didn't reach zone (transient re-login failure) — {(attempt < maxAttempts ? "retrying" : "giving up; next cron will respawn")}");
                 }
             }
             catch (Exception ex) { _globalLog?.Invoke($"[{id}] RELOG error: {ex.Message}"); }
