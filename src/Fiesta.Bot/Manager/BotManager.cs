@@ -374,19 +374,13 @@ public sealed class BotManager : IAsyncDisposable
         {
             needFace = false; needStop = false;
         }
-        // ⛔ ALREADY BASHING THIS TARGET → the face-step is redundant AND destructive (operator
-        // 2026-08-04: "we're spamming stop too much for no reason"). BASHSTART holds our position and
-        // the server's swing-follow keeps us faced at the target, so MOVERUN+STOP tells the server
-        // nothing new — it just CANCELS the swing stream (server answers CEASE_FIRE) and the melee
-        // damage stops. Measured on the new build BEFORE this change: 21 BASHSTART produced only 17 of
-        // OUR swings (0.8 per bash) because each cast's STOP killed the bash ~8ms after it started,
-        // against ~35 swings per bash for the real client in CombatExtensive.pcapng.
-        // This is scoped to "same target we are already bashing", so an opening cast, a cast on a NEW
-        // target, or a cast while not bashing all keep the proven face+stop.
-        if (handle.ZoneView is { BashActive: true } && handle.BashTarget == target && target != 0)
-        {
-            needFace = false; needStop = false;
-        }
+        // ⚠️ DO NOT "optimise" the face+stop away for a target we are already bashing. Tried and
+        // REVERTED 2026-08-04: the real client DOES stop before every cast and simply accepts that the
+        // cast cancels its own bash. Z:/RepeatableQuestingLvl23PlusLotsOfInfo.pcapng shows the pattern
+        // outright — BASHSTART, swings, then STOP → CAST → CEASE_FIRE → CAST_SUC_ACK, repeatedly — and
+        // all 74 casts in that capture succeeded (74 CAST_SUC_ACK for 74 casts). Skipping the face-step
+        // deviates from the client and risks the cast being rejected 0x0FCA, which is exactly what the
+        // instance-scoped exception above already had to work around.
         await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
         await EnsureBattleModeAsync(handle, s, ct);
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
@@ -2646,8 +2640,15 @@ public sealed class BotManager : IAsyncDisposable
                     {
                         try
                         {
-                            await bs.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
-                            if (handle.ZoneView is { } zv2) zv2.BashActive = true;
+                            // Re-bash with the FULL sequence (target → mode → face+stop → BASHSTART),
+                            // exactly as the real client does when it re-bashes after a mid-fight cast
+                            // (CombatExtensive.pcapng: TARGETTING → MOVERUN → STOP → BASHSTART).
+                            // A BARE BASHSTART risks being rejected outright — the server validates a
+                            // swing against facing/range, and without the face-step there is nothing to
+                            // establish either (operator 2026-08-04). A STOP *before* BASHSTART is
+                            // harmless: there is no swing stream yet to cancel. It is only a STOP
+                            // before a CAST *while already bashing* that kills our damage.
+                            await AutoAttackAsync(botId, tgt, ct);
                             Log($"[combat] RE-BASH h={tgt} after CEASE_FIRE — restarting melee swing stream");
                         }
                         catch (Exception ex) { Log($"[combat] re-bash error: {ex.Message}"); }
