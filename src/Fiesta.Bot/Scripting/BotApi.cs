@@ -735,6 +735,19 @@ public sealed class BotApi
     /// the use on an empty reserve and goes to a healer to restock instead. Cleared by a
     /// successful use or an HP-stone buy.</summary>
     public bool hpStoneDepleted() => View?.HpStoneDepleted ?? false;
+
+    /// <summary>True while a skill cast is animating — the character is LOCKED, so starting another
+    /// cast now is wasted. Gate the rotation on <c>not bot.casting()</c> (operator 2026-08-04:
+    /// "only cast when not on cooldown AND not in cast animation already").
+    /// <para>SERVER-AUTHORITATIVE: driven by the server's CAST_SUC_ACK / HIT_DAMAGE / CAST_FAIL /
+    /// CASTABORT / CASTCUT. It is however opened SPECULATIVELY the instant we send a cast, so the
+    /// round trip can't be spammed through, and it auto-releases on a predicted deadline if a
+    /// resolution packet is ever lost — casts stay speculative under lag instead of stalling.</para></summary>
+    public bool casting() => View?.IsCasting ?? false;
+
+    /// <summary>Whether the server has CONFIRMED the in-flight cast (CAST_SUC_ACK seen), as opposed to
+    /// it still being our speculative local guess. Diagnostic — lets a driver/log tell the two apart.</summary>
+    public bool castConfirmed() => View?.CastServerConfirmed ?? false;
     /// <summary>Current HP soul-stone reserve count, or -1 if unknown (no buy/use seen yet).
     /// Decrements on a successful use, refilled on a buy ack.</summary>
     public int hpStones() => View?.HpStones ?? -1;

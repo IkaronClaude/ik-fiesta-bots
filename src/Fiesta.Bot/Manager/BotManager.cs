@@ -379,6 +379,11 @@ public sealed class BotManager : IAsyncDisposable
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
+        // Open the cast-animation window SPECULATIVELY, right on send. Waiting for the server's
+        // CAST_SUC_ACK would leave a round-trip hole in which the driver fires more casts (that is
+        // precisely how 5 casts went out in 18ms). ZoneView then confirms/ends this from the server's
+        // own packets — the local ActiveSkill.CastTime is only the un-wedge deadline.
+        if (handle.ZoneView is { } zvc) zvc.NoteCastSent(ClientData?.Skill(skill)?.CastTimeMs ?? 0);
         handle.Log(BotLogLevel.Verbose, $"cast skill {skill} on h={target} ({(needFace || needStop ? "target+mode+face+stop+cast" : "target+mode+cast")})");
         return ActionResult.Sent;
     }

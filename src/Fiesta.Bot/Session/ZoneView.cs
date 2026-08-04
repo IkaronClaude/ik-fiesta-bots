@@ -350,6 +350,22 @@ public sealed class ZoneView : IDisposable
     //   0x0FCA = out of range
     //   0x0FC4, 0x0FC6 = unpinned (facing / cooldown / weapon — TODO)
     private const ushort OpBatCastFail = (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.SkillbashCastFailAck);
+    // ===== SERVER-AUTHORITATIVE CAST-ANIMATION STATE (operator 2026-08-04) =====
+    // The character is LOCKED for the duration of a cast, so a driver must not start another one while
+    // it runs. The client-side ActiveSkill.CastTime is only a PREDICTION — the server is the authority.
+    // Exact sequence, read off the real client in Z:/CombatExtensive.pcapng (identical for every cast):
+    //   C-> 0x2440 SKILLBASH_OBJ_CAST_REQ
+    //   S<- 0x243D CEASE_FIRE               (the cast kills the melee bash — server-confirmed)
+    //   S<- 0x244E SKILLBASH_HIT_OBJ_START  cast ACCEPTED, hit sequence begins
+    //   S<- 0x2435 SKILLBASH_CAST_SUC_ACK   authoritative "cast succeeded"
+    //   S<- 0x2457 SKILLBASH_HIT_BLAST
+    //   S<- 0x2452 SKILLBASH_HIT_DAMAGE     cast RESOLVES
+    // Measured START->DAMAGE windows in that capture: 154 / 129 / 63 / 21 / 178 ms.
+    private const ushort OpBatCastSuc = (ushort)(((int)ProtocolCommand.Bat << 10) | 53);
+    private const ushort OpBatHitObjStart = (ushort)(((int)ProtocolCommand.Bat << 10) | 78);
+    private const ushort OpBatHitDamage = (ushort)(((int)ProtocolCommand.Bat << 10) | 82);
+    private const ushort OpBatCastAbort = (ushort)(((int)ProtocolCommand.Bat << 10) | 55);
+    private const ushort OpBatCastCut = (ushort)(((int)ProtocolCommand.Bat << 10) | 56);
     private static readonly ushort OpClientItem = PacketRegistry.GetOpcode<PROTO_NC_CHAR_CLIENT_ITEM_CMD>();
     private static readonly ushort OpCellChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_CELLCHANGE_CMD>();
     private static readonly ushort OpEquipChange = PacketRegistry.GetOpcode<PROTO_NC_ITEM_EQUIPCHANGE_CMD>();
@@ -861,6 +877,49 @@ public sealed class ZoneView : IDisposable
     /// <summary>How many times the server has ceased our fire this session — a direct measure of how
     /// often our own STOP/cast cadence is cancelling the swing stream.</summary>
     public int BashCeasedCount { get; private set; }
+
+    /// <summary>Whether a skill cast is currently in flight / animating.
+    /// <para>SPECULATIVE-then-AUTHORITATIVE: set optimistically the moment we SEND a cast (so the driver
+    /// doesn't machine-gun casts during the round trip — that latency is real), then CONFIRMED by the
+    /// server's CAST_SUC_ACK and CLEARED by the server's HIT_DAMAGE / CAST_FAIL / CASTABORT / CASTCUT.
+    /// The server is the source of truth; the local guess only covers the round-trip gap.</para>
+    /// <para><see cref="CastPredictedUntilUtc"/> is a SAFETY NET, not the authority: if an expected
+    /// resolution packet is ever lost the flag would otherwise wedge the rotation forever, so a driver
+    /// treats the cast as done once that deadline passes. This is what lets casts stay speculative under
+    /// lag rather than stalling on a server round trip.</para></summary>
+    public bool CastInFlight { get; private set; }
+
+    /// <summary>Speculative deadline for the in-flight cast (local prediction from ActiveSkill.CastTime
+    /// plus round-trip margin). Only used to un-wedge if the server's resolution packet never arrives.</summary>
+    public DateTime CastPredictedUntilUtc { get; private set; } = DateTime.MinValue;
+
+    /// <summary>Server-confirmed cast state: true once CAST_SUC_ACK arrived for the in-flight cast.
+    /// Distinguishes "we think we're casting" from "the server agrees we are".</summary>
+    public bool CastServerConfirmed { get; private set; }
+
+    /// <summary>True while a cast is genuinely believed to be animating — server state first, with the
+    /// speculative window as the fallback so a dropped packet can't stall the rotation.</summary>
+    public bool IsCasting => CastInFlight && DateTime.UtcNow < CastPredictedUntilUtc;
+
+    /// <summary>Called when WE send a cast: begin the speculative window immediately (don't wait for the
+    /// server — that round trip is exactly the lag we're compensating for).</summary>
+    public void NoteCastSent(int predictedCastMs)
+    {
+        CastInFlight = true;
+        CastServerConfirmed = false;
+        // Predicted animation + a round-trip margin. Generous on purpose: this is only the un-wedge
+        // deadline, the server's resolution packet normally ends the cast well before it.
+        CastPredictedUntilUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(predictedCastMs, 0) + 900);
+    }
+
+    private void EndCast(string why)
+    {
+        if (!CastInFlight) return;
+        CastInFlight = false;
+        CastServerConfirmed = false;
+        CastPredictedUntilUtc = DateTime.MinValue;
+        _logLevel?.Invoke(BotLogLevel.Verbose, $"[combat] cast END ({why})");
+    }
 
     /// <summary>LEARNED effective attack range (operator 2026-07-15): the max distance at which our OWN swing
     /// has CONNECTED (SWING_DAMAGE Attacker==self, Damage&gt;0). The real weapon range is not in any client
@@ -1636,6 +1695,9 @@ public sealed class ZoneView : IDisposable
             var reason = pkt.Payload.Length >= 2
                 ? System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(pkt.Payload.Span)
                 : (ushort)0;
+            // The cast was REJECTED — there is no animation, so release the lock at once instead of
+            // making the rotation sit out a predicted window for a cast that never started.
+            EndCast($"CAST_FAIL 0x{reason:X4}");
             if (reason == CastFailReason.NotEnoughSp)
                 _log?.Invoke($"[ZoneView] cast FAILED — not enough SP (0x{reason:X4})");
             else if (reason == CastFailReason.OutOfRange)
@@ -1799,6 +1861,27 @@ public sealed class ZoneView : IDisposable
                 if (Exp >= 0) Exp = Math.Max(0, Exp - lost);
                 _logLevel?.Invoke(BotLogLevel.Note, $"[exp] DEATH -{lost} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session lost {SessionExpLost})");
             }
+        }
+        else if (op == OpBatCastSuc)
+        {
+            // Authoritative "your cast succeeded" — the server agrees we are casting. Doesn't END the
+            // cast (damage lands later), it upgrades our speculative guess to server-confirmed.
+            if (CastInFlight)
+            {
+                CastServerConfirmed = true;
+                _logLevel?.Invoke(BotLogLevel.Verbose, "[combat] cast SUC_ACK — server confirms cast in progress");
+            }
+        }
+        else if (op == OpBatHitDamage)
+        {
+            // The cast RESOLVED (damage applied) — authoritative end of the animation lock.
+            EndCast("HIT_DAMAGE — cast resolved");
+        }
+        else if (op == OpBatCastAbort || op == OpBatCastCut)
+        {
+            // Cast interrupted (moved / stunned / target lost). Free the rotation immediately rather
+            // than waiting out a predicted window that will never resolve.
+            EndCast(op == OpBatCastAbort ? "CASTABORT" : "CASTCUT");
         }
         else if (op == OpBatCeaseFire)
         {
