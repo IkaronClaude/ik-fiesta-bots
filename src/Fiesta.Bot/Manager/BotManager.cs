@@ -498,7 +498,12 @@ public sealed class BotManager : IAsyncDisposable
     /// server's RIDE_OFF lands — so firing twice re-mounts. Issue once, then wait for the ack.</para></summary>
     private async Task<bool> EnsureDismountedAsync(string id, BotHandle handle, CancellationToken ct)
     {
-        if (handle.ZoneView is not { IsMounted: true } zv) return true;
+        // The Lua may have JUST sent a mount (its tick is independent of us) with the RIDE_ON ack still in
+        // flight — reading IsMounted right now would see a stale false and skip the dismount, which is
+        // exactly how 97f68e8 no-opped. SuppressMount (set by the caller) stops any further mounting; give
+        // the pending ack a moment to land so we make the decision on settled state.
+        await Task.Delay(350, ct);
+        if (handle.ZoneView is not { IsMounted: true }) return true;
         var slot = MountSlot(handle);
         if (slot < 0) { handle.Log("[travel] mounted but no mount item found in bag — cannot dismount for the gate"); return false; }
         handle.Log($"[travel] DISMOUNTING before gate (slot={slot}) — a gate is silently ignored while mounted");
@@ -1396,7 +1401,10 @@ public sealed class BotManager : IAsyncDisposable
                 // the gate, close onto the exact tile and retry once.
                 handle.PendingDestMap = expected;
                 var seqBefore = handle.MapChangeSeq;
-                // A gate is silently ignored while mounted — dismount FIRST or this hop always aborts.
+                // A gate is silently ignored while mounted. Stop the Lua re-mounting FIRST (it mounts on
+                // its own tick during the approach), then dismount — suppress-then-dismount is what closes
+                // the race; dismounting alone loses to a mount that is still in flight.
+                handle.SuppressMount = true;
                 await EnsureDismountedAsync(id, handle, ct);
                 await UseGateAsync(id, gate.Handle, ct: ct);
                 if (!await WaitUntilAsync(() => handle.MapChangeSeq > seqBefore, 6000, ct))
@@ -1410,10 +1418,12 @@ public sealed class BotManager : IAsyncDisposable
                     {
                         handle.Log($"[travel] hop {hop + 1}: no transition after retry — aborting");
                         handle.PendingDestMap = null;
+                        handle.SuppressMount = false;   // re-allow transit mounting
                         return;
                     }
                 }
                 handle.PendingDestMap = null; // consumed by OnMapChanged
+                handle.SuppressMount = false; // hop taken — transit mounting allowed again
 
                 // A cross-server hop re-logs in on a fresh connection — wait until we're
                 // back in zone before the next hop. In-band LINKSAME stays InZone throughout.

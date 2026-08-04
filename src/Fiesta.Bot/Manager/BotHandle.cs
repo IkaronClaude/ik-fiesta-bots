@@ -193,6 +193,14 @@ public sealed class BotHandle
     /// is re-asserted only when it can genuinely have lapsed.</summary>
     internal volatile bool InBattleMode;
 
+    /// <summary>Set by the travel driver while a GATE HOP is being taken, and honoured by the Lua's
+    /// <c>mountUp()</c> via <c>bot.noMount()</c>. A gate is silently ignored while mounted, and the Lua
+    /// tick mounts for transit speed independently of C# — so without this the two race: the Lua mounts
+    /// during the gate approach, the RIDE_ON ack lands after C#'s mounted-check, and the gate is clicked
+    /// mounted anyway (observed 2026-08-04 19:47: mounted at .963, gate clicked at 19:47:10.033, hop
+    /// aborted). Suppressing the mount is what removes the race — a re-check alone cannot.</summary>
+    internal volatile bool SuppressMount;
+
     /// <summary>Last known FACING direction as a unit vector, tracked so a cast can tell whether a
     /// face-step is actually needed. Set whenever we commit a facing (FaceAndStop, or a BASHSTART on a
     /// target). The MOVERUN face-step breaks the melee swing stream, so it must only be sent when the

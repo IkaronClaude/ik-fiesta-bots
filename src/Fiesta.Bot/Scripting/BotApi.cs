@@ -1084,6 +1084,11 @@ public sealed class BotApi
     public bool mapInside(string mapName = null) => _mgr.ClientData?.MapInside(mapName ?? _handle.CurrentMap) ?? false;
     public int? selfHandle() => _handle.SelfHandle;
     public bool mounted() => View?.IsMounted ?? false;
+
+    /// <summary>True while the travel driver is taking a GATE HOP and mounting must be held off.
+    /// A gate is silently ignored while mounted, so <c>mountUp()</c> MUST early-return on this — the Lua
+    /// tick and the C# gate code otherwise race, the Lua mounts mid-approach, and the hop aborts.</summary>
+    public bool noMount() => _handle.SuppressMount;
     public double walkSpeed() => _handle.WalkSpeed;
     public int level() => (int)_handle.Level;
     public string phase() => _handle.Phase.ToString();
