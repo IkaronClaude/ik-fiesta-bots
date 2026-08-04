@@ -2444,6 +2444,9 @@ public sealed class BotManager : IAsyncDisposable
             var wmSession = new BotSession(wmConn, sel.Name, wmResult.WmHandle, wmEp, Log,
                 linkTag: "wm", logInbound: opt.LogInbound);
             handle.WmSession = wmSession;
+            // Same connection diagnostics on the WM link — a half-open WM socket is exactly the
+            // ghost-session shape, and it is equally invisible on the wire.
+            wmSession.ConnDiag = m => handle.Log(BotLogLevel.Note, m);
             if (handle.PacketLog is { } plw) wmSession.PacketTap = plw.Tap; // re-attach packet log if enabled
             TrackPartyInvites(handle, wmSession); // capture incoming party invites (the inviter)
             // The WM read loop gets its OWN linked CTS so an UNEXPECTED zone-only drop (server kick / net blip,
@@ -2495,6 +2498,11 @@ public sealed class BotManager : IAsyncDisposable
                 await using var zoneSession = new BotSession(zoneConn, sel.Name, zoneWmHandle, zoneEp, Log,
                     linkTag: "zone", logInbound: opt.LogInbound);
                 handle.ZoneSession = zoneSession;
+                // Surface connection-level anomalies (send-after-dispose, send-lock contention/timeout,
+                // half-open write timeout) into the bot log. A pcap cannot show ANY of these — they all
+                // happen before a byte reaches the socket — and they are the prime suspects for the bot
+                // freezing where the real client sails through (operator 2026-08-04).
+                zoneSession.ConnDiag = m => handle.Log(BotLogLevel.Note, m);
                 if (handle.PacketLog is { } plz) zoneSession.PacketTap = plz.Tap; // re-attach packet log across handoff
                 // Party MEMBER-STATE also flows ZONE-side for CO-LOCATED members: live HP (MEMBERINFORM 50) and
                 // positions (MEMBERLOCATION 73) broadcast on the field link to same-zone party members — the WM link
@@ -2947,6 +2955,10 @@ public sealed class BotManager : IAsyncDisposable
                 Log(firstEntry
                     ? $"*** {sel.Name} IN ZONE ({zoneEp}) — running until stopped ***"
                     : $"*** {sel.Name} RE-ENTERED ZONE ({zoneEp}, {currentMap}) after cross-server handoff ***");
+                // The new zone link is live — let the leveler tick again (no-op unless we suspended it
+                // for a handoff above). Logs how many ticks were skipped, so a suspend that never
+                // resumed is obvious rather than looking like a silent freeze.
+                handle.ScriptRunner?.Resume($"zone live again ({zoneEp}, {currentMap})");
                 firstEntry = false;
 
                 // Run the zone read loop, but ALSO watch the WM read loop: if the WM link dies FIRST while the
@@ -2974,6 +2986,15 @@ public sealed class BotManager : IAsyncDisposable
                     // Let the WM→destination-zone handoff settle before we connect (see
                     // CrossServerHandoffSettleMs): connecting too fast races the WM's "expect this
                     // client" notification and the new zone drops us — the intermittent gate-break.
+                    // ⛔ SUSPEND THE LEVELER ACROSS THE TRANSITION. The script runner is its own thread
+                    // with its own CTS (linked to the BOT token, not this zone session), so it does NOT
+                    // notice the zone connection dying — it keeps issuing walkTo/attack/useItem into the
+                    // disposed socket for the whole teardown + settle + reconnect. The unexpected-drop
+                    // path below already had to deal with this ("the leveler kept ticking against the
+                    // DISPOSED zone conn, SemaphoreSlim ObjectDisposed spam"); the handoff path never
+                    // did. None of it shows on the wire, because a send that throws never reaches the
+                    // socket. Resumed after re-entry below.
+                    handle.ScriptRunner?.Suspend($"cross-server handoff -> {zoneEp}");
                     Log($"[nav] reconnecting to zone {zoneEp} (wm={zoneWmHandle}) for cross-server handoff — settling {CrossServerHandoffSettleMs}ms for WM");
                     await Task.Delay(CrossServerHandoffSettleMs, ct);
                     continue;

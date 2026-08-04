@@ -27,6 +27,19 @@ public sealed class FiestaClientConnection : IDisposable
     private readonly byte[] _xorTable;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
+    /// <summary>Diagnostic sink for connection-level anomalies that are INVISIBLE ON THE WIRE —
+    /// sends after dispose, send-lock contention, write timeouts. Wired to the bot log.</summary>
+    public Action<string>? Diag { get; set; }
+
+    // Thresholds. Bot-behaviour timing only, not game facts.
+    private const int SendLockWaitMs = 5_000;      // give up waiting for the lock (something is stuck)
+    private const int SendLockSlowMs = 250;        // warn: we queued behind another sender this long
+    private const int SendWriteTimeoutMs = 5_000;  // a write must not outlive this (half-open socket)
+    private const int SendWriteSlowMs = 500;       // warn: socket is slow
+    private long _lockHeldSince;                   // when the current holder took the lock
+    private ushort _lockHolderOpcode;              // what the current holder is sending
+    private int _sendersWaiting;                   // queue depth behind the lock
+
     private XorStreamCipher? _sendCipher;
     private bool _disposed;
 
@@ -145,7 +158,37 @@ public sealed class FiestaClientConnection : IDisposable
         body[1] = (byte)(packet.Opcode >> 8);
         packet.Payload.Span.CopyTo(body.AsSpan(2));
 
-        await _sendLock.WaitAsync(ct);
+        // ===== SEND INSTRUMENTATION (operator 2026-08-04: "add as much logging as possible to catch it
+        // red handed"). A wire capture CANNOT show any of this — a send that blocks or throws before it
+        // reaches the socket leaves no packet. These are the process-level failures we're hunting:
+        //   * a send issued AFTER the connection was disposed (the leveler ticking on a dead link),
+        //   * a long WAIT on _sendLock (someone else is stuck holding it → we freeze, not reacquire),
+        //   * a long WRITE (half-open TCP that never times out — the socket that never closes).
+        if (_disposed)
+        {
+            Diag?.Invoke($"[conn] ⛔ SEND AFTER DISPOSE op=0x{packet.Opcode:X4} — caller is using a dead connection");
+            throw new ObjectDisposedException(nameof(FiestaClientConnection), $"send op=0x{packet.Opcode:X4} after dispose");
+        }
+
+        var waitStart = Environment.TickCount64;
+        var queued = Interlocked.Increment(ref _sendersWaiting);
+        try
+        {
+            if (!await _sendLock.WaitAsync(SendLockWaitMs, ct))
+            {
+                Diag?.Invoke($"[conn] ⛔ SEND LOCK TIMEOUT op=0x{packet.Opcode:X4} after {SendLockWaitMs}ms " +
+                             $"— holder op=0x{_lockHolderOpcode:X4} has held it {Environment.TickCount64 - _lockHeldSince}ms, {queued} sender(s) queued. " +
+                             "This is the freeze: a stuck send is wedging every other send.");
+                throw new TimeoutException($"send lock timeout op=0x{packet.Opcode:X4}");
+            }
+        }
+        finally { Interlocked.Decrement(ref _sendersWaiting); }
+
+        var waited = Environment.TickCount64 - waitStart;
+        if (waited > SendLockSlowMs)
+            Diag?.Invoke($"[conn] ⚠ send op=0x{packet.Opcode:X4} WAITED {waited}ms for the send lock (holder was op=0x{_lockHolderOpcode:X4})");
+        _lockHeldSince = Environment.TickCount64;
+        _lockHolderOpcode = packet.Opcode;
         try
         {
             _sendCipher.Transform(body); // advances cipher position; must be under the lock
@@ -164,10 +207,33 @@ public sealed class FiestaClientConnection : IDisposable
                 wire[2] = (byte)(bodyLen >> 8);
                 Buffer.BlockCopy(body, 0, wire, 3, bodyLen);
             }
-            await _stream.WriteAsync(wire, ct);
-            await _stream.FlushAsync(ct);
+            // WRITE TIMEOUT — without this a half-open TCP socket blocks here until the OS timeout
+            // (minutes) WHILE HOLDING _sendLock, so every later send queues behind it and the bot
+            // freezes rather than reconnecting. Bound it and shout.
+            using var wcts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            wcts.CancelAfter(SendWriteTimeoutMs);
+            var wStart = Environment.TickCount64;
+            try
+            {
+                await _stream.WriteAsync(wire, wcts.Token);
+                await _stream.FlushAsync(wcts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                Diag?.Invoke($"[conn] ⛔ SEND WRITE TIMEOUT op=0x{packet.Opcode:X4} after {SendWriteTimeoutMs}ms " +
+                             "— socket accepted no bytes (half-open / never closed). Treating the link as dead.");
+                throw new IOException($"write timeout op=0x{packet.Opcode:X4} (half-open socket)");
+            }
+            var wms = Environment.TickCount64 - wStart;
+            if (wms > SendWriteSlowMs)
+                Diag?.Invoke($"[conn] ⚠ send op=0x{packet.Opcode:X4} WRITE took {wms}ms (slow socket / backpressure)");
         }
-        finally { _sendLock.Release(); }
+        finally
+        {
+            _lockHolderOpcode = 0; _lockHeldSince = 0;
+            // Never touch a disposed semaphore — Dispose() no longer disposes it (see Dispose).
+            try { _sendLock.Release(); } catch (ObjectDisposedException) { }
+        }
     }
 
     /// <summary>Convenience: serialize a typed body and send it.</summary>
@@ -197,8 +263,16 @@ public sealed class FiestaClientConnection : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        if (_lockHolderOpcode != 0 || _sendersWaiting > 0)
+            Diag?.Invoke($"[conn] ⚠ DISPOSE while a send is in flight — holder op=0x{_lockHolderOpcode:X4} " +
+                         $"held {Environment.TickCount64 - _lockHeldSince}ms, {_sendersWaiting} waiting. " +
+                         "Those senders will now fail fast rather than block.");
         _stream.Dispose();
         _tcp.Dispose();
-        _sendLock.Dispose();
+        // ⛔ Do NOT dispose _sendLock. A sender may be inside WaitAsync or between Wait and Release;
+        // disposing the semaphore under it throws ObjectDisposedException from arbitrary places (the
+        // "SemaphoreSlim ObjectDisposed spam" already seen when the leveler ticked on a dead link).
+        // SemaphoreSlim without a wait handle holds no unmanaged resource, so letting the GC take it
+        // is safe. Sends after dispose are rejected up-front by the _disposed check in SendAsync.
     }
 }

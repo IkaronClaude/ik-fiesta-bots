@@ -48,6 +48,15 @@ public sealed class BotSession : IAsyncDisposable
     /// <summary>Runtime packet tap on the underlying connection — see
     /// <see cref="FiestaClientConnection.PacketTap"/>. Set to dump both directions
     /// (plaintext) to a log; null to disable.</summary>
+    /// <summary>Connection-level diagnostics that never appear on the wire — sends after dispose,
+    /// send-lock contention/timeouts, write timeouts on a half-open socket. Wire this to the bot log:
+    /// these are the process-level failures a pcap physically cannot show.</summary>
+    public Action<string>? ConnDiag
+    {
+        get => _conn.Diag;
+        set => _conn.Diag = value;
+    }
+
     public Action<bool, ushort, ReadOnlyMemory<byte>>? PacketTap
     {
         get => _conn.PacketTap;

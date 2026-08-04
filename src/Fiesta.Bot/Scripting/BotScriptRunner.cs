@@ -103,6 +103,31 @@ public sealed class BotScriptRunner : IDisposable
         try { _events.Add(e); } catch { /* completed/disposed mid-add */ }
     }
 
+    private int _suspended;              // 0 = running, 1 = suspended (zone transition in flight)
+    private int _ticksSuspended;         // how many ticks we skipped while suspended
+    private string _suspendReason = "";
+
+    /// <summary>Stop ticking the script WITHOUT tearing it down, for the duration of a zone
+    /// transition. The runner has its own thread and its own CTS (linked to the BOT token, not the
+    /// zone session), so it does not otherwise notice that the zone connection has gone away — it
+    /// would keep issuing gameplay commands into a disposed socket. Pair with <see cref="Resume"/>.</summary>
+    public void Suspend(string reason)
+    {
+        _suspendReason = reason;
+        if (Interlocked.Exchange(ref _suspended, 1) == 0)
+        {
+            Interlocked.Exchange(ref _ticksSuspended, 0);
+            _log($"[script] SUSPEND — {reason} (leveler will stop sending until the new zone is live)");
+        }
+    }
+
+    /// <summary>Resume ticking after a transition completes.</summary>
+    public void Resume(string reason)
+    {
+        if (Interlocked.Exchange(ref _suspended, 0) == 1)
+            _log($"[script] RESUME — {reason} (skipped {Volatile.Read(ref _ticksSuspended)} tick(s) while suspended)");
+    }
+
     private void RunLoop()
     {
         var ct = _cts.Token;
@@ -123,6 +148,20 @@ public sealed class BotScriptRunner : IDisposable
                 }
                 if (Environment.TickCount64 >= nextTick)
                 {
+                    // ⛔ SUSPENDED = a zone transition is in flight. The Lua thread is INDEPENDENT of the
+                    // zone connection lifecycle (its CTS is linked to the BOT-wide token), so without this
+                    // it keeps calling walkTo/attack/useItem against a disposed session for the whole
+                    // teardown + settle + reconnect — sends into a dead socket, ObjectDisposedException
+                    // spam, and a real chance of wedging the send lock. Invisible on the wire, because a
+                    // send that throws before the socket never produces a packet.
+                    if (Volatile.Read(ref _suspended) != 0)
+                    {
+                        var n = Interlocked.Increment(ref _ticksSuspended);
+                        if (n == 1 || n % 10 == 0)
+                            _log($"[script] tick SUSPENDED ({n} skipped) — {_suspendReason}");
+                        nextTick = Environment.TickCount64 + _tickMs;
+                        continue;
+                    }
                     Interlocked.Increment(ref _ticks);
                     SafeCall("tick");
                     nextTick = Environment.TickCount64 + _tickMs;
