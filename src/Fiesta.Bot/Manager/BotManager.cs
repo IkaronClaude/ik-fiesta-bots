@@ -375,7 +375,7 @@ public sealed class BotManager : IAsyncDisposable
             needFace = false; needStop = false;
         }
         await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
-        await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
+        await EnsureBattleModeAsync(handle, s, ct);
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
@@ -425,6 +425,19 @@ public sealed class BotManager : IAsyncDisposable
     /// never closing a ranged caster into melee) then a STOP committing the position.
     /// Used before a cast that enforces UsableDegree and/or isn't a moving-skill. Advances
     /// the tracked position. No-op if the bot's position is unknown.</summary>
+    /// <summary>Send NC_ACT_CHANGEMODE_REQ (battle mode) only when we aren't already in it.
+    /// Battle mode is a persistent TOGGLE, not a per-action packet: the real client sent it just
+    /// <b>4 times in the whole of CombatExtensive.pcapng</b> (against 8 skill casts and 3 BASHSTARTs),
+    /// while this bot was sending it once per cast — 396 times in a single session. The flag is
+    /// cleared whenever the server drops us out of combat, on death, and on a map change, so we
+    /// re-assert the mode exactly when it can actually have lapsed.</summary>
+    private static async Task EnsureBattleModeAsync(BotHandle handle, BotSession s, CancellationToken ct)
+    {
+        if (handle.InBattleMode) return;
+        await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
+        handle.InBattleMode = true;
+    }
+
     private static async Task FaceAndStopAsync(BotHandle handle, BotSession s, uint tx, uint ty, CancellationToken ct)
     {
         if (handle.Position is not { } pos) return;
@@ -515,7 +528,7 @@ public sealed class BotManager : IAsyncDisposable
         if (target == 0) return ActionResult.NotFound;
 
         await s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct);
-        await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
+        await EnsureBattleModeAsync(handle, s, ct);
 
         // FACE the mob then STOP, exactly like a skill cast (CastAsync) — the server validates
         // a swing against facing, and a zero-distance moverun (when already adjacent) does NOT
@@ -525,6 +538,10 @@ public sealed class BotManager : IAsyncDisposable
         if (NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
+        // Remember WHAT we're bashing and that it's running, so the CEASE_FIRE handler can tell a
+        // cancelled swing stream from an idle one and re-issue BASHSTART on the same target.
+        handle.BashTarget = target;
+        if (handle.ZoneView is { } zvb) zvb.BashActive = true;
         handle.Log(BotLogLevel.Verbose, $"auto-attack h={target} (faced+bashstart)");
         return ActionResult.Sent;
     }
@@ -2376,6 +2393,11 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.MapChanged += h =>
                 {
                     handle.Emit(new BotEvent(BotEventKind.MapChanged, h));
+                    // A map change ends combat server-side: battle mode and any running swing stream
+                    // are gone, so re-assert them on the next action rather than assuming they persist.
+                    handle.InBattleMode = false;
+                    handle.BashTarget = 0;
+                    if (handle.ZoneView is { } zvm) zvm.BashActive = false;
                     OnMapChanged(handle, h, Log);
                     if (h.IsCrossServer) { handoff = h; zoneCts.Cancel(); } // break to reconnect
                 };
@@ -2581,6 +2603,38 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SpChanged += sp => handle.Emit(new BotEvent(BotEventKind.Sp, sp));
                 zoneView.Damaged += hit => handle.Emit(new BotEvent(BotEventKind.Hit, hit));
                 var botId = handle.Id; // capture for the lambda
+                // RE-BASH when the server cease-fires us mid-fight (root fix, wire-proven 2026-08-04).
+                // Every skill cast routes through FaceAndStopAsync, whose NC_ACT_STOP_REQ cancels the
+                // BASHSTART swing stream; the server then sends CEASE_FIRE(self). Because that packet was
+                // undecoded the bot never re-issued BASHSTART, so its melee damage silently stopped after
+                // ~50ms while it believed it was attacking (measured: 1 damage dealt vs 77 taken in the 36s
+                // before a death; the mob regenerated because regen needs only ~20s without damage).
+                // We're still targeted and still faced at this point (the cast faced the same mob), so the
+                // swing stream only needs restarting — send BASHSTART alone rather than the full
+                // target+mode+face+stop sequence, which would re-introduce the very STOP that killed it.
+                zoneView.BashCeased += ceased =>
+                {
+                    var tgt = handle.BashTarget;
+                    if (tgt == 0 || handle.ZoneSession is not { } bs) return;
+                    // Target gone (dead/out of view) → the fight is over, don't resurrect the bash.
+                    if (NpcPos(handle, tgt) is null) { handle.BashTarget = 0; return; }
+                    // Cadence guard: CEASE_FIRE can arrive several times for one cancellation
+                    // (observed 3 within 50ms). This paces the restart; it is NOT an attempt cap —
+                    // the bash is re-issued for as long as the target lives.
+                    var now = DateTime.UtcNow;
+                    if ((now - handle.LastReBashAtUtc).TotalMilliseconds < 250) return;
+                    handle.LastReBashAtUtc = now;
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await bs.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
+                            if (handle.ZoneView is { } zv2) zv2.BashActive = true;
+                            Log($"[combat] RE-BASH h={tgt} after CEASE_FIRE — restarting melee swing stream");
+                        }
+                        catch (Exception ex) { Log($"[combat] re-bash error: {ex.Message}"); }
+                    }, ct);
+                };
                 zoneView.CastFailed += reason =>
                 {
                     handle.Emit(new BotEvent(BotEventKind.CastFail, reason));

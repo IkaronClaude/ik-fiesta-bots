@@ -328,6 +328,16 @@ public sealed class ZoneView : IDisposable
     // mid-session death is reflected immediately (not only after the next zone-enter re-seed), and
     // LOG it so a death's exp cost is visible/attributable instead of appearing as a mystery loss.
     private const ushort OpBatExpLost = (ushort)(((int)ProtocolCommand.Bat << 10) | 17);
+    // NC_BAT_CEASE_FIRE_CMD (Bat cmd 61 = 0x243D): {handle u16@0} — the server telling us an entity
+    // STOPPED attacking. When handle == SelfHandle this is the authoritative "your melee auto-attack
+    // (BASHSTART) is no longer running" signal, and without it the bot believed it was still swinging.
+    // PROVEN on the wire (packets-JcqFresh.log, 2026-08-04): BASHSTART at 14:52:10.907, then castRotation
+    // fired 5 skills in 18ms — each cast goes through FaceAndStopAsync, whose NC_ACT_STOP_REQ cancels the
+    // swing stream — and the server answered CEASE_FIRE(self) at .961/.962/11.009. The auto-attack lived
+    // ~50ms. Across that session: 43 BASHSTART vs 467 self-inflicted STOP, and in the 36s before a death
+    // the bot dealt damage ONCE while taking it 77 times (mob then regenerated, since regen needs only
+    // ~20s without incoming damage). 654 CEASE_FIRE arrived in one session, all previously undecoded.
+    private const ushort OpBatCeaseFire = (ushort)(((int)ProtocolCommand.Bat << 10) | 61);
     // NC_CHAR_EXP_CHANGED_CMD (Char cmd 115 = 0x1073): an AUTHORITATIVE absolute exp value —
     // {wmhandle u16@0, CharNo u32@2, CurrentExp u64@6}. The server sends this on some exp-change
     // events (not at zone-enter — hence the seed). Whenever it arrives it is ground truth, so set
@@ -520,6 +530,12 @@ public sealed class ZoneView : IDisposable
     /// far (move closer and retry); other codes are unpinned (facing, cooldown, weapon —
     /// log them to help reverse-engineering).</summary>
     public event Action<ushort>? CastFailed;
+
+    /// <summary>Raised when the server reports that OUR melee auto-attack stopped
+    /// (NC_BAT_CEASE_FIRE_CMD with our own handle). Carries the handle that ceased fire.
+    /// Subscribe to re-issue BASHSTART while a live target is still in range — otherwise the
+    /// bot silently stops dealing melee damage the moment any skill cast STOPs it.</summary>
+    public event Action<ushort>? BashCeased;
 
     public IReadOnlyCollection<NearbyPlayer> NearbyPlayers => _nearby.Values.ToArray();
     public int NearbyCount => _nearby.Count;
@@ -833,6 +849,18 @@ public sealed class ZoneView : IDisposable
     /// <see cref="LastDamageDealtAtUtc"/> which fires on any self-swing including a whiff/out-of-range
     /// (Damage==0). Lets the driver confirm a kite-chip damage skill actually connected vs missed.</summary>
     public DateTime LastRealDamageDealtAtUtc { get; private set; } = DateTime.MinValue;
+
+    /// <summary>Whether our melee auto-attack (BASHSTART) is believed to be running. Set true when
+    /// the bot sends BASHSTART, cleared by NC_BAT_CEASE_FIRE_CMD for our own handle — i.e. this is
+    /// SERVER-confirmed, not assumed. Read it before deciding the bot is "already attacking".</summary>
+    public bool BashActive { get; set; }
+
+    /// <summary>When the server last told us our auto-attack ceased (CEASE_FIRE on our handle).</summary>
+    public DateTime LastBashCeasedAtUtc { get; private set; } = DateTime.MinValue;
+
+    /// <summary>How many times the server has ceased our fire this session — a direct measure of how
+    /// often our own STOP/cast cadence is cancelling the swing stream.</summary>
+    public int BashCeasedCount { get; private set; }
 
     /// <summary>LEARNED effective attack range (operator 2026-07-15): the max distance at which our OWN swing
     /// has CONNECTED (SWING_DAMAGE Attacker==self, Damage&gt;0). The real weapon range is not in any client
@@ -1770,6 +1798,33 @@ public sealed class ZoneView : IDisposable
                 SessionExpLost += lost;
                 if (Exp >= 0) Exp = Math.Max(0, Exp - lost);
                 _logLevel?.Invoke(BotLogLevel.Note, $"[exp] DEATH -{lost} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session lost {SessionExpLost})");
+            }
+        }
+        else if (op == OpBatCeaseFire)
+        {
+            // {handle u16@0}. Broadcast for ANY entity that stopped attacking, so filter to our own
+            // handle before treating it as "our auto-attack died" (verified: payloads in one session
+            // were spread across many character handles, not just ours).
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2)
+            {
+                var who = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(p.Slice(0, 2));
+                if (SelfHandle is { } self && who == self)
+                {
+                    var wasActive = BashActive;
+                    BashActive = false;
+                    LastBashCeasedAtUtc = DateTime.UtcNow;
+                    BashCeasedCount++;
+                    // Only NOTE the ones that actually killed a running auto-attack; the rest are
+                    // routine (already idle) and would drown the log at ~650/session.
+                    _logLevel?.Invoke(wasActive ? BotLogLevel.Note : BotLogLevel.Verbose,
+                        $"[combat] CEASE_FIRE on SELF — melee auto-attack STOPPED{(wasActive ? " (was ACTIVE — re-bash needed)" : " (was already idle)")} (session {BashCeasedCount})");
+                    try { BashCeased?.Invoke(who); } catch { }
+                }
+                else
+                {
+                    _logLevel?.Invoke(BotLogLevel.Verbose, $"[combat] CEASE_FIRE h={who} (other entity)");
+                }
             }
         }
         else if (op == OpCharExpChanged)

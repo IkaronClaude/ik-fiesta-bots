@@ -179,6 +179,20 @@ public sealed class BotHandle
     /// attempt. Updated alongside <see cref="LastCastSkill"/>.</summary>
     internal volatile ushort LastCastTarget;
 
+    /// <summary>The handle our melee auto-attack (BASHSTART) was last started on. Used to re-issue
+    /// BASHSTART on the SAME target when the server cease-fires us mid-fight (every skill cast's
+    /// STOP cancels the swing stream), so auto-attack damage actually accumulates.</summary>
+    internal volatile ushort BashTarget;
+
+    /// <summary>When we last re-issued BASHSTART in response to a CEASE_FIRE. Paces the restart —
+    /// the server can send several CEASE_FIRE for one cancellation.</summary>
+    internal DateTime LastReBashAtUtc = DateTime.MinValue;
+
+    /// <summary>Whether we believe the character is in BATTLE mode (NC_ACT_CHANGEMODE_REQ 0x02).
+    /// A persistent toggle — see <c>EnsureBattleModeAsync</c>. Cleared on death / map change so it
+    /// is re-asserted only when it can genuinely have lapsed.</summary>
+    internal volatile bool InBattleMode;
+
     /// <summary>Cancellation for the currently-running <see cref="Manager.BotManager.WalkPath"/>,
     /// if any — cancelled to abort a walk early (e.g. on a server MOVEFAIL so the bot
     /// stops banging into an off-grid obstacle). Set/cleared by the walk task.</summary>
