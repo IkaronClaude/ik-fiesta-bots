@@ -467,6 +467,47 @@ public sealed class BotManager : IAsyncDisposable
         handle.InBattleMode = true;
     }
 
+    /// <summary>Mount item class in <c>ItemInfo</c> (mirrors <c>MOUNT_CLASS</c> in level_quest.lua).</summary>
+    private const int MountItemClass = 23;
+
+    /// <summary>Bag slot holding our mount, or -1. Mirrors the Lua <c>mountSlot()</c> predicate exactly:
+    /// <c>Type == 1 &amp;&amp; ItemClass == 23</c>, taking the HIGHEST <c>DemandLv</c> match.
+    /// <para>Both conditions matter: the Lua comment warns that other items SHARE Class 23 at low DemandLv
+    /// (e.g. id 2505), so a class-only match returns the wrong item once the bag re-sorts.</para></summary>
+    private int MountSlot(BotHandle handle)
+    {
+        if (handle.ZoneView is not { } zv || ClientData is null) return -1;
+        int bestSlot = -1, bestLv = -1;
+        foreach (var (slot, itemId) in zv.Inventory)
+        {
+            if (ClientData.Item(itemId) is not { } it) continue;
+            if (it.Type != 1 || it.ItemClass != MountItemClass) continue;
+            if (it.DemandLv > bestLv) { bestLv = it.DemandLv; bestSlot = slot; }
+        }
+        return bestSlot;
+    }
+
+    /// <summary>Dismount if mounted, and WAIT for the server's RIDE_OFF. Returns true once not mounted.
+    /// <para><b>Why this exists:</b> a gate CANNOT be used while mounted — the server silently ignores the
+    /// click. Proven live 2026-08-04: mounted gate-use aborted after 14s of retries every time, while
+    /// unmounted gate-use transitioned in ~150ms (18:58:19 mounted → abort; 18:59:52 and 18:59:57 unmounted
+    /// → arrived in 153ms/156ms). That silent refusal was looping the whole travel system — the bot mounted
+    /// for speed, failed the gate, re-routed, re-mounted, forever — which is why it went 30+ minutes without
+    /// a single fight while exp went backwards from deaths in transit.</para>
+    /// <para>The mount item is a TOGGLE (<c>NC_ITEM_USE_REQ</c>), and <c>IsMounted</c> only clears when the
+    /// server's RIDE_OFF lands — so firing twice re-mounts. Issue once, then wait for the ack.</para></summary>
+    private async Task<bool> EnsureDismountedAsync(string id, BotHandle handle, CancellationToken ct)
+    {
+        if (handle.ZoneView is not { IsMounted: true } zv) return true;
+        var slot = MountSlot(handle);
+        if (slot < 0) { handle.Log("[travel] mounted but no mount item found in bag — cannot dismount for the gate"); return false; }
+        handle.Log($"[travel] DISMOUNTING before gate (slot={slot}) — a gate is silently ignored while mounted");
+        await UseItemAsync(id, (byte)slot, 0, ct);
+        var ok = await WaitUntilAsync(() => handle.ZoneView?.IsMounted != true, 3000, ct);
+        if (!ok) handle.Log("[travel] dismount NOT confirmed (no RIDE_OFF within 3s) — taking the gate anyway");
+        return ok;
+    }
+
     /// <summary>Send NC_ACT_STOP_REQ at our CURRENT position — no MOVERUN step.
     /// This is what the real client does before a cast while already engaged
     /// (Z:/CombatPriest.pcapng: TARGETTING → STOP → CAST), and it is why its auto-attack keeps
@@ -1355,11 +1396,15 @@ public sealed class BotManager : IAsyncDisposable
                 // the gate, close onto the exact tile and retry once.
                 handle.PendingDestMap = expected;
                 var seqBefore = handle.MapChangeSeq;
+                // A gate is silently ignored while mounted — dismount FIRST or this hop always aborts.
+                await EnsureDismountedAsync(id, handle, ct);
                 await UseGateAsync(id, gate.Handle, ct: ct);
                 if (!await WaitUntilAsync(() => handle.MapChangeSeq > seqBefore, 6000, ct))
                 {
                     handle.Log($"[travel] hop {hop + 1}: gate didn't fire from range — closing in and retrying");
                     await ApproachAsync(id, handle, gate.X, gate.Y, 0, unitsPerSec, ct);
+                    // Re-check: the approach can have re-mounted us, and a mounted gate-click is a no-op.
+                    await EnsureDismountedAsync(id, handle, ct);
                     await UseGateAsync(id, gate.Handle, ct: ct);
                     if (!await WaitUntilAsync(() => handle.MapChangeSeq > seqBefore, 8000, ct))
                     {
