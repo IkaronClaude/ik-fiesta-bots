@@ -374,6 +374,19 @@ public sealed class BotManager : IAsyncDisposable
         {
             needFace = false; needStop = false;
         }
+        // ⛔ ALREADY BASHING THIS TARGET → the face-step is redundant AND destructive (operator
+        // 2026-08-04: "we're spamming stop too much for no reason"). BASHSTART holds our position and
+        // the server's swing-follow keeps us faced at the target, so MOVERUN+STOP tells the server
+        // nothing new — it just CANCELS the swing stream (server answers CEASE_FIRE) and the melee
+        // damage stops. Measured on the new build BEFORE this change: 21 BASHSTART produced only 17 of
+        // OUR swings (0.8 per bash) because each cast's STOP killed the bash ~8ms after it started,
+        // against ~35 swings per bash for the real client in CombatExtensive.pcapng.
+        // This is scoped to "same target we are already bashing", so an opening cast, a cast on a NEW
+        // target, or a cast while not bashing all keep the proven face+stop.
+        if (handle.ZoneView is { BashActive: true } && handle.BashTarget == target && target != 0)
+        {
+            needFace = false; needStop = false;
+        }
         await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
         await EnsureBattleModeAsync(handle, s, ct);
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
