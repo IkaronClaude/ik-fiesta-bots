@@ -374,17 +374,30 @@ public sealed class BotManager : IAsyncDisposable
         {
             needFace = false; needStop = false;
         }
-        // ⚠️ DO NOT "optimise" the face+stop away for a target we are already bashing. Tried and
-        // REVERTED 2026-08-04: the real client DOES stop before every cast and simply accepts that the
-        // cast cancels its own bash. Z:/RepeatableQuestingLvl23PlusLotsOfInfo.pcapng shows the pattern
-        // outright — BASHSTART, swings, then STOP → CAST → CEASE_FIRE → CAST_SUC_ACK, repeatedly — and
-        // all 74 casts in that capture succeeded (74 CAST_SUC_ACK for 74 casts). Skipping the face-step
-        // deviates from the client and risks the cast being rejected 0x0FCA, which is exactly what the
-        // instance-scoped exception above already had to work around.
+        // ⭐ IT IS THE **MOVERUN**, NOT THE STOP, THAT KILLS THE AUTO-ATTACK (Z:/CombatPriest.pcapng,
+        // operator's deliberately-clean capture, 2026-08-04). Handle-filtered, the real client's own
+        // swing stream CONTINUES after every cast with NO new BASHSTART:
+        //     1821 CAST -> skill dmg -> our swing x5
+        //     1875 CAST -> skill dmg -> our swing
+        //     2133 CAST -> skill dmg -> our swing x5
+        // and it only sent 5 BASHSTART all capture while landing 43 auto-attack + 22 skill damage
+        // against 31 taken. Its pre-cast sequence is TARGETTING -> STOP -> CAST, with NO MOVERUN.
+        // Ours was TARGETTING -> MOVERUN -> STOP -> CAST, and that one extra packet is the difference:
+        // MOVING breaks the swing stream, a bare STOP does not. So when we are ALREADY bashing this
+        // target we are by definition already in range and faced (BASHSTART holds position and the
+        // server's swing-follow keeps facing) — send the STOP alone and skip the face-step MOVERUN.
+        // ⚠️ Keep the FULL face+stop everywhere else: an opening cast, a cast on a NEW target, or a cast
+        // while not bashing still need the face-step or the cast is rejected 0x0FCA. An earlier attempt
+        // (171cf5a) dropped BOTH the MOVERUN and the STOP and was reverted — the STOP is load-bearing;
+        // the client sends it before every cast and all 74 casts in the lvl23+ capture succeeded.
+        var alreadyBashingThis = handle.ZoneView is { BashActive: true } && target != 0 && handle.BashTarget == target;
+        if (alreadyBashingThis) { needFace = false; needStop = false; }
         await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
         await EnsureBattleModeAsync(handle, s, ct);
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
+        else if (alreadyBashingThis)
+            await StopOnlyAsync(handle, s, ct);   // STOP without the swing-breaking MOVERUN
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
         // Open the cast-animation window SPECULATIVELY, right on send. Waiting for the server's
         // CAST_SUC_ACK would leave a round-trip hole in which the driver fires more casts (that is
@@ -448,6 +461,20 @@ public sealed class BotManager : IAsyncDisposable
         if (handle.InBattleMode) return;
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
         handle.InBattleMode = true;
+    }
+
+    /// <summary>Send NC_ACT_STOP_REQ at our CURRENT position — no MOVERUN step.
+    /// This is what the real client does before a cast while already engaged
+    /// (Z:/CombatPriest.pcapng: TARGETTING → STOP → CAST), and it is why its auto-attack keeps
+    /// streaming through casts. <see cref="FaceAndStopAsync"/>'s MOVERUN is what breaks the swings;
+    /// the STOP itself is harmless and is still required or the cast is rejected 0x0FCA.</summary>
+    private static async Task StopOnlyAsync(BotHandle handle, BotSession s, CancellationToken ct)
+    {
+        if (handle.Position is not { } pos) return;
+        var stop = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), pos.X);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), pos.Y);
+        await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
     }
 
     private static async Task FaceAndStopAsync(BotHandle handle, BotSession s, uint tx, uint ty, CancellationToken ct)
