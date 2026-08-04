@@ -2395,6 +2395,12 @@ public sealed class BotManager : IAsyncDisposable
     /// </summary>
     private const int CrossServerHandoffSettleMs = 600;
 
+    /// <summary>Liveness watchdog cadence and the "this is definitely wrong" stillness threshold.
+    /// 45s is well beyond any legitimate pause (a hand-in dialogue, a cast, waiting out a stun) but far
+    /// short of the 15+ minutes the bot silently wasted before this existed. Bot-behaviour timing only.</summary>
+    private const int WatchdogPollMs = 5_000;
+    private const int WatchdogStillSecs = 45;
+
     private async Task RunBotAsync(BotHandle handle)
     {
         var opt = handle.Options;
@@ -2960,6 +2966,57 @@ public sealed class BotManager : IAsyncDisposable
                 // resumed is obvious rather than looking like a silent freeze.
                 handle.ScriptRunner?.Resume($"zone live again ({zoneEp}, {currentMap})");
                 firstEntry = false;
+
+                // ===== LIVENESS WATCHDOG (operator 2026-08-05) =====
+                // "How do you need this elaborate diagnostic check to find out the bot is completely
+                // unmoving? We should have a routine that notices no movement > log error."
+                // A motionless bot must SHOUT, not require packet forensics. Found the hard way: an
+                // unexpected drop disposes the ScriptRunner, the auto-relog re-entered the zone fine, but
+                // the leveler was never restored — so the bot stood in a mob pack at full HP for 15+ min
+                // doing NOTHING, while every status field said "InZone, healthy". Nothing logged a word.
+                // This watchdog catches BOTH shapes: no script at all, and script-but-not-moving.
+                _ = Task.Run(async () =>
+                {
+                    var lastPos = handle.Position; var stillSince = DateTime.UtcNow; var lastTicks = -1L;
+                    while (!zoneCts.IsCancellationRequested && handle.Phase == BotPhase.InZone)
+                    {
+                        await Task.Delay(WatchdogPollMs, zoneCts.Token);
+
+                        // (a) IN ZONE WITH NO SCRIPT — the exact failure above. Self-heal from the retained
+                        // source rather than just complaining; a bot with no driver can never recover alone.
+                        if (handle.ScriptRunner is null && handle.LastScriptSource is { } src)
+                        {
+                            handle.Log(BotLogLevel.Note,
+                                "⛔ WATCHDOG: IN ZONE but NO SCRIPT RUNNING — the leveler was lost (most likely an " +
+                                "unexpected drop disposed it and the relog never restored it). Re-applying the last script.");
+                            ApplyScript(handle.Id, handle.LastScriptName ?? "level_quest", src,
+                                        handle.LastScriptTickMs <= 0 ? 400 : handle.LastScriptTickMs);
+                            stillSince = DateTime.UtcNow;
+                            continue;
+                        }
+
+                        // (b) NOT MOVING — position unchanged for too long. Report the script's tick counter
+                        // too, which separates "thread is dead/stuck" from "ticking but choosing to stand".
+                        var pos = handle.Position;
+                        var ticks = handle.ScriptRunner?.Status().Ticks ?? -1;
+                        var moved = pos is null || lastPos is null
+                                    || pos.Value.X != lastPos.Value.X || pos.Value.Y != lastPos.Value.Y;
+                        if (moved) { lastPos = pos; stillSince = DateTime.UtcNow; lastTicks = ticks; continue; }
+
+                        var stillFor = (DateTime.UtcNow - stillSince).TotalSeconds;
+                        if (stillFor >= WatchdogStillSecs)
+                        {
+                            var ticking = ticks != lastTicks;
+                            handle.Log(BotLogLevel.Note,
+                                $"⛔ WATCHDOG: MOTIONLESS for {stillFor:F0}s at ({pos?.X},{pos?.Y}) on {handle.CurrentMap} — " +
+                                $"script={(handle.ScriptRunner is null ? "NONE" : handle.ScriptRunner.Status().State)} " +
+                                $"ticks={ticks} ({(ticking ? "ticking — it is RUNNING but not acting" : "NOT TICKING — thread dead/stuck/suspended")}) " +
+                                $"hp={handle.ZoneView?.Hp} inCombat={handle.ZoneView?.InCombat}. A bot standing still is ALWAYS a bug.");
+                            stillSince = DateTime.UtcNow;   // re-arm so it reports periodically, not once
+                        }
+                        lastTicks = ticks;
+                    }
+                }, zoneCts.Token);
 
                 // Run the zone read loop, but ALSO watch the WM read loop: if the WM link dies FIRST while the
                 // zone is still alive (GHOST-FIX P0 gap, operator 2026-07-28 "ensure the stuck condition can no
