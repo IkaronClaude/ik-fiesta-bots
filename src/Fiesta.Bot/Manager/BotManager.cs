@@ -2376,10 +2376,24 @@ public sealed class BotManager : IAsyncDisposable
     /// connection to the new zone server. The WM tells the destination zone "expect this client"
     /// as part of the switch; connecting BEFORE that notification lands races the WM and the zone
     /// drops us (the intermittent "zone link breaks on a gate" under cluster load, operator
-    /// 2026-07-29 — a real client is expected to hit this ~1-in-50 gate uses; more often ⇒ this
-    /// race). A couple of seconds lets the WM→zone handoff settle. Pure bot-behaviour timing.
+    /// 2026-07-29).
+    /// <para><b>MEASURED AGAINST THE REAL CLIENT (Z:/GateTest.pcapng, 2026-08-04).</b> The operator
+    /// captured ~15 round trips across a cross-node zone boundary (zone0 9016 ⇄ zone1 9019) in four
+    /// conditions — cross-node mounted/unmounted and same-node mounted/unmounted — annotating
+    /// "Not a single dc", "No dc", "0 dcs. Leaving it here." The client's gap from the OLD
+    /// connection's last packet to the NEW connection's SYN, n=30:
+    /// <b>median 0.442 s, min 0.331 s, max 0.527 s</b> — a very tight distribution, and every one
+    /// of the 30 crossings succeeded.</para>
+    /// <para>So the WM→zone notification reliably lands well inside ~0.5 s, and the original
+    /// "a couple of seconds" was ~4x more conservative than anything the real client does. Waiting
+    /// longer is not free: it leaves a multi-second hole where neither zone owns the session, which
+    /// is a plausible source of the very drops it was meant to prevent (operator's hypothesis).
+    /// Set to 600 ms — just above the client's observed WORST case (527 ms), so we stay inside real
+    /// client behaviour with a small margin rather than inventing a value.</para>
+    /// <para>⚠️ If gate-break DCs return, do NOT simply raise this again — re-measure against a fresh
+    /// capture first. The client proves ~0.5 s is sufficient; a regression here means something else.</para>
     /// </summary>
-    private const int CrossServerHandoffSettleMs = 2000;
+    private const int CrossServerHandoffSettleMs = 600;
 
     private async Task RunBotAsync(BotHandle handle)
     {
