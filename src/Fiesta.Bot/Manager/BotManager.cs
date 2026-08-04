@@ -517,6 +517,23 @@ public sealed class BotManager : IAsyncDisposable
     /// server's swing-follow keeps us faced, so that case reliably needs nothing.</para></summary>
     private bool NeedsFacingAdjust(BotHandle handle, ushort skill, ushort target)
     {
+        // ⭐ A RECENT CONNECTING HIT IS PROOF we are in range AND faced — the server only lands our swing
+        // when both hold. Check this FIRST, and note why it must come first:
+        // gating on ZoneView.LearnedMeleeRange (as the first version of this did) DEADLOCKS. That value
+        // starts at 0 each session and only grows from OUR OWN connecting swings, so: range 0 → "adjust"
+        // → MOVERUN every cast → MOVERUN breaks the swing stream → almost no swings land → range never
+        // learned → forever. Measured live: 0.9 our-swings per BASHSTART, statistically unchanged from
+        // before the fix, and "LEARNED attack-range" never fired. A gate must never depend on the thing
+        // it is gating.
+        // This signal bootstraps cleanly because the OPENING bash is not preceded by a cast: it survives,
+        // lands a hit, and from then on the MOVERUN is suppressed so the stream persists. It is also the
+        // exact signal the instance-scoped exception above already trusts — generalised to field maps now
+        // that Z:/CombatPriest.pcapng shows the real client sending no MOVERUN before its casts.
+        if (handle.ZoneView is { } zvh
+            && zvh.LastRealDamageDealtAtUtc > DateTime.MinValue
+            && (DateTime.UtcNow - zvh.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500)
+            return false;
+
         if (NpcPos(handle, target) is not { } tp || handle.Position is not { } pos) return true;
         var dx = (double)tp.X - pos.X; var dy = (double)tp.Y - pos.Y;
         var dist = Math.Sqrt(dx * dx + dy * dy);
