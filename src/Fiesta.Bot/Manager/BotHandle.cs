@@ -365,6 +365,8 @@ public sealed class BotHandle
             HpStones: view?.HpStones,
             SpStones: view?.SpStones,
             InCombat: view?.InCombat ?? false,
+            Aggressors: view?.Aggressors.Count ?? 0,
+            NearestAggressorDist: NearestAggressorDistance(view),
             Dead: view?.Dead ?? false,
             Drops: view?.Drops.Count ?? 0,
             Script: GraphRunners.IsEmpty
@@ -372,6 +374,25 @@ public sealed class BotHandle
                 : string.Join(" | ", GraphRunners.Values.Select(g => g.StatusLine)),
             CreatedAtUtc: CreatedAtUtc,
             RecentLog: RecentLog());
+    }
+
+    /// <summary>Distance to the nearest mob currently aggroing us, or null if nothing is aggroed / we don't
+    /// have a position / none of the aggressor handles are in the NPC view. Cross-references the aggressor
+    /// handle set against the live NPC positions — the same join the Lua side does, lifted to the snapshot so
+    /// a deaggro can be observed from the control API (see <see cref="BotSnapshot.NearestAggressorDist"/>).</summary>
+    private double? NearestAggressorDistance(ZoneView? view)
+    {
+        if (view is null || Position is not { } p) return null;
+        var aggro = view.Aggressors;
+        if (aggro.Count == 0) return null;
+        double? best = null;
+        foreach (var n in view.NearbyNpcs)
+        {
+            if (!aggro.Contains(n.Handle)) continue;
+            var d = Math.Sqrt(Math.Pow((double)n.X - p.X, 2) + Math.Pow((double)n.Y - p.Y, 2));
+            if (best is null || d < best) best = d;
+        }
+        return best;
     }
 }
 
@@ -404,6 +425,14 @@ public sealed record BotSnapshot(
     int? HpStones,
     int? SpStones,
     bool InCombat,
+    /// <summary>How many mobs are confidently aggroing us right now (ZoneView.Aggressors, 8s window).
+    /// Exposed on the snapshot because the Lua runtime had <c>bot.aggressors()</c> but nothing outside the
+    /// script could see it — which made a "did the tail actually shed?" check impossible from the API.</summary>
+    int Aggressors,
+    /// <summary>Distance to the CLOSEST current aggressor, or null if none/unknown. This is the field that
+    /// lets us MEASURE the mob leash off the wire instead of baking a constant: ride away and watch at what
+    /// distance the aggressor set drains without any kills. Needed for the arrival-shed (P0).</summary>
+    double? NearestAggressorDist,
     bool Dead,
     int Drops,
     string? Script,
