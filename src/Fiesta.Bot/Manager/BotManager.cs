@@ -390,13 +390,17 @@ public sealed class BotManager : IAsyncDisposable
         // while not bashing still need the face-step or the cast is rejected 0x0FCA. An earlier attempt
         // (171cf5a) dropped BOTH the MOVERUN and the STOP and was reverted — the STOP is load-bearing;
         // the client sends it before every cast and all 74 casts in the lvl23+ capture succeeded.
-        var alreadyBashingThis = handle.ZoneView is { BashActive: true } && target != 0 && handle.BashTarget == target;
-        if (alreadyBashingThis) { needFace = false; needStop = false; }
+        // Send the MOVERUN face-step ONLY when facing/range genuinely need adjusting. If we're already
+        // in range and already pointing at the target, the step tells the server nothing and just kills
+        // our swings. The STOP still goes out either way — that part IS load-bearing (the client sends
+        // it before every cast; dropping it in 171cf5a caused rejections and was reverted in 94ffe8e).
+        var adjust = NeedsFacingAdjust(handle, skill, target);
+        if (!adjust) { needFace = false; needStop = false; }
         await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
         await EnsureBattleModeAsync(handle, s, ct);
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
-        else if (alreadyBashingThis)
+        else if (!adjust)
             await StopOnlyAsync(handle, s, ct);   // STOP without the swing-breaking MOVERUN
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
         // Open the cast-animation window SPECULATIVELY, right on send. Waiting for the server's
@@ -500,6 +504,41 @@ public sealed class BotManager : IAsyncDisposable
         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), faceY);
         await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
         handle.SetPosition(faceX, faceY);
+        if (dist > 1) { handle.FacingDx = dx / dist; handle.FacingDy = dy / dist; }
+    }
+
+    /// <summary>Is a face-step actually REQUIRED to cast <paramref name="skill"/> at
+    /// <paramref name="target"/>? Only send the MOVERUN when it is — the face-step breaks the melee
+    /// swing stream, so an unconditional one silently costs us all our auto-attack damage
+    /// (operator 2026-08-04: "we do need to moverun to ensure we face and we're in range etc. but we
+    /// should only moverun IF AN ADJUSTMENT IS REQUIRED").
+    /// <para>No adjustment is needed when we are BOTH already inside the skill's range AND already
+    /// facing the target within its <c>UsableDegree</c> arc. While auto-attacking the same target the
+    /// server's swing-follow keeps us faced, so that case reliably needs nothing.</para></summary>
+    private bool NeedsFacingAdjust(BotHandle handle, ushort skill, ushort target)
+    {
+        if (NpcPos(handle, target) is not { } tp || handle.Position is not { } pos) return true;
+        var dx = (double)tp.X - pos.X; var dy = (double)tp.Y - pos.Y;
+        var dist = Math.Sqrt(dx * dx + dy * dy);
+        if (dist < 1) return false;                       // on top of it: nothing to adjust
+
+        var si = ClientData?.Skill(skill);
+        // Range 0 = melee skill; use the melee reach we already close to for auto-attack.
+        // Range 0 = melee: use the reach LEARNED from the wire (an archer's differs from a fighter's),
+        // never a baked constant. If nothing has been learned yet, adjust rather than assume.
+        double range = si is { Range: > 0 } ? si.Range : (handle.ZoneView?.LearnedMeleeRange ?? 0);
+        if (range <= 0) return true;
+        if (dist > range) return true;                    // out of range → must close
+
+        // Facing: compare our tracked heading against the direction to the target. UsableDegree is the
+        // skill's allowed arc (0 = no facing requirement at all).
+        var deg = si?.UsableDegree ?? 0;
+        if (deg <= 0) return false;                       // skill doesn't care which way we point
+        if (handle.FacingDx == 0 && handle.FacingDy == 0) return true;   // heading unknown → adjust
+        var dot = (handle.FacingDx * dx + handle.FacingDy * dy) / dist;
+        dot = Math.Clamp(dot, -1.0, 1.0);
+        var offBy = Math.Acos(dot) * 180.0 / Math.PI;
+        return offBy > deg / 2.0;                         // outside the arc → must turn
     }
 
     /// <summary>Face (<paramref name="x"/>,<paramref name="y"/>) and STOP — a public wrapper over

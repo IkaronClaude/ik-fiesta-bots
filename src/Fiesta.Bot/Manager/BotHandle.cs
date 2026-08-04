@@ -193,6 +193,12 @@ public sealed class BotHandle
     /// is re-asserted only when it can genuinely have lapsed.</summary>
     internal volatile bool InBattleMode;
 
+    /// <summary>Last known FACING direction as a unit vector, tracked so a cast can tell whether a
+    /// face-step is actually needed. Set whenever we commit a facing (FaceAndStop, or a BASHSTART on a
+    /// target). The MOVERUN face-step breaks the melee swing stream, so it must only be sent when the
+    /// facing/range genuinely needs adjusting (operator 2026-08-04).</summary>
+    internal double FacingDx, FacingDy;
+
     /// <summary>Cancellation for the currently-running <see cref="Manager.BotManager.WalkPath"/>,
     /// if any — cancelled to abort a walk early (e.g. on a server MOVEFAIL so the bot
     /// stops banging into an off-grid obstacle). Set/cleared by the walk task.</summary>
