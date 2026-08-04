@@ -64,6 +64,10 @@ public sealed class BotApi
         var t = NewTable();
         t["id"] = id; t["name"] = _mgr.ClientData?.SkillName(id) ?? "";
         t["cooldownMs"] = si.DelayTimeMs; t["sp"] = si.Sp; t["range"] = si.Range;
+        // castTimeMs = the CAST ANIMATION length. The character is locked for its duration, so a driver
+        // must not start another cast while it runs (operator 2026-08-04: "only cast when not on cooldown
+        // AND not in cast animation already").
+        t["castTimeMs"] = si.CastTimeMs;
         t["usableDegree"] = si.UsableDegree; t["moving"] = si.IsMovingSkill;
         // UseClass: real class combat skills are >=2 (Fighter line 2-7, Cleric 8-13, Archer 14-19,
         // Mage 20-25, Joker 27+); ==1 is the Trainee/alchemy/event bucket (Mining, Ride Mover, the

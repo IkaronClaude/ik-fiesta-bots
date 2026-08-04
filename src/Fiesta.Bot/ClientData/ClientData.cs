@@ -61,6 +61,11 @@ public sealed class ClientData
             UsableDegree: GetInt(row, "UsableDegree"),
             IsMovingSkill: GetInt(row, "IsMovingSkill") != 0,
             DelayTimeMs: GetInt(row, "DlyTime"),
+            // CastTime = the CAST ANIMATION length (ActiveSkill.shn col 26), distinct from DlyTime (the
+            // cooldown). While it runs the character is locked in the cast, so firing another skill during
+            // it is wasted — that is how castRotation ended up sending FIVE casts in 18ms, each one's STOP
+            // cancelling the melee swing stream (see the CEASE_FIRE ticket / packets-JcqFresh.log).
+            CastTimeMs: GetInt(row, "CastTime"),
             Range: GetInt(row, "Range"),
             Sp: GetInt(row, "SP"),
             UseClass: GetInt(row, "UseClass"),
@@ -597,4 +602,4 @@ public sealed record PortalDest(int Index, int GroupNo, string Map, int MinLevel
 /// facing requirement. <see cref="IsMovingSkill"/> = castable while moving (no STOP needed).
 /// <see cref="DelayTimeMs"/> = cooldown (ms). <see cref="Range"/> = cast range (0 = melee).
 /// <see cref="Sp"/> = mana cost.</summary>
-public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false);
+public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0);
