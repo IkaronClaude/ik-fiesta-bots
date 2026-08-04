@@ -2712,7 +2712,30 @@ public sealed class BotManager : IAsyncDisposable
                     var tgt = handle.BashTarget;
                     if (tgt == 0 || handle.ZoneSession is not { } bs) return;
                     // Target gone (dead/out of view) → the fight is over, don't resurrect the bash.
-                    if (NpcPos(handle, tgt) is null) { handle.BashTarget = 0; return; }
+                    if (NpcPos(handle, tgt) is not { } rbPos) { handle.BashTarget = 0; return; }
+                    // ⛔ ONLY re-bash when we are actually WITHIN MELEE REACH. AutoAttackAsync explicitly
+                    // does NOT close a gap ("the CALLER must already be within melee weapon range") — its
+                    // face-step moves at most 16u. Re-bashing from range makes the server reject the bash
+                    // outright, and the rejection arrives as another CEASE_FIRE, which re-triggers this
+                    // handler: a self-feeding BASHSTART→CEASE_FIRE loop that never lands a swing.
+                    // PROVEN on the wire 2026-08-04: of the cease-fires on self, **30 immediately followed
+                    // our own BASHSTART** (vs only 7 following a MOVERUN) — the bash was not being
+                    // interrupted, it was FAILING TO START. That is the failure the operator flagged:
+                    // "without stop and face / client-side range move before bash start there's a chance
+                    // our bash will just fail, watch for that."
+                    // Reach comes from the wire (LearnedMeleeRange); until something has connected we
+                    // cannot know it, so don't spam a bash that will just be rejected — the grind loop
+                    // walks into range and opens a fresh bash there.
+                    if (handle.Position is not { } rbSelf) return;
+                    var reach = handle.ZoneView?.LearnedMeleeRange ?? 0;
+                    if (reach <= 0) return;
+                    var rdx = (double)rbPos.X - rbSelf.X; var rdy = (double)rbPos.Y - rbSelf.Y;
+                    if (Math.Sqrt(rdx * rdx + rdy * rdy) > reach)
+                    {
+                        handle.Log(BotLogLevel.Verbose,
+                            $"[combat] re-bash SKIPPED h={tgt} — out of melee reach ({Math.Sqrt(rdx * rdx + rdy * rdy):F0}u > {reach:F0}u); walk in first");
+                        return;
+                    }
                     // Cadence guard: CEASE_FIRE can arrive several times for one cancellation
                     // (observed 3 within 50ms). This paces the restart; it is NOT an attempt cap —
                     // the bash is re-issued for as long as the target lives.
