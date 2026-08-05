@@ -405,7 +405,12 @@ public sealed class ZoneEntry
             var off = 2 + i * 2;
             if (off + 2 > p.Length) break;
             var pid = (ushort)(p[off] | (p[off + 1] << 8));
-            if (pid != 0) passives.Add(pid);
+            // id 0 is a REAL passive ("Bravery Mastery [01]"/BraveMastery01) — `number` already bounds
+            // the loop, so there is no empty-slot sentinel to filter. Wire proof (Bot7170, 2026-08-05):
+            // 0x103E body `03 00 | 00 00 | 09 00 | 0A 00` = THREE passives 0/9/10, but this filter
+            // reported only "9,10" and hid a learned Bravery Mastery [01] from the whole bot.
+            // Third and last copy of the same "id 0 is a sentinel" bug (see ZoneView's two).
+            passives.Add(pid);
         }
         return passives;
     }
