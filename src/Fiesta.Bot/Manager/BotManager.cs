@@ -508,8 +508,18 @@ public sealed class BotManager : IAsyncDisposable
         if (slot < 0) { handle.Log("[travel] mounted but no mount item found in bag — cannot dismount for the gate"); return false; }
         handle.Log($"[travel] DISMOUNTING before gate (slot={slot}) — a gate is silently ignored while mounted");
         await UseItemAsync(id, (byte)slot, 0, ct);
-        var ok = await WaitUntilAsync(() => handle.ZoneView?.IsMounted != true, 3000, ct);
-        if (!ok) handle.Log("[travel] dismount NOT confirmed (no RIDE_OFF within 3s) — taking the gate anyway");
+        // ⏱ 3000ms was set JUST UNDER the real dismount latency, so this "failed" essentially every time.
+        // Measured 2026-08-05 over 21 pre-gate dismounts: 20/21 (95%) reported NOT-confirmed, yet the RIDE_OFF
+        // actually landed every single time — at min 3.03s / median 3.14s / max 6.78s. The distribution is
+        // tightly clustered just past 3s (3.03, 3.06, 3.10, 3.11 ×2, 3.12 ×3, 3.13 ×2, 3.14 ×2, 3.16, 3.18 ×2,
+        // 3.19, 3.20, 3.24, 3.61, 6.78), i.e. a ~3.1s server-side dismount animation we were racing by ~100ms.
+        // The consequence is not cosmetic: we then "take the gate anyway" WHILE STILL MOUNTED, and a gate is
+        // SILENTLY ignored while mounted (the very fact this method exists to avoid) — so the hop no-ops and
+        // travel pays a full re-route. This timeout is an UPPER BOUND, not a fixed delay: WaitUntilAsync
+        // returns the moment IsMounted flips, so a generous cap costs nothing on the happy path and only ever
+        // saves a wasted hop. 8s covers the observed max with headroom.
+        var ok = await WaitUntilAsync(() => handle.ZoneView?.IsMounted != true, 8000, ct);
+        if (!ok) handle.Log("[travel] dismount NOT confirmed (no RIDE_OFF within 8s) — taking the gate anyway");
         return ok;
     }
 
