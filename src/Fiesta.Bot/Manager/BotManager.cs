@@ -518,7 +518,26 @@ public sealed class BotManager : IAsyncDisposable
         // travel pays a full re-route. This timeout is an UPPER BOUND, not a fixed delay: WaitUntilAsync
         // returns the moment IsMounted flips, so a generous cap costs nothing on the happy path and only ever
         // saves a wasted hop. 8s covers the observed max with headroom.
-        var ok = await WaitUntilAsync(() => handle.ZoneView?.IsMounted != true, 8000, ct);
+        // ⛔ STOP WAITING THE MOMENT THE GATE MENU OPENS — otherwise we DEADLOCK against ourselves.
+        // Wire trace of hop 3/4 (2026-08-05), which cost 8.0s of dead air:
+        //     16:41:09.223  C->S ITEM_USE_REQ (dismount)
+        //     16:41:09.265  S->C ITEM_USE_ACK            (accepted in 42ms)
+        //     16:41:09.605  S->C 0x3C01 SERVERMENU_REQ   <- the GATE MENU is ALREADY OPEN, waiting on us
+        //     ...7.6s of us sending NOTHING while we sit in this wait...
+        //     16:41:17.224  C->S 0x3C02 SERVERMENU_ACK   (only after the timeout fires)
+        //     16:41:17.260  S->C RIDE_OFF + MOVESPEED + MAP_LOGOUT
+        // The RIDE_OFF is delivered AS PART OF THE MAP TRANSITION — and the transition cannot happen until
+        // we answer the menu, which we were too busy waiting to answer. Classic "the gate depends on the
+        // thing it gates": the event we block on can only be produced by the action we are blocking.
+        // Measured cost: EVERY hop timed out at the full 8s (4 waits in one 4-hop route ≈ 32s of dead air),
+        // and travel was already ~47% of the bot's time. Raising this cap 3s->8s earlier made it WORSE.
+        // A menu on screen means the gate ALREADY responded, so the dismount has served its purpose.
+        var ok = await WaitUntilAsync(
+            () => handle.ZoneView?.IsMounted != true || handle.ZoneView is { ServerMenuOpen: true },
+            8000, ct);
+        if (ok && handle.ZoneView is { IsMounted: true, ServerMenuOpen: true })
+            handle.Log(BotLogLevel.Info, "[travel] gate menu already open — not waiting out the dismount; " +
+                                         "the RIDE_OFF arrives with the map transition");
         if (!ok) handle.Log("[travel] dismount NOT confirmed (no RIDE_OFF within 8s) — taking the gate anyway");
         return ok;
     }
