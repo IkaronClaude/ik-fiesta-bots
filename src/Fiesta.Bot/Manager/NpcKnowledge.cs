@@ -25,6 +25,10 @@ public sealed class NpcKnowledge
     private readonly object _questDeprioIoLock = new();
     // key = "host|questId" -> the character level at which a flee happened while pursuing it.
     private readonly ConcurrentDictionary<string, int> _questDeprio = new(StringComparer.Ordinal);
+    private readonly string _questDeathsPath;
+    private readonly object _questDeathsIoLock = new();
+    // key = "host|questId" -> how many times we have DIED pursuing it, across all sessions.
+    private readonly ConcurrentDictionary<string, int> _questDeaths = new(StringComparer.Ordinal);
 
     public NpcKnowledge(string? dir = null)
     {
@@ -33,10 +37,12 @@ public sealed class NpcKnowledge
             ?? Path.Combine(AppContext.BaseDirectory, "bot-knowledge");
         _path = Path.Combine(baseDir, "npc-shops.json");
         _questDeprioPath = Path.Combine(baseDir, "quest-deprio.json");
+        _questDeathsPath = Path.Combine(baseDir, "quest-deaths.json");
         _mobThreatPath = Path.Combine(baseDir, "mob-threats.json");
         _scalarPath = Path.Combine(baseDir, "learned-scalars.json");
         Load();
         LoadQuestDeprio();
+        LoadQuestDeaths();
         LoadMobThreat();
         LoadScalars();
     }
@@ -60,6 +66,51 @@ public sealed class NpcKnowledge
         if (_questDeprio.TryGetValue(key, out var ex) && ex == level) return; // already recorded, don't re-save
         _questDeprio[key] = level;
         SaveQuestDeprio();
+    }
+
+    /// <summary>How many times the bot has DIED while pursuing this quest, ever (across every
+    /// session). 0 if never.</summary>
+    public int QuestDeaths(string host, int questId) =>
+        _questDeaths.TryGetValue(QKey(host, questId), out var n) ? n : 0;
+
+    /// <summary>Record (and persist) a death while pursuing this quest; returns the new total.
+    /// <para>Exists because the Lua driver's own <c>questDeaths</c> table is a script-local, wiped on
+    /// every script re-apply — and this bot re-applies/respawns constantly, so the count that was
+    /// supposed to rank a lethal quest LAST never survived to do it. Measured 2026-08-05: right after
+    /// shipping a death-ranked ordering, the bot went straight back to the mob that had killed it and
+    /// spent 53% of a 6-minute budget walking to it. Knowledge that resets every session cannot
+    /// influence a bot that restarts every few minutes — so it lives here, on the PVC.</para></summary>
+    public int RecordQuestDeath(string host, int questId)
+    {
+        if (string.IsNullOrEmpty(host)) return 0;
+        var n = _questDeaths.AddOrUpdate(QKey(host, questId), 1, (_, v) => v + 1);
+        SaveQuestDeaths();
+        return n;
+    }
+
+    private void LoadQuestDeaths()
+    {
+        try
+        {
+            if (!File.Exists(_questDeathsPath)) return;
+            var d = JsonSerializer.Deserialize<Dictionary<string, int>>(File.ReadAllText(_questDeathsPath));
+            if (d is not null) foreach (var (k, v) in d) _questDeaths[k] = v;
+        }
+        catch { /* a corrupt/missing store just starts empty */ }
+    }
+
+    private void SaveQuestDeaths()
+    {
+        lock (_questDeathsIoLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_questDeathsPath)!);
+                File.WriteAllText(_questDeathsPath, JsonSerializer.Serialize(
+                    new SortedDictionary<string, int>(_questDeaths), new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { /* persistence is best-effort; in-memory still works this session */ }
+        }
     }
 
     private void LoadQuestDeprio()

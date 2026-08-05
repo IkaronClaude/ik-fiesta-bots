@@ -173,6 +173,15 @@ public sealed class BotApi
     /// current character level — deprioritizes it to "last resort" until a level-up.</summary>
     public void recordQuestDeprioritized(int questId, int atLevel) => _mgr.Knowledge.RecordQuestDeprioritized(_handle.Options.Host, questId, atLevel);
 
+    /// <summary>How many times we have DIED pursuing this quest, across ALL sessions. PERSISTED —
+    /// use this to rank a repeatedly-lethal quest last, NOT a script-local counter: script locals are
+    /// wiped on every re-apply and this bot respawns constantly, so a local count never survives long
+    /// enough to influence the choice it was written for (measured 2026-08-05).</summary>
+    public int questDeaths(int questId) => _mgr.Knowledge.QuestDeaths(_handle.Options.Host, questId);
+
+    /// <summary>Record + PERSIST a death while pursuing this quest. Returns the new lifetime total.</summary>
+    public int recordQuestDeath(int questId) => _mgr.Knowledge.RecordQuestDeath(_handle.Options.Host, questId);
+
     /// <summary>Contents of personal storage as of the last open: a table of
     /// <c>{slot=..., id=...}</c>. Empty until storage has been opened. Read with
     /// <see cref="storageBox"/> / <see cref="storageOpen"/> before depositing.</summary>
