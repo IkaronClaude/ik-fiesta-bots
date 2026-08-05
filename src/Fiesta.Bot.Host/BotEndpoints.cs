@@ -192,6 +192,14 @@ public static class BotEndpoints
                     status,
                     repeatable = q?.Repeatable ?? false,
                     exp = q?.ExpReward ?? 0,
+                    // Remote accept / hand-in flags (QuestData +25 / +88). The driver does NOT use these yet:
+                    // START_REQ 0x4414 + doQuest(npc=0) were tried live and did not accept, so the real
+                    // remote-accept sequence is still undecoded (P1). Exposed so "which quests even claim to
+                    // support it" is answerable from live data instead of by reading offsets.
+                    remoteAccept = q?.IsInstantAccept ?? false,
+                    remoteHandIn = q?.IsInstantHandIn ?? false,
+                    startNpc = q?.StartNpc ?? 0,
+                    turnInNpc = q?.TurnInNpc ?? 0,
                     objectiveMob = q?.ObjectiveMob ?? -1,
                     objectives,
                     // The verdict fields — what a targeting decision should hinge on.
