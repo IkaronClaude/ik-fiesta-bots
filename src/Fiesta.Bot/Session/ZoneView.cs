@@ -1352,6 +1352,14 @@ public sealed class ZoneView : IDisposable
     // clobbered the bag before (the "Mushroom House" mini-house item hid the real loot). Main bag has
     // the lvl-1 "Mystery Vault" item as a tell.
     private const byte MainBag = 9;
+    /// <summary>The PERSONAL STORAGE (warehouse) container. Same class of wire-verified protocol constant as
+    /// <see cref="EquipBox"/> (8) and <see cref="MainBag"/> (9) above — a container id, not game data.
+    /// <para>PROVEN from Z:/Storage.pcapng: all ten NC_ITEM_RELOC_REQ in that capture move between box 9 and
+    /// box 6, and the operator's own chat annotation labels the first one ("Next I will store a sword"):
+    /// <c>from=0x2411</c> (box 9 slot 17) → <c>to=0x1800</c> (box 6 slot 0). Deposits are 9→6, withdrawals
+    /// 6→9, the SAME packet both ways; slot 36 also appears, so storage is multi-page. Independently
+    /// corroborated by the live DB, where the only rows with <c>nStorageType=6</c> are that capture's items.</para></summary>
+    public const byte StorageBoxId = 6;
     private static byte BoxOf(int inven) => (byte)(inven >> 10);
 
     /// <summary>Seed bag + worn-gear from the zone-login item list (captured by
@@ -1429,11 +1437,12 @@ public sealed class ZoneView : IDisposable
     /// <summary>The inventory BOX id storage lives in — <b>learned from the wire</b> (every item
     /// `location` in the storage-open packet is a packed <c>(box &lt;&lt; 10) | slot</c>, same encoding as
     /// the bag's box 9 and equipment's box 8), never hard-coded.
-    /// <para><b>-1 = not yet known</b>, which happens when storage was empty the only time we opened it
-    /// (an empty item array carries no location to learn from). A deposit MUST refuse loudly while this
-    /// is -1 rather than guess a box — moving an item to the wrong container is not recoverable by
-    /// retrying.</para></summary>
-    public int StorageBox { get; private set; } = -1;
+    /// <para>Seeded from the wire-verified <see cref="StorageBoxId"/> so a deposit works even when storage
+    /// is EMPTY (an empty item array carries no location to learn from — the old -1 default made the first
+    /// deposit impossible, a gate depending on the very thing it gated). A storage-open still OVERWRITES
+    /// this from the actual item locations, so if a server ever used a different container the observed
+    /// value wins over the constant.</para></summary>
+    public int StorageBox { get; private set; } = StorageBoxId;
 
     /// <summary>Money currently held IN storage (the `cen` field of the storage-open packet). Storage
     /// money moves with NC_ITEM_DEPOSIT/WITHDRAW (0x301C/0x301E), which carry only a cen amount.</summary>
@@ -1455,6 +1464,11 @@ public sealed class ZoneView : IDisposable
     /// FAIL-LOUDLY requirement exists to prevent ("I don't want hours of debugging to find out a simple
     /// operation has been failing for days"). Never assume — ask this.</summary>
     public bool StorageOpen => StorageOpenUtc is { } t && (DateTime.UtcNow - t) < TimeSpan.FromSeconds(10);
+
+    /// <summary>Monotonic count of NC_ITEM_CELLCHANGE_CMD received. A storage RELOC is confirmed by this
+    /// advancing — the server answers a move with a CELLCHANGE pair — which is the only real evidence the
+    /// item moved. Used by <c>StorageMoveAsync</c> so a deposit is never assumed to have worked.</summary>
+    public int CellChangeCount { get; private set; }
 
     /// <summary>Raised when storage opens with its contents.</summary>
     public event Action<IReadOnlyList<(byte Slot, ushort ItemId)>>? StorageOpened;
@@ -2429,7 +2443,13 @@ public sealed class ZoneView : IDisposable
                     var slot = (byte)(loc & 0xFF);
                     // itemId is the first field of SHINE_ITEM_STRUCT, immediately after `location`.
                     var itemId = off + 5 <= p.Length ? (ushort)(p[off + 3] | (p[off + 4] << 8)) : (ushort)0;
-                    if (StorageBox < 0) StorageBox = box;
+                    // OBSERVED beats the constant: if this server ever placed storage in a different
+                    // container, the item's own location is the authority.
+                    if (box != StorageBox)
+                    {
+                        _log?.Invoke($"[ZoneView] STORAGE container is box {box} (expected {StorageBox}) — using the observed value");
+                        StorageBox = box;
+                    }
                     items.Add((slot, itemId));
                     if (datasize == 0) break;           // malformed; don't spin
                     off += datasize;
@@ -2743,6 +2763,10 @@ public sealed class ZoneView : IDisposable
             // [exchange:2][location:2][itemid:2][attr…] — a slot gained/changed an item. location
             // encodes box (>>10) + slot (&0xFF); only track the MAIN BAG so mini-house/premium box
             // changes don't collide with / clobber bag slots.
+            // The counter is how a storage RELOC is CONFIRMED: the server answers a move with a
+            // CELLCHANGE pair, so "did the count advance" is the evidence the item actually moved.
+            // Counted for EVERY box — a deposit's cell change lands in the storage box, not the bag.
+            CellChangeCount++;
             var p = pkt.Payload.Span;
             if (p.Length >= 6)
             {

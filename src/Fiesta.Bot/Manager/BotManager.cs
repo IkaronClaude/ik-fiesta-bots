@@ -1767,6 +1767,56 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, $"sell slot {slot} x{lot}",
             s => s.SendAsync(new PROTO_NC_ITEM_SELL_REQ { slot = slot, lot = lot }, ct));
 
+    /// <summary>Move an item between the BAG and personal STORAGE, and VERIFY it landed.
+    /// <para>Wire shape proven from Z:/Storage.pcapng (operator-annotated "Next I will store a sword"):
+    /// <c>NC_ITEM_RELOC_REQ {from ITEM_INVEN, to ITEM_INVEN}</c> where an ITEM_INVEN is the packed
+    /// <c>(box &lt;&lt; 10) | slot</c> — deposit = bag(9)→storage(6), withdraw = storage(6)→bag(9), the SAME
+    /// packet both ways. The server answers with a PAIR of NC_ITEM_CELLCHANGE_CMD (the swap).
+    /// There is NO dedicated item-deposit packet: NC_ITEM_DEPOSIT/WITHDRAW carry only a `cen`, i.e. money.</para>
+    /// <para>⚠️ FAILS LOUDLY (operator, non-negotiable): the move is confirmed against the CELLCHANGE
+    /// counter, and a timeout is reported as a FAILURE, not assumed to be success. A silent storage no-op
+    /// is indistinguishable from "the bag filled up again" and can burn days before anyone notices.</para></summary>
+    public async Task<ActionResult> StorageMoveAsync(string id, byte fromSlot, byte toSlot,
+        bool deposit = true, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        var view = handle.ZoneView;
+        if (view is null) return ActionResult.NotInZone;
+        if (!view.StorageOpen)
+        {
+            handle.Log(BotLogLevel.Note, $"CRUTCH[CRIT] storage {(deposit ? "deposit" : "withdraw")} REFUSED — no storage session is open " +
+                                         "(never fire a move into a closed storage; that is the silent no-op we must not have)");
+            return ActionResult.NotInZone;
+        }
+        var storageBox = view.StorageBox;
+        var from = (ushort)((deposit ? MainBagBox : storageBox) << 10 | fromSlot);
+        var to = (ushort)((deposit ? storageBox : MainBagBox) << 10 | toSlot);
+
+        var before = view.CellChangeCount;
+        await s.SendAsync(new PROTO_NC_ITEM_RELOC_REQ
+        {
+            from = new FiestaLibReloaded.Networking.Structs.ITEM_INVEN { Inven = from },
+            to = new FiestaLibReloaded.Networking.Structs.ITEM_INVEN { Inven = to },
+        }, ct);
+        // Wait for the server's CELLCHANGE pair. Confirmation is the ONLY evidence the move happened.
+        for (var waited = 0; waited < 3000; waited += 50)
+        {
+            if (view.CellChangeCount > before)
+            {
+                handle.Log(BotLogLevel.Note, $"storage {(deposit ? "DEPOSIT" : "WITHDRAW")} ok: " +
+                    $"box{from >> 10} slot{from & 0xFF} -> box{to >> 10} slot{to & 0xFF}");
+                return ActionResult.Sent;
+            }
+            await Task.Delay(50, ct);
+        }
+        handle.Log(BotLogLevel.Note, $"CRUTCH[CRIT] storage {(deposit ? "DEPOSIT" : "WITHDRAW")} FAILED — no CELLCHANGE in 3s for " +
+            $"box{from >> 10} slot{from & 0xFF} -> box{to >> 10} slot{to & 0xFF} (item did NOT move; a MISSING ack is a failure, not success)");
+        return ActionResult.NotInZone;
+    }
+
+    private const int MainBagBox = 9;   // matches ZoneView's MainBag — the bag half of a storage move
+
     /// <summary>Enchant (upgrade) the gear in equip slot <paramref name="equip"/> using the
     /// enhancement stones at the given inventory slots (NC_ITEM_UPGRADE_REQ, GearEnchantment.pcapng).
     /// <paramref name="raw"/> = the primary stone (Elrue/Lixir/Xir by + range); the optional
