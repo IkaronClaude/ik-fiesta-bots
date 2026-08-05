@@ -28,7 +28,10 @@ public sealed record NearbyPlayer(ushort Handle, string Name, byte Class, byte L
 /// each gate leads come straight from the zone, no server files needed.</para></summary>
 /// <summary>What service an NPC's shop offers, classified from the shop-open opcode it sends when
 /// clicked (so the bot finds the skill master / smith / item merchant / healer dynamically).</summary>
-public enum ShopKind { Unknown, Item, Weapon, Skill, SoulStone }
+/// <summary>What an NPC's click turned out to open. <c>Storage</c> is the personal warehouse
+/// (NC_MENU_OPENSTORAGE_CMD 0x3C08) — not a shop, but classified the same way so the driver can FIND the
+/// storage keeper BY ROLE (operator: Raina in RouN, Kyle in Eld) instead of baking an npc id or coords.</summary>
+public enum ShopKind { Unknown, Item, Weapon, Skill, SoulStone, Storage }
 
 public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, uint Y, byte Flag = 0, string? LinkMap = null, byte Team = 0)
 {
@@ -1446,6 +1449,13 @@ public sealed class ZoneView : IDisposable
     /// A deposit is only valid while a storage session is genuinely open — check this, don't assume.</summary>
     public DateTime? StorageOpenUtc { get; private set; }
 
+    /// <summary>True while a storage session is genuinely open RIGHT NOW. Time-bounded exactly like
+    /// <see cref="ShopOpen"/>: a bare "we opened it once" flag would still read true after we had walked
+    /// away, and a deposit fired into a closed session is precisely the silent no-op the operator's
+    /// FAIL-LOUDLY requirement exists to prevent ("I don't want hours of debugging to find out a simple
+    /// operation has been failing for days"). Never assume — ask this.</summary>
+    public bool StorageOpen => StorageOpenUtc is { } t && (DateTime.UtcNow - t) < TimeSpan.FromSeconds(10);
+
     /// <summary>Raised when storage opens with its contents.</summary>
     public event Action<IReadOnlyList<(byte Slot, ushort ItemId)>>? StorageOpened;
 
@@ -2426,6 +2436,11 @@ public sealed class ZoneView : IDisposable
                 }
                 _storageItems = items.ToArray();
                 StorageOpenUtc = DateTime.UtcNow;
+                // Classify the NPC we just clicked as the STORAGE keeper, so discovery finds it by ROLE and
+                // persists that (npcKind/knownShopKind) exactly like the smith / healer / skill master. This
+                // is what lets the driver walk to Raina/Kyle without a baked id.
+                LastShopKind = ShopKind.Storage;
+                ShopOpenUtc = DateTime.UtcNow;   // a storage session counts as "a menu opened" for the probe
                 _log?.Invoke($"[ZoneView] STORAGE opened (0x3C08): {count} item(s), page {StoragePage}/{StorageMaxPage}, " +
                              $"cen={StorageCen}, openType={openType}, box={(StorageBox < 0 ? "UNKNOWN (storage empty)" : StorageBox.ToString())}" +
                              (items.Count > 0 ? " — " + string.Join(",", items.Select(it => $"slot{it.Slot}=item{it.ItemId}")) : ""));

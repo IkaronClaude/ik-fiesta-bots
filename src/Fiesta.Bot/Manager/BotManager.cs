@@ -1757,6 +1757,7 @@ public sealed class BotManager : IAsyncDisposable
         Session.ShopKind.Weapon => "weapon",
         Session.ShopKind.Item => "item",
         Session.ShopKind.SoulStone => "soulstone",
+        Session.ShopKind.Storage => "storage",   // personal warehouse (0x3C08) — a role, not a shop
         _ => "unknown",
     };
 

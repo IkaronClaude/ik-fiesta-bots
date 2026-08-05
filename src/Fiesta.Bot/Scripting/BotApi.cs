@@ -192,7 +192,7 @@ public sealed class BotApi
     /// <summary>True if a storage session is currently open (the last open SUCCEEDED). A failed open
     /// (0x3C07) leaves this false — never assume storage is open, a deposit into a closed storage is
     /// exactly the silent no-op the operator wants to make impossible.</summary>
-    public bool storageOpen() => View?.StorageOpenUtc is not null;
+    public bool storageOpen() => View?.StorageOpen ?? false;
 
     /// <summary>The inventory box id storage lives in, LEARNED from the wire, or <b>-1 if not yet
     /// known</b> (storage was empty the only time we opened it, so no item location revealed it).
@@ -445,6 +445,7 @@ public sealed class BotApi
         Session.ShopKind.Weapon => "weapon",
         Session.ShopKind.Item => "item",
         Session.ShopKind.SoulStone => "soulstone",
+        Session.ShopKind.Storage => "storage",   // personal warehouse (0x3C08) — found by role, not by id
         _ => "unknown",
     };
 
