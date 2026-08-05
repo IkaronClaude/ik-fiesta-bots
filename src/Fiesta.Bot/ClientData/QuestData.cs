@@ -14,8 +14,10 @@ namespace Fiesta.Bot.GameData;
 ///   +4  u32 QuestID · +8 u32 TitleID · +12 u32 DescriptionID (all QuestDialog.shn ids)
 ///   +16 u8 Region · +17 u8 QuestType · +18 IsRepeatable · +19 IsDailyQuest · +20 DailyType
 ///   +21 StartCondition (67B, the ACCEPT GATE):
-///       +24 IsVisible(=shows in the available quest LOG; 0 = hidden but still completable) ·
-///       +25 IsInstantAccept(=remote accept via quest log) · +26 NeedsLevel
+///       +24 bIsWaitListView(=REMOTE ACCEPT: quest is offerable from the wait list / quest log) ·
+///       +25 bIsWaitListProgress(=remote PROGRESS, not the accept gate) · +26 NeedsLevel
+///       ⚠️ gherblino names these IsVisible/IsInstantAccept — that is his mis-decode (he dropped the
+///       3 pad bytes before StartCondition and invented flags to fill them). Operator, 2026-08-05.
 ///       +27 LevelMin · +28 LevelMax · +29 NeedsNPC · +30 u16 NPCID(giver) · +32 NeedsItem
 ///       +33 u16 ItemID · +56 NeedsPreviousQuest · +58 u16 PreviousQuestID · +62 NeedsClass · +63 Class
 ///   +88 EndCondition (104B, turn-in gate + OBJECTIVES):
@@ -27,7 +29,7 @@ namespace Fiesta.Bot.GameData;
 ///   +680 scripts in DATA order Start, Doing(=Action), End(=Finish) (EUC-KR, NUL-terminated)
 ///
 /// Eligibility is the StartCondition <c>Needs*</c> gates, NOT a bare StartNPC: a quest is
-/// NPC-startable only when <c>NeedsNPC &amp;&amp; NPCID==npc</c>; <c>IsInstantAccept</c> means it can
+/// NPC-startable only when <c>NeedsNPC &amp;&amp; NPCID==npc</c>; <c>IsWaitListView</c> (@24) means it can
 /// also be accepted remotely from the quest log (0x4414 START_REQ, no walking). See [[questdata-shn-format]].
 /// </summary>
 public static class QuestData
@@ -66,8 +68,17 @@ public static class QuestData
             int title = (int)U32(off + 8);   // QuestDialog id of the title (DescriptionID is @12)
 
             // --- StartCondition (the accept gate) ---
-            bool isVisible = Flag(off + StartCond + 3);          // @24 = shows in available quest LOG
-            bool isInstantAccept = Flag(off + StartCond + 4);    // @25 = remote-accept via quest log
+            // ⚠️ THESE TWO ARE bIsWaitListView / bIsWaitListProgress — the names below are gherblino's
+            // MIS-DECODE and were wrong (operator, 2026-08-05). gherblino's PDB extract skipped C struct
+            // PADDING, so it invented three flag fields at @21/@22/@23 to fill the 3 pad bytes that really
+            // sit before StartCondition (verified 0 for all 2304 quests). Everything after shifted, and the
+            // genuine remote-accept pair landed here under the invented names "IsVisible"/"IsInstantAccept".
+            // REMOTE ACCEPT IS THE **View** FLAG (@24) — it is what puts a quest in the remotely-acceptable
+            // wait list. @25 (Progress) is about progressing remotely and is NOT the accept gate, so the
+            // driver's `remoteAcceptable` has been reading the wrong byte all along; that is a strong
+            // candidate for why the live remote-accept attempt on the JCQ chain never accepted.
+            bool isWaitListView = Flag(off + StartCond + 3);      // @24 bIsWaitListView   = REMOTE ACCEPT
+            bool isWaitListProgress = Flag(off + StartCond + 4);  // @25 bIsWaitListProgress = remote progress
             bool needsLevel = Flag(off + StartCond + 5);         // @26
             int minLevel = b[off + StartCond + 6];               // @27
             int maxLevel = b[off + StartCond + 7];               // @28
@@ -158,7 +169,7 @@ public static class QuestData
             map[id] = new QuestDef(id, title, startNpc, needsLevel, minLevel, maxLevel, reqClass,
                 npcs, objectives, rewards, start, action2, finish,
                 Repeatable: Flag(off + 18), PrereqQuest: prereqQuest,
-                IsVisible: isVisible, IsInstantAccept: isInstantAccept, IsInstantHandIn: isInstantHandIn,
+                IsWaitListView: isWaitListView, IsWaitListProgress: isWaitListProgress, IsInstantHandIn: isInstantHandIn,
                 NeedsNpc: needsNpc, NeedsItem: needsItem, NeedsItemId: needsItemId, NeedsClass: needsClass,
                 Region: b[off + 16], QuestType: b[off + 17],
                 EndNeedsLevel: endNeedsLevel, EndLevel: endLevel);
@@ -178,7 +189,7 @@ public sealed record QuestDef(
     IReadOnlyList<QuestTarget> Npcs, IReadOnlyList<QuestObjective> Objectives,
     IReadOnlyList<QuestRewardDef> Rewards, string StartScript, string ActionScript, string FinishScript,
     bool Repeatable = false, int PrereqQuest = 0,
-    bool IsVisible = false, bool IsInstantAccept = false, bool IsInstantHandIn = false,
+    bool IsWaitListView = false, bool IsWaitListProgress = false, bool IsInstantHandIn = false,
     bool NeedsNpc = false, bool NeedsItem = false, int NeedsItemId = 0, bool NeedsClass = false,
     int Region = 0, int QuestType = 0, bool EndNeedsLevel = false, int EndLevel = 0)
 {
@@ -220,9 +231,11 @@ public sealed record QuestDef(
            && (!NeedsClass || charClass == 0 || ClassMatches(charClass));
 
     /// <summary>True if this quest can be accepted remotely from the quest log (no walking to the
-    /// giver) — gated by <see cref="IsInstantAccept"/>. NOTE a separate client-side level-floor
-    /// (~lvl 10–20) also applies; the caller must AND in that floor.</summary>
-    public bool RemoteAcceptable => IsInstantAccept;
+    /// giver) — gated by <see cref="IsWaitListView"/> (@24), NOT the @25 Progress flag: @24 is what puts
+    /// a quest in the remotely-acceptable wait list. Reading @25 here was gherblino's mis-decode and is a
+    /// strong candidate for why the live remote-accept attempt on the JCQ chain never accepted.
+    /// NOTE a separate client-side level-floor (~lvl 10–20) also applies; the caller must AND in that floor.</summary>
+    public bool RemoteAcceptable => IsWaitListView;
 
     /// <summary>Best-effort class match: the quest's required base class vs the char's base class.
     /// Fiesta class lines (Fighter 1.., Cleric 6.., Archer 11.., Mage 16.., Joker 21..) — a quest

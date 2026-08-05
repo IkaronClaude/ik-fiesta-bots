@@ -591,8 +591,8 @@ public sealed class BotApi
         t["endNeedsLevel"] = q.EndNeedsLevel; t["endLevel"] = q.EndLevel;
         t["class"] = q.Class; t["linkedQuest"] = q.LinkedQuest;
         t["needsNpc"] = q.NeedsNpc; t["needsItem"] = q.NeedsItem; t["needsItemId"] = q.NeedsItemId;
-        t["needsClass"] = q.NeedsClass; t["isVisible"] = q.IsVisible;
-        t["remoteAcceptable"] = q.IsInstantAccept; t["instantHandIn"] = q.IsInstantHandIn;
+        t["needsClass"] = q.NeedsClass; t["isWaitListView"] = q.IsWaitListView;
+        t["remoteAcceptable"] = q.RemoteAcceptable; t["remoteProgress"] = q.IsWaitListProgress; t["instantHandIn"] = q.IsInstantHandIn;
         t["region"] = q.Region; t["questType"] = q.QuestType; t["repeatable"] = q.Repeatable;
         t["exp"] = q.ExpReward;                // turn-in EXP reward (Type-0 reward) — drives exp prioritisation
         t["objectiveMob"] = q.ObjectiveMob;   // mobId to grind for this quest (-1 = meeting quest)
@@ -735,7 +735,7 @@ public sealed class BotApi
             e["noObjective"] = q.Objectives.Count == 0;  // 0-objective: accept + instant turn-in
             // remoteAcceptable = can be accepted from the quest log without walking (0x4414 START_REQ).
             // A separate client-side level-floor (~lvl 10–20) also applies — the driver ANDs that in.
-            e["remoteAcceptable"] = q.IsInstantAccept; e["instantHandIn"] = q.IsInstantHandIn;
+            e["remoteAcceptable"] = q.RemoteAcceptable; e["remoteProgress"] = q.IsWaitListProgress; e["instantHandIn"] = q.IsInstantHandIn;
             var objs = NewTable(); int oi = 1;
             foreach (var o in q.Objectives)
             { var oe = NewTable(); oe["type"] = o.Type; oe["mob"] = o.Mob; oe["count"] = o.Count; oe["item"] = o.Item; objs[oi++] = DynValue.NewTable(oe); }

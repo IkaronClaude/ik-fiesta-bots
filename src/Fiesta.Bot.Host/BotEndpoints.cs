@@ -196,7 +196,8 @@ public static class BotEndpoints
                     // START_REQ 0x4414 + doQuest(npc=0) were tried live and did not accept, so the real
                     // remote-accept sequence is still undecoded (P1). Exposed so "which quests even claim to
                     // support it" is answerable from live data instead of by reading offsets.
-                    remoteAccept = q?.IsInstantAccept ?? false,
+                    remoteAccept = q?.RemoteAcceptable ?? false,          // @24 bIsWaitListView (the real accept gate)
+                    remoteProgress = q?.IsWaitListProgress ?? false,      // @25 — NOT the accept gate
                     remoteHandIn = q?.IsInstantHandIn ?? false,
                     startNpc = q?.StartNpc ?? 0,
                     turnInNpc = q?.TurnInNpc ?? 0,
@@ -561,8 +562,8 @@ public static class BotEndpoints
             {
                 q.Id, q.StartNpc, q.TurnInNpc, q.MinLevel, q.MaxLevel, q.IsNeedLevel, q.Class, q.LinkedQuest,
                 q.ObjectiveMob, q.PrereqQuest,
-                q.NeedsNpc, q.NeedsItem, q.NeedsItemId, q.NeedsClass, q.IsVisible,
-                remoteAcceptable = q.IsInstantAccept, q.IsInstantHandIn, q.Region, q.QuestType, q.Repeatable,
+                q.NeedsNpc, q.NeedsItem, q.NeedsItemId, q.NeedsClass, q.IsWaitListView,
+                remoteAcceptable = q.RemoteAcceptable, remoteProgress = q.IsWaitListProgress, q.IsInstantHandIn, q.Region, q.QuestType, q.Repeatable,
                 title = cd!.QuestDialog(q.Title),
                 npcs = q.Npcs, objectives = q.Objectives, rewards = q.Rewards,
                 q.StartScript, q.ActionScript, q.FinishScript
