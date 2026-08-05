@@ -130,6 +130,78 @@ public static class BotEndpoints
             "note=headline only (quest accept/finish, level-up, death, purchase, errors); info adds kills/quest-progress; " +
             "verbose adds move/cast/auto-attack. Plain text so `curl .../log?level=info` is directly readable.");
 
+        // 🥈 SILVER RULE ENDPOINT (operator 2026-08-05): "I'd have to run a probe script, which stops the
+        // leveller" is an ARCHITECTURE FAILURE — add the endpoint instead. This is that endpoint for quest
+        // targeting, the exact data whose absence caused a wrong diagnosis twice in one session: I could not
+        // read bot.quest(id).objectives without replacing the running driver, so I inferred a quest's target
+        // from its NAME and was wrong. Everything here is read-only and disturbs nothing.
+        //
+        // It answers "WHY is the bot pursuing this quest, and is that target actually killable?" by joining
+        // the quest's objectives to MobInfo (level / maxHp / gradeType) and to the persisted deprioritize
+        // mark. Concretely it exposes the bug class found on 2026-08-05: "Rare Material 4"(q2511) is a
+        // type-2 COLLECT objective for an item dropped by mob22 "Marlone" (L26, 9916 HP, GradeType 1) —
+        // a boss, reachable only through a collect objective, which the type-1-only boss screen missed.
+        group.MapGet("/{id}/quests", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var view = bot.ZoneView;
+            var cd = manager.ClientData;
+            if (view is null || cd is null) return Results.Ok(Array.Empty<object>());
+
+            var rows = new List<object>();
+            foreach (var (qid, status) in view.ActiveQuests)
+            {
+                var q = cd.Quest(qid);
+                var objectives = new List<object>();
+                var maxGrade = 0;
+                if (q is not null)
+                {
+                    foreach (var o in q.Objectives)
+                    {
+                        // Resolve the mob the SAME way the driver must: an objective with mob 0 falls back
+                        // to the quest's own kill target. Reported for BOTH kill (1) and collect (2) types —
+                        // reporting only type 1 is precisely how the boss went unnoticed.
+                        var mob = o.Mob != 0 ? o.Mob : q.ObjectiveMob;
+                        var mi = mob > 0 ? cd.Mob(mob) : null;
+                        if (mi is not null && mi.GradeType > maxGrade) maxGrade = mi.GradeType;
+                        objectives.Add(new
+                        {
+                            type = o.Type,
+                            typeName = o.Type switch { 1 => "kill", 2 => "collect", _ => $"type{o.Type}" },
+                            mob,
+                            viaObjectiveMob = o.Mob == 0 && mob > 0,
+                            item = o.Item,
+                            need = o.Count,
+                            mobName = mi?.Name ?? "",
+                            mobLevel = mi?.Level ?? -1,
+                            mobMaxHp = mi?.MaxHp ?? -1,
+                            mobGrade = mi?.GradeType ?? -1,
+                        });
+                    }
+                }
+                rows.Add(new
+                {
+                    id = qid,
+                    name = cd.QuestName(qid),
+                    status,
+                    repeatable = q?.Repeatable ?? false,
+                    exp = q?.ExpReward ?? 0,
+                    objectiveMob = q?.ObjectiveMob ?? -1,
+                    objectives,
+                    // The verdict fields — what a targeting decision should hinge on.
+                    targetsBoss = maxGrade >= 1,
+                    deprioritizedAtLevel = manager.Knowledge.QuestDeprioritizedAtLevel(bot.Options.Host, qid),
+                });
+            }
+            return Results.Ok(new { level = bot.Level, count = rows.Count, quests = rows });
+        })
+        .WithSummary("Every ACTIVE quest with its objectives joined to MobInfo + the persisted deprioritize mark")
+        .WithDescription("Read-only; safe on a running bot (does NOT replace the driver like applying a probe script does). " +
+            "Per objective: type (kill/collect), the resolved mob (incl. the mob-0 -> objectiveMob fallback), and that mob's " +
+            "level/maxHp/gradeType. `targetsBoss` is true when any objective's mob is GradeType>=1 — the check that must " +
+            "cover COLLECT objectives too, not just kills.");
+
         group.MapPost("/{id}/stop", async (string id) =>
         {
             var stopped = await manager.StopAsync(id);
