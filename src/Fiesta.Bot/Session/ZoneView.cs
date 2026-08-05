@@ -1043,6 +1043,7 @@ public sealed class ZoneView : IDisposable
     /// decodes — damage, kills, exp, stuns — into the live stat panel without ZoneView knowing about
     /// MetricStore. Null until wired; every call site null-checks, so metrics are strictly additive.</summary>
     public Action<string, double>? MetricSink;
+    private DateTime? _mountedSinceUtc;
 
     /// <summary>Raised for every observed incoming hit so a DURABLE store can retain it across sessions
     /// (this in-memory table dies with the ZoneView on each respawn). Args: (mobId, damage).</summary>
@@ -1894,6 +1895,7 @@ public sealed class ZoneView : IDisposable
     private void SelfAbstate(uint idx, uint restKeeptimeMs, bool active, string src)
     {
         bool moveBlock = IsMoveBlockingAbstate?.Invoke(idx) == true;
+        if (moveBlock) MetricSink?.Invoke("stuns", 1);   // stun/root: the states that actually cost us time
         long now = Environment.TickCount64;
         bool changed;
         lock (_selfAbstateLock)
@@ -1997,6 +1999,8 @@ public sealed class ZoneView : IDisposable
             // 0xCC02 payload = [mountHandle u16][zero...]. The mount is a separate
             // mover entity; its MOVESPEED (0xCC0D) uses this handle, not the player's.
             IsMounted = true;
+            MetricSink?.Invoke("mounts", 1);
+            _mountedSinceUtc = DateTime.UtcNow;
             ClearCastBar();   // the summon's cast completed — stop holding still
             var p = pkt.Payload.Span;
             if (p.Length >= 2) _mountHandle = (ushort)(p[0] | (p[1] << 8));
@@ -2005,6 +2009,9 @@ public sealed class ZoneView : IDisposable
         else if (op == OpMoverRideOff)
         {
             IsMounted = false;
+            MetricSink?.Invoke("dismounts", 1);
+            // Bank the ride as SECONDS MOUNTED so "time spent on mount" is a real duration, not a count.
+            if (_mountedSinceUtc is { } ms) { MetricSink?.Invoke("secondsMounted", (DateTime.UtcNow - ms).TotalSeconds); _mountedSinceUtc = null; }
             ClearCastBar();   // the dismount's cast completed
             _mountHandle = null;
             // Reset speed to default running pace (120 u/s). The server will send
@@ -2889,6 +2896,7 @@ public sealed class ZoneView : IDisposable
                 if (cen != Money)
                 {
                     var delta = Money < 0 ? 0 : cen - Money;  // first seed (Money==-1) isn't a real delta
+                    if (delta != 0) MetricSink?.Invoke("moneyDelta", delta);
                     var line = Money < 0
                         ? $"[money] seed {cen}"
                         : $"[money] {(delta >= 0 ? "+" : "")}{delta} -> {cen} (was {Money})";

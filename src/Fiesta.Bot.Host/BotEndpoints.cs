@@ -148,6 +148,40 @@ public static class BotEndpoints
             "time at least X'); for LowerIsBetter (damageTaken, deaths) the HIGH tail. Samples are batched (default " +
             "500ms) so the window means TIME, not caller frequency.");
 
+        // 📡 STREAMING metrics as NDJSON (operator: "Bonus points if you make this endpoint streamable, e.g.
+        // post 'UpdateRate: 10s' and then every 10s the server pushes a new json object"). One JSON object
+        // per line, flushed each tick, so `curl -N` and browser fetch-readers both work with no framing
+        // beyond a newline. Ends when the client disconnects (the cancellation token) or maxSeconds elapses —
+        // an un-bounded stream would otherwise pin a thread per forgotten tab.
+        group.MapGet("/{id}/metrics/stream", async (string id, double? updateRate, int? maxSeconds,
+            HttpContext ctx, CancellationToken ct) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) { ctx.Response.StatusCode = 404; return; }
+            var every = TimeSpan.FromSeconds(Math.Clamp(updateRate ?? 10, 0.5, 300));
+            var deadline = DateTime.UtcNow.AddSeconds(Math.Clamp(maxSeconds ?? 3600, 1, 86_400));
+            ctx.Response.ContentType = "application/x-ndjson";
+            ctx.Response.Headers.CacheControl = "no-cache";
+            var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = false };
+            while (!ct.IsCancellationRequested && DateTime.UtcNow < deadline)
+            {
+                var payload = new
+                {
+                    atUtc = DateTime.UtcNow,
+                    live = LivePanel(bot),
+                    metrics = bot.Metrics.Snapshot(),
+                    maps = bot.Trace.MapCounts(recentOnly: true),
+                    tracePoints = bot.Trace.Count,
+                };
+                await ctx.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(payload, opts) + "\n", ct);
+                await ctx.Response.Body.FlushAsync(ct);   // flush per line or the client sees nothing until buffer fill
+                try { await Task.Delay(every, ct); } catch (OperationCanceledException) { break; }
+            }
+        })
+        .WithSummary("Stream metrics as NDJSON, one JSON object per line")
+        .WithDescription("?updateRate=SECONDS (default 10, clamped 0.5-300) and ?maxSeconds=N (default 3600) to bound " +
+            "the stream. Try: curl -N '.../metrics/stream?updateRate=5'. Each line is the same shape as GET /metrics.");
+
         // Position trace for the browser-rendered heatmap. Stores raw timestamp+map+coord and lets the client
         // poll with `since` (operator: "so I can watch what the bot is doing live and also it takes up less
         // data") — the server never rasterises anything.
