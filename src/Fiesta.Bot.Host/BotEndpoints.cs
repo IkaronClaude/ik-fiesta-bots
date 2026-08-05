@@ -115,6 +115,16 @@ public static class BotEndpoints
         })
         .WithSummary("Status of one bot (incl. recent log)");
 
+        // ⚠️⚠️ `max` IS A REQUEST SIZE, NOT THE BUFFER SIZE. The ring buffer holds 100_000 lines
+        // (BotHandle.MaxLogLines) — roughly 5 hours of verbose history at the measured ~6 lines/sec.
+        // If you do not pass `max` you get the default and silently throw away almost all of it.
+        // This cost real accuracy: with the old 200 default, a level=verbose read returned NINE SECONDS,
+        // and "0 kills, 0 QUEST_MOB_KILL — the bot completes nothing" was reported off exactly that
+        // sample while the bot was in a town phase and actually at q52 5/8 and climbing.
+        //   GET /log?level=note&max=100000                     <- headlines, hours of history
+        //   GET /log?level=info&from=13:41:15&to=13:42:00      <- drill into one moment
+        // A NARROW SAMPLE IS NOT A NEGATIVE RESULT: "I did not see X" means nothing until you know the
+        // window was wide enough to have contained X.
         group.MapGet("/{id}/log", (string id, string? level, int? max, string? from, string? to) =>
         {
             var bot = manager.Get(id);
