@@ -164,7 +164,10 @@ public static class BotEndpoints
                         // reporting only type 1 is precisely how the boss went unnoticed.
                         var mob = o.Mob != 0 ? o.Mob : q.ObjectiveMob;
                         var mi = mob > 0 ? cd.Mob(mob) : null;
-                        if (mi is not null && mi.GradeType > maxGrade) maxGrade = mi.GradeType;
+                        // A boss must be something you FIGHT, so it needs HP. GradeType alone is not enough:
+                        // gathering nodes score high too (mob5018 "Herb" is L150, 0 HP, GradeType 5), and
+                        // treating those as bosses would shelve harmless collection quests.
+                        if (mi is not null && mi.MaxHp > 0 && mi.GradeType > maxGrade) maxGrade = mi.GradeType;
                         objectives.Add(new
                         {
                             type = o.Type,
