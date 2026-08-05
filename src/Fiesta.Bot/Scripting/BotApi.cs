@@ -173,6 +173,39 @@ public sealed class BotApi
     /// current character level — deprioritizes it to "last resort" until a level-up.</summary>
     public void recordQuestDeprioritized(int questId, int atLevel) => _mgr.Knowledge.RecordQuestDeprioritized(_handle.Options.Host, questId, atLevel);
 
+    /// <summary>Contents of personal storage as of the last open: a table of
+    /// <c>{slot=..., id=...}</c>. Empty until storage has been opened. Read with
+    /// <see cref="storageBox"/> / <see cref="storageOpen"/> before depositing.</summary>
+    public DynValue storageItems()
+    {
+        var t = NewTable(); var v = View;
+        if (v is null) return DynValue.NewTable(t);
+        int i = 1;
+        foreach (var (slot, id) in v.StorageItems)
+        {
+            var e = NewTable(); e["slot"] = (int)slot; e["id"] = (int)id;
+            t[i++] = DynValue.NewTable(e);
+        }
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>True if a storage session is currently open (the last open SUCCEEDED). A failed open
+    /// (0x3C07) leaves this false — never assume storage is open, a deposit into a closed storage is
+    /// exactly the silent no-op the operator wants to make impossible.</summary>
+    public bool storageOpen() => View?.StorageOpenUtc is not null;
+
+    /// <summary>The inventory box id storage lives in, LEARNED from the wire, or <b>-1 if not yet
+    /// known</b> (storage was empty the only time we opened it, so no item location revealed it).
+    /// A deposit must refuse loudly at -1 rather than guess.</summary>
+    public int storageBox() => View?.StorageBox ?? -1;
+
+    /// <summary>Money held in storage, and the current/max storage page from the last open.</summary>
+    public double storageCen() => View?.StorageCen ?? 0;
+    /// <inheritdoc cref="storageCen"/>
+    public int storagePage() => View?.StoragePage ?? 0;
+    /// <inheritdoc cref="storageCen"/>
+    public int storageMaxPage() => View?.StorageMaxPage ?? 0;
+
     /// <summary>The item ids the last-opened merchant sells (from SHOPOPEN/SHOPOPENTABLE). Empty
     /// until a shop is opened. The driver reads this + <see cref="itemInfo"/> to decide what to buy.</summary>
     public DynValue shopItems()

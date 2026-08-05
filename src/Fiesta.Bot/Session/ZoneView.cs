@@ -242,6 +242,15 @@ public sealed class ZoneView : IDisposable
     // SellAndInventoryManagement.pcapng). So it must flip the generic "shop is open" signal that
     // SELL gates on, else a sell into it is rejected 0x0383 ("shop not open").
     private const ushort OpShopOpenSoulStone = 0x3C05;
+    // Personal STORAGE (warehouse). NC_MENU_OPENSTORAGE_CMD (Menu cmd 8 = 0x3C08) carries the storage
+    // CONTENTS the same way a shop-open carries its sell list; NC_MENU_OPENSTORAGE_FAIL_CMD (cmd 7 =
+    // 0x3C07) is the refusal. Opcodes from the PDB enum extract (dept MENU=15).
+    // ⚠️ NOT the money packets: NC_ITEM_DEPOSIT_REQ/ACK (0x301C/0x301D) and NC_ITEM_WITHDRAW_REQ/ACK
+    // (0x301E/0x301F) carry ONLY a `cen u64` — they move MONEY in and out of storage, not items.
+    // ITEMS move by NC_ITEM_RELOC_REQ (0x300B) {from ITEM_INVEN u16, to ITEM_INVEN u16} between the
+    // bag box and the storage box — which is why the storage box id has to be known before depositing.
+    private const ushort OpStorageOpenFail = 0x3C07;
+    private const ushort OpStorageOpen = 0x3C08;
     // NC_MENU_RANDOMOPTION_CMD (Menu cmd 14 = 0x3C0E): a NON-shop NPC menu (the Anvil reforge/reroll
     // service). Clicking such an NPC returns this instead of a shop-open — the sync open flow uses it
     // to classify the NPC as "not a shop". (Catalogue the other niche NPC menus per the P1 ticket.)
@@ -1393,6 +1402,39 @@ public sealed class ZoneView : IDisposable
     /// <summary>Raised when the learned-skill list is (re)populated at zone login.</summary>
     public event Action? SkillsChanged;
 
+    // ── Personal storage (warehouse) ───────────────────────────────────────────────────────────────
+    private (byte Slot, ushort ItemId)[] _storageItems = [];
+
+    /// <summary>Contents of the personal storage as of the last open (0x3C08), as (slot, itemId).
+    /// Empty until storage has been opened at least once this session.</summary>
+    public IReadOnlyList<(byte Slot, ushort ItemId)> StorageItems => _storageItems;
+
+    /// <summary>The inventory BOX id storage lives in — <b>learned from the wire</b> (every item
+    /// `location` in the storage-open packet is a packed <c>(box &lt;&lt; 10) | slot</c>, same encoding as
+    /// the bag's box 9 and equipment's box 8), never hard-coded.
+    /// <para><b>-1 = not yet known</b>, which happens when storage was empty the only time we opened it
+    /// (an empty item array carries no location to learn from). A deposit MUST refuse loudly while this
+    /// is -1 rather than guess a box — moving an item to the wrong container is not recoverable by
+    /// retrying.</para></summary>
+    public int StorageBox { get; private set; } = -1;
+
+    /// <summary>Money currently held IN storage (the `cen` field of the storage-open packet). Storage
+    /// money moves with NC_ITEM_DEPOSIT/WITHDRAW (0x301C/0x301E), which carry only a cen amount.</summary>
+    public ulong StorageCen { get; private set; }
+
+    /// <summary>Current / maximum storage page from the last open. Storage is paged; a page is
+    /// requested with NC_ITEM_OPENSTORAGEPAGE_REQ (0x3028) <c>{page u8}</c>.</summary>
+    public byte StoragePage { get; private set; }
+    /// <inheritdoc cref="StoragePage"/>
+    public byte StorageMaxPage { get; private set; }
+
+    /// <summary>UTC of the last successful storage open, or null if the last attempt FAILED (0x3C07).
+    /// A deposit is only valid while a storage session is genuinely open — check this, don't assume.</summary>
+    public DateTime? StorageOpenUtc { get; private set; }
+
+    /// <summary>Raised when storage opens with its contents.</summary>
+    public event Action<IReadOnlyList<(byte Slot, ushort ItemId)>>? StorageOpened;
+
     private readonly HashSet<int> _doneQuests = new();
     private readonly ConcurrentDictionary<int, byte> _activeQuests = new();
     private readonly HashSet<int> _availableQuests = new();
@@ -2331,6 +2373,61 @@ public sealed class ZoneView : IDisposable
                     : ShopKind.Item; // 0x3C06 / 0x3C0B
                 ShopOpened?.Invoke(_shopItems);
             }
+        }
+        else if (op == OpStorageOpen)
+        {
+            // NC_MENU_OPENSTORAGE_CMD (0x3C08) — the personal storage/warehouse opened. Same shape as a
+            // shop-open: the server SENDS THE CONTENTS. PDB layout (PROTO_NC_MENU_OPENSTORAGE_CMD, 12b
+            // header + array): {cen u64 @0, maxpage u8 @8, curpage u8 @9, nOpenType u8 @10,
+            // itemcounter u8 @11, itemarray PROTO_ITEMPACKET_INFORM[] @12}, and each ITEMPACKET_INFORM is
+            // {datasize u8 @0, location ITEM_INVEN u16 @1, info SHINE_ITEM_STRUCT @3} with `datasize`
+            // giving the record's own length (so we do NOT need to know SHINE_ITEM_STRUCT's size).
+            //
+            // ⭐ The storage BOX id is LEARNED HERE, not baked: every `location` is a packed
+            // (box << 10) | slot, exactly like the bag (box 9) and equipment (box 8), so box = loc >> 10.
+            // If storage is empty there is nothing to learn from and StorageBox stays -1 — deposits must
+            // refuse loudly rather than guess a box (see StorageBox).
+            var p = pkt.Payload.Span;
+            if (p.Length >= 12)
+            {
+                StorageCen = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(p.Slice(0, 8));
+                StorageMaxPage = p[8];
+                StoragePage = p[9];
+                var openType = p[10];
+                int count = p[11];
+                var items = new List<(byte Slot, ushort ItemId)>(count);
+                var off = 12;
+                for (var i = 0; i < count && off + 3 <= p.Length; i++)
+                {
+                    var datasize = p[off];
+                    var loc = (ushort)(p[off + 1] | (p[off + 2] << 8));
+                    var box = (byte)(loc >> 10);
+                    var slot = (byte)(loc & 0xFF);
+                    // itemId is the first field of SHINE_ITEM_STRUCT, immediately after `location`.
+                    var itemId = off + 5 <= p.Length ? (ushort)(p[off + 3] | (p[off + 4] << 8)) : (ushort)0;
+                    if (StorageBox < 0) StorageBox = box;
+                    items.Add((slot, itemId));
+                    if (datasize == 0) break;           // malformed; don't spin
+                    off += datasize;
+                }
+                _storageItems = items.ToArray();
+                StorageOpenUtc = DateTime.UtcNow;
+                _log?.Invoke($"[ZoneView] STORAGE opened (0x3C08): {count} item(s), page {StoragePage}/{StorageMaxPage}, " +
+                             $"cen={StorageCen}, openType={openType}, box={(StorageBox < 0 ? "UNKNOWN (storage empty)" : StorageBox.ToString())}" +
+                             (items.Count > 0 ? " — " + string.Join(",", items.Select(it => $"slot{it.Slot}=item{it.ItemId}")) : ""));
+                StorageOpened?.Invoke(_storageItems);
+            }
+        }
+        else if (op == OpStorageOpenFail)
+        {
+            // NC_MENU_OPENSTORAGE_FAIL_CMD (0x3C07). The operator's hard requirement is that storage
+            // FAILS LOUDLY — a silent storage failure is indistinguishable from "the bag filled up
+            // again" and can burn days. So this is never swallowed.
+            var p = pkt.Payload.Span;
+            var err = p.Length >= 2 ? (p[0] | (p[1] << 8)) : (p.Length == 1 ? p[0] : -1);
+            StorageOpenUtc = null;
+            _log?.Invoke($"[ZoneView] CRUTCH[CRIT] STORAGE OPEN FAILED (0x3C07) err={err} " +
+                         $"({p.Length}b: {Convert.ToHexString(p.Length > 8 ? p.Slice(0, 8) : p)})");
         }
         else if (op == OpShopOpenSoulStone)
         {
