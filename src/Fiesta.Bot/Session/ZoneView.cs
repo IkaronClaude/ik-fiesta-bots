@@ -978,7 +978,10 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>When the server opened a cast bar on us (<c>NC_ACT_CREATECASTBAR</c>), UtcMinValue if none
     /// is in flight. Cleared by <c>NC_ACT_CANCELCASTBAR</c> and by whatever completes the cast (RIDE_ON for a
-    /// mount summon).</summary>
+    /// mount summon).
+    /// <para>⚠️ <c>NC_ACT_CANCELCASTBAR</c> (0x2048) is misleadingly named: it fires on COMPLETION as well as
+    /// on a genuine cancel — observed arriving in the same millisecond as the RIDE_ON of a successful summon.
+    /// Use the cast's DURATION to tell them apart (self-cancelled: 99ms; completed: 2755ms).</para></summary>
     public DateTime CastBarStartedAtUtc { get; private set; } = DateTime.MinValue;
 
     /// <summary>⭐ True while a server-side CAST BAR is in flight — a timed action (mount summon, skill) that
@@ -1876,12 +1879,19 @@ public sealed class ZoneView : IDisposable
         }
         else if (op == OpCancelCastBar)
         {
-            // Note (not Verbose): a cancelled cast is a FAILED action, and until now it was completely
-            // invisible — we spent two passes calling our own self-cancelled mount "a refused summon".
-            var held = CastBarStartedAtUtc > DateTime.MinValue
-                ? $" after {(DateTime.UtcNow - CastBarStartedAtUtc).TotalMilliseconds:F0}ms" : "";
+            // ⚠️ DESPITE THE ENUM NAME (NC_ACT_CANCELCASTBAR), 0x2048 fires on COMPLETION as well as on a real
+            // cancel — observed 15:10:13.792, where it landed in the SAME MILLISECOND as the RIDE_ON that proved
+            // the summon succeeded. So this line must NOT assert failure; the DURATION is what distinguishes
+            // them. A self-cancelled summon closed after 99ms; the successful one ran 2755ms (the full ~3s
+            // animation). Report the duration and let it speak — an early close means something interrupted us.
+            var heldMs = CastBarStartedAtUtc > DateTime.MinValue
+                ? (DateTime.UtcNow - CastBarStartedAtUtc).TotalMilliseconds : -1;
             ClearCastBar();
-            _logLevel?.Invoke(BotLogLevel.Note, $"[ZoneView] CASTBAR CANCELLED (0x2048){held} — the cast did NOT complete");
+            var verdict = heldMs < 0 ? "" : heldMs < 1000
+                ? " — CUT SHORT, something interrupted the cast (we moved?)"
+                : " — ran to full length (likely completed; check for the result packet)";
+            _logLevel?.Invoke(BotLogLevel.Note,
+                $"[ZoneView] CASTBAR closed (0x2048) after {(heldMs < 0 ? 0 : heldMs):F0}ms{verdict}");
         }
         else if (op == OpAbStateSet || op == OpAbStateReset)
         {
