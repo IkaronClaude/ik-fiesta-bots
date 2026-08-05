@@ -33,8 +33,10 @@ public sealed class NpcKnowledge
             ?? Path.Combine(AppContext.BaseDirectory, "bot-knowledge");
         _path = Path.Combine(baseDir, "npc-shops.json");
         _questDeprioPath = Path.Combine(baseDir, "quest-deprio.json");
+        _mobThreatPath = Path.Combine(baseDir, "mob-threats.json");
         Load();
         LoadQuestDeprio();
+        LoadMobThreat();
     }
 
     private static string QKey(string host, int questId) => $"{host}|{questId}";
@@ -80,6 +82,82 @@ public sealed class NpcKnowledge
                 var json = JsonSerializer.Serialize(
                     new SortedDictionary<string, int>(_questDeprio), new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(_questDeprioPath, json);
+            }
+            catch { /* persistence is best-effort; in-memory still works this session */ }
+        }
+    }
+
+    // ⚔️ DURABLE MOB THREAT TABLE — how hard each mob hits, learned by being hit.
+    // ZoneView learns this per SESSION, but ZoneView is recreated on every respawn/pod-roll, and this bot
+    // respawns constantly (deploys, deaths, cross-server handoffs). Measured 2026-08-05: mob4002 killed the
+    // bot TWICE (208-246 dmg vs 881 maxHp = four hits, -528 exp) and in the very next session was not in the
+    // table at all — so the lethality demotion built on it could not fire for the mob that motivated it.
+    // Each session re-paid the learning cost the model exists to avoid paying twice. Persisting it here means
+    // a mob is learned ONCE EVER, the same principle as the shop classification above.
+    // ⚠️ Stores the SAMPLES (max/count/sum), never a derived verdict like "dangerous": maxHp changes with
+    // levels and gear, so "how many hits can this kill me in" must be recomputed against CURRENT maxHp, not
+    // frozen at the moment of first contact.
+    private readonly string _mobThreatPath;
+    private readonly object _mobThreatIoLock = new();
+    // key = "host|mobId" -> observed damage samples
+    private readonly ConcurrentDictionary<string, MobThreatSample> _mobThreat = new(StringComparer.Ordinal);
+
+    /// <summary>Observed incoming-damage samples for one mob. <paramref name="Max"/> is the worst hit seen.</summary>
+    public sealed record MobThreatSample(int Max, int Count, long Sum);
+
+    private static string MKey(string host, int mobId) => $"{host}|{mobId}";
+
+    /// <summary>Everything learned about how hard <paramref name="mobId"/> hits on this server, or null if we
+    /// have never been hit by it. NULL MEANS NO EVIDENCE — it does NOT mean the mob is harmless.</summary>
+    public MobThreatSample? MobThreat(string host, int mobId) =>
+        _mobThreat.TryGetValue(MKey(host, mobId), out var s) ? s : null;
+
+    /// <summary>All mob threat samples for a server, as mobId → sample (for seeding a fresh ZoneView).</summary>
+    public IReadOnlyDictionary<int, MobThreatSample> MobThreatsFor(string host)
+    {
+        var prefix = host + "|";
+        var outp = new Dictionary<int, MobThreatSample>();
+        foreach (var (k, v) in _mobThreat)
+            if (k.StartsWith(prefix, StringComparison.Ordinal)
+                && int.TryParse(k.AsSpan(prefix.Length), out var mob)) outp[mob] = v;
+        return outp;
+    }
+
+    /// <summary>Record one observed hit. Persists only when the WORST-CASE grows — the max is what drives the
+    /// survivability decision, and saving on every sample would write on every incoming hit in combat.</summary>
+    public void RecordMobHit(string host, int mobId, int damage)
+    {
+        if (string.IsNullOrEmpty(host) || mobId <= 0 || damage <= 0) return;
+        var key = MKey(host, mobId);
+        var before = _mobThreat.TryGetValue(key, out var old) ? old.Max : -1;
+        var upd = _mobThreat.AddOrUpdate(key,
+            _ => new MobThreatSample(damage, 1, damage),
+            (_, s) => new MobThreatSample(Math.Max(s.Max, damage), s.Count + 1, s.Sum + damage));
+        if (upd.Max > before) SaveMobThreat();
+    }
+
+    private void LoadMobThreat()
+    {
+        try
+        {
+            if (!File.Exists(_mobThreatPath)) return;
+            var json = File.ReadAllText(_mobThreatPath);
+            var d = JsonSerializer.Deserialize<Dictionary<string, MobThreatSample>>(json);
+            if (d is not null) foreach (var (k, v) in d) _mobThreat[k] = v;
+        }
+        catch { /* a corrupt/missing store just starts empty */ }
+    }
+
+    private void SaveMobThreat()
+    {
+        lock (_mobThreatIoLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_mobThreatPath)!);
+                var json = JsonSerializer.Serialize(
+                    new SortedDictionary<string, MobThreatSample>(_mobThreat), new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(_mobThreatPath, json);
             }
             catch { /* persistence is best-effort; in-memory still works this session */ }
         }

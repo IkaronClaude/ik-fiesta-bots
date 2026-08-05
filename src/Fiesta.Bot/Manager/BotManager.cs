@@ -2751,6 +2751,14 @@ public sealed class BotManager : IAsyncDisposable
                 };
                 if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
+                // ⚔️ DURABLE THREAT TABLE: seed what we already know about how hard each mob hits, and push
+                // every new sample back out. ZoneView's table dies on each respawn/handoff and this bot
+                // respawns constantly, so without this a mob has to hurt us again in EVERY session before the
+                // lethality check can see it — mob4002 killed the bot twice and was absent from the table in
+                // the very next session. Learned once, remembered thereafter.
+                zoneView.SeedMobHits(Knowledge.MobThreatsFor(handle.Options.Host)
+                    .Select(kv => (kv.Key, kv.Value.Max, kv.Value.Count, kv.Value.Sum)));
+                zoneView.MobHitSampled = (mobId, dmg) => Knowledge.RecordMobHit(handle.Options.Host, mobId, dmg);
                 zoneView.IsInsideScenarioArea = (areaName, pos) =>          // hold AREAENTRY_ACK until inside the .aid box
                 {
                     if (handle.CurrentMap is not { } m || AreaProvider?.Invoke(m) is not { } areas) return true; // no data → ack now

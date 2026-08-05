@@ -1039,6 +1039,26 @@ public sealed class ZoneView : IDisposable
     /// unknown mob as unknown, NOT as safe — see [[fiesta-nothing-yet-read-as-an-answer]]).</summary>
     public int MobHitSamples(int mobId) => _mobHits.TryGetValue(mobId, out var s) ? s.Count : 0;
 
+    /// <summary>Raised for every observed incoming hit so a DURABLE store can retain it across sessions
+    /// (this in-memory table dies with the ZoneView on each respawn). Args: (mobId, damage).</summary>
+    public Action<int, int>? MobHitSampled;
+
+    /// <summary>Seed the threat table from durable knowledge at zone-enter, so a mob learned in an earlier
+    /// session is dangerous from the FIRST tick rather than needing to hurt us again to be re-learned.</summary>
+    public void SeedMobHits(IEnumerable<(int MobId, int Max, int Count, long Sum)> seeds)
+    {
+        var n = 0;
+        foreach (var (mobId, max, count, sum) in seeds)
+        {
+            if (mobId <= 0 || max <= 0) continue;
+            _mobHits[mobId] = (max, count, sum);
+            n++;
+        }
+        if (n > 0)
+            _logLevel?.Invoke(BotLogLevel.Note, $"[threat] seeded {n} mob(s) from durable knowledge — " +
+                "previously-learned threats apply immediately, no need to be hit again to re-learn them");
+    }
+
     /// <summary>Every mob we have damage evidence for: mobId → (max, samples, avg).</summary>
     public IReadOnlyDictionary<int, (int Max, int Count, double Avg)> LearnedMobHits =>
         _mobHits.ToDictionary(kv => kv.Key,
@@ -1190,6 +1210,7 @@ public sealed class ZoneView : IDisposable
                     var upd = _mobHits.AddOrUpdate(atkMob,
                         _ => (h.Damage, 1, h.Damage),
                         (_, s) => (Math.Max(s.Max, h.Damage), s.Count + 1, s.Sum + h.Damage));
+                    MobHitSampled?.Invoke(atkMob, h.Damage);   // persist it — this table dies with the session
                     // Announce a new worst-case only — the headline a human needs is "this thing can take
                     // N of my HP in one hit", not every sample. Note level, and only on a real increase.
                     if (upd.Max > prevMax && MaxHp > 0)
