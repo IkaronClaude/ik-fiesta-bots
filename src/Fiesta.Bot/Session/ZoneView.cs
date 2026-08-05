@@ -536,6 +536,17 @@ public sealed class ZoneView : IDisposable
     public Func<int, string>? QuestNameResolver { get; set; }
     private string QName(int id) => QuestNameResolver?.Invoke(id) ?? $"q{id}";
 
+    /// <summary>Resolves an item id → the skill its book teaches and WHICH TABLE that id is in
+    /// (set from <c>ClientData.ScrollSkill</c>). Needed because the server's learn confirmation
+    /// (NC_SKILL_SKILL_LEARNSUC_CMD 0x4804) carries a bare skill id and is used for BOTH active and
+    /// passive learns — the id spaces overlap, so the packet alone cannot say which set to file it in.
+    /// The real client knows from the item it just used; so do we, via <see cref="LastUseAckItem"/>.
+    /// <para>Wire-proven 2026-08-05 on Bot7170: using "Bravery Mastery [01]" produced
+    /// <c>0x4804 {id=0}</c> and "One Handed Sword Mastery [01]" produced <c>0x4804 {id=9}</c> — both
+    /// PASSIVE ids. Filing them as actives made the bot believe it knew ActiveSkill 9 =
+    /// "Slice and Dice [10]", which castRotation would then pick as the top rank of that family.</para></summary>
+    public Func<int, (int Id, bool Passive)>? ScrollSkillResolver { get; set; }
+
     public event Action<NearbyPlayer>? PlayerAppeared;
 
     /// <summary>Raised when a tracked handle leaves view.</summary>
@@ -2766,17 +2777,35 @@ public sealed class ZoneView : IDisposable
         else if (op == OpSkillLearnSuc)
         {
             // NC_SKILL_SKILL_LEARNSUC_CMD (0x4804): the server CONFIRMS a skill was learned (e.g. after
-            // using a skill scroll) = {skillId u16 @0, level u8 @2}. Without handling this, learnedSkills()
-            // stayed at the login seed and castRotation never used a freshly-learned skill. Add it so the
-            // bot recognizes + casts the real combat skills it just bought from the skill master.
+            // using a skill book) = {skillId u16 @0, level u8 @2}. Without handling this, learnedSkills()
+            // stayed at the login seed and castRotation never used a freshly-learned skill.
+            //
+            // ⚠️ THE SAME PACKET CONFIRMS PASSIVE LEARNS, carrying a PASSIVE id — and the two id spaces
+            // overlap, so the packet cannot tell us which set to file it in. Resolve it the way the real
+            // client does: from the BOOK WE JUST USED. NC_ITEM_USE_ACK (0x3016) lands a few ms earlier
+            // (07:35:30.910 -> .978 and 07:35:35.914 -> .914 on the wire), so LastUseAckItem identifies
+            // the book, and ClientData.ScrollSkill maps it to (id, passive). We only trust it when the
+            // book's skill id MATCHES the confirmed id — otherwise fall back to ACTIVE, which is what a
+            // skill-master learn (no item) is.
+            // Filing a passive as an active is not cosmetic: learning "One Handed Sword Mastery [01]"
+            // (passive 9) used to add active 9 = "Slice and Dice [10]" to the cast rotation, which then
+            // picks it as the highest rank of that family — casting a skill the character does not have.
             var p = pkt.Payload.Span;
             if (p.Length >= 2)
             {
                 var skillId = (ushort)(p[0] | (p[1] << 8));
                 var lvl = p.Length >= 3 ? p[2] : (byte)0;
-                if (_skills.TryAdd(skillId, 1))
+                var passive = false;
+                if (LastUseAckItem >= 0 && ScrollSkillResolver is { } resolve)
                 {
-                    _log?.Invoke($"[ZoneView] SKILL LEARNED: id={skillId} lv{lvl} (now know {_skills.Count})");
+                    var (bookSkill, bookPassive) = resolve(LastUseAckItem);
+                    if (bookSkill == skillId) passive = bookPassive;
+                }
+                var set = passive ? _passives : _skills;
+                if (set.TryAdd(skillId, 1))
+                {
+                    _log?.Invoke($"[ZoneView] {(passive ? "PASSIVE" : "SKILL")} LEARNED: id={skillId} lv{lvl} " +
+                                 $"(now know {_skills.Count} active / {_passives.Count} passive)");
                     SkillsChanged?.Invoke();
                 }
             }

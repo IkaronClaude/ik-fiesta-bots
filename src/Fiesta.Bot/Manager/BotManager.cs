@@ -2535,6 +2535,9 @@ public sealed class BotManager : IAsyncDisposable
                 // opt-in via spawn options.
                 using var zoneView = new ZoneView(zoneSession, Log, handle.Log);
                 zoneView.QuestNameResolver = qid => ClientData?.QuestName(qid) ?? $"q{qid}";  // log quest NAMES, not bare ids
+                // Lets the 0x4804 learn-confirmation tell an ACTIVE learn from a PASSIVE one (overlapping
+                // id spaces) by looking up the book that was just used. See ZoneView.ScrollSkillResolver.
+                zoneView.ScrollSkillResolver = itemId => ClientData?.ScrollSkill(itemId) ?? (-1, false);
                 handle.ZoneView = zoneView;
                 // DYNAMIC SCENARIO-DOOR COLLISION (2026-07-15): push live door states into the map's pathfinding
                 // grid so closed doors become walls in our collision — matching the server, killing the JCQ
