@@ -1290,9 +1290,18 @@ public sealed class ZoneView : IDisposable
     /// (NC_CHAR_CLIENT_PASSIVE_CMD 0x103E). Resolve a name with client PassiveSkill.</summary>
     public IReadOnlyCollection<ushort> LearnedPassives => _passives.Keys.ToArray();
 
-    /// <summary>True if the character has learned the given skill id (active OR passive) — the
-    /// "do I already know this" check (e.g. to avoid buying a scroll for a skill already learned).</summary>
-    public bool HasSkill(ushort skillId) => _skills.ContainsKey(skillId) || _passives.ContainsKey(skillId);
+    /// <summary>True if the character has learned the given skill id — the "do I already know this"
+    /// check (e.g. to avoid buying/using a book for a skill already learned).
+    /// <para>⚠️ <paramref name="passive"/> SELECTS THE ID SPACE and is not optional in meaning:
+    /// <c>ActiveSkill</c> and <c>PassiveSkill</c> are separate client tables whose ids OVERLAP.
+    /// ActiveSkill 0 = "Slice and Dice [01]" while PassiveSkill 0 = "Bravery Mastery [01]";
+    /// ActiveSkill 9/10 exist and so do PassiveSkill 9/10 ("One Handed Sword Mastery [01]/[02]").
+    /// This method used to OR the two sets together, so a character that knew Slice and Dice [01]
+    /// (active 0) reported "already learned" for Bravery Mastery [01] (passive 0) and would never
+    /// learn it — one of the two bugs that left three mastery books rotting in Bot7170's bag
+    /// (2026-08-05). Always pass the flag from <c>ClientData.ScrollSkill().Passive</c>.</para></summary>
+    public bool HasSkill(ushort skillId, bool passive) =>
+        passive ? _passives.ContainsKey(skillId) : _skills.ContainsKey(skillId);
 
     /// <summary>The NC_CHAR_CLIENT_ITEM_CMD <c>box</c> value that holds WORN gear (vs bag
     /// pages). Confirmed from the ZoneEntry item-frame log: box 8 carried the 6 equipped
@@ -1352,12 +1361,17 @@ public sealed class ZoneView : IDisposable
     }
 
     /// <summary>Seed the learned PASSIVE skills from the zone-login passive list (0x103E).
-    /// Resolve names via client PassiveSkill; <see cref="HasSkill"/> covers actives + passives.</summary>
+    /// Resolve names via client PassiveSkill; check membership with <see cref="HasSkill"/> passing
+    /// <c>passive: true</c> (the id spaces overlap — see that method).
+    /// <para>id 0 is a REAL passive ("Bravery Mastery [01]" / <c>BraveMastery01</c>), NOT a sentinel —
+    /// the same trap already documented for the active list. Filtering it out (as this did until
+    /// 2026-08-05) made a learned Bravery Mastery [01] invisible, so the leveler kept trying to
+    /// learn it.</para></summary>
     public void SeedPassives(IEnumerable<ushort>? passives)
     {
         if (passives is null) return;
         var added = 0;
-        foreach (var p in passives) if (p != 0 && _passives.TryAdd(p, 1)) added++;
+        foreach (var p in passives) if (_passives.TryAdd(p, 1)) added++;
         if (added > 0)
         {
             _log?.Invoke($"[ZoneView] seeded {added} learned passives: {string.Join(",", _passives.Keys.OrderBy(k => k))}");
@@ -2736,7 +2750,11 @@ public sealed class ZoneView : IDisposable
                     var off = 2 + i * 2;
                     if (off + 2 > p.Length) break;
                     var pid = (ushort)(p[off] | (p[off + 1] << 8));
-                    if (pid != 0 && _passives.TryAdd(pid, 1)) added++;
+                    // id 0 is a REAL passive ("Bravery Mastery [01]"/BraveMastery01) — the `number`
+                    // field already bounds the loop, so there is no empty-slot sentinel to filter.
+                    // Same bug the ACTIVE list above was fixed for on 2026-07-01; the passive list
+                    // kept the filter until 2026-08-05.
+                    if (_passives.TryAdd(pid, 1)) added++;
                 }
                 if (added > 0)
                 {

@@ -115,21 +115,34 @@ public sealed class BotApi
         // off-hand shield (Equip 10, ShieldAC>0). The driver uses twoHand to avoid the infinite "equip a
         // second hand item → server rejects (2H uses both hands) → re-equip" loop. (operator 2026-07-07)
         t["twoHand"] = it.TwoHand; t["shieldAc"] = it.ShieldAc;
-        // For a skill scroll, the ACTIVE-skill id it teaches (InxName join), else -1. Lets the driver
-        // skip buying a scroll for a skill already learned: if hasSkill(itemInfo(id).scrollSkillId) skip.
-        var scrollSid = it.IsScroll ? (_mgr.ClientData?.ScrollSkillId(id) ?? -1) : -1;
+        // For a skill book, the skill id it teaches (InxName join), else -1 — PLUS which table that id
+        // lives in. ActiveSkill and PassiveSkill are separate tables with OVERLAPPING id spaces (active
+        // 0 = "Slice and Dice [01]", passive 0 = "Bravery Mastery [01]"), so `scrollSkillId` alone is
+        // ambiguous: ALWAYS pass scrollSkillPassive through to hasSkill(id, passive).
+        var (scrollSid, scrollPassive) = it.IsScroll
+            ? (_mgr.ClientData?.ScrollSkill(id) ?? (-1, false))
+            : (-1, false);
         t["scrollSkillId"] = scrollSid;
-        // The PREREQUISITE skill id the taught skill needs first (ActiveSkill DemandSk), or 0 if none.
-        // Gate learn-from-bag on hasSkill(prereq) so a rank-[02] scroll isn't USE'd (and looped forever)
-        // before rank-[01] is learned — the server refuses the out-of-order learn.
-        t["scrollSkillPrereq"] = scrollSid >= 0 ? (_mgr.ClientData?.SkillPrereqId(scrollSid) ?? 0) : 0;
+        t["scrollSkillPassive"] = scrollPassive;
+        // The PREREQUISITE skill id the taught skill needs first (DemandSk, same table as the skill),
+        // or -1 if none. Gate learn-from-bag on hasSkill(prereq, passive) so a rank-[02] book isn't USE'd
+        // (and looped forever) before rank-[01] is learned — the server refuses the out-of-order learn.
+        // -1, NOT 0, means "no prereq": 0 is a real id in BOTH tables (Slice and Dice [02]'s genuine
+        // prereq is active id 0; One Handed Sword Mastery [02]'s is passive id 9).
+        t["scrollSkillPrereq"] = scrollSid >= 0 ? (_mgr.ClientData?.SkillPrereqId(scrollSid, scrollPassive) ?? -1) : -1;
         return DynValue.NewTable(t);
     }
 
-    /// <summary>The ACTIVE-skill id a skill scroll teaches (via the ItemInfo↔ActiveSkill InxName join),
-    /// or -1 if the item isn't a skill scroll. Pair with <see cref="hasSkill"/> to avoid over-buying:
-    /// don't buy a scroll whose <c>scrollSkillId</c> is already learned (or whose item is in the bag).</summary>
-    public int scrollSkillId(int itemId) => _mgr.ClientData?.ScrollSkillId(itemId) ?? -1;
+    /// <summary>The skill id a skill book teaches (ItemInfo↔ActiveSkill/PassiveSkill InxName join), or
+    /// -1 if the item isn't a skill book. ⚠️ AMBIGUOUS ALONE — the two tables' id spaces overlap; use
+    /// <see cref="scrollSkillPassive"/> (or <c>itemInfo(id).scrollSkillPassive</c>) to know which, and
+    /// pass it to <see cref="hasSkill"/>. Avoids over-buying a book for a skill already learned.</summary>
+    public int scrollSkillId(int itemId) => _mgr.ClientData?.ScrollSkill(itemId).Id ?? -1;
+
+    /// <summary>True if the skill taught by this book is a PASSIVE (mastery — in <c>PassiveSkill</c>),
+    /// false if an active (<c>ActiveSkill</c>) or not a book. Selects the id space for
+    /// <see cref="scrollSkillId"/> / <see cref="hasSkill"/>.</summary>
+    public bool scrollSkillPassive(int itemId) => _mgr.ClientData?.ScrollSkill(itemId).Passive ?? false;
 
     /// <summary>The PERSISTED learnt shop kind of an NPC on the current server+map ("weapon"|"skill"|
     /// "item"|"soulstone"|"notshop"), or "" if never encountered. Lets discovery skip re-probing an NPC
@@ -170,9 +183,23 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>True if the bot has already learned this skill id (from the login skill list +
-    /// any learned this session). Lets the driver skip re-buying a scroll it already knows.</summary>
-    public bool hasSkill(int id) => View?.HasSkill((ushort)id) ?? false;
+    /// <summary>True if the bot has already learned this skill id (from the login skill/passive lists +
+    /// anything learned this session). Lets the driver skip re-buying/re-using a book it already knows.
+    /// <para>⚠️ <paramref name="passive"/> SELECTS THE ID SPACE — <c>ActiveSkill</c> and
+    /// <c>PassiveSkill</c> ids overlap (active 0 = "Slice and Dice [01]", passive 0 = "Bravery
+    /// Mastery [01]"). Pass <c>itemInfo(id).scrollSkillPassive</c>. Defaults to false (active) for the
+    /// existing combat callers, which only ever deal in active ids.</para></summary>
+    public bool hasSkill(int id, bool passive = false) => View?.HasSkill((ushort)id, passive) ?? false;
+
+    /// <summary>The PASSIVE skill ids the character has learned (login 0x103E list). Separate id space
+    /// from <see cref="learnedSkills"/> — see <see cref="hasSkill"/>.</summary>
+    public DynValue learnedPassives()
+    {
+        var t = NewTable(); var v = View;
+        if (v is null) return DynValue.NewTable(t);
+        int i = 1; foreach (var id in v.LearnedPassives) t[i++] = (int)id;
+        return DynValue.NewTable(t);
+    }
 
     /// <summary>The inventory bag slot currently holding <paramref name="itemId"/> (e.g. a scroll
     /// just bought), or -1 if not in the bag. Use with <see cref="useItem"/> to consume it.</summary>

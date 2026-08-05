@@ -24,7 +24,8 @@ public sealed class ClientData
     private readonly ConcurrentDictionary<string, ShnTable?> _cache = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyDictionary<int, QuestDef>? _quests;
     private readonly object _questLock = new();
-    private IReadOnlyDictionary<string, int>? _skillIdByInx; // ActiveSkill InxName -> skill ID
+    private IReadOnlyDictionary<string, int>? _skillIdByInx;   // ActiveSkill  InxName -> skill ID
+    private IReadOnlyDictionary<string, int>? _passiveIdByInx; // PassiveSkill InxName -> skill ID (SEPARATE id space)
     private readonly object _skillInxLock = new();
     private IReadOnlySet<uint>? _moveBlockAbstates; // AbState.AbStataIndex set that immobilizes (stun/root)
     private readonly object _abstateLock = new();
@@ -239,54 +240,91 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Name");
     }
 
-    /// <summary>The ACTIVE-skill id a skill scroll teaches, or -1 if the item isn't a skill scroll
-    /// (or no matching skill). A scroll's <c>ItemInfo.InxName</c> equals the <c>ActiveSkill.InxName</c>
-    /// of the skill it teaches (e.g. scroll item 4720 "Bone Slicer [01]" InxName <c>SeverBone01</c> →
-    /// ActiveSkill id 20). <c>ItemUseSkill</c> is only the generic use-handler ("UseSkill"), NOT the
-    /// skill id — so we join on InxName. Lets the leveler avoid buying a scroll for a skill it already
-    /// knows: <c>if HasSkill(ScrollSkillId(itemId)) skip</c>.</summary>
-    public int ScrollSkillId(int itemId)
+    /// <summary>The display name of a PASSIVE skill id from client <c>PassiveSkill</c> (col "Name").
+    /// Passives live in their OWN table with their OWN id space — see <see cref="ScrollSkill"/>.</summary>
+    public string PassiveSkillName(int skillId)
+    {
+        var t = Table("PassiveSkill");
+        var row = t?.FindByLong("ID", skillId) ?? t?.FindByLong("id", skillId);
+        return row is null ? "" : GetStr(row, "Name");
+    }
+
+    /// <summary>The skill a skill book/scroll teaches: its id and WHICH TABLE that id belongs to.
+    /// Returns <c>(-1, false)</c> if the item isn't a skill book (or no matching skill).
+    /// <para>⚠️ There are TWO skill tables with SEPARATE, OVERLAPPING id spaces: <c>ActiveSkill</c>
+    /// (castable skills) and <c>PassiveSkill</c> (masteries — "One Handed Sword Mastery [01]",
+    /// "Bravery Mastery [01]"). Both start at id 0 and collide: ActiveSkill 0 = "Slice and Dice [01]",
+    /// PassiveSkill 0 = "Bravery Mastery [01]"; ActiveSkill 9/10 are real skills and so are
+    /// PassiveSkill 9/10 (One Handed Sword Mastery [01]/[02]). So a bare skill id is MEANINGLESS
+    /// without knowing its table — hence the <c>Passive</c> flag, which must be carried all the way
+    /// through to <see cref="Session.ZoneView.HasSkill"/>.</para>
+    /// A book's <c>ItemInfo.InxName</c> equals the <c>InxName</c> of the skill it teaches
+    /// (scroll item 4720 "Bone Slicer [01]" InxName <c>SeverBone01</c> → ActiveSkill id 20;
+    /// book item 7613 "One Handed Sword Mastery [01]" InxName <c>OHSwdMastery01</c> → PassiveSkill id 9).
+    /// <c>ItemUseSkill</c> is only the generic use-handler ("UseSkill"), NOT the skill id — so we join
+    /// on InxName, ACTIVE first then PASSIVE.
+    /// <para>(2026-08-05: resolving against ActiveSkill ONLY is why the mastery books never learned —
+    /// they returned -1, and the leveler's learn-from-bag sweep skips anything with id &lt; 0, so three
+    /// mastery books sat unlearned in Bot7170's bag while <c>scrollEligible</c> refused to re-buy them.)</para></summary>
+    public (int Id, bool Passive) ScrollSkill(int itemId)
     {
         var it = Table("ItemInfo");
         var row = it?.FindByLong("ID", itemId) ?? it?.FindByLong("id", itemId);
-        if (row is null) return -1;
-        if (GetStr(row, "ItemUseSkill") != "UseSkill") return -1; // not a skill scroll
+        if (row is null) return (-1, false);
+        if (GetStr(row, "ItemUseSkill") != "UseSkill") return (-1, false); // not a skill book
         var inx = GetStr(row, "InxName");
-        if (string.IsNullOrEmpty(inx)) return -1;
-        return SkillIdByInx().TryGetValue(inx, out var id) ? id : -1;
+        if (string.IsNullOrEmpty(inx)) return (-1, false);
+        if (SkillIdByInx(passive: false).TryGetValue(inx, out var active)) return (active, false);
+        if (SkillIdByInx(passive: true).TryGetValue(inx, out var passive)) return (passive, true);
+        return (-1, false);
     }
 
-    /// <summary>The prerequisite ACTIVE-skill id a skill must already have learned before it can itself
-    /// be learned — the client <c>ActiveSkill.DemandSk</c> column holds the prereq skill's <c>InxName</c>
-    /// (e.g. Fatal Slash [02] / <c>RedSlash02</c> has <c>DemandSk="RedSlash01"</c> = Fatal Slash [01]).
-    /// Returns 0 if there is no prereq ("-"/empty) or it can't be resolved. Lets the learn-from-bag sweep
-    /// skip a rank-[02] scroll until rank-[01] is learned — the server refuses the out-of-order USE, which
-    /// otherwise loops forever re-using the unlearnable scroll and starves the learnable ones.</summary>
-    public int SkillPrereqId(int skillId)
+    /// <summary>The ACTIVE-skill id a skill scroll teaches, or -1. Thin wrapper over
+    /// <see cref="ScrollSkill"/> that DISCARDS the passive flag — only safe where the caller has
+    /// already established the skill is an active. Prefer <see cref="ScrollSkill"/>.</summary>
+    public int ScrollSkillId(int itemId)
     {
-        var t = Table("ActiveSkill");
+        var (id, passive) = ScrollSkill(itemId);
+        return passive ? -1 : id;
+    }
+
+    /// <summary>The prerequisite skill a skill must already have learned before it can itself be learned —
+    /// the <c>DemandSk</c> column (in the SAME table as the skill) holds the prereq's <c>InxName</c>
+    /// (Fatal Slash [02] / <c>RedSlash02</c> → <c>DemandSk="RedSlash01"</c>; One Handed Sword Mastery [02]
+    /// / <c>OHSwdMastery02</c> → <c>DemandSk="OHSwdMastery01"</c>). A prereq is always in the same table as
+    /// the skill that demands it, so the returned id shares <paramref name="passive"/>'s id space.
+    /// <para>Returns <b>-1</b> when there is no prereq ("-"/empty/unresolvable) — NOT 0, because
+    /// <b>0 is a real skill id in both tables</b> (ActiveSkill 0 = "Slice and Dice [01]", the genuine
+    /// prereq of "Slice and Dice [02]"; PassiveSkill 0 = "Bravery Mastery [01]"). The old 0-means-none
+    /// sentinel made those two prereqs invisible — the same "id 0 is a REAL skill" trap already
+    /// documented for the login skill list.</para>
+    /// Lets the learn-from-bag sweep skip a rank-[02] book until rank-[01] is learned — the server
+    /// refuses the out-of-order USE, which otherwise loops forever re-using the unlearnable book.</summary>
+    public int SkillPrereqId(int skillId, bool passive = false)
+    {
+        var t = Table(passive ? "PassiveSkill" : "ActiveSkill");
         var row = t?.FindByLong("ID", skillId) ?? t?.FindByLong("id", skillId);
-        if (row is null) return 0;
+        if (row is null) return -1;
         var dsk = GetStr(row, "DemandSk");
-        if (string.IsNullOrEmpty(dsk) || dsk == "-") return 0;
-        return SkillIdByInx().TryGetValue(dsk, out var id) ? id : 0;
+        if (string.IsNullOrEmpty(dsk) || dsk == "-") return -1;
+        return SkillIdByInx(passive).TryGetValue(dsk, out var id) ? id : -1;
     }
 
-    private IReadOnlyDictionary<string, int> SkillIdByInx()
+    private IReadOnlyDictionary<string, int> SkillIdByInx(bool passive)
     {
-        if (_skillIdByInx is { } cached) return cached;
+        if ((passive ? _passiveIdByInx : _skillIdByInx) is { } cached) return cached;
         lock (_skillInxLock)
         {
-            if (_skillIdByInx is { } c2) return c2;
+            if ((passive ? _passiveIdByInx : _skillIdByInx) is { } c2) return c2;
             var map = new Dictionary<string, int>(StringComparer.Ordinal);
-            var t = Table("ActiveSkill");
+            var t = Table(passive ? "PassiveSkill" : "ActiveSkill");
             if (t is not null)
                 foreach (var row in t.Rows)
                 {
                     var inx = GetStr(row, "InxName");
                     if (!string.IsNullOrEmpty(inx)) map[inx] = GetInt(row, "ID");
                 }
-            return _skillIdByInx = map;
+            return passive ? (_passiveIdByInx = map) : (_skillIdByInx = map);
         }
     }
 
