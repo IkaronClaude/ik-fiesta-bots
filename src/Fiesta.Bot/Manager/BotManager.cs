@@ -360,6 +360,15 @@ public sealed class BotManager : IAsyncDisposable
             if (zv.MaxHp > 0) m.LogMetric("hpPct", 100.0 * hp / zv.MaxHp);
         };
         zv.SpChanged += sp => m.LogMetric("sp", sp);
+        zv.MoveFailed += _ => m.LogMetric("moveFails", 1);
+        zv.MapChanged += _ => m.LogMetric("mapChanges", 1);
+        // Sampled-on-change rather than polled: these only move when something happens, and a gauge with no
+        // new samples correctly reports its last value rather than a fake zero.
+        zv.HpChanged += _ =>
+        {
+            m.LogMetric("aggressors", zv.Aggressors.Count);
+            if (zv.HpStones is { } st) m.LogMetric("hpStones", st);
+        };
     }
 
     /// <summary>Make a bot say <paramref name="text"/> in its zone (local chat).</summary>

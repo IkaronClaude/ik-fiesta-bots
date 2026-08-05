@@ -152,7 +152,24 @@ public sealed class BotHandle
     /// spawn coord wasn't captured). Lets navigation default the "from" point.</summary>
     public (uint X, uint Y)? Position { get { lock (_posGate) return _pos; } }
 
-    internal void SetPosition(uint x, uint y) { lock (_posGate) _pos = (x, y); }
+    internal void SetPosition(uint x, uint y)
+    {
+        (uint X, uint Y)? prev;
+        lock (_posGate) { prev = _pos; _pos = (x, y); }
+        // 📍 Every position update flows through here — walk steps, MOVEFAIL resyncs, map handoffs — so it is
+        // the one place the trace and the distance metric can be fed without hunting call sites.
+        // Trace self-rate-limits to 1/sec; DISTANCE is only counted for same-map moves under a sane step cap,
+        // because a map handoff teleports the coordinate and would otherwise book a bogus multi-thousand-unit
+        // "journey" every time the bot changes zone.
+        Trace.Sample(CurrentMap, (int)x, (int)y);
+        if (prev is { } p && !string.IsNullOrEmpty(CurrentMap) && string.Equals(CurrentMap, _lastTraceMap, StringComparison.Ordinal))
+        {
+            var d = Math.Sqrt(Math.Pow((double)x - p.X, 2) + Math.Pow((double)y - p.Y, 2));
+            if (d > 0 && d < 2000) Metrics.LogMetric("distance", d);
+        }
+        _lastTraceMap = CurrentMap;
+    }
+    private string? _lastTraceMap;
 
     /// <summary>The target of the most recently issued MOVERUN step (the tile the bot was trying to
     /// enter). On a MOVEFAIL, this is the tile the server rejected — the nav layer marks it

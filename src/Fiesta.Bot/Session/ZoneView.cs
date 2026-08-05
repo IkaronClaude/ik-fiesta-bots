@@ -1961,6 +1961,7 @@ public sealed class ZoneView : IDisposable
                 {
                     LastKill = dead; KillsByMe++;
                     _log?.Invoke($"[combat] KILLED {(wasChar && !wasMob ? "clone/char" : "mob")} h={dead} (totalKills={KillsByMe})");
+                    MetricSink?.Invoke("kills", 1);
                 }
             }
         }
@@ -2323,6 +2324,7 @@ public sealed class ZoneView : IDisposable
             {
                 long gain = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(0, 4));
                 SessionExpGained += gain;
+                MetricSink?.Invoke("expGained", gain);
                 if (Exp >= 0) Exp += gain;
                 // Attribute this kill's exp to the MOB that gave it (handle @4) so the leveler can learn per-mob
                 // exp (decode → log). The mob just died → resolve its MobId from _npcs, else the _recentNpcs stash.
@@ -2351,6 +2353,8 @@ public sealed class ZoneView : IDisposable
             {
                 long lost = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(0, 4));
                 SessionExpLost += lost;
+                MetricSink?.Invoke("expLostToDeath", lost);
+                MetricSink?.Invoke("deaths", 1);
                 if (Exp >= 0) Exp = Math.Max(0, Exp - lost);
                 _logLevel?.Invoke(BotLogLevel.Note, $"[exp] DEATH -{lost} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session lost {SessionExpLost})");
             }

@@ -1,0 +1,225 @@
+namespace Fiesta.Bot.Host;
+
+/// <summary>The live BOT WATCH page — "a window into everything going on with the bot; like a stat panel,
+/// you look at it and immediately know where the bot is" (operator epic, 2026-08-05).
+/// <para>Shows live vitals, the metric windows, a browser-rendered position heatmap, and the log with a
+/// severity filter, all polling the existing endpoints. Served at "/watch".</para>
+/// <para>EMBEDDED AS A STRING, like <see cref="StatusPage"/>, rather than served from wwwroot: this host has
+/// no static-file middleware, and embedding guarantees the page ships inside the image with no publish/copy
+/// step that could silently leave it out. Dependency-free vanilla JS so it works under any CSP and offline.</para>
+/// <para>The heatmap is drawn CLIENT-SIDE from raw timestamp+map+coord points (operator's preference): the
+/// server never rasterises, decay is applied in the browser from each point's age, and polling with `since`
+/// means the live view costs a few numbers per second instead of an image.</para></summary>
+internal static class WatchPage
+{
+    public const string Html = """
+<!doctype html>
+<meta charset="utf-8">
+<title>bot watch</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#232a34; --fg:#c9d1d9; --dim:#7d8590;
+          --ok:#3fb950; --warn:#d29922; --crit:#f85149; --accent:#58a6ff; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace }
+  header { display:flex; gap:12px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--line) }
+  header input,header select { background:var(--panel); color:var(--fg); border:1px solid var(--line); padding:4px 6px; border-radius:4px; font:inherit }
+  .wrap { display:grid; grid-template-columns: 340px 1fr; gap:10px; padding:10px; align-items:start }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px }
+  h2 { margin:0 0 8px; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim) }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px }
+  .kv div:nth-child(odd) { color:var(--dim) }
+  .bar { height:6px; background:#0b0e13; border-radius:3px; overflow:hidden; margin:3px 0 7px }
+  .bar > i { display:block; height:100%; background:var(--ok) }
+  table { width:100%; border-collapse:collapse }
+  th,td { text-align:right; padding:2px 5px; border-bottom:1px solid var(--line); white-space:nowrap }
+  th:first-child,td:first-child { text-align:left }
+  th { color:var(--dim); font-weight:normal; position:sticky; top:0; background:var(--panel) }
+  #log { height:320px; overflow:auto; background:#0b0e13; border:1px solid var(--line); border-radius:6px; padding:6px; white-space:pre-wrap; word-break:break-word }
+  .l-note{color:#e6edf3} .l-info{color:#8b949e} .l-verb{color:#6e7681}
+  .hit-crit{color:var(--crit);font-weight:bold} .hit-warn{color:var(--warn)} .hit-ok{color:var(--ok)}
+  canvas { width:100%; background:#0b0e13; border:1px solid var(--line); border-radius:6px; display:block }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap }
+  .muted { color:var(--dim) }
+  .err { color:var(--crit) }
+</style>
+
+<header>
+  <strong>bot watch</strong>
+  <label>bot <input id="bot" value="JcqFresh" size="12"></label>
+  <label>token <input id="tok" type="password" size="16" placeholder="bearer"></label>
+  <label>log level
+    <select id="lvl"><option>note</option><option selected>info</option><option>verbose</option></select>
+  </label>
+  <label>map <select id="mapsel"><option value="">(current)</option></select></label>
+  <label><input type="checkbox" id="recent" checked> heatmap: last 30m only</label>
+  <span id="status" class="muted"></span>
+</header>
+
+<div class="wrap">
+  <div>
+    <div class="panel" style="margin-bottom:10px">
+      <h2>live</h2>
+      <div id="vitals"></div>
+    </div>
+    <div class="panel">
+      <h2>where it's been</h2>
+      <canvas id="heat" width="320" height="320"></canvas>
+      <div id="mapinfo" class="muted" style="margin-top:6px"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel" style="margin-bottom:10px">
+      <h2>metrics <span class="muted" id="mwin"></span></h2>
+      <div style="max-height:340px; overflow:auto"><table id="metrics"></table></div>
+    </div>
+    <div class="panel">
+      <h2>log <span class="muted">(severity filter above)</span></h2>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = (p, q={}) => {
+  const u = new URL(`/api/bots/${encodeURIComponent($('#bot').value)}${p}`, location.origin);
+  for (const [k,v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') u.searchParams.set(k,v);
+  const tok = $('#tok').value.trim();
+  return fetch(u, tok ? { headers:{ Authorization:'Bearer '+tok } } : {});
+};
+const num = v => v === null || v === undefined ? '—'
+  : (typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : v);
+
+// ── live + metrics ────────────────────────────────────────────────────────────────────────────────
+function vitals(l) {
+  const pct = (a,b) => (a!=null && b) ? Math.max(0, Math.min(100, 100*a/b)) : 0;
+  const bar = (a,b,col) => `<div class="bar"><i style="width:${pct(a,b)}%;background:${col}"></i></div>`;
+  const dps = l.incomingDps5s, heal = l.sustainableHealDps;
+  const losing = (dps>0 && heal>0 && dps>heal);
+  return `
+    <div class="kv">
+      <div>phase</div><div>${l.phase ?? '—'}</div>
+      <div>map</div><div>${l.map ?? '—'} <span class="muted">${l.position ?? ''}</span></div>
+      <div>level</div><div>${num(l.level)} <span class="muted">exp ${num(l.exp)}</span></div>
+      <div>money</div><div>${num(l.money)}</div>
+    </div>
+    <div style="margin-top:8px">hp ${num(l.hp)}/${num(l.maxHp)}${bar(l.hp,l.maxHp,'var(--ok)')}
+    sp ${num(l.sp)}/${num(l.maxSp)}${bar(l.sp,l.maxSp,'var(--accent)')}</div>
+    <div class="kv">
+      <div>stones</div><div>hp ${num(l.hpStones)} · sp ${num(l.spStones)}</div>
+      <div>bag used</div><div>${num(l.bagUsed)}</div>
+      <div>combat</div><div>${l.inCombat ? 'YES' : 'no'} · aggro ${num(l.aggressors)}${l.nearestAggressorDist!=null?` @${num(l.nearestAggressorDist)}u`:''}</div>
+      <div>mounted</div><div>${l.mounted ? 'yes' : 'no'}${l.dead ? ' · <span class="err">DEAD</span>' : ''}</div>
+      <div>incoming</div><div class="${losing?'hit-crit':''}">${num(dps)} dmg/s</div>
+      <div>heal cap</div><div>${heal!=null?num(heal)+' hp/s':'<span class="muted">unknown</span>'}</div>
+    </div>
+    ${losing ? '<div class="hit-crit" style="margin-top:6px">incoming exceeds sustainable healing — this fight cannot be out-healed</div>' : ''}
+    <div class="muted" style="margin-top:6px">${l.script ?? ''}</div>`;
+}
+
+function metricsTable(ms) {
+  // Percentiles follow each metric's direction: for HigherIsBetter the LOW tail is the warning sign,
+  // for LowerIsBetter the HIGH tail is. The server already picks the right end; we just label it.
+  const wins = ms[0]?.windows?.map(w => w.window) ?? [];
+  $('#mwin').textContent = wins.length ? `· windows ${wins.join(' / ')} · p95/p99 = worst-case tail for that metric` : '';
+  let h = '<tr><th>metric</th><th>now</th>';
+  for (const w of wins) h += `<th>${w} avg</th><th>${w} p95</th><th>${w} sum</th>`;
+  h += '</tr>';
+  for (const m of ms) {
+    h += `<tr><td title="${m.direction} · ${m.kind}">${m.name}</td><td>${num(m.latest)}</td>`;
+    for (const w of m.windows) h += `<td>${num(w.avg)}</td><td>${num(w.p95)}</td><td>${num(w.sum)}</td>`;
+    h += '</tr>';
+  }
+  return h;
+}
+
+async function tickMetrics() {
+  try {
+    const r = await api('/metrics');
+    if (!r.ok) { $('#status').textContent = `metrics ${r.status}`; return; }
+    const d = await r.json();
+    $('#vitals').innerHTML = vitals(d.live);
+    $('#metrics').innerHTML = metricsTable(d.metrics);
+    const sel = $('#mapsel');
+    const have = new Set([...sel.options].map(o=>o.value));
+    for (const k of Object.keys(d.maps||{})) if (!have.has(k)) sel.add(new Option(k,k));
+    $('#mapinfo').textContent = `${d.tracePoints} trace points · ` +
+      Object.entries(d.maps||{}).map(([k,v])=>`${k}:${v}`).join('  ');
+    $('#status').textContent = 'ok ' + new Date().toLocaleTimeString();
+  } catch (e) { $('#status').textContent = 'metrics: ' + e.message; }
+}
+
+// ── heatmap (rendered client-side from raw points, per the epic) ──────────────────────────────────
+let pts = [], sinceT = 0, lastMap = null;
+async function tickTrace() {
+  try {
+    const map = $('#mapsel').value || undefined;
+    if (map !== lastMap) { pts = []; sinceT = 0; lastMap = map; }   // map switch = fresh canvas
+    const r = await api('/trace', { since: sinceT, map, recent: $('#recent').checked });
+    if (!r.ok) return;
+    const d = await r.json();
+    for (const p of d.points) { pts.push(p); if (p.t > sinceT) sinceT = p.t; }
+    if (pts.length > 20000) pts = pts.slice(-20000);
+    draw(d.nowUnixMs);
+  } catch {}
+}
+
+function draw(now) {
+  const c = $('#heat'), g = c.getContext('2d');
+  const W = c.width, H = c.height;
+  g.clearRect(0,0,W,H);
+  const shown = $('#mapsel').value ? pts.filter(p=>p.map===$('#mapsel').value) : pts;
+  if (!shown.length) { g.fillStyle='#30363d'; g.fillText('no trace yet', 10, 20); return; }
+  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for (const p of shown) { if(p.x<x0)x0=p.x; if(p.x>x1)x1=p.x; if(p.y<y0)y0=p.y; if(p.y>y1)y1=p.y; }
+  const pad = 8, sx = (x1-x0)||1, sy = (y1-y0)||1, s = Math.min((W-2*pad)/sx, (H-2*pad)/sy);
+  const px = p => pad + (p.x-x0)*s, py = p => H - (pad + (p.y-y0)*s);   // flip Y: game +Y is up
+  // Age-based decay is applied HERE, in the browser, so the server never has to pick a curve and the
+  // same raw points can be re-rendered with different decay without refetching.
+  const span = 30*60*1000;
+  for (const p of shown) {
+    const age = Math.min(1, (now - p.t) / span);
+    g.fillStyle = `rgba(${Math.round(88+167*(1-age))},${Math.round(166-60*age)},${Math.round(255-140*age)},${0.15+0.55*(1-age)})`;
+    g.fillRect(px(p)-1.5, py(p)-1.5, 3, 3);
+  }
+  const last = shown[shown.length-1];
+  g.fillStyle = '#f85149'; g.beginPath(); g.arc(px(last), py(last), 3.5, 0, 7); g.fill();
+  g.fillStyle = '#7d8590';
+  g.fillText(`${shown.length} pts  x ${x0}-${x1}  y ${y0}-${y1}`, 6, H-6);
+}
+
+// ── log with severity filter ──────────────────────────────────────────────────────────────────────
+async function tickLog() {
+  try {
+    const r = await api('/log', { level: $('#lvl').value, max: 400 });
+    if (!r.ok) return;
+    const txt = await r.text();
+    const el = $('#log');
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+    el.innerHTML = txt.trimEnd().split('\n').map(line => {
+      let cls = 'l-verb';
+      if (/ N /.test(line.slice(12,16))) cls = 'l-note';
+      else if (/ I /.test(line.slice(12,16))) cls = 'l-info';
+      let h = line.replace(/[&<>]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch]));
+      h = h.replace(/CRUTCH\[CRIT\]/g,'<span class="hit-crit">CRUTCH[CRIT]</span>')
+           .replace(/CRUTCH\[WARN\]/g,'<span class="hit-warn">CRUTCH[WARN]</span>')
+           .replace(/CRUTCH\[OK\]/g,'<span class="hit-ok">CRUTCH[OK]</span>')
+           .replace(/\bDIED\b|\bDEATH\b/g,'<span class="hit-crit">$&</span>');
+      return `<div class="${cls}">${h}</div>`;
+    }).join('');
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  } catch {}
+}
+
+$('#mapsel').onchange = () => { pts=[]; sinceT=0; };
+$('#recent').onchange = () => { pts=[]; sinceT=0; };
+const saved = localStorage.getItem('botwatch.tok'); if (saved) $('#tok').value = saved;
+$('#tok').onchange = () => localStorage.setItem('botwatch.tok', $('#tok').value);
+
+setInterval(tickMetrics, 2000); tickMetrics();
+setInterval(tickTrace, 1000);   tickTrace();
+setInterval(tickLog, 2000);     tickLog();
+</script>
+""";
+}

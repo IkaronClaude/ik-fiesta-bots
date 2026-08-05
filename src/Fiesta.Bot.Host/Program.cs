@@ -135,6 +135,7 @@ app.MapGet("/status.json", () =>
 }).WithTags("Meta").WithSummary("Public bot status (no auth)");
 
 app.MapGet("/", () => Results.Content(StatusPage.Html, "text/html; charset=utf-8")).ExcludeFromDescription();
+app.MapGet("/watch", () => Results.Content(WatchPage.Html, "text/html; charset=utf-8")).ExcludeFromDescription();
 
 app.MapBotEndpoints(app.Services.GetService<BotManager>(), xorError);
 app.MapAccountEndpoints(app.Services.GetService<ApiAccountProvisioner>(), provisionerError);
