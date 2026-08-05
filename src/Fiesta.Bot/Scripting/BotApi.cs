@@ -903,6 +903,14 @@ public sealed class BotApi
     public bool lastOpenWasRandomOption() => (View?.RandomOptionUtc ?? DateTime.MinValue) > DateTime.MinValue;
     public bool buy(int itemId, int lot = 1) => Ok(Wait(_mgr.BuyAsync(Id, (ushort)itemId, (uint)lot)));
     public bool sell(int slot, int lot = 1) => Ok(Wait(_mgr.SellAsync(Id, (byte)slot, (uint)lot)));
+
+    /// <summary>Move ONE item between the bag and personal storage and return whether it was CONFIRMED.
+    /// <c>deposit=true</c> is bag→storage, false is storage→bag (the same NC_ITEM_RELOC_REQ both ways).
+    /// <para>Returns <b>false</b> when no storage session is open, or when no CELLCHANGE confirmed the
+    /// move within 3s — a missing ack is a FAILURE, never assumed success, and it logs CRUTCH[CRIT].
+    /// Check the return value: that is the whole point of the operator's fail-loudly requirement.</para></summary>
+    public bool storageMove(int fromSlot, int toSlot, bool deposit = true)
+        => Ok(Wait(_mgr.StorageMoveAsync(Id, (byte)fromSlot, (byte)toSlot, deposit)));
     public bool enchant(int equip, int raw, int rawLeft = 255, int rawMiddle = 255, int rawRight = 255, int money = 0)
         => Ok(Wait(_mgr.EnchantAsync(Id, (byte)equip, (byte)raw, (byte)rawLeft, (byte)rawMiddle, (byte)rawRight, (uint)money)));
     public bool target(int handle) => Ok(Wait(_mgr.TargetAsync(Id, (ushort)handle)));
