@@ -1584,11 +1584,53 @@ public sealed class ZoneView : IDisposable
     // bag was full. Base 48 slots, +24 when anything occupies a slot >= 48 (i.e. an expansion is present).
     // TODO: replace with the server-seeded bag size once that field is decoded (P1 inventory ticket) — this
     // is INFERRED from occupancy, not read from the wire, and is the one number here that is not ground truth.
-    public int BagCapacity => 48 + (_inventory.Keys.Any(sl => sl >= 48) ? 24 : 0);
+    public int BagCapacity => Math.Max(
+        Math.Max(48 + (_inventory.Keys.Any(sl => sl >= 48) ? 24 : 0),
+                 _inventory.Count == 0 ? 0 : _inventory.Keys.Max() + 1),   // a used slot proves capacity
+        _learnedBagFloor);
+
+    // 📏 LEARNED CAPACITY FLOOR. The 48(+24) rule is a guess, and it was caught being WRONG live: the panel
+    // reported used=48 free=0 "full" while the SERVER's own bagFull flag said False — i.e. the character has
+    // more than 48 slots but none above 48 is occupied yet, so the guess caps too low.
+    // That is not cosmetic: the Lua gates sell trips on bagFreeSlots ("free < 6 -> go sell"), so a wrongly
+    // zero count sends the bot to town for nothing.
+    // The contradiction is EVIDENCE: if the server says we are not full while we believe there is no room,
+    // capacity must exceed what we can see. Raise the floor by one and let it converge upward from real
+    // observations rather than inventing a number. Still not ground truth — the P1 to read the server-seeded
+    // bag size stands — but it is now self-correcting instead of confidently wrong.
+    private int _learnedBagFloor;
+
+    /// <summary>Call when bag occupancy or the server's full-flag may have changed; widens the learned
+    /// capacity floor whenever the server contradicts our "no room left" belief.</summary>
+    private void ReconcileBagCapacity()
+    {
+        if (BagFull) return;                       // server agrees we are full: nothing to learn
+        var occupied = _inventory.Count;
+        if (occupied <= 0) return;
+        if (BagCapacity - occupied > 0) return;    // we already think there is room
+        var floor = occupied + 1;
+        if (floor > _learnedBagFloor)
+        {
+            _learnedBagFloor = floor;
+            _logLevel?.Invoke(BotLogLevel.Note,
+                $"[bag] capacity guess was too LOW — server says not full at {occupied} occupied slots, " +
+                $"so capacity is at least {floor}. Raising the learned floor (the 48/+24 rule is inferred, not read).");
+        }
+    }
 
     /// <summary>Free bag slots (capacity minus occupied). Unlike <see cref="BagFull"/> — the 0x346 pick-fail
     /// flag, which is a stale event — this is a live count.</summary>
-    public int BagFreeSlots => Math.Max(0, BagCapacity - _inventory.Count);
+    public int BagFreeSlots
+    {
+        get
+        {
+            // Reconcile on READ rather than hooking every packet that can change occupancy or the full-flag:
+            // this is the property callers actually consult, so the correction can never be missed because a
+            // new inventory path forgot to call it.
+            ReconcileBagCapacity();
+            return Math.Max(0, BagCapacity - _inventory.Count);
+        }
+    }
 
     /// <summary>Passive skill ids the character has learned, from the login passive list
     /// (NC_CHAR_CLIENT_PASSIVE_CMD 0x103E). Resolve a name with client PassiveSkill.</summary>
