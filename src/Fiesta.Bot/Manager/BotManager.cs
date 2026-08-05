@@ -2769,7 +2769,8 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SeedScalars(
                     cdStat?.Min ?? -1,                                            // MIN: converges from above
                     healStat is { Count: > 0 } ? healStat.Sum / healStat.Count : -1,
-                    healStat?.Count ?? 0);
+                    healStat?.Count ?? 0,
+                    healStat?.Max ?? -1);
                 zoneView.IsInsideScenarioArea = (areaName, pos) =>          // hold AREAENTRY_ACK until inside the .aid box
                 {
                     if (handle.CurrentMap is not { } m || AreaProvider?.Invoke(m) is not { } areas) return true; // no data → ack now

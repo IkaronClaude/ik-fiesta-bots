@@ -1055,10 +1055,13 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Seed learned scalars from durable knowledge so the survivability inequality is answerable
     /// from the FIRST tick instead of after the second heal of each session.</summary>
-    public void SeedScalars(double cooldownMsMin, double healAvg, int healCount)
+    public void SeedScalars(double cooldownMsMin, double healAvg, int healCount, double healMax = -1)
     {
         if (cooldownMsMin > 0) HpStoneCooldownMs = cooldownMsMin;
         if (healAvg > 0 && healCount > 0) { _healSum = (long)(healAvg * healCount); _healSamples = healCount; }
+        // Seed the MAX as well — SustainableHealDps keys off it, so restoring only the mean would leave the
+        // inequality unanswerable after a respawn despite having the data on disk.
+        if (healMax > 0 && healMax > HpStoneHealMax) HpStoneHealMax = (int)healMax;
         if (cooldownMsMin > 0 || healAvg > 0)
             _logLevel?.Invoke(BotLogLevel.Note,
                 $"[heal] seeded from durable knowledge — stone cooldown {(cooldownMsMin > 0 ? $"{cooldownMsMin:F0}ms" : "unknown")}, " +
@@ -1122,11 +1125,19 @@ public sealed class ZoneView : IDisposable
     private int _healSamples;
     private long _healSum;
 
-    /// <summary>Sustainable healing in HP/sec from the stone alone: mean heal ÷ learned cooldown.
-    /// -1 until BOTH have been measured. Compare against observed incoming DPS: if incoming exceeds this, the
-    /// fight cannot be out-healed and staying in it is a loss no matter how the rotation is tuned.</summary>
+    /// <summary>Sustainable healing in HP/sec from the stone alone: <b>MAX</b> observed heal ÷ learned
+    /// cooldown. -1 until both have been measured. Compare against observed incoming DPS: if incoming
+    /// exceeds this, the fight cannot be out-healed however the rotation is tuned.
+    /// <para>⚠️ USES THE MAX, NOT THE MEAN, AND THAT IS DELIBERATE. A heal can never exceed MISSING HP, so
+    /// every sample is really <c>min(stone_capacity, maxHp − hp)</c> — any heal taken at high HP is CLAMPED
+    /// and understates the stone. Observed spread on one character: min 140, max 487 over 5 samples. The mean
+    /// (377) is therefore biased LOW by the clamped samples, and an under-estimate of our own healing is the
+    /// dangerous direction here: it would make the bot judge winnable fights unwinnable and walk away from
+    /// them — precisely the "arbitrary cap that abandoned winnable fights" the operator removed 2026-07-16.
+    /// The max is the best available estimate of true capacity (still a LOWER bound, since even it may have
+    /// been clamped — it can only rise as more samples arrive).</para></summary>
     public double SustainableHealDps =>
-        HpStoneHealAvg > 0 && HpStoneCooldownMs > 0 ? HpStoneHealAvg / (HpStoneCooldownMs / 1000.0) : -1;
+        HpStoneHealMax > 0 && HpStoneCooldownMs > 0 ? HpStoneHealMax / (HpStoneCooldownMs / 1000.0) : -1;
 
     /// <summary>When the HP soul stone last ACTUALLY healed (0x5008), UtcMinValue if never.</summary>
     public DateTime LastHpStoneSuccessUtc { get; private set; } = DateTime.MinValue;
