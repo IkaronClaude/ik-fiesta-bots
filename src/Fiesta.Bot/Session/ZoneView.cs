@@ -457,6 +457,27 @@ public sealed class ZoneView : IDisposable
     // so combat keeps holding the target through the blink; a re-appear (AddOrUpdateNpc) or a real death
     // (REALLYKILL) removes it. NearbyNpcs returns _npcs ∪ non-expired _recentNpcs. Value = (npc, expiryTick).
     private readonly ConcurrentDictionary<ushort, (NearbyNpc Npc, long Expiry)> _recentNpcs = new();
+    // 📉 AoI CHURN SUMMARISER (P0 observability fix, 2026-08-05). Mobs enter/leave AoI constantly, and one
+    // LogV per transition filled the ~200-line /log ring buffer in about TWO SECONDS — evicting focus
+    // decisions, combat events and CEASE_FIREs before they could be read. That is not a cosmetic annoyance: it
+    // caused at least two wrong diagnoses this session ("ENGAGE=0", "0 kills") because the tail could not hold
+    // a decision long enough to see it, so guesswork filled the gap. Per [[fiesta-bot-tail-logging]],
+    // per-frame churn is exactly what must NOT get a line each. Roll it up into one line per second instead:
+    // same information (how many in, how many out, current roster), a fraction of the volume.
+    private int _aoiIn, _aoiOut;
+    private long _aoiNextFlush;
+    private const int AoiFlushMs = 1000;
+    private void NoteAoiChurn(bool entered)
+    {
+        if (entered) _aoiIn++; else _aoiOut++;
+        var now = Environment.TickCount64;
+        if (_aoiNextFlush == 0) { _aoiNextFlush = now + AoiFlushMs; return; }
+        if (now < _aoiNextFlush) return;
+        LogV($"[AoI] +{_aoiIn} / -{_aoiOut} mob(s) in {AoiFlushMs}ms (roster {_npcs.Count})");
+        _aoiIn = _aoiOut = 0;
+        _aoiNextFlush = now + AoiFlushMs;
+    }
+
     private const int RecentNpcTtlMs = 4000; // long enough to bridge the ~200ms flicker; short enough that a
                                              // genuinely-departed mob is dropped fast (no chasing a ghost).
 
@@ -586,7 +607,7 @@ public sealed class ZoneView : IDisposable
         if (npc.Flag == 1) return;                              // a gate, not a combat target
         if (IsHuntableMob is { } huntable && !huntable(npc.MobId)) return; // a static/friendly NPC
         _recentNpcs[hnd] = (npc, Environment.TickCount64 + RecentNpcTtlMs);
-        LogV($"[ZoneView] mob h={hnd} id={npc.MobId} left AoI — stickied {RecentNpcTtlMs}ms (flicker bridge)");
+        NoteAoiChurn(entered: false);   // was one LogV per mob — see the AoI summariser above
     }
 
     /// <summary>Live scenario corridor DOOR states (0x6C09), keyed by door handle. The instance nav reads
@@ -2877,9 +2898,12 @@ public sealed class ZoneView : IDisposable
         // Authoritative roster, kept until map change — the navigation source of truth.
         _npcSeed[mobid] = new NpcSeedEntry(mobid, x, y, flag == 1, linkMap);
         if (isNew)
-            LogV(flag == 1
-                ? $"[ZoneView] gate appeared: id={mobid} h={handle} @({x},{y}) -> {linkMap}"
-                : $"[ZoneView] npc/mob appeared: id={mobid} h={handle} @({x},{y}) mode={mode} flag={flag} team={team}");
+        {
+            // Gates keep a line each: they are rare and navigationally load-bearing. Mob/NPC appearances are
+            // pure churn and get counted into the once-per-second [AoI] roll-up instead.
+            if (flag == 1) LogV($"[ZoneView] gate appeared: id={mobid} h={handle} @({x},{y}) -> {linkMap}");
+            else NoteAoiChurn(entered: true);
+        }
     }
 
     // Conversion: 127 raw units (human runspeed from 0x203E capture) ≈ 120 u/s.
