@@ -211,6 +211,9 @@ public sealed class BotHandle
     /// <summary>Throttle for the "walk SUPPRESSED — cast bar open" line (see BotManager.WalkAsync).</summary>
     internal DateTime LastCastBarWalkLogUtc = DateTime.MinValue;
 
+    /// <summary>Throttle for the "HP stone still on cooldown" line (see BotManager.UseSoulStoneHpAsync).</summary>
+    internal DateTime LastStoneCooldownLogUtc = DateTime.MinValue;
+
     /// <summary>Last known FACING direction as a unit vector, tracked so a cast can tell whether a
     /// face-step is actually needed. Set whenever we commit a facing (FaceAndStop, or a BASHSTART on a
     /// target). The MOVERUN face-step breaks the melee swing stream, so it must only be sent when the

@@ -813,6 +813,25 @@ public sealed class BotApi
     /// successful use or an HP-stone buy.</summary>
     public bool hpStoneDepleted() => View?.HpStoneDepleted ?? false;
 
+    /// <summary>Milliseconds until the HP soul stone can heal again — <b>0 = ready now</b>, -1 = the cooldown
+    /// has not been learned yet. This is the difference between "I asked to heal" and "I healed".
+    /// <para>The stone has a server-side cooldown (~6.9s, LEARNED from the min gap between successful uses,
+    /// never hardcoded). Firing inside it returns USEFAIL and heals nothing. In the 15:30:41 death all five
+    /// uses were refused and HP fell 628→0 while the log claimed a recharge each time.</para>
+    /// <para>USE THIS AS A COMBAT INPUT: sustained survivability is not maxHp, it is
+    /// <c>maxHp + one heal per cooldown</c>. If <c>hpStoneReadyIn() &gt; 0</c> the bot has NO heal available
+    /// and must decide on that basis (reposition, stun, break line of sight) rather than trading blows in the
+    /// belief that a heal is coming.</para></summary>
+    public double hpStoneReadyIn() => View?.HpStoneReadyInMs ?? -1;
+
+    /// <summary>The learned HP soul-stone cooldown in ms (-1 until two successful uses have been observed).
+    /// Derived from the wire, so it stays correct if the server's value differs from the ~6.9s measured.</summary>
+    public double hpStoneCooldownMs() => View?.HpStoneCooldownMs ?? -1;
+
+    /// <summary>Consecutive HP-stone USEFAILs since the last real heal. <b>Non-zero means the bot is asking to
+    /// heal and NOT healing</b> — the exact condition that killed it while the log looked healthy.</summary>
+    public int hpStoneFailsInARow() => View?.HpStoneFailsSinceSuccess ?? 0;
+
     /// <summary>True while a skill cast is animating — the character is LOCKED, so starting another
     /// cast now is wasted. Gate the rotation on <c>not bot.casting()</c> (operator 2026-08-04:
     /// "only cast when not on cooldown AND not in cast animation already").
