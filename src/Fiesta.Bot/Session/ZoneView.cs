@@ -173,7 +173,20 @@ public sealed class ZoneView : IDisposable
     {
         public const ushort NotEnoughSp = 0x0FC9;
         public const ushort OutOfRange = 0x0FCA;
-        // 0x0FC4, 0x0FC6 — unpinned (facing / cooldown / weapon type)
+
+        /// <summary>The skill is NOT READY — still on cooldown (or a cast is already running).
+        /// <para>Pinned from the wire 2026-08-05 (Bot7170, RouVal02). The cast at 07:55:44.42 SUCCEEDED
+        /// — `0x2440 CAST_REQ` → `0x2435` + `0x244E HIT_OBJ_START` + three `0x2452 HIT_DAMAGE`. The
+        /// re-presses 530ms and 1060ms later both came back `0x2434` with this code, and Bone Slicer
+        /// [02] (15s cooldown) cast at :44.4 failed again at :50.4 — exactly its remaining cooldown.
+        /// So this is the server saying "not yet", i.e. the EXPECTED answer to a spam re-press.</para>
+        /// <para>⚠️ It is expected but NOT free: every re-press routes through FaceAndStop, whose
+        /// <c>NC_ACT_STOP_REQ</c> makes the server answer <c>CEASE_FIRE</c> and kill the melee swing
+        /// stream. In the death this was pinned from, that cost the bot its auto-attack for a whole
+        /// 16s fight — it dealt damage ONCE (the successful cast) while dying 55%→0%. So a caller
+        /// seeing this code must STOP re-pressing and bank the cooldown, not keep trying.</para></summary>
+        public const ushort NotReady = 0x0FC8;
+        // 0x0FC4, 0x0FC6 — unpinned (facing / weapon type)
 
         /// <summary>Human-readable description of a cast-fail code, for logs and the
         /// <c>on_cast_fail</c> script hook (so failures like "not enough SP" are obvious
@@ -182,6 +195,7 @@ public sealed class ZoneView : IDisposable
         {
             NotEnoughSp => "not enough SP",
             OutOfRange  => "target out of range",
+            NotReady    => "skill on cooldown / not ready — STOP re-pressing (each re-press cancels auto-attack)",
             0x0FC0      => "cannot cast (dead / invalid state)",
             0x0FC4      => "cooldown/facing/weapon (0x0FC4)",
             0x0FC6      => "cooldown/facing/weapon (0x0FC6)",
