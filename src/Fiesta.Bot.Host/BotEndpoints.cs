@@ -196,8 +196,8 @@ public static class BotEndpoints
                     // START_REQ 0x4414 + doQuest(npc=0) were tried live and did not accept, so the real
                     // remote-accept sequence is still undecoded (P1). Exposed so "which quests even claim to
                     // support it" is answerable from live data instead of by reading offsets.
-                    remoteAccept = q?.RemoteAcceptable ?? false,          // @24 bIsWaitListView (the real accept gate)
-                    remoteProgress = q?.IsWaitListProgress ?? false,      // @25 — NOT the accept gate
+                    remoteAccept = q?.RemoteAcceptable ?? false,      // @25 bIsWaitListProgress = REMOTE ACCEPT
+                    questListVisible = q?.IsWaitListView ?? false,    // @24 = visible in quest list, NOT accept
                     remoteHandIn = q?.IsInstantHandIn ?? false,
                     startNpc = q?.StartNpc ?? 0,
                     turnInNpc = q?.TurnInNpc ?? 0,
