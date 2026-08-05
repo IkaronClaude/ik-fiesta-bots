@@ -2430,7 +2430,12 @@ public sealed class ZoneView : IDisposable
                         _mobChase.AddOrUpdate(npc.MobId, away, (_, old) => away > old ? away : old);
                         // Only fires on a NEW maximum, so it's self-throttling: the tail shows the leash being
                         // learned, mob by mob, and stops talking once each type's limit has settled.
-                        if (away > prev + 25)
+                        // Was `away > prev + 25` — which is NOT throttling when 40 mobs each learn their OWN
+                        // maximum: measured 36 [leash] lines in 63s, and that spam then EVICTED the bag-census
+                        // diagnostic from the ~200-line ring buffer (note-level window shrank to ~3 min), which
+                        // is what blocked confirming the top blocker's premise. Only report a MATERIAL change:
+                        // the first observation for a mob id, or a >25% jump over its previous max.
+                        if (prev <= 0 || away > prev * 1.25)
                             _log?.Invoke($"[leash] mob {npc.MobId} (h={hnd}) chased {away:F0}u from its spawn " +
                                          $"(prev max {prev:F0}u) — learned chase limit now {away:F0}u");
                     }
