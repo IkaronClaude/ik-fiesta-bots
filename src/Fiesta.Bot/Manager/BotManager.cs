@@ -81,6 +81,12 @@ public sealed class BotManager : IAsyncDisposable
         if (!_bots.TryAdd(id, handle))
             throw new InvalidOperationException($"a bot with id '{id}' already exists");
 
+        // Log/UI readability: rewrite every bare `mob<id>` token into "Marlone (Id 22)" (operator
+        // 2026-08-05 — "I don't want to see anything like Mob22 in the web UI"). Same rule as
+        // QuestNameResolver ("log quest NAMES, not bare ids"), applied to mobs and done ONCE at the
+        // log choke point so it covers the ~35 Lua call sites and every future one for free.
+        handle.MobNameResolver = mobId => ClientData?.Mob(mobId)?.Name;
+
         handle.Log($"spawn requested: {options.Host}:{options.LoginPort} user='{options.Credentials.Username}'");
         handle.RunTask = Task.Run(() => RunBotAsync(handle));
         return handle;

@@ -330,6 +330,44 @@ public sealed class BotHandle
     /// time. Raised from whatever thread logged — handlers must not block.</summary>
     public event Action<string>? LogLine;
 
+    /// <summary>Resolves a mob id to its client <c>MobInfo</c> display name, so log lines read
+    /// "Marlone (Id 22)" instead of "mob22". Set by the manager from <c>ClientData</c>; null
+    /// (or a null/empty result) leaves the token untouched — an unresolvable id is itself signal
+    /// that the mob is missing from MobInfo, so it must stay visible rather than be blanked.</summary>
+    public Func<int, string?>? MobNameResolver { get; set; }
+
+    // Matches a BARE `mob<digits>` token only: `mobId=`, `mobs`, `MobInfo` etc. don't match
+    // (the char after the digits must be a non-word char), and the id is bounded so a hex blob
+    // can't produce a silly capture. Compiled once — this runs on every log line (~6/s).
+    private static readonly System.Text.RegularExpressions.Regex MobTokenRx =
+        new(@"\bmob(\d{1,6})\b", System.Text.RegularExpressions.RegexOptions.Compiled
+                               | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    // MobInfo lookups are a LINEAR row scan (ShnTable.FindByLong) over a multi-thousand-row table,
+    // and Log() runs on the session read loop — so memoize. One scan per distinct id, ever.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> _mobNameCache = new();
+
+    /// <summary>Rewrite bare mob ids into "Name (Id N)". Cheap-exits when the line has no
+    /// "mob" at all, which is the overwhelming majority of lines.</summary>
+    private string ResolveMobNames(string message)
+    {
+        if (MobNameResolver is not { } resolve) return message;
+        // Must be case-INSENSITIVE to match the regex below, or a "Mob22" line would be
+        // skipped by the very guard meant only to make the common case cheap.
+        if (message.IndexOf("mob", StringComparison.OrdinalIgnoreCase) < 0) return message;
+        try
+        {
+            return MobTokenRx.Replace(message, m =>
+            {
+                if (!int.TryParse(m.Groups[1].Value, out var id)) return m.Value;
+                // "" caches a genuine miss so an unknown id costs one scan, not one per line.
+                var name = _mobNameCache.GetOrAdd(id, i => resolve(i) ?? "");
+                return string.IsNullOrWhiteSpace(name) ? m.Value : $"{name} (Id {id})";
+            });
+        }
+        catch { return message; }   // a broken resolver must never cost us the log line
+    }
+
     internal void Log(string message) => Log(BotLogLevel.Note, message);
 
     /// <summary>Append a log line at the given verbosity. The level is stamped into the
@@ -338,7 +376,7 @@ public sealed class BotHandle
     internal void Log(BotLogLevel level, string message)
     {
         var tag = level switch { BotLogLevel.Verbose => "V", BotLogLevel.Info => "I", _ => "N" };
-        var line = $"{DateTime.UtcNow:HH:mm:ss.fff} {tag} {message}";
+        var line = $"{DateTime.UtcNow:HH:mm:ss.fff} {tag} {ResolveMobNames(message)}";
         lock (_logGate)
         {
             _log.Add((level, line));
