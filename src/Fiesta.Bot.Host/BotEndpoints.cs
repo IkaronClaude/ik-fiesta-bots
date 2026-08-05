@@ -1000,6 +1000,8 @@ public static class BotEndpoints
             // at 48/48. The two are answering DIFFERENT questions, so a mismatch between them is normal and
             // is NOT evidence about capacity (I previously mistook it for exactly that). Show both, label
             // the inferred pair as inferred, and let a human read them as what they are.
+            // BagFull is a STALE EVENT FLAG (set when a pickup FAILED with 0x346), not a capacity statement:
+            // `false` only means no pickup has failed, and a STACKABLE item picks up fine at full occupancy.
             BagFullServerSignal = bot.ZoneView?.BagFull,
             Skills = SkillPanel(bot, cd),
             // The survivability inequality, surfaced where a human can see both sides at once.

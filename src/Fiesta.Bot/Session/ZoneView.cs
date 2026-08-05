@@ -1596,9 +1596,23 @@ public sealed class ZoneView : IDisposable
     // learn from, and the +1 I derived from it was an invented number.
     // The real fix is to decode the server-seeded bag size (P1) — until then this stays an honest guess,
     // labelled as inferred everywhere it is surfaced.
-    public int BagCapacity => Math.Max(
-        48 + (_inventory.Keys.Any(sl => sl >= 48) ? 24 : 0),
-        _inventory.Count == 0 ? 0 : _inventory.Keys.Max() + 1);
+    /// <summary>Bag slots per page. HARDCODE AUTHORISED (operator, 2026-08-05).</summary>
+    public const int BagPageSlots = 24;
+
+    /// <summary>Bag pages we rely on. Two is the base every character has.</summary>
+    public const int BagPagesAssumed = 2;
+
+    // 🎒 BAG CAPACITY = 2 pages x 24 slots = 48. Operator's call, and DELIBERATELY CONSERVATIVE: premium
+    // "bonus bag" items add pages, but we do NOT rely on them being available.
+    // The asymmetry is why: if we assume 48 and actually have 72, we sell a little early — harmless. If we
+    // assume 72 and actually have 48, pickups start failing — harmful. Under-estimating is the safe direction.
+    // Earlier attempts to be cleverer here were both wrong and are not worth retrying:
+    //   · "+24 if a slot >= 48 is occupied" — speculation, never verified.
+    //   · inferring capacity from BagFull==false — meaningless, because a STACKABLE item merges into an
+    //     existing stack and picks up fine at full occupancy (operator corrected this).
+    // Bag size is per-page and page count comes from premium-expansion abstates; decoding that is the real
+    // answer if bonus pages ever matter, but it is not needed to run the bot safely.
+    public int BagCapacity => BagPageSlots * BagPagesAssumed;
 
     /// <summary>Free bag slots (capacity minus occupied). Unlike <see cref="BagFull"/> — the 0x346 pick-fail
     /// flag, which is a stale event — this is a live count.</summary>
