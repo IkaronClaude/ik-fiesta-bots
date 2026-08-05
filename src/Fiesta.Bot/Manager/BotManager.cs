@@ -2398,6 +2398,10 @@ public sealed class BotManager : IAsyncDisposable
     /// <summary>Liveness watchdog cadence and the "this is definitely wrong" stillness threshold.
     /// 45s is well beyond any legitimate pause (a hand-in dialogue, a cast, waiting out a stun) but far
     /// short of the 15+ minutes the bot silently wasted before this existed. Bot-behaviour timing only.</summary>
+    // How long to wait after a CEASE_FIRE before deciding the swing stream is genuinely dead. The real client
+    // does not re-bash on a cease-fire at all (27 of 39 resumed by themselves — CombatPriest.pcapng), so this
+    // is a stall detector, not a cadence. Long enough to let the server's own resumption land.
+    private const int ReBashVerifyMs = 1_200;
     private const int WatchdogPollMs = 5_000;
     private const int WatchdogStillSecs = 45;
 
@@ -2829,6 +2833,30 @@ public sealed class BotManager : IAsyncDisposable
                     {
                         try
                         {
+                            // ⛔ DO NOT RE-BASH ON THE CEASE_FIRE ITSELF — WAIT AND SEE IF THE STREAM RESUMES.
+                            // Measured against the operator's own priest combat capture (CombatPriest.pcapng,
+                            // zone 9025) 2026-08-05, which OVERTURNS the 2026-08-04 reading above:
+                            //     CEASE_FIRE events (S<-):                            39
+                            //       -> swings resumed with NO client BASHSTART first: 27
+                            //       -> client sent BASHSTART before any swing:         5
+                            //     total client BASHSTART: 5      total server SWING_START: 82
+                            // The real client bashes FIVE times and collects EIGHTY-TWO swings. CEASE_FIRE is a
+                            // transient combat-state notification, NOT "your attack stopped" — the server keeps
+                            // swinging on its own (e.g. CEASE_FIRE @9465 -> SWING_START @9553/@9565 + damage,
+                            // with nothing sent in between). Re-bashing on every one is what produced our
+                            // thrash: bash sessions 355->368 in ~3s, each RE-BASH cancelled 30-55ms later,
+                            // net damage ~0 and zero quest kills.
+                            // So: wait, then re-bash ONLY if the stream really is dead (no damage landed).
+                            var seenAt = handle.ZoneView?.LastRealDamageDealtAtUtc ?? DateTime.MinValue;
+                            await Task.Delay(ReBashVerifyMs, ct);
+                            if (handle.BashTarget != tgt) return;                 // target changed → not ours to fix
+                            if (handle.ZoneView?.LastRealDamageDealtAtUtc > seenAt)
+                            {
+                                handle.Log(BotLogLevel.Verbose,
+                                    $"[combat] cease-fire h={tgt} — swings RESUMED on their own, no re-bash needed (matches real client)");
+                                return;
+                            }
+                            if (NpcPos(handle, tgt) is null) { handle.BashTarget = 0; return; }
                             // Re-bash with the FULL sequence (target → mode → face+stop → BASHSTART),
                             // exactly as the real client does when it re-bashes after a mid-fight cast
                             // (CombatExtensive.pcapng: TARGETTING → MOVERUN → STOP → BASHSTART).
@@ -2838,7 +2866,7 @@ public sealed class BotManager : IAsyncDisposable
                             // harmless: there is no swing stream yet to cancel. It is only a STOP
                             // before a CAST *while already bashing* that kills our damage.
                             await AutoAttackAsync(botId, tgt, ct);
-                            Log($"[combat] RE-BASH h={tgt} after CEASE_FIRE — restarting melee swing stream");
+                            Log($"[combat] RE-BASH h={tgt} — swing stream stayed DEAD for {ReBashVerifyMs}ms after CEASE_FIRE (genuine stall, not the normal transient)");
                         }
                         catch (Exception ex) { Log($"[combat] re-bash error: {ex.Message}"); }
                     }, ct);
