@@ -1016,6 +1016,25 @@ public sealed class ZoneView : IDisposable
     /// <summary>Clear the in-flight cast bar (the cast finished or was cancelled).</summary>
     private void ClearCastBar() => CastBarStartedAtUtc = DateTime.MinValue;
 
+    /// <summary>When the HP soul stone last ACTUALLY healed (0x5008), UtcMinValue if never.</summary>
+    public DateTime LastHpStoneSuccessUtc { get; private set; } = DateTime.MinValue;
+
+    /// <summary>HP soul-stone cooldown in ms, LEARNED from the minimum gap between successful uses
+    /// (-1 until two successes have been seen). Measured 2026-08-05: 6.75s / 6.94s / 7.05s → ~7s.
+    /// Learned, not hardcoded — it is a game fact and must come from the wire.</summary>
+    public double HpStoneCooldownMs { get; private set; } = -1;
+
+    /// <summary>Consecutive HP stone USEFAILs since the last success. Non-zero means the bot is asking to
+    /// heal and NOT healing — the condition that killed it at 15:30:41 while the log said "recharge".</summary>
+    public int HpStoneFailsSinceSuccess { get; private set; }
+
+    /// <summary>Milliseconds until the HP stone is likely usable again (0 = ready now, -1 = cooldown not
+    /// learned yet). Lets a caller stop spamming a stone that cannot fire, and — more importantly — know that
+    /// its healing is unavailable so it can make a different decision.</summary>
+    public double HpStoneReadyInMs => HpStoneCooldownMs < 0 || LastHpStoneSuccessUtc == DateTime.MinValue
+        ? -1
+        : Math.Max(0, HpStoneCooldownMs - (DateTime.UtcNow - LastHpStoneSuccessUtc).TotalMilliseconds);
+
     /// <summary>Result code from the most recent <c>NC_ITEM_RELOC_ACK</c> (0x300C), -1 if none seen. This is
     /// the server's answer to every item move, including storage deposits/withdrawals.
     /// <para>Observed codes (packets-JcqFresh.log, 2026-08-05): a storage deposit that produced NO cell change
@@ -2439,6 +2458,21 @@ public sealed class ZoneView : IDisposable
             {
                 HpStoneDepleted = false;
                 if (HpStones is { } n && n > 0) HpStones = n - 1;
+                // LEARN THE HP-STONE COOLDOWN from the wire (never hardcode a game fact). Consecutive
+                // SUCCESSES cannot be closer together than the cooldown, so the minimum observed gap
+                // converges onto it from above. Measured 2026-08-05: 6.75s / 6.94s / 7.05s.
+                if (LastHpStoneSuccessUtc > DateTime.MinValue)
+                {
+                    var gapMs = (DateTime.UtcNow - LastHpStoneSuccessUtc).TotalMilliseconds;
+                    if (gapMs > 250 && (HpStoneCooldownMs < 0 || gapMs < HpStoneCooldownMs))
+                    {
+                        HpStoneCooldownMs = gapMs;
+                        _logLevel?.Invoke(BotLogLevel.Note,
+                            $"[ZoneView] LEARNED HP soul-stone cooldown ≈ {gapMs:F0}ms (min gap between successful uses)");
+                    }
+                }
+                LastHpStoneSuccessUtc = DateTime.UtcNow;
+                HpStoneFailsSinceSuccess = 0;
             }
             else
             {
@@ -2466,6 +2500,24 @@ public sealed class ZoneView : IDisposable
                     bool empty = HpStones is { } n && n <= 0;
                     if (empty && !HpStoneDepleted) _log?.Invoke("[ZoneView] HP soul-stone reserve EMPTY (0x5006 + count 0) — need restock");
                     HpStoneDepleted = empty;
+                    // ⛔ NOT "harmless". With charges in reserve a USEFAIL means the stone is ON COOLDOWN, and the
+                    // old note said the driver could just "spam again and one lands" — but the cooldown CAPS heal
+                    // throughput at one per ~7s, and nothing modelled that. Measured 2026-08-05: 59 HP_USE_REQ →
+                    // 23 success / 23 USEFAIL / 13 unanswered (39%). In the death at 15:30:41 ALL FIVE uses failed
+                    // and HP fell 628→0 monotonically while the log claimed "soul-stone HP recharge" each time.
+                    // Log it as the failed heal it is, so a bot that cannot heal is visible instead of silent.
+                    if (!empty)
+                    {
+                        HpStoneFailsSinceSuccess++;
+                        var sinceMs = LastHpStoneSuccessUtc > DateTime.MinValue
+                            ? (DateTime.UtcNow - LastHpStoneSuccessUtc).TotalMilliseconds : -1;
+                        _logLevel?.Invoke(BotLogLevel.Info,
+                            $"[ZoneView] HP soul-stone USE FAILED (0x5006) — reserve has {HpStones?.ToString() ?? "?"} " +
+                            $"charge(s), so this is the COOLDOWN ({sinceMs:F0}ms since last success, learned cd " +
+                            $"{(HpStoneCooldownMs < 0 ? "unknown" : $"{HpStoneCooldownMs:F0}ms")}); " +
+                            $"{HpStoneFailsSinceSuccess} failed heal(s) in a row — WE ARE NOT HEALING");
+                    }
+                    else HpStoneFailsSinceSuccess = 0;
                 }
                 else
                     _log?.Invoke("[ZoneView] soul-stone USE FAILED (0x5006) with no pending USE — ignoring (can't attribute HP vs SP)");
