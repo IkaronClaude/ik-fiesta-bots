@@ -841,7 +841,10 @@ public sealed class ZoneView : IDisposable
     // (0x201A) when aggro'd (already decoded below). So its position while idle IS its spawn neighbourhood. We
     // seed the anchor on first sighting, keep refreshing it while it walks (idle wander stays near home), and
     // FREEZE it the moment it becomes a confirmed aggressor — from then on every step is measured from home.
-    private readonly ConcurrentDictionary<ushort, (uint X, uint Y, bool Frozen)> _mobAnchor = new();
+    // IdleConfirmed: we have actually SEEN this mob at rest (walking, or first-sighted while it wasn't already
+    // chasing us). Only idle-confirmed anchors are allowed to teach a chase limit — a mob first seen mid-run is
+    // anchored wherever it happened to be, which would inflate the learned leash with a number we never observed.
+    private readonly ConcurrentDictionary<ushort, (uint X, uint Y, bool Frozen, bool IdleConfirmed)> _mobAnchor = new();
     // LEARNED per-mob chase limit: the furthest from its own anchor a mob of this id has been seen while STILL
     // confirmed aggroing. A lower bound on its leash that only ever tightens upward as we observe more — the
     // measured alternative to a hardcoded leash constant.
@@ -870,8 +873,8 @@ public sealed class ZoneView : IDisposable
     /// still at home and not chasing, so the anchor may be moved. A frozen anchor never moves again.</summary>
     private void NoteMobAnchor(ushort handle, uint x, uint y, bool idle)
     {
-        _mobAnchor.AddOrUpdate(handle, (x, y, false),
-            (_, old) => old.Frozen || !idle ? old : (x, y, false));
+        _mobAnchor.AddOrUpdate(handle, (x, y, false, idle && !_aggressors.ContainsKey(handle)),
+            (_, old) => old.Frozen || !idle ? old : (x, y, false, true));
     }
 
     /// <summary>Freeze a mob's anchor (it just started chasing us) and fold its current distance-from-home into
@@ -879,7 +882,8 @@ public sealed class ZoneView : IDisposable
     private void FreezeMobAnchor(ushort handle)
     {
         if (_mobAnchor.TryGetValue(handle, out var a) && !a.Frozen)
-            _mobAnchor[handle] = (a.X, a.Y, true);
+            _mobAnchor[handle] = (a.X, a.Y, true, a.IdleConfirmed);
+        if (!a.IdleConfirmed) return;            // never saw it at rest → its "spawn" is a guess; don't learn from it
         if (AnchorDistance(handle) is not { } d) return;
         foreach (var n in NearbyNpcs)
             if (n.Handle == handle)
@@ -1874,6 +1878,8 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
+                _mobAnchor.Clear();   // handles are PER-MAP and get reused — a stale anchor from the previous
+                                      // map makes a fresh mob look like it chased thousands of units from home
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
                 LastScenarioArea = null; InScenarioInstance = false; _scenarioAckedAreas.Clear();
                 MapChanged?.Invoke(h);
@@ -2396,7 +2402,7 @@ public sealed class ZoneView : IDisposable
                     // is willing to leave home. This is where the leash is actually measured — the freeze above
                     // only sets distance 0. Grows monotonically; never guessed.
                     if (op == OpSomeoneMoveRun && _aggressors.ContainsKey(hnd)
-                        && _mobAnchor.TryGetValue(hnd, out var anc))
+                        && _mobAnchor.TryGetValue(hnd, out var anc) && anc.IdleConfirmed)
                     {
                         var away = Math.Sqrt(Math.Pow((double)toX - anc.X, 2) + Math.Pow((double)toY - anc.Y, 2));
                         var prev = _mobChase.TryGetValue(npc.MobId, out var pv) ? pv : 0;
@@ -2441,7 +2447,7 @@ public sealed class ZoneView : IDisposable
             if (handoff is { } h)
             {
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear();  // entities are per-map; the new map re-broadcasts
+                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _mobAnchor.Clear();  // entities are per-map; the new map re-broadcasts
                 _nearby.Clear();
                 _drops.Clear();  // ground items are per-map too
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
