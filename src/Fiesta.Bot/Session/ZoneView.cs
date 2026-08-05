@@ -1039,6 +1039,11 @@ public sealed class ZoneView : IDisposable
     /// unknown mob as unknown, NOT as safe — see [[fiesta-nothing-yet-read-as-an-answer]]).</summary>
     public int MobHitSamples(int mobId) => _mobHits.TryGetValue(mobId, out var s) ? s.Count : 0;
 
+    /// <summary>Metrics sink: (name, value). Set by BotManager so ZoneView can report what it already
+    /// decodes — damage, kills, exp, stuns — into the live stat panel without ZoneView knowing about
+    /// MetricStore. Null until wired; every call site null-checks, so metrics are strictly additive.</summary>
+    public Action<string, double>? MetricSink;
+
     /// <summary>Raised for every observed incoming hit so a DURABLE store can retain it across sessions
     /// (this in-memory table dies with the ZoneView on each respawn). Args: (mobId, damage).</summary>
     public Action<int, int>? MobHitSampled;
@@ -1287,6 +1292,7 @@ public sealed class ZoneView : IDisposable
                         (_, s) => (Math.Max(s.Max, h.Damage), s.Count + 1, s.Sum + h.Damage));
                     MobHitSampled?.Invoke(atkMob, h.Damage);   // persist it — this table dies with the session
                     _recentIncoming.Enqueue((DateTime.UtcNow, h.Damage));   // feed the live incoming-DPS window
+                MetricSink?.Invoke("damageTaken", h.Damage);
                     while (_recentIncoming.Count > 512) _recentIncoming.TryDequeue(out _);
                     // Announce a new worst-case only — the headline a human needs is "this thing can take
                     // N of my HP in one hit", not every sample. Note level, and only on a real increase.
@@ -1320,6 +1326,7 @@ public sealed class ZoneView : IDisposable
                 _logLevel?.Invoke(BotLogLevel.Info,
                     $"[dmgdealt] mob={defMob} dmg={h.Damage} resthp={h.RestHp} h={h.Defender}" +
                     (h.Damage > 0 ? "" : " — WHIFF (no connect)"));
+                if (h.Damage > 0) MetricSink?.Invoke("damageDealt", h.Damage);
             }
             if (h.Damage > 0)
             {
@@ -2186,6 +2193,7 @@ public sealed class ZoneView : IDisposable
                     _stoneHealPendingUntil = DateTime.MinValue;   // one attribution per use
                     _healSamples++; _healSum += healed;
                     ScalarLearned?.Invoke(ScalarStoneHeal, healed);
+                    MetricSink?.Invoke("healsLanded", healed);
                     if (healed > HpStoneHealMax)
                     {
                         HpStoneHealMax = healed;
@@ -2375,7 +2383,10 @@ public sealed class ZoneView : IDisposable
                 var caster = (ushort)(hp2[2] | (hp2[3] << 8));
                 int targets = hp2[4];
                 if (SelfHandle is { } meC && caster == meC)
+                {
                     _logLevel?.Invoke(BotLogLevel.Info, $"[skillhit] OUR skill landed on {targets} target(s) (0x2452)");
+                    MetricSink?.Invoke("skillHits", targets > 0 ? targets : 1);
+                }
             }
         }
         else if (op == OpBatCastAbort || op == OpBatCastCut)
@@ -2706,6 +2717,7 @@ public sealed class ZoneView : IDisposable
                     if (!empty)
                     {
                         HpStoneFailsSinceSuccess++;
+                        MetricSink?.Invoke("healsFailed", 1);
                         var sinceMs = LastHpStoneSuccessUtc > DateTime.MinValue
                             ? (DateTime.UtcNow - LastHpStoneSuccessUtc).TotalMilliseconds : -1;
                         _logLevel?.Invoke(BotLogLevel.Info,

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Manager;
+using Fiesta.Bot.Metrics;
 using Fiesta.Bot.Pathfinding;
 
 namespace Fiesta.Bot.Host;
@@ -125,6 +126,48 @@ public static class BotEndpoints
         //   GET /log?level=info&from=13:41:15&to=13:42:00      <- drill into one moment
         // A NARROW SAMPLE IS NOT A NEGATIVE RESULT: "I did not see X" means nothing until you know the
         // window was wide enough to have contained X.
+        // ── METRICS / BOT-WATCH (operator epic 2026-08-05: "a window into everything going on with the bot;
+        // like a stat panel, you look at it and immediately know where the bot is") ────────────────────────
+        group.MapGet("/{id}/metrics", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            return Results.Json(new
+            {
+                id = bot.Id,
+                atUtc = DateTime.UtcNow,
+                live = LivePanel(bot),
+                metrics = bot.Metrics.Snapshot(),
+                maps = bot.Trace.MapCounts(recentOnly: true),
+                tracePoints = bot.Trace.Count,
+            });
+        })
+        .WithSummary("All metrics for a bot, plus the live hp/sp/exp panel")
+        .WithDescription("Each metric reports 1m/5m/10m windows: count, avg, stdDev, min, max, p95, p99, sum, perMinute. " +
+            "p95/p99 follow the metric's DIRECTION — for HigherIsBetter (hp, exp) they are the LOW tail ('95% of the " +
+            "time at least X'); for LowerIsBetter (damageTaken, deaths) the HIGH tail. Samples are batched (default " +
+            "500ms) so the window means TIME, not caller frequency.");
+
+        // Position trace for the browser-rendered heatmap. Stores raw timestamp+map+coord and lets the client
+        // poll with `since` (operator: "so I can watch what the bot is doing live and also it takes up less
+        // data") — the server never rasterises anything.
+        group.MapGet("/{id}/trace", (string id, long? since, string? map, bool? recent) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var pts = bot.Trace.Since(since ?? 0, map, recent ?? false);
+            return Results.Json(new
+            {
+                nowUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                count = pts.Count,
+                recentWindowMinutes = PositionTrace.RecentWindow.TotalMinutes,
+                points = pts.Select(p => new { t = p.T, map = p.Map, x = p.X, y = p.Y }),
+            });
+        })
+        .WithSummary("Position trace points (timestamp+map+coord) for the live heatmap")
+        .WithDescription("Poll with ?since=<last t you saw> to get only new points. ?map=RouN filters to one map; " +
+            "?recent=true drops samples older than 30 minutes. One sample per second.");
+
         group.MapGet("/{id}/log", (string id, string? level, int? max, string? from, string? to) =>
         {
             var bot = manager.Get(id);
@@ -882,6 +925,32 @@ public static class BotEndpoints
         BotManager.ActionResult.NotInZone => Results.Conflict(new { error = "bot is not in zone yet" }),
         _ => Results.NotFound(),
     };
+
+    /// <summary>The always-on vitals for the watch panel: what a human glances at first.
+    /// <para>Deliberately built ON TOP of the existing <see cref="BotHandle.Snapshot"/> rather than
+    /// re-deriving fields from ZoneView. Re-deriving would create a second, silently-diverging view of the
+    /// same truth — the panel would eventually disagree with /api/bots/{id} and there would be no way to tell
+    /// which was right. Only the genuinely NEW numbers are added here.</para></summary>
+    private static object LivePanel(BotHandle bot)
+    {
+        var snap = bot.Snapshot();
+        var zv = bot.ZoneView;
+        var bagUsed = 0;
+        if (zv is not null) foreach (var kv in zv.Inventory) if (kv.Value > 0) bagUsed++;
+        return new
+        {
+            snap.Phase, snap.Map, snap.Position, snap.Level, snap.Exp,
+            snap.Hp, snap.MaxHp, snap.Sp, snap.MaxSp,
+            snap.HpStones, snap.SpStones, snap.InCombat, snap.Aggressors,
+            snap.NearestAggressorDist, snap.Mounted, snap.Dead, snap.Drops, snap.Script,
+            Money = zv is { Money: >= 0 } ? zv.Money : (long?)null,
+            BagUsed = bagUsed,
+            // The survivability inequality, surfaced where a human can see both sides at once.
+            SustainableHealDps = zv is { SustainableHealDps: > 0 } ? zv.SustainableHealDps : (double?)null,
+            IncomingDps5s = zv?.IncomingDamageSince(TimeSpan.FromSeconds(5)),
+        };
+    }
+
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/say</c>.</summary>

@@ -206,6 +206,13 @@ public sealed class BotHandle
     /// during the gate approach, the RIDE_ON ack lands after C#'s mounted-check, and the gate is clicked
     /// mounted anyway (observed 2026-08-04 19:47: mounted at .963, gate clicked at 19:47:10.033, hop
     /// aborted). Suppressing the mount is what removes the race — a re-check alone cannot.</summary>
+    /// <summary>Per-bot metrics ("a window into everything going on with the bot" — operator 2026-08-05).
+    /// Declare with InitMetric, write with LogMetric from anywhere; batching absorbs the caller's rate.</summary>
+    public Metrics.MetricStore Metrics { get; } = new();
+
+    /// <summary>Rolling position trace (1/sec, timestamp+map+coord) for the live browser heatmap.</summary>
+    public Metrics.PositionTrace Trace { get; } = new();
+
     internal volatile bool SuppressMount;
 
     /// <summary>Throttle for the "walk SUPPRESSED — cast bar open" line (see BotManager.WalkAsync).</summary>

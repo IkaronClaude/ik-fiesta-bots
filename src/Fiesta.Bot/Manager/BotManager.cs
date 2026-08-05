@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
+using Fiesta.Bot.Metrics;
 using Fiesta.Bot.Navigation;
 using Fiesta.Bot.Pathfinding;
 using Fiesta.Bot.Scripting;
@@ -320,6 +321,46 @@ public sealed class BotManager : IAsyncDisposable
 
     /// <summary>Outcome of a manual in-zone action.</summary>
     public enum ActionResult { Sent, NotFound, NotInZone }
+
+    /// <summary>Declare + wire this bot's metrics to real packet events. Called per zone-enter (and per map
+    /// handoff), so it must be idempotent: InitMetric ignores redefinition, and the event hooks are assigned
+    /// (=) rather than accumulated (+=) where a duplicate subscription would double-count.
+    /// <para>Everything here is fed by packets the bot already decodes — no new protocol work — so the panel
+    /// is a VIEW over existing truth rather than a second source of it.</para></summary>
+    private static void RegisterMetrics(BotHandle handle, ZoneView zv)
+    {
+        var m = handle.Metrics;
+        // Gauges: levels sampled over time. Batch-averaged.
+        m.InitMetric("hp", MetricDirection.HigherIsBetter);
+        m.InitMetric("sp", MetricDirection.HigherIsBetter);
+        m.InitMetric("hpPct", MetricDirection.HigherIsBetter);
+        m.InitMetric("aggressors", MetricDirection.LowerIsBetter);
+        m.InitMetric("hpStones", MetricDirection.HigherIsBetter);
+        // Counters: amounts that must ADD UP within a batch, not average.
+        m.InitMetric("damageDealt", MetricDirection.HigherIsBetter, MetricKind.Counter);
+        m.InitMetric("damageTaken", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        m.InitMetric("expGained", MetricDirection.HigherIsBetter, MetricKind.Counter);
+        m.InitMetric("expLostToDeath", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        m.InitMetric("deaths", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        m.InitMetric("kills", MetricDirection.HigherIsBetter, MetricKind.Counter);
+        m.InitMetric("skillHits", MetricDirection.HigherIsBetter, MetricKind.Counter);
+        m.InitMetric("healsLanded", MetricDirection.HigherIsBetter, MetricKind.Counter);
+        m.InitMetric("healsFailed", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        m.InitMetric("moneyDelta", MetricDirection.HigherIsBetter, MetricKind.Counter);
+        m.InitMetric("distance", MetricDirection.HigherIsBetter, MetricKind.Counter);
+        m.InitMetric("mapChanges", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        m.InitMetric("stuns", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        m.InitMetric("moveFails", MetricDirection.LowerIsBetter, MetricKind.Counter);
+
+        // ── wire to the wire ────────────────────────────────────────────────────────────────────────
+        zv.MetricSink = (name, val) => m.LogMetric(name, val);
+        zv.HpChanged += hp =>
+        {
+            m.LogMetric("hp", hp);
+            if (zv.MaxHp > 0) m.LogMetric("hpPct", 100.0 * hp / zv.MaxHp);
+        };
+        zv.SpChanged += sp => m.LogMetric("sp", sp);
+    }
 
     /// <summary>Make a bot say <paramref name="text"/> in its zone (local chat).</summary>
     public Task<ActionResult> SayAsync(string id, string text, CancellationToken ct = default)
@@ -2751,6 +2792,7 @@ public sealed class BotManager : IAsyncDisposable
                 };
                 if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
+                RegisterMetrics(handle, zoneView);
                 // ⚔️ DURABLE THREAT TABLE: seed what we already know about how hard each mob hits, and push
                 // every new sample back out. ZoneView's table dies on each respawn/handoff and this bot
                 // respawns constantly, so without this a mob has to hurt us again in EVERY session before the
