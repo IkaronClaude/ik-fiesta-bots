@@ -837,7 +837,20 @@ public sealed class BotApi
     /// <summary>Error code of the last soul-stone BUY failure (0x5005), 0 if none seen.</summary>
     public int lastStoneBuyFailErr() => View?.LastStoneBuyFailErr ?? 0;
     public bool dead() => View?.Dead ?? false;
+    /// <summary>True if WE were hit in roughly the last 8s. ⚠️ This is "am I being attacked", NOT
+    /// "am I attacking" — do not use it to decide whether to (re)start an auto-attack. Doing exactly
+    /// that was the bug that made the bot stop fighting back precisely when mobs were hitting it: the
+    /// grind loop only re-issued <c>autoAttack</c> when <c>not inCombat()</c>, which is never true while
+    /// a pack is beating on us. Use <see cref="bashing"/> for "is my swing stream running".</summary>
     public bool inCombat() => View?.InCombat ?? false;
+
+    /// <summary>True while OUR melee auto-attack (BASHSTART) swing stream is actually running — set when
+    /// the server starts our bash, cleared when it sends CEASE_FIRE on our own handle. This is the
+    /// correct "am I attacking right now" signal, and the one to gate a re-issue of
+    /// <see cref="autoAttack"/> on: a bash lapses for reasons that have nothing to do with whether we
+    /// are being hit (a cast's stop/face, the target moving, a cancelled walk-over), and when it does,
+    /// the bot must start swinging again or it deals literally zero damage.</summary>
+    public bool bashing() => View?.BashActive ?? false;
     /// <summary>Learned effective attack range (max distance a swing of ours has connected at) — 0 until the
     /// first connecting hit. Measured from the wire since no client file / PDB carries it (operator 2026-07-15).</summary>
     public double learnedRange() => View?.LearnedMeleeRange ?? 0;
