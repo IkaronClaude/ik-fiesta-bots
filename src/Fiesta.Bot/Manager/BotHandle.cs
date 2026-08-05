@@ -27,9 +27,16 @@ public enum BotPhase
 /// </summary>
 public sealed class BotHandle
 {
-    // Big enough that a verbose firehose (move/cast every tick) doesn't evict the headline
-    // Note/Info lines before a tailer reads them. Filtered down per-level on the way out.
-    private const int MaxLogLines = 1500;
+    // Big enough that a verbose firehose does not evict history before anyone reads it. 1500 was FAR too
+    // small: measured 2026-08-05, at level=verbose 1500 lines spanned 63 SECONDS and the endpoint's
+    // 200-line default spanned NINE. That produced real misdiagnoses — a "0 kills, the bot completes
+    // nothing" report that was a 9-second sample taken during a town phase, and a bag census evicted
+    // before it could be read. A narrow sample is not a negative result, so the buffer must be wide
+    // enough that "I did not see X" actually means something.
+    // 100k lines ~= 10MB, which is nothing next to what this process already holds (operator 2026-08-05:
+    // "we'll survive having 10MB worth of buffer"). Still filtered per-level on the way out, so a
+    // level=note read stays cheap.
+    private const int MaxLogLines = 100_000;
     private readonly List<(BotLogLevel Level, string Line)> _log = new();
     private readonly object _logGate = new();
 
