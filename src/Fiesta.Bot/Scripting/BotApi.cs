@@ -651,6 +651,12 @@ public sealed class BotApi
     /// where clicking the NPC opens a selection menu instead of a direct dialogue.</summary>
     public bool startQuest(int id) => Ok(Wait(_mgr.StartQuestAsync(Id, (ushort)id)));
 
+    /// <summary>ACCEPT A QUEST REMOTELY from the quest log — no travel to the giver, no NPC click.
+    /// Returns true only if the quest actually went ACTIVE (verified, never assumed). Gate on
+    /// <c>quest(id).remoteAcceptable</c> (@25) plus the client-side level floor; fall back to
+    /// travelling when it returns false. Sequence proven in Z:/QuestsRemoteAndMulti.pcapng.</summary>
+    public bool remoteAcceptQuest(int id) => Ok(Wait(_mgr.RemoteAcceptQuestAsync(Id, (ushort)id)));
+
     /// <summary>The server's last accept/start result for a quest: <b>0</b> = accepted, <b>&gt;0</b> =
     /// a refusal reason code (from NC_QUEST_START_ACK.err / SELECT_START_ACK.ErrorType / QUEST_ERR),
     /// <b>-1</b> = never attempted. Lets the driver react to WHY an accept failed (level / prereq /

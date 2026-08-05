@@ -1897,6 +1897,41 @@ public sealed class BotManager : IAsyncDisposable
             s => s.SendAsync(new PROTO_NC_QUEST_START_REQ { nQuestID = questId }, ct));
     }
 
+    /// <summary>ACCEPT A QUEST REMOTELY from the quest log — no travelling to the giver, no NPC click.
+    /// <para>Sequence, captured in <c>Z:/QuestsRemoteAndMulti.pcapng</c> (operator chat immediately
+    /// before it: "Okay I will remote accept a quest"; no NPC click anywhere near it):
+    /// <code>
+    /// C-> 0x4414 NC_QUEST_START_REQ      {questId}   -> q286
+    /// S-> 0x4401 NC_QUEST_SCRIPT_CMD_REQ (a SAY page)
+    /// S-> 0x4415 NC_QUEST_START_ACK
+    /// C-> 0x4402 NC_QUEST_SCRIPT_CMD_ACK             (ack the served page)
+    /// </code>
+    /// So it is START_REQ followed by the ORDINARY dialogue drain — which is why this just calls
+    /// <see cref="DriveQuestDialogueAsync"/> with <c>npcHandle: 0</c> (its remote mode).</para>
+    /// <para>Only quests with <c>QuestDef.RemoteAcceptable</c> (@25 <c>bIsWaitListProgress</c>) qualify —
+    /// 642 of 2304 in the client data, and 26 of the bot's 28 active quests. Callers must also AND in the
+    /// client-side level floor. VERIFIES by checking the quest actually went ACTIVE; returns
+    /// <see cref="ActionResult.NotFound"/> and logs loudly if it did not, so a silent no-op is impossible.</para></summary>
+    public async Task<ActionResult> RemoteAcceptQuestAsync(string id, ushort questId, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var h)) return ActionResult.NotFound;
+        if (h.Phase != BotPhase.InZone) return ActionResult.NotInZone;
+        if (ClientData?.Quest(questId) is { } qd && !qd.RemoteAcceptable)
+        {
+            h.Log(BotLogLevel.Note, $"quest {questId} REMOTE-ACCEPT refused — not flagged remotely acceptable (@25); travel to the giver instead");
+            return ActionResult.NotFound;
+        }
+        var start = await StartQuestAsync(id, questId, ct);
+        if (start != ActionResult.Sent) return start;
+        // Drain the pages START_REQ triggered. npcHandle 0 = remote (no click) — see DriveQuestDialogueAsync.
+        await DriveQuestDialogueAsync(id, npcHandle: 0, questId: questId, ct: ct);
+        var ok = h.ZoneView?.IsQuestActive(questId) == true;
+        h.Log(BotLogLevel.Note, ok
+            ? $"quest {questId} REMOTE-ACCEPTED from the quest log (no travel to the giver)"
+            : $"CRUTCH[WARN] quest {questId} remote-accept did NOT take (quest not active after the drain) — falling back to travelling to the giver");
+        return ok ? ActionResult.Sent : ActionResult.NotFound;
+    }
+
     /// <summary>Answer the currently-pending quest dialogue step (from
     /// <see cref="ZoneView.PendingQuest"/>) — "proceed". Convenience so the caller needn't
     /// pass the quest id / qsc each step.</summary>
@@ -1936,21 +1971,38 @@ public sealed class BotManager : IAsyncDisposable
         // applied here. CONFIRMED via a live capture 2026-07-01 (quest 6 hand-in stuck "0 pages acked"
         // forever): clicking this NPC right after its shop was left open got ZERO response from the
         // server — no page, no menu, nothing — until the shop was closed first.
-        await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
-        await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct);
+        // ⭐ npcHandle == 0 means REMOTE: the pages are ALREADY being served (we sent NC_QUEST_START_REQ
+        // from the quest log), so there is no NPC to click — skip the click/stop entirely and go straight
+        // to draining. Clicking handle 0 is a click on a non-existent entity: the server answers nothing,
+        // which is exactly why the 2026-07-14 remote-accept attempt logged "0 pages acked, concluded=False"
+        // and was wrongly written off as "the remote-accept packet sequence is unknown".
+        // It is NOT unknown — Z:/QuestsRemoteAndMulti.pcapng captures it, with the operator's own chat
+        // ("Okay I will remote accept a quest") immediately before and no NPC click anywhere:
+        //     C-> 0x4414 START_REQ {questId}      -> q286
+        //     S<- 0x4401 SCRIPT_CMD_REQ (a SAY page)
+        //     S<- 0x4415 START_ACK
+        //     C-> 0x4402 SCRIPT_CMD_ACK           <- the client acks the served page
+        // i.e. once START_REQ is sent the flow is the ORDINARY dialogue drain below, unchanged.
+        if (npcHandle != 0)
+        {
+            await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
+            await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct);
+        }
         // The real client ALWAYS follows NPCCLICK with STOP_REQ (0x2012) reporting the position it
         // halted at to talk — and the server only starts pushing the quest script (0x4401) AFTER that
         // STOP arrives (verified across every accept in QuestsLowLevel.pcapng: click→stop→0x4401→0x4402,
         // no menu for a plain quest giver). The bot used to click without STOP, so the server treated
         // the click as a bare/menu interaction and never drove the script. Send STOP at our current pos.
-        if (h.Position is { } pos)
+        if (npcHandle != 0 && h.Position is { } pos)
         {
             var stop = new byte[8];
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), pos.X);
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), pos.Y);
             await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
         }
-        h.Log($"quest dialogue: click npc h={npcHandle} + stop, driving (result={result}, rewardIndex={rewardIndex})");
+        h.Log(npcHandle == 0
+            ? $"quest dialogue: REMOTE (no npc click) — draining the pages START_REQ already triggered (result={result}, rewardIndex={rewardIndex})"
+            : $"quest dialogue: click npc h={npcHandle} + stop, driving (result={result}, rewardIndex={rewardIndex})");
 
         // A quest GIVER that offers SEVERAL quests opens an NPC MENU (0x201C) on click — the quest
         // script (0x4401) only arrives AFTER we tell the server WHICH quest to advance. That is the
@@ -1963,7 +2015,8 @@ public sealed class BotManager : IAsyncDisposable
              && zv?.NpcMenuOpen != true
              && (zv?.PendingQuest?.AtUtc ?? DateTime.MinValue) <= lastSeen; w += 80)
             await Task.Delay(80, ct);
-        if (zv?.NpcMenuOpen == true)
+        // A REMOTE drive never opens an NPC menu (there was no click) — skip the whole menu branch.
+        if (npcHandle != 0 && zv?.NpcMenuOpen == true)
         {
             if (questId != 0 && !StartAcceptIsButton(questId))
             {
