@@ -1618,22 +1618,19 @@ public sealed class BotManager : IAsyncDisposable
         // call and falsely reads as an empty reserve. Skip as a no-op when already full.
         if (_bots.TryGetValue(id, out var h) && h.ZoneView is { } v && v.Hp is { } hp && v.MaxHp > 0 && hp >= v.MaxHp)
             return Task.FromResult(ActionResult.Sent);
-        // ⏳ DON'T FIRE WHILE THE STONE IS ON COOLDOWN. This is not a retry-cap bandaid — it is respecting a
-        // LEARNED SERVER FACT (HpStoneCooldownMs, derived from the min gap between successful uses, ~6.9s
-        // measured). The driver was firing ~2/sec, so most uses could never land: 59 requests -> 23 success /
-        // 23 USEFAIL / 13 with NO REPLY AT ALL (39%), the silence suggesting the server rate-limits the spam.
-        // Suppressing the doomed sends both stops that and keeps the USEFAIL signal meaningful — a USEFAIL
-        // that survives this gate is genuinely interesting (empty reserve / full HP), not just cooldown noise.
-        if (_bots.TryGetValue(id, out var hcd) && hcd.ZoneView is { } vcd && vcd.HpStoneReadyInMs > 0)
-        {
-            if (DateTime.UtcNow - hcd.LastStoneCooldownLogUtc > TimeSpan.FromMilliseconds(2000))
-            {
-                hcd.LastStoneCooldownLogUtc = DateTime.UtcNow;
-                hcd.Log(BotLogLevel.Info, $"[soulstone] HP stone still on cooldown — {vcd.HpStoneReadyInMs:F0}ms " +
-                    $"to go (learned cd {vcd.HpStoneCooldownMs:F0}ms); NOT firing. WE CANNOT HEAL RIGHT NOW.");
-            }
-            return Task.FromResult(ActionResult.Sent);
-        }
+        // ⛔ DO NOT GATE THE HEAL ON THE LEARNED COOLDOWN. An earlier version of this method did exactly
+        // that and it KILLED THE BOT (2026-08-05, 16:29:09, -264 exp):
+        //     16:29:08.038  HP stone still on cooldown — 5181ms to go (learned cd 12834ms); NOT firing.
+        //     16:29:09.653  DEATH -264      (hp 9%, 11 aggressors)
+        // The estimator takes the MINIMUM gap between successful uses, so it converges on the true cooldown
+        // FROM ABOVE — early in a session it OVERESTIMATES (12834ms here vs the ~6900ms measured once
+        // converged). Using an UPPER bound to BLOCK an action is unsafe by construction: it withholds a heal
+        // that was very likely available, and at 9% HP that is fatal.
+        // To block safely we would need a LOWER bound on the cooldown, which nothing here provides.
+        // So: always fire. A refused USE costs one packet; a withheld heal costs the character. The spam is
+        // cosmetic, the missed heal is not. HpStoneCooldownMs / HpStoneReadyInMs remain exposed for the
+        // driver to REASON with ("I probably cannot heal for Nms, so do not take this fight") — informing a
+        // decision is fine, silently suppressing the action is not.
         // NOTE the wording: this logs the REQUEST, not a heal. It used to say "recharge", which read as
         // success — during the 15:30:41 death it printed five times while every use was refused and HP fell
         // 628->0. The outcome is the 0x5008/0x5006 ack, logged by ZoneView.
