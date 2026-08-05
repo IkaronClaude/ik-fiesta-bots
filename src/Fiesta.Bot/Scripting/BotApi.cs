@@ -530,7 +530,17 @@ public sealed class BotApi
     public bool answerQuest(int result = 1) => Ok(Wait(_mgr.ProceedQuestAsync(Id, (uint)result)));
     /// <summary>Drive a whole quest dialogue with one NPC (accept or turn-in): click it and
     /// ACK every server-pushed script page until the dialogue ends. <c>result</c>=1 accepts.</summary>
-    public bool doQuest(int npcHandle, int result = 1, int rewardIndex = -1, int questId = 0) => Ok(Wait(_mgr.DriveQuestDialogueAsync(Id, (ushort)npcHandle, (uint)result, rewardIndex, questId: (ushort)questId)));
+    /// <summary>Drive a quest dialogue. <paramref name="npcHandle"/> <b>&lt; 0 = REMOTE</b> (no NPC to
+    /// click — the pages are already being served after a START_REQ); <paramref name="questId"/>
+    /// <b>&lt; 0 = unspecified</b>.
+    /// <para>⚠️ NEITHER uses 0 as "none" (operator, 2026-08-05): <b>0 is a legitimate id in this game</b> —
+    /// ActiveSkill 0 and PassiveSkill 0 are real skills, item 0 is "Leather Boots", and an entity handle
+    /// of 0 cannot be assumed invalid either. Every time 0 has been used as a sentinel here it has
+    /// eventually hidden a real value. Use -1 across the Lua boundary and null inside C#.</para></summary>
+    public bool doQuest(int npcHandle, int result = 1, int rewardIndex = -1, int questId = -1)
+        => Ok(Wait(_mgr.DriveQuestDialogueAsync(Id,
+            npcHandle < 0 ? null : (ushort)npcHandle, (uint)result, rewardIndex,
+            questId: questId < 0 ? null : (ushort)questId)));
     /// <summary>True if the LAST doQuest drive CONCLUDED (reached the Qsc 0x06/0x0A terminal for our quest) — i.e.
     /// the accept/hand-in actually completed on the wire. Use after a hand-in to detect success even when a
     /// REPEATABLE re-accepted (leaving bot.questProgress stale at N/N so questReadyToHandin would loop).</summary>

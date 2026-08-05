@@ -1649,7 +1649,8 @@ public sealed class BotManager : IAsyncDisposable
     /// which SELECT_START correctly and whose start pages have no [BUTTON].</summary>
     private bool StartAcceptIsButton(int questId)
     {
-        if (questId == 0 || ClientData?.Quest(questId) is not { } q) return false;
+        // No 0-as-"none" guard: callers pass a real id (the nullable is unwrapped first).
+        if (ClientData?.Quest(questId) is not { } q) return false;
         var dlg = ClientData.QuestDialog(q.StartDialogId);
         return dlg is not null && dlg.Contains("[BUTTON]", StringComparison.OrdinalIgnoreCase);
     }
@@ -1924,7 +1925,7 @@ public sealed class BotManager : IAsyncDisposable
         var start = await StartQuestAsync(id, questId, ct);
         if (start != ActionResult.Sent) return start;
         // Drain the pages START_REQ triggered. npcHandle 0 = remote (no click) — see DriveQuestDialogueAsync.
-        await DriveQuestDialogueAsync(id, npcHandle: 0, questId: questId, ct: ct);
+        await DriveQuestDialogueAsync(id, npcHandle: null, questId: questId, ct: ct);   // null = REMOTE (no NPC)
         var ok = h.ZoneView?.IsQuestActive(questId) == true;
         h.Log(BotLogLevel.Note, ok
             ? $"quest {questId} REMOTE-ACCEPTED from the quest log (no travel to the giver)"
@@ -1953,7 +1954,7 @@ public sealed class BotManager : IAsyncDisposable
     /// prompt (0x4412) on the [SHOW_REWARD] page; if <paramref name="rewardIndex"/> &gt;= 0 this
     /// answers it mid-dialogue with NC_QUEST_REWARD_SELECT_ITEM_INDEX (the RAW reward slot) BEFORE
     /// acking the "Complete" page — the order the real client uses (verified in Quest.pcapng).</summary>
-    public async Task<ActionResult> DriveQuestDialogueAsync(string id, ushort npcHandle, uint result = 1, int rewardIndex = -1, int maxSteps = 24, ushort questId = 0, CancellationToken ct = default)
+    public async Task<ActionResult> DriveQuestDialogueAsync(string id, ushort? npcHandle, uint result = 1, int rewardIndex = -1, int maxSteps = 24, ushort? questId = null, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var h)) return ActionResult.NotFound;
         if (h.Phase != BotPhase.InZone || h.ZoneSession is not { } s) return ActionResult.NotInZone;
@@ -1971,7 +1972,7 @@ public sealed class BotManager : IAsyncDisposable
         // applied here. CONFIRMED via a live capture 2026-07-01 (quest 6 hand-in stuck "0 pages acked"
         // forever): clicking this NPC right after its shop was left open got ZERO response from the
         // server — no page, no menu, nothing — until the shop was closed first.
-        // ⭐ npcHandle == 0 means REMOTE: the pages are ALREADY being served (we sent NC_QUEST_START_REQ
+        // ⭐ npcHandle == null means REMOTE: the pages are ALREADY being served (we sent NC_QUEST_START_REQ
         // from the quest log), so there is no NPC to click — skip the click/stop entirely and go straight
         // to draining. Clicking handle 0 is a click on a non-existent entity: the server answers nothing,
         // which is exactly why the 2026-07-14 remote-accept attempt logged "0 pages acked, concluded=False"
@@ -1983,24 +1984,24 @@ public sealed class BotManager : IAsyncDisposable
         //     S<- 0x4415 START_ACK
         //     C-> 0x4402 SCRIPT_CMD_ACK           <- the client acks the served page
         // i.e. once START_REQ is sent the flow is the ORDINARY dialogue drain below, unchanged.
-        if (npcHandle != 0)
+        if (npcHandle is { } clickHandle)
         {
             await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
-            await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct);
+            await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)clickHandle, (byte)(clickHandle >> 8) }), ct);
         }
         // The real client ALWAYS follows NPCCLICK with STOP_REQ (0x2012) reporting the position it
         // halted at to talk — and the server only starts pushing the quest script (0x4401) AFTER that
         // STOP arrives (verified across every accept in QuestsLowLevel.pcapng: click→stop→0x4401→0x4402,
         // no menu for a plain quest giver). The bot used to click without STOP, so the server treated
         // the click as a bare/menu interaction and never drove the script. Send STOP at our current pos.
-        if (npcHandle != 0 && h.Position is { } pos)
+        if (npcHandle is not null && h.Position is { } pos)
         {
             var stop = new byte[8];
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(0), pos.X);
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(stop.AsSpan(4), pos.Y);
             await s.SendAsync(new FiestaPacket(OpActStop, stop), ct);
         }
-        h.Log(npcHandle == 0
+        h.Log(npcHandle is null
             ? $"quest dialogue: REMOTE (no npc click) — draining the pages START_REQ already triggered (result={result}, rewardIndex={rewardIndex})"
             : $"quest dialogue: click npc h={npcHandle} + stop, driving (result={result}, rewardIndex={rewardIndex})");
 
@@ -2016,16 +2017,16 @@ public sealed class BotManager : IAsyncDisposable
              && (zv?.PendingQuest?.AtUtc ?? DateTime.MinValue) <= lastSeen; w += 80)
             await Task.Delay(80, ct);
         // A REMOTE drive never opens an NPC menu (there was no click) — skip the whole menu branch.
-        if (npcHandle != 0 && zv?.NpcMenuOpen == true)
+        if (npcHandle is not null && zv?.NpcMenuOpen == true)
         {
-            if (questId != 0 && !StartAcceptIsButton(questId))
+            if (questId is { } selQid && !StartAcceptIsButton(selQid))
             {
                 var npcId = zv.MenuNpcId != 0 ? zv.MenuNpcId : (ushort)(zv.NearbyNpcs.FirstOrDefault(n => n.Handle == npcHandle)?.MobId ?? 0);
-                await s.SendAsync(new PROTO_NC_QUEST_SELECT_START_REQ { nNPCID = npcId, nQuestID = questId }, ct);
+                await s.SendAsync(new PROTO_NC_QUEST_SELECT_START_REQ { nNPCID = npcId, nQuestID = selQid }, ct);
                 zv.ClearNpcMenu();
-                h.Log($"quest dialogue: SELECT_START npc={npcId} quest={questId} (multi-quest menu)");
+                h.Log($"quest dialogue: SELECT_START npc={npcId} quest={selQid} (multi-quest menu)");
             }
-            else if (questId != 0 && StartAcceptIsButton(questId))
+            else if (questId is { } btnQid && StartAcceptIsButton(btnQid))
             {
                 // BUTTON/[MENU]-accept quest (e.g. lvl-20 job-change q60015): SELECT_START is refused 2881;
                 // the real client presses the menu button → NPCMENUOPEN_ACK {ack=1}. Then the server serves
@@ -2033,7 +2034,7 @@ public sealed class BotManager : IAsyncDisposable
                 // hypothesis 2026-07-04; scoped to [BUTTON] start pages.)
                 await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = 1 }, ct);
                 zv.ClearNpcMenu();
-                h.Log($"quest dialogue: BUTTON-accept q{questId} — answered NPC menu (option 1 = the accept button) npc={zv.MenuNpcId}");
+                h.Log($"quest dialogue: BUTTON-accept q{btnQid} — answered NPC menu (option 1 = the accept button) npc={zv.MenuNpcId}");
             }
             else
             {
@@ -2055,7 +2056,7 @@ public sealed class BotManager : IAsyncDisposable
         // 0x06 (accept-confirm) / 0x0A (done) — those just signal the dialogue concluded.
         // DERIVE the per-page menu answers from THIS quest's script (dialogId -> correct nResult), so a
         // puzzle/choice page is answered with the option that reaches ACCEPT — no hardcoding.
-        var menuAnswers = questId != 0 ? DeriveMenuAnswers(questId) : new Dictionary<int, uint>();
+        var menuAnswers = questId is { } mqid ? DeriveMenuAnswers(mqid) : new Dictionary<int, uint>();
         if (menuAnswers.Count > 0)
             h.Log($"quest {questId}: derived menu answers {string.Join(",", menuAnswers.Select(kv => $"say{kv.Key}=>{kv.Value}"))}");
         bool rewardSelected = false, concluded = false, redirected = false;
@@ -2081,7 +2082,7 @@ public sealed class BotManager : IAsyncDisposable
             // `[MENU]` absent → no bypass available at this exact step; ack it normally (result=1) to
             // progress the OTHER quest's script, same as a real player forced through a NPC's line before
             // reaching a page where a choice becomes available.
-            if (questId != 0 && cur.QuestId != questId)
+            if (questId is { } wantQid && cur.QuestId != wantQid)
             {
                 if (cur.Qsc is 0x06 or 0x0A) continue; // someone else's terminal — nothing to act on
                 if (DialogHasMenuTag(cur.DialogId))
@@ -2090,8 +2091,8 @@ public sealed class BotManager : IAsyncDisposable
                     {
                         redirected = true;
                         var npcId = zv?.MenuNpcId != 0 ? zv!.MenuNpcId : (ushort)(zv?.NearbyNpcs.FirstOrDefault(n => n.Handle == npcHandle)?.MobId ?? 0);
-                        await s.SendAsync(new PROTO_NC_QUEST_SELECT_START_REQ { nNPCID = npcId, nQuestID = questId }, ct);
-                        h.Log($"quest dialogue: npc h={npcHandle} showed q{cur.QuestId} [MENU] page (not acked) — we want q{questId}, SELECT_START npc={npcId}");
+                        await s.SendAsync(new PROTO_NC_QUEST_SELECT_START_REQ { nNPCID = npcId, nQuestID = wantQid }, ct);
+                        h.Log($"quest dialogue: npc h={npcHandle} showed q{cur.QuestId} [MENU] page (not acked) — we want q{wantQid}, SELECT_START npc={npcId}");
                     }
                 }
                 else

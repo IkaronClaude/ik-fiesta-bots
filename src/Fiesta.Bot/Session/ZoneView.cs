@@ -1531,7 +1531,10 @@ public sealed class ZoneView : IDisposable
     // --- Quest accept/start result (NC_QUEST_START_ACK / SELECT_START_ACK / QUEST_ERR) ---
     // NC_QUEST_START_ACK carries only {err} with no questId, so the START_REQ questId is stashed
     // here when the manager sends it and paired with the next START_ACK.
-    private int _lastStartReqQuestId;
+    // -1 = no START_REQ attributed yet. NOT 0 — "0 means none" is the sentinel trap that has bitten this
+    // codebase repeatedly (ActiveSkill 0 and PassiveSkill 0 are real skills, item 0 is "Leather Boots"),
+    // so ids never use 0 for absence (operator, 2026-08-05).
+    private int _lastStartReqQuestId = -1;
     private readonly ConcurrentDictionary<int, int> _questAcceptErr = new(); // questId -> last server err code
 
     /// <summary>Record that a START_REQ for <paramref name="questId"/> was just sent, so the next
@@ -1552,9 +1555,9 @@ public sealed class ZoneView : IDisposable
 
     private void RecordQuestAcceptResult(int questId, int err)
     {
-        if (questId != 0) _questAcceptErr[questId] = err;
+        if (questId >= 0) _questAcceptErr[questId] = err;
         LastQuestAcceptResult = (questId, err);
-        if (err == 0 && questId != 0) MarkQuestActive(questId);
+        if (err == 0 && questId >= 0) MarkQuestActive(questId);
         _log?.Invoke($"[ZoneView] QUEST_ACCEPT_RESULT quest={questId} err={err}{(err == 0 ? " (accepted)" : " (refused)")}");
         QuestAcceptResult?.Invoke(questId, err);
     }
@@ -2728,7 +2731,7 @@ public sealed class ZoneView : IDisposable
             var p = pkt.Payload.Span;
             int err = p.Length >= 2 ? (p[0] | (p[1] << 8)) : (p.Length == 1 ? p[0] : -1);
             _log?.Invoke($"[ZoneView] QUEST_ERR raw=[{Convert.ToHexString(p)}] (lastStartReq={_lastStartReqQuestId})");
-            if (_lastStartReqQuestId != 0) RecordQuestAcceptResult(_lastStartReqQuestId, err == 0 ? -2 : err);
+            if (_lastStartReqQuestId >= 0) RecordQuestAcceptResult(_lastStartReqQuestId, err == 0 ? -2 : err);
         }
         else if (op == OpClientItem)
         {
