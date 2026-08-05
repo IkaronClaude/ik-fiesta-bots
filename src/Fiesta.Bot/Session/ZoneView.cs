@@ -1043,6 +1043,29 @@ public sealed class ZoneView : IDisposable
     /// (this in-memory table dies with the ZoneView on each respawn). Args: (mobId, damage).</summary>
     public Action<int, int>? MobHitSampled;
 
+    /// <summary>Raised when a per-server scalar is measured, so it can be persisted. Args: (name, value).
+    /// These take REPEATED observation to establish (the stone cooldown needs two successful heals), so
+    /// without persistence they are unavailable for most of a session — measured: 8 minutes in, still
+    /// unlearned, and the survivability inequality still reading -1.</summary>
+    public Action<string, double>? ScalarLearned;
+
+    /// <summary>Names of the persisted scalars (shared between the seeder and the learner).</summary>
+    public const string ScalarStoneCooldownMs = "hpStoneCooldownMs";
+    public const string ScalarStoneHeal = "hpStoneHeal";
+
+    /// <summary>Seed learned scalars from durable knowledge so the survivability inequality is answerable
+    /// from the FIRST tick instead of after the second heal of each session.</summary>
+    public void SeedScalars(double cooldownMsMin, double healAvg, int healCount)
+    {
+        if (cooldownMsMin > 0) HpStoneCooldownMs = cooldownMsMin;
+        if (healAvg > 0 && healCount > 0) { _healSum = (long)(healAvg * healCount); _healSamples = healCount; }
+        if (cooldownMsMin > 0 || healAvg > 0)
+            _logLevel?.Invoke(BotLogLevel.Note,
+                $"[heal] seeded from durable knowledge — stone cooldown {(cooldownMsMin > 0 ? $"{cooldownMsMin:F0}ms" : "unknown")}, " +
+                $"heal avg {(healAvg > 0 ? $"{healAvg:F0}" : "unknown")} ⇒ sustainable {(SustainableHealDps > 0 ? $"{SustainableHealDps:F0} HP/s" : "unknown")} " +
+                "(no need to heal twice before we can judge a fight)");
+    }
+
     /// <summary>Seed the threat table from durable knowledge at zone-enter, so a mob learned in an earlier
     /// session is dangerous from the FIRST tick rather than needing to hurt us again to be re-learned.</summary>
     public void SeedMobHits(IEnumerable<(int MobId, int Max, int Count, long Sum)> seeds)
@@ -2151,6 +2174,7 @@ public sealed class ZoneView : IDisposable
                     var healed = hpNow - _hpAtStoneUse;
                     _stoneHealPendingUntil = DateTime.MinValue;   // one attribution per use
                     _healSamples++; _healSum += healed;
+                    ScalarLearned?.Invoke(ScalarStoneHeal, healed);
                     if (healed > HpStoneHealMax)
                     {
                         HpStoneHealMax = healed;
@@ -2625,6 +2649,7 @@ public sealed class ZoneView : IDisposable
                     if (gapMs > 250 && (HpStoneCooldownMs < 0 || gapMs < HpStoneCooldownMs))
                     {
                         HpStoneCooldownMs = gapMs;
+                        ScalarLearned?.Invoke(ScalarStoneCooldownMs, gapMs);   // persist: min-gap converges from above
                         _logLevel?.Invoke(BotLogLevel.Note,
                             $"[ZoneView] LEARNED HP soul-stone cooldown ≈ {gapMs:F0}ms (min gap between successful uses)");
                     }

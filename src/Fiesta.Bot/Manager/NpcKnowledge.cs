@@ -34,9 +34,11 @@ public sealed class NpcKnowledge
         _path = Path.Combine(baseDir, "npc-shops.json");
         _questDeprioPath = Path.Combine(baseDir, "quest-deprio.json");
         _mobThreatPath = Path.Combine(baseDir, "mob-threats.json");
+        _scalarPath = Path.Combine(baseDir, "learned-scalars.json");
         Load();
         LoadQuestDeprio();
         LoadMobThreat();
+        LoadScalars();
     }
 
     private static string QKey(string host, int questId) => $"{host}|{questId}";
@@ -158,6 +160,67 @@ public sealed class NpcKnowledge
                 var json = JsonSerializer.Serialize(
                     new SortedDictionary<string, MobThreatSample>(_mobThreat), new JsonSerializerOptions { WriteIndented = true });
                 File.WriteAllText(_mobThreatPath, json);
+            }
+            catch { /* persistence is best-effort; in-memory still works this session */ }
+        }
+    }
+
+    // 📊 DURABLE LEARNED SCALARS — per-server measurements that take REPEATED OBSERVATION to establish and
+    // are therefore worthless if they reset every session. The HP-stone cooldown is the motivating case: it is
+    // derived from the MINIMUM gap between two successful uses, so a fresh session cannot know it until the
+    // bot has healed twice. Measured 2026-08-05: eight minutes into a session it was still unlearned and
+    // SustainableHealDps still read -1 — i.e. the survivability inequality was unavailable for most of the
+    // session, which is exactly when the bot is dying (deaths consumed 102% of exp over a 75-min window).
+    // Keeps Min/Max/Count/Sum so a caller can use whichever statistic is correct for its quantity:
+    //   · cooldown  → MIN (converges on the truth FROM ABOVE, so the smallest gap ever seen is the best estimate)
+    //   · heal size → AVG/MAX
+    // Stores raw samples, never a derived verdict — same rule as the mob threat table.
+    private readonly string _scalarPath;
+    private readonly object _scalarIoLock = new();
+    private readonly ConcurrentDictionary<string, LearnedStat> _scalars = new(StringComparer.Ordinal);
+
+    /// <summary>A learned measurement: the extremes plus enough to recompute a mean.</summary>
+    public sealed record LearnedStat(double Min, double Max, int Count, double Sum);
+
+    private static string SKey(string host, string name) => $"{host}|{name}";
+
+    /// <summary>A learned scalar for this server, or null if never measured. NULL = NO EVIDENCE.</summary>
+    public LearnedStat? Scalar(string host, string name) =>
+        _scalars.TryGetValue(SKey(host, name), out var s) ? s : null;
+
+    /// <summary>Record one observation. Persists only when an EXTREME moves (min down or max up) — the
+    /// extremes are what the callers key off, and saving every sample would write on every heal.</summary>
+    public void RecordScalar(string host, string name, double value)
+    {
+        if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(name) || double.IsNaN(value)) return;
+        var key = SKey(host, name);
+        var had = _scalars.TryGetValue(key, out var old);
+        var upd = _scalars.AddOrUpdate(key,
+            _ => new LearnedStat(value, value, 1, value),
+            (_, s) => new LearnedStat(Math.Min(s.Min, value), Math.Max(s.Max, value), s.Count + 1, s.Sum + value));
+        if (!had || upd.Min < old!.Min || upd.Max > old.Max) SaveScalars();
+    }
+
+    private void LoadScalars()
+    {
+        try
+        {
+            if (!File.Exists(_scalarPath)) return;
+            var d = JsonSerializer.Deserialize<Dictionary<string, LearnedStat>>(File.ReadAllText(_scalarPath));
+            if (d is not null) foreach (var (k, v) in d) _scalars[k] = v;
+        }
+        catch { /* a corrupt/missing store just starts empty */ }
+    }
+
+    private void SaveScalars()
+    {
+        lock (_scalarIoLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_scalarPath)!);
+                File.WriteAllText(_scalarPath, JsonSerializer.Serialize(
+                    new SortedDictionary<string, LearnedStat>(_scalars), new JsonSerializerOptions { WriteIndented = true }));
             }
             catch { /* persistence is best-effort; in-memory still works this session */ }
         }

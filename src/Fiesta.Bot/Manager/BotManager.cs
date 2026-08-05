@@ -2759,6 +2759,17 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SeedMobHits(Knowledge.MobThreatsFor(handle.Options.Host)
                     .Select(kv => (kv.Key, kv.Value.Max, kv.Value.Count, kv.Value.Sum)));
                 zoneView.MobHitSampled = (mobId, dmg) => Knowledge.RecordMobHit(handle.Options.Host, mobId, dmg);
+                // 📊 Learned scalars (HP-stone cooldown + heal size). These need REPEATED observation — the
+                // cooldown is the min gap between two successful heals — so without persistence the
+                // survivability inequality is unavailable for most of every session (measured: 8 minutes in,
+                // still unlearned, SustainableHealDps still -1). Seed, then keep learning.
+                zoneView.ScalarLearned = (name, val) => Knowledge.RecordScalar(handle.Options.Host, name, val);
+                var cdStat = Knowledge.Scalar(handle.Options.Host, ZoneView.ScalarStoneCooldownMs);
+                var healStat = Knowledge.Scalar(handle.Options.Host, ZoneView.ScalarStoneHeal);
+                zoneView.SeedScalars(
+                    cdStat?.Min ?? -1,                                            // MIN: converges from above
+                    healStat is { Count: > 0 } ? healStat.Sum / healStat.Count : -1,
+                    healStat?.Count ?? 0);
                 zoneView.IsInsideScenarioArea = (areaName, pos) =>          // hold AREAENTRY_ACK until inside the .aid box
                 {
                     if (handle.CurrentMap is not { } m || AreaProvider?.Invoke(m) is not { } areas) return true; // no data → ack now
