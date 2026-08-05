@@ -2199,6 +2199,22 @@ public sealed class ZoneView : IDisposable
         {
             // The cast RESOLVED (damage applied) — authoritative end of the animation lock.
             EndCast("HIT_DAMAGE — cast resolved");
+            // ⚔️ OUR SKILL DAMAGE — the other half of offensive output. [dmgdealt] hooks the MELEE
+            // SWING_DAMAGE (0x2448) only, so every skill hit was invisible: a window showing "5 dmgdealt"
+            // was the melee half of 5 + 20 skill hits. Counting both is the difference between "the bot
+            // barely attacks" and "the bot attacks mostly with skills", which are opposite diagnoses.
+            // Header only: {index u16, caster u16, targetnum u8} — the per-target SkillDamage[] array that
+            // follows is NOT decoded here on purpose. FiestaLib marks it "unsupported type" and the PDB
+            // extract has no SkillDamage layout, so its damage/resthp offsets would be a GUESS. Log what
+            // the struct actually defines; a P1 covers decoding the array once the layout is established.
+            var hp2 = pkt.Payload.Span;
+            if (hp2.Length >= 5)
+            {
+                var caster = (ushort)(hp2[2] | (hp2[3] << 8));
+                int targets = hp2[4];
+                if (SelfHandle is { } meC && caster == meC)
+                    _logLevel?.Invoke(BotLogLevel.Info, $"[skillhit] OUR skill landed on {targets} target(s) (0x2452)");
+            }
         }
         else if (op == OpBatCastAbort || op == OpBatCastCut)
         {
