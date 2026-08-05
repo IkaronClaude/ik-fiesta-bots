@@ -521,11 +521,38 @@ public static class BotEndpoints
         {
             var bot = manager.Get(id);
             if (bot is null) return Results.NotFound();
-            var inv = bot.ZoneView?.Inventory;
-            if (inv is null) return Results.Conflict(new { error = "bot is not in zone yet" });
-            return Results.Ok(new { id, items = inv.OrderBy(kv => kv.Key).Select(kv => new { slot = kv.Key, itemId = kv.Value }) });
+            var view = bot.ZoneView;
+            var inv = view?.Inventory;
+            if (view is null || inv is null) return Results.Conflict(new { error = "bot is not in zone yet" });
+            var cd = manager.ClientData;
+            // NAME + STACK COUNT + the sell/keep inputs, not a bare id list. Why (2026-08-06): the bot
+            // deadlocked on "bag FULL + nothing sellable", blocking the hand-in of THREE complete quests,
+            // which emptied the quest board and dropped it into the last-resort grind at 0 exp/2min. The
+            // bag was 48/48 with FIVE separate slots of one potion and NINE of return scrolls — and the
+            // endpoint could not say whether those were full stacks or mergeable partials, because it
+            // returned only ids. The count was decoded all along (ZoneView.ItemCount); nothing surfaced it.
+            // sellPrice/gradeType/demandLv are exactly the fields the driver's classifier keys on, so a
+            // "why is this not sellable?" question is answerable here instead of by reading ItemInfo by hand.
+            var rows = inv.OrderBy(kv => kv.Key).Select(kv =>
+            {
+                var info = cd?.Item(kv.Value);
+                return new
+                {
+                    slot = kv.Key,
+                    itemId = kv.Value,
+                    count = view.ItemCount(kv.Key),
+                    name = info?.Name ?? "",
+                    type = info?.Type ?? -1,
+                    itemClass = info?.ItemClass ?? -1,
+                    sellPrice = info?.SellPrice ?? -1,
+                    gradeType = info?.GradeType ?? -1,
+                    demandLv = info?.DemandLv ?? -1,
+                    maxLot = info?.MaxLot ?? -1,
+                };
+            }).ToList();
+            return Results.Ok(new { id, used = rows.Count, capacity = Session.ZoneView.BagPageSlots * Session.ZoneView.BagPagesAssumed, items = rows });
         })
-        .WithSummary("List the bot's bag contents (slot → itemId)");
+        .WithSummary("Bag contents with names, stack counts and the sell/keep fields");
 
         group.MapGet("/{id}/equipment", (string id) =>
         {
