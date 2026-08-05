@@ -43,6 +43,8 @@ public static class BotEndpoints
             group.MapPost("/{id}/soulstone-hp", (string id) => Unavailable()).WithSummary("Bot soul-stone HP (unavailable)");
             group.MapPost("/{id}/use-item", (string id) => Unavailable()).WithSummary("Bot use-item (unavailable)");
             group.MapPost("/{id}/shop-open", (string id) => Unavailable()).WithSummary("Bot open-shop (unavailable)");
+            group.MapGet("/{id}/storage", (string id) => Unavailable()).WithSummary("Bot storage (unavailable)");
+            group.MapPost("/{id}/storage/move", (string id) => Unavailable()).WithSummary("Bot storage move (unavailable)");
             group.MapGet("/{id}/shop", (string id) => Unavailable()).WithSummary("Bot shop list (unavailable)");
             group.MapPost("/{id}/buy", (string id) => Unavailable()).WithSummary("Bot buy (unavailable)");
             group.MapPost("/{id}/sell", (string id) => Unavailable()).WithSummary("Bot sell (unavailable)");
@@ -308,6 +310,50 @@ public static class BotEndpoints
             return ToResult(await manager.OpenShopAsync(id, h, req.MenuOption ?? 1), id, new { id, openedShop = h });
         })
         .WithSummary("Open a merchant's shop (click + menu-ack) so the server sends its sell list — then GET /shop");
+
+        // ── PERSONAL STORAGE (warehouse) ──────────────────────────────────────────────────────────────
+        // Read + act, so a deposit can be EXERCISED and VERIFIED directly instead of only through the
+        // driver's policy (Silver Rule: build the path, don't guess whether it works).
+        group.MapGet("/{id}/storage", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var v = bot.ZoneView;
+            if (v is null) return Results.Ok(new { open = false, box = -1, items = Array.Empty<object>() });
+            return Results.Ok(new
+            {
+                open = v.StorageOpen,
+                box = v.StorageBox,
+                cen = v.StorageCen,
+                page = v.StoragePage,
+                maxPage = v.StorageMaxPage,
+                cellChanges = v.CellChangeCount,
+                items = v.StorageItems.Select(it => new
+                {
+                    slot = it.Slot,
+                    id = (int)it.ItemId,
+                    name = manager.ClientData?.Item(it.ItemId)?.Name ?? "",
+                }),
+            });
+        })
+        .WithSummary("Personal storage: contents, container box, money, page, and whether a session is open")
+        .WithDescription("Open it first by clicking the storage keeper via POST /shop-open (a storage open reports " +
+            "shopKind=storage). `box` is the container id — 6, wire-verified from Z:/Storage.pcapng.");
+
+        group.MapPost("/{id}/storage/move", async (string id, StorageMoveRequest req) =>
+        {
+            if (req.FromSlot is not { } f)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["fromSlot"] = ["fromSlot is required"] });
+            if (req.ToSlot is not { } t)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["toSlot"] = ["toSlot is required"] });
+            var deposit = req.Deposit ?? true;
+            var r = await manager.StorageMoveAsync(id, f, t, deposit);
+            return ToResult(r, id, new { id, deposit, fromSlot = f, toSlot = t });
+        })
+        .WithSummary("Move one item between the bag and storage (NC_ITEM_RELOC_REQ), CONFIRMED by CELLCHANGE")
+        .WithDescription("deposit=true moves bag->storage, false moves storage->bag (the same packet both ways). " +
+            "Requires an OPEN storage session; refuses otherwise. A missing CELLCHANGE within 3s is reported as a " +
+            "FAILURE (CRUTCH[CRIT] in the bot log), never assumed to be success.");
 
         group.MapGet("/{id}/shop", (string id) =>
         {
@@ -904,6 +950,15 @@ public sealed record ShopOpenRequest
 {
     public ushort? NpcHandle { get; init; }
     public byte? MenuOption { get; init; }
+}
+
+/// <summary>Body for <c>POST /api/bots/{id}/storage/move</c>. <c>Deposit</c> defaults to true
+/// (bag → storage); false withdraws (storage → bag) using the same RELOC packet.</summary>
+public sealed record StorageMoveRequest
+{
+    public byte? FromSlot { get; init; }
+    public byte? ToSlot { get; init; }
+    public bool? Deposit { get; init; }
 }
 
 /// <summary>Body for <c>POST /api/bots/{id}/buy</c>. <c>Lot</c> defaults to 1.</summary>
