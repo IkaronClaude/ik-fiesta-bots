@@ -136,7 +136,7 @@ public static class BotEndpoints
             {
                 id = bot.Id,
                 atUtc = DateTime.UtcNow,
-                live = LivePanel(bot),
+                live = LivePanel(bot, manager.ClientData),
                 metrics = bot.Metrics.Snapshot(),
                 maps = bot.Trace.MapCounts(recentOnly: true),
                 tracePoints = bot.Trace.Count,
@@ -176,7 +176,7 @@ public static class BotEndpoints
                 var payload = new
                 {
                     atUtc = DateTime.UtcNow,
-                    live = LivePanel(bot),
+                    live = LivePanel(bot, manager.ClientData),
                     metrics = bot.Metrics.Snapshot(),
                     maps = bot.Trace.MapCounts(recentOnly: true),
                     tracePoints = bot.Trace.Count,
@@ -973,7 +973,12 @@ public static class BotEndpoints
     /// re-deriving fields from ZoneView. Re-deriving would create a second, silently-diverging view of the
     /// same truth — the panel would eventually disagree with /api/bots/{id} and there would be no way to tell
     /// which was right. Only the genuinely NEW numbers are added here.</para></summary>
-    private static object LivePanel(BotHandle bot)
+    private static object LivePanel(BotHandle bot) => LivePanel(bot, null);
+
+    /// <summary>Overload that can also report SKILL COOLDOWNS. The cooldown LENGTH lives in client data
+    /// (ActiveSkill.DelayTime) and the last-use TIMESTAMP lives in ZoneView, so neither alone can answer
+    /// "is this skill ready?" — the manager is where both are reachable, hence the optional parameter.</summary>
+    private static object LivePanel(BotHandle bot, GameData.ClientData? cd)
     {
         var snap = bot.Snapshot();
         var zv = bot.ZoneView;
@@ -987,10 +992,45 @@ public static class BotEndpoints
             snap.NearestAggressorDist, snap.Mounted, snap.Dead, snap.Drops, snap.Script,
             Money = zv is { Money: >= 0 } ? zv.Money : (long?)null,
             BagUsed = bagUsed,
+            BagFree = bot.ZoneView?.BagFreeSlots,
+            BagCapacity = bot.ZoneView?.BagCapacity,
+            Skills = SkillPanel(bot, cd),
             // The survivability inequality, surfaced where a human can see both sides at once.
             SustainableHealDps = zv is { SustainableHealDps: > 0 } ? zv.SustainableHealDps : (double?)null,
             IncomingDps5s = zv?.IncomingDamageSince(TimeSpan.FromSeconds(5)),
         };
+    }
+
+    /// <summary>Learned skills with their cooldown state: length from client data, last-use from ZoneView,
+    /// remaining computed here. Returns an empty list rather than null when client data is unavailable, so
+    /// the panel renders "no skills" instead of breaking — and NEVER invents a cooldown for a skill whose
+    /// DelayTime we cannot read (unknown stays unknown, it does not become "ready").</summary>
+    private static object[] SkillPanel(BotHandle bot, GameData.ClientData? cd)
+    {
+        var zv = bot.ZoneView;
+        if (zv is null || cd is null) return [];
+        var now = DateTime.UtcNow;
+        var outp = new List<object>();
+        foreach (var id in zv.LearnedSkills)
+        {
+            var si = cd.Skill(id);
+            if (si is null) continue;                     // not in client data — cannot judge, so omit
+            var lastAt = zv.SkillLastCastAtUtc(id);
+            double? remaining = null;
+            if (si.DelayTimeMs > 0 && lastAt is { } la)
+                remaining = Math.Max(0, si.DelayTimeMs - (now - la).TotalMilliseconds);
+            outp.Add(new
+            {
+                Id = (int)id,
+                Name = cd.SkillName(id) ?? "",
+                CooldownMs = si.DelayTimeMs,
+                SpCost = si.Sp,
+                LastCastAtUtc = lastAt,
+                RemainingMs = remaining,
+                Ready = remaining is null or <= 0,        // never cast this session => ready
+            });
+        }
+        return outp.OrderBy(o => ((dynamic)o).Name as string ?? "").ToArray();
     }
 
 }

@@ -1566,6 +1566,30 @@ public sealed class ZoneView : IDisposable
     /// read from the wire, never hard-coded. Resolve a name with client ActiveSkill.</summary>
     public IReadOnlyCollection<ushort> LearnedSkills => _skills.Keys.ToArray();
 
+    // ⏱ PER-SKILL LAST-CAST, so the watch panel can show real cooldowns. NoteCastSent() already existed but
+    // records the cast ANIMATION length (a global lock), not which skill was used — so "is Bone Slicer ready?"
+    // was unanswerable server-side even though the Lua tracked it privately in castAt[]. The cooldown length
+    // itself comes from client ActiveSkill.DelayTime; this supplies the other half, the last-use timestamp.
+    private readonly ConcurrentDictionary<ushort, DateTime> _lastSkillCast = new();
+
+    /// <summary>Record that this skill was just cast (called at the send site).</summary>
+    public void NoteSkillCast(ushort skillId) => _lastSkillCast[skillId] = DateTime.UtcNow;
+
+    /// <summary>When this skill was last cast, or null if never this session.</summary>
+    public DateTime? SkillLastCastAtUtc(ushort skillId) =>
+        _lastSkillCast.TryGetValue(skillId, out var t) ? t : null;
+
+    // 🎒 BAG CAPACITY — single source of truth. This heuristic previously lived only in BotApi.bagFreeSlots,
+    // so the watch panel would have had to duplicate it and the two could silently disagree about whether the
+    // bag was full. Base 48 slots, +24 when anything occupies a slot >= 48 (i.e. an expansion is present).
+    // TODO: replace with the server-seeded bag size once that field is decoded (P1 inventory ticket) — this
+    // is INFERRED from occupancy, not read from the wire, and is the one number here that is not ground truth.
+    public int BagCapacity => 48 + (_inventory.Keys.Any(sl => sl >= 48) ? 24 : 0);
+
+    /// <summary>Free bag slots (capacity minus occupied). Unlike <see cref="BagFull"/> — the 0x346 pick-fail
+    /// flag, which is a stale event — this is a live count.</summary>
+    public int BagFreeSlots => Math.Max(0, BagCapacity - _inventory.Count);
+
     /// <summary>Passive skill ids the character has learned, from the login passive list
     /// (NC_CHAR_CLIENT_PASSIVE_CMD 0x103E). Resolve a name with client PassiveSkill.</summary>
     public IReadOnlyCollection<ushort> LearnedPassives => _passives.Keys.ToArray();

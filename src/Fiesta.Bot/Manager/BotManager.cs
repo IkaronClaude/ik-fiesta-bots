@@ -461,6 +461,7 @@ public sealed class BotManager : IAsyncDisposable
         // precisely how 5 casts went out in 18ms). ZoneView then confirms/ends this from the server's
         // own packets — the local ActiveSkill.CastTime is only the un-wedge deadline.
         if (handle.ZoneView is { } zvc) zvc.NoteCastSent(ClientData?.Skill(skill)?.CastTimeMs ?? 0);
+        if (handle.ZoneView is { } zvs) zvs.NoteSkillCast(skill);   // per-skill, for the cooldown panel
         handle.Log(BotLogLevel.Verbose, $"cast skill {skill} on h={target} ({(needFace || needStop ? "target+mode+face+stop+cast" : "target+mode+cast")})");
         return ActionResult.Sent;
     }

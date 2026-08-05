@@ -93,14 +93,32 @@ function vitals(l) {
     sp ${num(l.sp)}/${num(l.maxSp)}${bar(l.sp,l.maxSp,'var(--accent)')}</div>
     <div class="kv">
       <div>stones</div><div>hp ${num(l.hpStones)} · sp ${num(l.spStones)}</div>
-      <div>bag used</div><div>${num(l.bagUsed)}</div>
+      <div>bag</div><div>${num(l.bagUsed)} used · ${num(l.bagFree)} free <span class="muted">/ ${num(l.bagCapacity)}</span></div>
       <div>combat</div><div>${l.inCombat ? 'YES' : 'no'} · aggro ${num(l.aggressors)}${l.nearestAggressorDist!=null?` @${num(l.nearestAggressorDist)}u`:''}</div>
       <div>mounted</div><div>${l.mounted ? 'yes' : 'no'}${l.dead ? ' · <span class="err">DEAD</span>' : ''}</div>
       <div>incoming</div><div class="${losing?'hit-crit':''}">${num(dps)} dmg/s</div>
       <div>heal cap</div><div>${heal!=null?num(heal)+' hp/s':'<span class="muted">unknown</span>'}</div>
     </div>
     ${losing ? '<div class="hit-crit" style="margin-top:6px">incoming exceeds sustainable healing — this fight cannot be out-healed</div>' : ''}
-    <div class="muted" style="margin-top:6px">${l.script ?? ''}</div>`;
+    <div class="muted" style="margin-top:6px">${l.script ?? ''}</div>
+    ${skills(l.skills)}`;
+}
+
+// Skill cooldowns. A skill with no cooldown length in client data shows "?" rather than a fabricated
+// "ready" — unknown must stay unknown, or the panel lies about what the bot can do right now.
+function skills(list) {
+  if (!list || !list.length) return '';
+  const row = s => {
+    const rem = s.remainingMs;
+    const state = s.cooldownMs > 0
+      ? (rem == null ? '<span class="muted">unused</span>'
+        : rem <= 0 ? '<span class="hit-ok">ready</span>'
+        : `<span class="hit-warn">${(rem/1000).toFixed(1)}s</span>`)
+      : '<span class="muted">?</span>';
+    return `<tr><td>${s.name || s.id}</td><td>${s.cooldownMs? (s.cooldownMs/1000).toFixed(1)+'s' : '—'}</td><td>${state}</td></tr>`;
+  };
+  return `<h2 style="margin-top:10px">skills</h2><table>
+    <tr><th>skill</th><th>cd</th><th>state</th></tr>${list.map(row).join('')}</table>`;
 }
 
 function metricsTable(ms) {
