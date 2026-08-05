@@ -351,6 +351,9 @@ public sealed class BotManager : IAsyncDisposable
         m.InitMetric("mapChanges", MetricDirection.LowerIsBetter, MetricKind.Counter);
         m.InitMetric("stuns", MetricDirection.LowerIsBetter, MetricKind.Counter);
         m.InitMetric("moveFails", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        m.InitMetric("itemsPickedUp", MetricDirection.HigherIsBetter, MetricKind.Counter);
+        m.InitMetric("pickupFails", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        m.InitMetric("questMobKills", MetricDirection.HigherIsBetter, MetricKind.Counter);
         m.InitMetric("mounts", MetricDirection.HigherIsBetter, MetricKind.Counter);
         m.InitMetric("dismounts", MetricDirection.HigherIsBetter, MetricKind.Counter);
         m.InitMetric("secondsMounted", MetricDirection.HigherIsBetter, MetricKind.Counter);

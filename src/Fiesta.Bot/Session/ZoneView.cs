@@ -3116,6 +3116,10 @@ public sealed class ZoneView : IDisposable
                     int qid = p[1 + i * 4 + 2] | (p[1 + i * 4 + 3] << 8);
                     _questProgress.AddOrUpdate(qid, 1, (_, v) => v + 1);
                     _log?.Invoke($"[ZoneView] QUEST_MOB_KILL quest={QName(qid)} credited (total {_questProgress[qid]})");
+                    // The kill that actually COUNTED. Distinct from "kills": a mob8 grind climbs kills
+                    // while completing nothing, so questMobKills is the metric that says the bot is
+                    // making quest PROGRESS rather than merely fighting.
+                    MetricSink?.Invoke("questMobKills", 1);
                 }
             }
         }
@@ -3289,6 +3293,11 @@ public sealed class ZoneView : IDisposable
                 else if (r.ItemId != 0xFFFF) BagFull = false;
                 // 0x341 is the SUCCESS code (the bag gained the item — confirmed in KillAndPickupItems.pcapng),
                 // 0x346 is bag-full; label it so the trace isn't misread as a failure (cost an earlier session).
+                // 📦 PICKUP OUTCOMES as metrics. Counting the LOT (not 1) so a stack of 30 reads as 30 items,
+                // and counting failures separately — "we picked up nothing" and "we tried and were refused"
+                // are different problems and must not average into one number.
+                if (r.Error == PickSuccess) MetricSink?.Invoke("itemsPickedUp", r.Lot > 0 ? r.Lot : 1);
+                else MetricSink?.Invoke("pickupFails", 1);
                 var pickStatus = r.Error switch { PickSuccess => "OK", PickInventoryFull => "BAG FULL", _ => $"0x{r.Error:X}" };
                 _log?.Invoke($"[ZoneView] pick ack: item {r.ItemId} lot {r.Lot} -> {pickStatus}");
                 PickedUp?.Invoke(r);
