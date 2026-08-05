@@ -676,7 +676,24 @@ public sealed class BotManager : IAsyncDisposable
         // set facing, which is why BASHSTART produced no swings. FaceAndStop always steps a
         // little toward the target so facing is correct. The CALLER must already be within
         // melee weapon range (walk there first); this doesn't close large gaps.
-        if (NpcPos(handle, target) is { } tp)
+        //
+        // ⛔ …BUT NOT ON A RE-BASH MID-FIGHT. FaceAndStop's MOVERUN is exactly what breaks a swing
+        // stream ("MOVING breaks the swing stream, a bare STOP does not" — CastAsync's own note), so
+        // sending it unconditionally means every re-bash cancels the bash it is starting. Wire proof
+        // (Bot7170, RouVal02, 2026-08-05 08:22): re-bash → MOVERUN → CEASE_FIRE → re-bash, five
+        // "was ACTIVE" cancellations in three seconds (sessions 258→266), halving our damage output
+        // in the fights that were killing the bot.
+        // A CONNECTING HIT in the last 2500ms already proves we are in range AND faced — the server
+        // only lands our swing when both hold — so a re-bash then needs the STOP alone. This is the
+        // same signal, and the same bootstrap argument, that NeedsFacingAdjust uses on the cast path:
+        // the OPENING bash has no recent hit, so it still gets the full face+stop, lands a hit, and
+        // from then on the MOVERUN is suppressed and the stream persists.
+        var facedByRecentHit = handle.ZoneView is { } zvf
+            && zvf.LastRealDamageDealtAtUtc > DateTime.MinValue
+            && (DateTime.UtcNow - zvf.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500;
+        if (facedByRecentHit)
+            await StopOnlyAsync(handle, s, ct);              // STOP without the swing-breaking MOVERUN
+        else if (NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
         // Remember WHAT we're bashing and that it's running, so the CEASE_FIRE handler can tell a
