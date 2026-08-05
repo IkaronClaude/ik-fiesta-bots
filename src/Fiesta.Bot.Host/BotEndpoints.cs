@@ -44,6 +44,7 @@ public static class BotEndpoints
             group.MapPost("/{id}/use-item", (string id) => Unavailable()).WithSummary("Bot use-item (unavailable)");
             group.MapPost("/{id}/shop-open", (string id) => Unavailable()).WithSummary("Bot open-shop (unavailable)");
             group.MapGet("/{id}/storage", (string id) => Unavailable()).WithSummary("Bot storage (unavailable)");
+            group.MapPost("/{id}/quest/remote-accept", (string id) => Unavailable()).WithSummary("Bot remote-accept (unavailable)");
             group.MapPost("/{id}/storage/move", (string id) => Unavailable()).WithSummary("Bot storage move (unavailable)");
             group.MapGet("/{id}/shop", (string id) => Unavailable()).WithSummary("Bot shop list (unavailable)");
             group.MapPost("/{id}/buy", (string id) => Unavailable()).WithSummary("Bot buy (unavailable)");
@@ -546,6 +547,30 @@ public static class BotEndpoints
         })
         .WithSummary("Drive a full quest dialogue with an NPC (click + ACK every page; accept or turn-in)");
 
+        // Trigger a REMOTE ACCEPT on demand. Exists so the path can be PROVEN without applying a probe
+        // script (which would replace the running leveler) — the operator's Silver Rule: if verifying
+        // something needs a probe, the missing thing is an endpoint. The driver calls the same
+        // RemoteAcceptQuestAsync, so a success here is a success there.
+        group.MapPost("/{id}/quest/remote-accept", async (string id, RemoteAcceptRequest req) =>
+        {
+            if (req.QuestId is not { } q)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["questId"] = ["questId is required"] });
+            var r = await manager.RemoteAcceptQuestAsync(id, q);
+            var bot = manager.Get(id);
+            return ToResult(r, id, new
+            {
+                id,
+                questId = q,
+                // The verdict, from the bot's own state — not from the fact that we sent a packet.
+                active = bot?.ZoneView?.IsQuestActive(q) ?? false,
+                remoteAcceptable = manager.ClientData?.Quest(q)?.RemoteAcceptable ?? false,
+            });
+        })
+        .WithSummary("Accept a quest REMOTELY from the quest log (no travel, no NPC click) — verified by the quest going active")
+        .WithDescription("Refuses quests not flagged @25 bIsWaitListProgress. Sends NC_QUEST_START_REQ then drains the " +
+            "served script pages, exactly as captured in Z:/QuestsRemoteAndMulti.pcapng. `active` in the response is read " +
+            "back from the bot's own quest state, so a false there means it genuinely did not take.");
+
         group.MapGet("/{id}/quest-dialog/{dialogId:int}", (string id, int dialogId) =>
         {
             var cd = manager.ClientData;
@@ -963,6 +988,12 @@ public sealed record ShopOpenRequest
 
 /// <summary>Body for <c>POST /api/bots/{id}/storage/move</c>. <c>Deposit</c> defaults to true
 /// (bag → storage); false withdraws (storage → bag) using the same RELOC packet.</summary>
+/// <summary>Body for <c>POST /api/bots/{id}/quest/remote-accept</c>.</summary>
+public sealed record RemoteAcceptRequest
+{
+    public ushort? QuestId { get; init; }
+}
+
 public sealed record StorageMoveRequest
 {
     public byte? FromSlot { get; init; }
