@@ -994,6 +994,13 @@ public static class BotEndpoints
             BagUsed = bagUsed,
             BagFree = bot.ZoneView?.BagFreeSlots,
             BagCapacity = bot.ZoneView?.BagCapacity,
+            // ⚠️ BagFree/BagCapacity are INFERRED (48 +24 if any slot >= 48 is occupied). BagFull is the
+            // SERVER's own signal — a real pickup that failed with 0x346. Show both, because they can
+            // legitimately disagree: with exactly 48 slots used and no expansion slot occupied, the
+            // heuristic reports "0 free" on a bag that may actually have 72 slots. Reporting only the
+            // inferred number would present a guess as a fact; reporting only the flag would lose the
+            // live count. Where they disagree, BagFull is the one to trust.
+            BagFullServerSignal = bot.ZoneView?.BagFull,
             Skills = SkillPanel(bot, cd),
             // The survivability inequality, surfaced where a human can see both sides at once.
             SustainableHealDps = zv is { SustainableHealDps: > 0 } ? zv.SustainableHealDps : (double?)null,
