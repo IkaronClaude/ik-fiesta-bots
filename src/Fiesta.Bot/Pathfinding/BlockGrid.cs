@@ -177,9 +177,23 @@ public sealed class BlockGrid
     // WHOLE door state0 so the pathfinder routes around the courtyard (through the state0 opening) instead of
     // bouncing tile-by-tile. If the door is OPEN we simply never accumulate the threshold (few/no MOVEFAILs there).
     // MUST reset on map re-entry (ResetDoorLearning) — the door may have opened while we were off the map.
+    // ⛔ DISTINCT TILES ALONE IS NOT ENOUGH — it wedged the bot (live, Eld, 2026-08-05). The design assumed a
+    // re-path after each poison would explore a NEW wall tile, growing the distinct set to the threshold. It
+    // doesn't always: the bot bounced off the SAME tile 61 times in 60 seconds
+    //     MOVEFAIL @(16333,14373) → poisoned tile (2615,2301)      ×61, identical every time
+    // so the set stayed at ONE entry, `> SbiClosedThreshold` was never true, the door was never marked closed,
+    // and it re-pathed into the same wall forever while exp sat at exactly 0 for minutes.
+    // Failing repeatedly against the SAME wall tile is just as conclusive as failing against six different ones —
+    // we cannot get past it either way — so trip on EITHER signal. Distinct tiles still wins when the wall is
+    // actually being explored; the total counter catches the degenerate case that produced the wedge.
     public enum SbiMoveFail { NotInDoor, Poisoned, DoorClosed }
     public const int SbiClosedThreshold = 6;
+    /// <summary>Total MOVEFAILs against one door's wall tiles before we call it CLOSED, regardless of how many
+    /// distinct tiles were involved. Higher than the distinct threshold so a genuinely-explorable wall still
+    /// resolves via the (more precise) distinct-tile path first.</summary>
+    public const int SbiClosedFailCountThreshold = 12;
     private readonly Dictionary<string, HashSet<int>> _sbiFailTiles = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _sbiFailCount = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Record a MOVEFAIL against the field .sbi doors. CRUCIAL (operator 2026-07-22): a MOVEFAIL's
     /// <paramref name="fromX"/>,<paramref name="fromY"/> is where the server SNAPPED US BACK — the wall's OUTER
@@ -220,7 +234,11 @@ public sealed class BlockGrid
             if (!d.BlockedLocal(0, lx, ly) || d.BlockedLocal(1, lx, ly)) continue; // only a state0-only WALL tile counts
             if (!_sbiFailTiles.TryGetValue(d.Name, out var set)) { set = new HashSet<int>(); _sbiFailTiles[d.Name] = set; }
             set.Add(ty * WidthTiles + tx);
-            if (set.Count > SbiClosedThreshold)
+            var fails = _sbiFailCount[d.Name] = _sbiFailCount.GetValueOrDefault(d.Name) + 1;
+            // Either signal proves the door is shut: six DIFFERENT wall tiles refused us, or we bounced off this
+            // wall enough times that re-pathing is plainly not finding a way through (the Eld wedge — see the
+            // note on SbiClosedFailCountThreshold).
+            if (set.Count > SbiClosedThreshold || fails > SbiClosedFailCountThreshold)
             {
                 _learnedDoorStates[d.Name] = 0; // CLOSED — apply the whole state0 wall
                 RebuildDoorOverlay();
@@ -239,6 +257,7 @@ public sealed class BlockGrid
     {
         _learnedDoorStates.Clear();
         _sbiFailTiles.Clear();
+        _sbiFailCount.Clear();
         ClearRuntimeBlocked();
         RebuildDoorOverlay();
     }
