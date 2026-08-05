@@ -1064,6 +1064,47 @@ public sealed class ZoneView : IDisposable
         _mobHits.ToDictionary(kv => kv.Key,
             kv => (kv.Value.Max, kv.Value.Count, kv.Value.Count > 0 ? (double)kv.Value.Sum / kv.Value.Count : 0d));
 
+    // 💚 HOW MUCH ONE HP STONE ACTUALLY HEALS. The stone's USESUC (0x5008) is EMPTY — the HP arrives
+    // separately as an HPCHANGE (0x240E). So the heal amount is only knowable by pairing them: snapshot HP at
+    // the success, then attribute the next HP *increase* that lands within a short window.
+    // WHY THIS MATTERS: the dominant death mode is PACK ATTRITION, not burst. Measured over a 75-min window
+    // (6 deaths, exp NET -28 — deaths consumed 102% of everything earned): one death was `mob19` hitting us
+    // 58 times for max 13 each. Per-mob "hits to kill" says 68 hits and is useless there; what decides that
+    // fight is `incoming_dps  vs  heal_per_stone / cooldown`. We already learn incoming damage per mob and the
+    // ~6.9s cooldown — this is the last missing term.
+    private int _hpAtStoneUse = -1;
+    private DateTime _stoneHealPendingUntil = DateTime.MinValue;
+
+    // Rolling window of incoming hits (utc, damage) so the driver can ask what the PACK is actually doing to
+    // us right now, rather than reasoning about mobs one at a time. Bounded — combat can be dense.
+    private readonly ConcurrentQueue<(DateTime At, int Dmg)> _recentIncoming = new();
+
+    /// <summary>Observed incoming damage per second over the trailing <paramref name="window"/>. This is the
+    /// left-hand side of the survivability inequality (right-hand side = <see cref="SustainableHealDps"/>).</summary>
+    public double IncomingDamageSince(TimeSpan window)
+    {
+        var cutoff = DateTime.UtcNow - window;
+        while (_recentIncoming.TryPeek(out var head) && head.At < cutoff) _recentIncoming.TryDequeue(out _);
+        var total = 0L;
+        foreach (var (at, dmg) in _recentIncoming) if (at >= cutoff) total += dmg;
+        var secs = window.TotalSeconds;
+        return secs > 0 ? total / secs : 0;
+    }
+
+    /// <summary>Largest single-stone heal observed, -1 if never measured.</summary>
+    public int HpStoneHealMax { get; private set; } = -1;
+
+    /// <summary>Mean heal per stone, -1 if never measured.</summary>
+    public double HpStoneHealAvg => _healSamples > 0 ? (double)_healSum / _healSamples : -1;
+    private int _healSamples;
+    private long _healSum;
+
+    /// <summary>Sustainable healing in HP/sec from the stone alone: mean heal ÷ learned cooldown.
+    /// -1 until BOTH have been measured. Compare against observed incoming DPS: if incoming exceeds this, the
+    /// fight cannot be out-healed and staying in it is a loss no matter how the rotation is tuned.</summary>
+    public double SustainableHealDps =>
+        HpStoneHealAvg > 0 && HpStoneCooldownMs > 0 ? HpStoneHealAvg / (HpStoneCooldownMs / 1000.0) : -1;
+
     /// <summary>When the HP soul stone last ACTUALLY healed (0x5008), UtcMinValue if never.</summary>
     public DateTime LastHpStoneSuccessUtc { get; private set; } = DateTime.MinValue;
 
@@ -1211,6 +1252,8 @@ public sealed class ZoneView : IDisposable
                         _ => (h.Damage, 1, h.Damage),
                         (_, s) => (Math.Max(s.Max, h.Damage), s.Count + 1, s.Sum + h.Damage));
                     MobHitSampled?.Invoke(atkMob, h.Damage);   // persist it — this table dies with the session
+                    _recentIncoming.Enqueue((DateTime.UtcNow, h.Damage));   // feed the live incoming-DPS window
+                    while (_recentIncoming.Count > 512) _recentIncoming.TryDequeue(out _);
                     // Announce a new worst-case only — the headline a human needs is "this thing can take
                     // N of my HP in one hit", not every sample. Note level, and only on a real increase.
                     if (upd.Max > prevMax && MaxHp > 0)
@@ -2099,6 +2142,24 @@ public sealed class ZoneView : IDisposable
             try
             {
                 var hp = pkt.ReadBody<PROTO_NC_BAT_HPCHANGE_CMD>().hp;
+                // 💚 ATTRIBUTE A STONE HEAL. Only an INCREASE inside the post-USESUC window counts — HP moves
+                // constantly from incoming damage, and counting a drop (or an unrelated regen tick) would
+                // poison the average that the survivability inequality depends on.
+                var hpNow = (int)hp;
+                if (_stoneHealPendingUntil > DateTime.UtcNow && _hpAtStoneUse >= 0 && hpNow > _hpAtStoneUse)
+                {
+                    var healed = hpNow - _hpAtStoneUse;
+                    _stoneHealPendingUntil = DateTime.MinValue;   // one attribution per use
+                    _healSamples++; _healSum += healed;
+                    if (healed > HpStoneHealMax)
+                    {
+                        HpStoneHealMax = healed;
+                        _logLevel?.Invoke(BotLogLevel.Note,
+                            $"[heal] HP stone restores up to {healed} HP (avg {HpStoneHealAvg:F0} over {_healSamples}) — " +
+                            $"sustainable {SustainableHealDps:F0} HP/s at the learned {HpStoneCooldownMs:F0}ms cooldown. " +
+                            "Incoming damage above that CANNOT be out-healed.");
+                    }
+                }
                 Hp = hp;
                 HpChanged?.Invoke(hp);
             }
@@ -2570,6 +2631,9 @@ public sealed class ZoneView : IDisposable
                 }
                 LastHpStoneSuccessUtc = DateTime.UtcNow;
                 HpStoneFailsSinceSuccess = 0;
+                // Arm the heal-amount measurement: the HP itself arrives in a following HPCHANGE.
+                _hpAtStoneUse = Hp.HasValue ? (int)Hp.Value : -1;
+                _stoneHealPendingUntil = DateTime.UtcNow.AddMilliseconds(1500);
             }
             else
             {

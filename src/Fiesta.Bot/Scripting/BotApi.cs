@@ -831,6 +831,27 @@ public sealed class BotApi
     /// <summary>How many of this mob's hardest hits it would take to kill us from full, or -1 if unknown.
     /// The direct survivability question: &lt;=3 means a single mob can burst us down, and quest targets
     /// like that need a different plan (or to be skipped) rather than a straight melee trade.</summary>
+    /// <summary>Mean HP restored by one soul stone, -1 if never measured.</summary>
+    public double hpStoneHealAvg() => View?.HpStoneHealAvg ?? -1;
+
+    /// <summary>Sustainable healing in HP/sec from the stone (mean heal ÷ learned cooldown), -1 if unknown.
+    /// <para>⭐ THE SURVIVABILITY INEQUALITY. Compare against incoming DPS: if the pack deals more than this,
+    /// the fight CANNOT be out-healed and no rotation tuning changes that. This is the term that was missing
+    /// while the per-mob "hits to kill" check looked at the wrong statistic — measured over 75 minutes, the
+    /// dominant death mode was PACK ATTRITION (one death was mob19 landing 58 hits of ≤13 damage, which
+    /// "hits to kill = 68" calls perfectly safe), and deaths consumed 102% of all exp earned.</para></summary>
+    public double sustainableHealDps() => View?.SustainableHealDps ?? -1;
+
+    /// <summary>Observed incoming damage per second over the last <paramref name="windowMs"/>, using the
+    /// real hits we took (not an estimate). Pair with <see cref="sustainableHealDps"/>: exceeding it means
+    /// we are losing HP faster than we can restore it, whatever the individual mobs look like.</summary>
+    public double incomingDps(double windowMs = 5000)
+    {
+        var v = View;
+        if (v is null) return 0;
+        return v.IncomingDamageSince(TimeSpan.FromMilliseconds(windowMs));
+    }
+
     public int mobHitsToKillUs(int mobId)
     {
         var max = View?.MobHitMax(mobId) ?? -1;
