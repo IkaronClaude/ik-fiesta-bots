@@ -3351,7 +3351,19 @@ public sealed class BotManager : IAsyncDisposable
                 // to the carried endpoint with its WM handle and re-enter the zone.
                 if (handoff is { IsCrossServer: true } ho && ho.Ip is { } ip && !ct.IsCancellationRequested)
                 {
-                    zoneEp = new FiestaEndpoint(ip, ho.Port);
+                    // ⛔ TAKE ONLY THE PORT FROM THE HANDOFF, KEEP OUR CONFIGURED HOST. The handoff carries
+                    // the server's PUBLIC address (62.171.171.24), but we are configured to reach the game
+                    // through a specific host — in the cluster that is `fiesta-proxy`, which exposes every
+                    // zone port. Initial zone entry has always done exactly this (`new FiestaEndpoint(opt.Host,
+                    // zoneAdv.Port)` above); the handoff path did not, so from the FIRST map change onward the
+                    // bot silently left the configured path and hairpinned out to the public IP — skipping the
+                    // proxy the whole deployment is built around, for most of the session's life.
+                    // (Not claimed as the cause of the 2026-08-05 handoff `Connection refused`: both paths
+                    // tested OPEN from inside the pod afterwards, so that failure was transient, during a
+                    // node-pressure window. This is the consistency bug it exposed, not a proven fix for it.)
+                    if (!string.Equals(ip, opt.Host, StringComparison.OrdinalIgnoreCase))
+                        Log($"[nav] handoff advertised {ip}:{ho.Port} — connecting via configured host {opt.Host}:{ho.Port} instead");
+                    zoneEp = new FiestaEndpoint(opt.Host, ho.Port);
                     zoneWmHandle = ho.WmHandle;
                     currentMap = handle.CurrentMap ?? currentMap;
                     // Let the WM→destination-zone handoff settle before we connect (see
