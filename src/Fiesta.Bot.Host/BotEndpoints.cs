@@ -994,12 +994,12 @@ public static class BotEndpoints
             BagUsed = bagUsed,
             BagFree = bot.ZoneView?.BagFreeSlots,
             BagCapacity = bot.ZoneView?.BagCapacity,
-            // ⚠️ BagFree/BagCapacity are INFERRED (48 +24 if any slot >= 48 is occupied). BagFull is the
-            // SERVER's own signal — a real pickup that failed with 0x346. Show both, because they can
-            // legitimately disagree: with exactly 48 slots used and no expansion slot occupied, the
-            // heuristic reports "0 free" on a bag that may actually have 72 slots. Reporting only the
-            // inferred number would present a guess as a fact; reporting only the flag would lose the
-            // live count. Where they disagree, BagFull is the one to trust.
+            // ⚠️ BagFree/BagCapacity are INFERRED (48, +24 if any slot >= 48 is occupied). BagFull is a
+            // STALE EVENT FLAG — set when a pickup FAILED with 0x346 — so `false` only means "no pickup has
+            // failed", NOT "there is room": a STACKABLE item merges into an existing stack and picks up fine
+            // at 48/48. The two are answering DIFFERENT questions, so a mismatch between them is normal and
+            // is NOT evidence about capacity (I previously mistook it for exactly that). Show both, label
+            // the inferred pair as inferred, and let a human read them as what they are.
             BagFullServerSignal = bot.ZoneView?.BagFull,
             Skills = SkillPanel(bot, cd),
             // The survivability inequality, surfaced where a human can see both sides at once.

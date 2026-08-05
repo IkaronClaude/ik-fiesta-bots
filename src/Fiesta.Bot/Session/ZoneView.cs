@@ -1584,53 +1584,25 @@ public sealed class ZoneView : IDisposable
     // bag was full. Base 48 slots, +24 when anything occupies a slot >= 48 (i.e. an expansion is present).
     // TODO: replace with the server-seeded bag size once that field is decoded (P1 inventory ticket) — this
     // is INFERRED from occupancy, not read from the wire, and is the one number here that is not ground truth.
+    // 🎒 BAG CAPACITY — INFERRED, and knowingly so. Base 48, +24 when anything occupies a slot >= 48
+    // (an expansion must exist for that slot to be usable), and never below highestOccupiedSlot+1 since a
+    // used slot proves the bag reaches that far. That is the whole of what we can honestly derive.
+    //
+    // ⛔ DO NOT try to widen this from BagFull. I did, and it was WRONG (operator corrected, 2026-08-05):
+    // BagFull is a STALE EVENT FLAG — set when a pickup FAILED with 0x346 — so `false` only means "no
+    // pickup has failed", NOT "there is room". A STACKABLE item picks up fine at 48/48 by merging into an
+    // existing stack (partial merges give partial success), so seeing "not full" at full occupancy is
+    // completely normal and proves nothing about capacity. There is no client/server disagreement here to
+    // learn from, and the +1 I derived from it was an invented number.
+    // The real fix is to decode the server-seeded bag size (P1) — until then this stays an honest guess,
+    // labelled as inferred everywhere it is surfaced.
     public int BagCapacity => Math.Max(
-        Math.Max(48 + (_inventory.Keys.Any(sl => sl >= 48) ? 24 : 0),
-                 _inventory.Count == 0 ? 0 : _inventory.Keys.Max() + 1),   // a used slot proves capacity
-        _learnedBagFloor);
-
-    // 📏 LEARNED CAPACITY FLOOR. The 48(+24) rule is a guess, and it was caught being WRONG live: the panel
-    // reported used=48 free=0 "full" while the SERVER's own bagFull flag said False — i.e. the character has
-    // more than 48 slots but none above 48 is occupied yet, so the guess caps too low.
-    // That is not cosmetic: the Lua gates sell trips on bagFreeSlots ("free < 6 -> go sell"), so a wrongly
-    // zero count sends the bot to town for nothing.
-    // The contradiction is EVIDENCE: if the server says we are not full while we believe there is no room,
-    // capacity must exceed what we can see. Raise the floor by one and let it converge upward from real
-    // observations rather than inventing a number. Still not ground truth — the P1 to read the server-seeded
-    // bag size stands — but it is now self-correcting instead of confidently wrong.
-    private int _learnedBagFloor;
-
-    /// <summary>Call when bag occupancy or the server's full-flag may have changed; widens the learned
-    /// capacity floor whenever the server contradicts our "no room left" belief.</summary>
-    private void ReconcileBagCapacity()
-    {
-        if (BagFull) return;                       // server agrees we are full: nothing to learn
-        var occupied = _inventory.Count;
-        if (occupied <= 0) return;
-        if (BagCapacity - occupied > 0) return;    // we already think there is room
-        var floor = occupied + 1;
-        if (floor > _learnedBagFloor)
-        {
-            _learnedBagFloor = floor;
-            _logLevel?.Invoke(BotLogLevel.Note,
-                $"[bag] capacity guess was too LOW — server says not full at {occupied} occupied slots, " +
-                $"so capacity is at least {floor}. Raising the learned floor (the 48/+24 rule is inferred, not read).");
-        }
-    }
+        48 + (_inventory.Keys.Any(sl => sl >= 48) ? 24 : 0),
+        _inventory.Count == 0 ? 0 : _inventory.Keys.Max() + 1);
 
     /// <summary>Free bag slots (capacity minus occupied). Unlike <see cref="BagFull"/> — the 0x346 pick-fail
     /// flag, which is a stale event — this is a live count.</summary>
-    public int BagFreeSlots
-    {
-        get
-        {
-            // Reconcile on READ rather than hooking every packet that can change occupancy or the full-flag:
-            // this is the property callers actually consult, so the correction can never be missed because a
-            // new inventory path forgot to call it.
-            ReconcileBagCapacity();
-            return Math.Max(0, BagCapacity - _inventory.Count);
-        }
-    }
+    public int BagFreeSlots => Math.Max(0, BagCapacity - _inventory.Count);
 
     /// <summary>Passive skill ids the character has learned, from the login passive list
     /// (NC_CHAR_CLIENT_PASSIVE_CMD 0x103E). Resolve a name with client PassiveSkill.</summary>

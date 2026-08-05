@@ -93,7 +93,7 @@ function vitals(l) {
     sp ${num(l.sp)}/${num(l.maxSp)}${bar(l.sp,l.maxSp,'var(--accent)')}</div>
     <div class="kv">
       <div>stones</div><div>hp ${num(l.hpStones)} · sp ${num(l.spStones)}</div>
-      <div>bag</div><div>${num(l.bagUsed)} used · ${num(l.bagFree)} free <span class="muted">/ ${num(l.bagCapacity)} (inferred)</span>${l.bagFullServerSignal ? ' <span class="hit-warn">SERVER SAYS FULL</span>' : ''}</div>
+      <div>bag</div><div>${num(l.bagUsed)} used · ${num(l.bagFree)} free <span class="muted">/ ${num(l.bagCapacity)} (inferred)</span>${l.bagFullServerSignal ? ' <span class="hit-warn">last pickup FAILED (0x346)</span>' : ''}</div>
       <div>combat</div><div>${l.inCombat ? 'YES' : 'no'} · aggro ${num(l.aggressors)}${l.nearestAggressorDist!=null?` @${num(l.nearestAggressorDist)}u`:''}</div>
       <div>mounted</div><div>${l.mounted ? 'yes' : 'no'}${l.dead ? ' · <span class="err">DEAD</span>' : ''}</div>
       <div>incoming</div><div class="${losing?'hit-crit':''}">${num(dps)} dmg/s</div>
