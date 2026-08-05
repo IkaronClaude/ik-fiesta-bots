@@ -17,4 +17,12 @@
     <ProjectReference Include="..\Fiesta.Bot\Fiesta.Bot.csproj" />
   </ItemGroup>
 
+  <!-- Served pages are embedded resources, NOT wwwroot: StaticWebAssetsEnabled is false above, and
+       embedding compiles them into the assembly so they ship in the image with no publish/copy step.
+       Keeping them as real .html files (rather than C# string literals) preserves editor tooling and
+       diffs, and avoids any """ collision with raw-string delimiters. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Pages\watch.html" LogicalName="Fiesta.Bot.Host.Pages.watch.html" />
+  </ItemGroup>
+
 </Project>
