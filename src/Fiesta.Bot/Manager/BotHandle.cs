@@ -329,11 +329,38 @@ public sealed class BotHandle
     /// <summary>The most recent <paramref name="max"/> log lines at or quieter than
     /// <paramref name="maxLevel"/> (Note ⊂ Info ⊂ Verbose). <paramref name="max"/> ≤ 0 or
     /// past the buffer returns all matching lines — the backfill a tail connection replays.</summary>
-    public IReadOnlyList<string> RecentLines(int max, BotLogLevel maxLevel = BotLogLevel.Verbose)
+    /// <summary>Recent log lines, filtered by severity and optionally by a TIME WINDOW.
+    /// <para>The window exists for the drill-down workflow (operator 2026-08-05): read <c>level=note</c>,
+    /// spot a headline at <c>13:41:22.123</c>, then re-read <c>level=info from=13:41:15 to=13:42:00</c> to
+    /// see everything around it — instead of pulling a huge verbose blob and hoping the moment is in it.</para>
+    /// <para><paramref name="from"/>/<paramref name="to"/> are UTC times of day, <c>HH:mm[:ss[.fff]]</c>
+    /// (partials are padded: <c>13:41</c> → <c>13:41:00.000</c>, and <c>to</c> pads to <c>.999</c> so an
+    /// inclusive end works). Lines are stored with an <c>HH:mm:ss.fff</c> prefix, so this is an exact
+    /// ordinal compare on that prefix — no parsing, no allocation per line.</para>
+    /// <para>⚠️ Does NOT handle a window spanning midnight (times only, no date); such a range returns
+    /// nothing rather than wrapping. Say so rather than silently returning a confusing subset.</para></summary>
+    public IReadOnlyList<string> RecentLines(int max, BotLogLevel maxLevel = BotLogLevel.Verbose,
+        string? from = null, string? to = null)
     {
+        static string? Stamp(string? t, char pad)
+        {
+            if (string.IsNullOrWhiteSpace(t)) return null;
+            var v = t.Trim();
+            // Accept HH:mm, HH:mm:ss, HH:mm:ss.fff — pad out to the stored 12-char prefix.
+            if (v.Length == 5) v += pad == '0' ? ":00.000" : ":59.999";
+            else if (v.Length == 8) v += pad == '0' ? ".000" : ".999";
+            return v.Length >= 12 ? v[..12] : v.PadRight(12, pad);
+        }
+        var lo = Stamp(from, '0');
+        var hi = Stamp(to, '9');
         lock (_logGate)
         {
-            var filtered = _log.Where(e => e.Level <= maxLevel).Select(e => e.Line).ToList();
+            IEnumerable<(BotLogLevel Level, string Line)> q = _log.Where(e => e.Level <= maxLevel);
+            if (lo is not null || hi is not null)
+                q = q.Where(e => e.Line.Length >= 12
+                    && (lo is null || string.CompareOrdinal(e.Line, 0, lo, 0, 12) >= 0)
+                    && (hi is null || string.CompareOrdinal(e.Line, 0, hi, 0, 12) <= 0));
+            var filtered = q.Select(e => e.Line).ToList();
             if (max <= 0 || max >= filtered.Count) return filtered;
             return filtered.GetRange(filtered.Count - max, max);
         }

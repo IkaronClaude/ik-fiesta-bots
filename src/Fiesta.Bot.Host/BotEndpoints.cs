@@ -115,7 +115,7 @@ public static class BotEndpoints
         })
         .WithSummary("Status of one bot (incl. recent log)");
 
-        group.MapGet("/{id}/log", (string id, string? level, int? max) =>
+        group.MapGet("/{id}/log", (string id, string? level, int? max, string? from, string? to) =>
         {
             var bot = manager.Get(id);
             if (bot is null) return Results.NotFound();
@@ -125,11 +125,14 @@ public static class BotEndpoints
                 "info" or "i" => BotLogLevel.Info,
                 _ => BotLogLevel.Verbose,   // default: the full firehose
             };
-            var lines = bot.RecentLines(max ?? 200, maxLevel);
+            var lines = bot.RecentLines(max ?? 2000, maxLevel, from, to);
             return Results.Text(string.Join("\n", lines) + "\n", "text/plain");
         })
         .WithSummary("Tail a bot's log as plain text, filtered by verbosity")
-        .WithDescription("Query: level=note|info|verbose (default verbose=everything), max=N lines (default 200). " +
+        .WithDescription("Query: level=note|info|verbose (default verbose=everything), max=N lines (default 2000), " +
+            "from=HH:mm[:ss[.fff]] and to=... to restrict to a UTC time window. Drill-down workflow: read level=note, " +
+            "spot a headline time, then re-read level=info&from=..&to=.. around it. (max is a REQUEST size, not the " +
+            "buffer size — the buffer holds 100k lines.) A window spanning midnight is not supported and returns nothing. " +
             "note=headline only (quest accept/finish, level-up, death, purchase, errors); info adds kills/quest-progress; " +
             "verbose adds move/cast/auto-attack. Plain text so `curl .../log?level=info` is directly readable.");
 
