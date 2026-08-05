@@ -105,6 +105,13 @@ public sealed class BotScriptRunner : IDisposable
 
     private int _suspended;              // 0 = running, 1 = suspended (zone transition in flight)
     private int _ticksSuspended;         // how many ticks we skipped while suspended
+    private long _suspendStartedAt;      // TickCount64 when the current suspension began
+
+    /// <summary>How long a zone-transition suspend may last before we treat it as a dead session and stop.
+    /// A normal cross-server handoff resumes in seconds; this is deliberately generous so cluster load never
+    /// trips it, while still bounding what was previously an INFINITE wait (observed: 840 skipped ticks on a
+    /// Failed bot whose handoff never returned, with the snapshot still reporting the script as running).</summary>
+    private const long SuspendMaxMs = 120_000;
     private string _suspendReason = "";
 
     /// <summary>Stop ticking the script WITHOUT tearing it down, for the duration of a zone
@@ -138,6 +145,7 @@ public sealed class BotScriptRunner : IDisposable
             _state = "running";
 
             var nextTick = Environment.TickCount64;
+            _suspendStartedAt = Environment.TickCount64;
             while (!ct.IsCancellationRequested)
             {
                 var wait = (int)Math.Clamp(nextTick - Environment.TickCount64, 0, _tickMs);
@@ -157,8 +165,27 @@ public sealed class BotScriptRunner : IDisposable
                     if (Volatile.Read(ref _suspended) != 0)
                     {
                         var n = Interlocked.Increment(ref _ticksSuspended);
+                        if (n == 1) _suspendStartedAt = Environment.TickCount64;
                         if (n == 1 || n % 10 == 0)
                             _log($"[script] tick SUSPENDED ({n} skipped) — {_suspendReason}");
+                        // ⛔ BOUND THE SUSPENSION. It had no timeout at all: if Resume() never arrives —
+                        // e.g. the cross-server handoff FAILS with "peer closed" and the bot goes Failed —
+                        // the runner parks here forever while still reporting `running`. Observed live
+                        // 2026-08-05: 840 skipped ticks (~5.6 min) on a Failed bot, handoff -> :9019 that
+                        // was never coming back, and the snapshot still said the script was healthy.
+                        // A wait with no exit is not a safety measure, it is a silent stall - and one that
+                        // actively hides the failure, because "suspended" looks deliberate in the log.
+                        // STOP rather than auto-resume: resuming would drive walkTo/attack into the disposed
+                        // session this suspend exists to protect. A stopped script on a dead bot is the
+                        // honest state and is visible in the snapshot, so the respawn path can act on it.
+                        if (Environment.TickCount64 - _suspendStartedAt > SuspendMaxMs)
+                        {
+                            _log($"[script:{_name}] CRUTCH[CRIT] SUSPENDED for {(Environment.TickCount64 - _suspendStartedAt) / 1000}s " +
+                                 $"({n} ticks) waiting on: {_suspendReason} — that never resumed. STOPPING the script; " +
+                                 "the bot needs a respawn (a suspend with no exit silently hides a dead session).");
+                            _state = "stopped";
+                            break;
+                        }
                         nextTick = Environment.TickCount64 + _tickMs;
                         continue;
                     }
