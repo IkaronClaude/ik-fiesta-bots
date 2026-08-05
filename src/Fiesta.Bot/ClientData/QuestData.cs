@@ -87,7 +87,10 @@ public static class QuestData
             bool needsNpc = Flag(off + StartCond + 8);           // @29
             ushort startNpc = U16(off + StartCond + 9);          // @30 (giver mobId)
             bool needsItem = Flag(off + StartCond + 11);         // @32
-            int needsItemId = U16(off + StartCond + 12);         // @33 (trigger item — "hidden quest")
+            // @34 — was @33, an OFF-BY-ONE fixed 2026-08-05 from the CLIENT PDB (Fiesta.pdb) type dump.
+            // QUEST_START_CONDITION has bItem@+8 then a pad byte, so ItemID is at +10 (= @34), not +9.
+            // The compiler-computed offsets in the PDB are the authority here — no manual padding rules.
+            int needsItemId = U16(off + StartCond + 13);         // @34 = Start(@24) + 10
             bool needsPrereq = Flag(off + StartCond + 35);       // @56
             int prereqQuest = needsPrereq ? U16(off + StartCond + 37) : 0; // @58
             bool needsClass = Flag(off + StartCond + 41);        // @62
