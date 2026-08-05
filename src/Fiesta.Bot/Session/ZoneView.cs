@@ -140,6 +140,11 @@ public sealed class ZoneView : IDisposable
     // at zone login and periodically thereafter. Both arrive; 0x203E is always-self
     // (no handle) while 0xCC0D covers any mover and needs SelfHandle filtering.
     // Conversion: field_value * (120.0 / 33.0) ≈ u/s (33 = base walk from capture).
+    // ⭐ CAST BAR (PDB-extracted names, NC_ACT_CREATECASTBAR=71 / NC_ACT_CANCELCASTBAR=72 in the ACT dept).
+    // Neither was handled at all until 2026-08-05, and that gap silently cancelled our own mount every time —
+    // see CastBarActive below for the wire trace.
+    private const ushort OpCreateCastBar = 0x2047;
+    private const ushort OpCancelCastBar = 0x2048;
     private const ushort OpActMoveSpeed = 0x203E;
     private const ushort OpMoverRideOn = 0xCC02;
     private const ushort OpMoverRideOff = 0xCC06;
@@ -971,6 +976,39 @@ public sealed class ZoneView : IDisposable
     /// <summary>When the bot was last hit (UtcMinValue if never).</summary>
     public DateTime LastHitAtUtc { get; private set; } = DateTime.MinValue;
 
+    /// <summary>When the server opened a cast bar on us (<c>NC_ACT_CREATECASTBAR</c>), UtcMinValue if none
+    /// is in flight. Cleared by <c>NC_ACT_CANCELCASTBAR</c> and by whatever completes the cast (RIDE_ON for a
+    /// mount summon).</summary>
+    public DateTime CastBarStartedAtUtc { get; private set; } = DateTime.MinValue;
+
+    /// <summary>⭐ True while a server-side CAST BAR is in flight — a timed action (mount summon, skill) that
+    /// <b>MOVING CANCELS</b>. Gate movement on this.
+    /// <para>Why this exists (wire trace, packets-JcqFresh.log 2026-08-05, mount summon):</para>
+    /// <code>
+    /// 14:59:12.422  C-&gt;S 0x3015 ITEM_USE_REQ        (mount summon)
+    /// 14:59:12.437  S-&gt;C 0x201B ACT_MOVEFAIL_CMD    (server roots us FOR the cast)
+    /// 14:59:12.441  S-&gt;C 0x2047 ACT_CREATECASTBAR   (the cast begins)
+    /// 14:59:12.512  C-&gt;S 0x2019 ACT_MOVERUN_CMD     (WE walk — nav read the MOVEFAIL as a desync and re-pathed)
+    /// 14:59:12.540  S-&gt;C 0x2048 ACT_CANCELCASTBAR   (server cancels OUR OWN summon, 71ms in)
+    /// </code>
+    /// Neither castbar opcode was decoded, so this was invisible: the bot mounted 58 times in one session and
+    /// we blamed "the summon is refused". It was never refused — we cancelled it ourselves, every time, by
+    /// reacting to the cast's own root as if it were a pathing failure.
+    /// <para>NOTE THE ORDERING: the MOVEFAIL arrives ~4ms BEFORE the CREATECASTBAR, so a guard on the MOVEFAIL
+    /// handler cannot see the cast yet. The gate has to be on the OUTBOUND MOVERUN (see WalkAsync).</para>
+    /// <para>Bounded by <see cref="CastBarMaxWait"/> so a cast bar whose completion packet we don't yet decode
+    /// can never freeze the bot — it expires and movement resumes.</para></summary>
+    public bool CastBarActive => CastBarStartedAtUtc > DateTime.MinValue
+                                 && DateTime.UtcNow - CastBarStartedAtUtc < CastBarMaxWait;
+
+    /// <summary>Upper bound on how long we will hold still for a cast bar. The measured mount/dismount
+    /// animation is ~3.1s (21 pre-gate dismounts: min 3.03s, median 3.14s), so 4.5s covers it with headroom
+    /// while guaranteeing we cannot wedge if a completion packet is missed.</summary>
+    private static readonly TimeSpan CastBarMaxWait = TimeSpan.FromSeconds(4.5);
+
+    /// <summary>Clear the in-flight cast bar (the cast finished or was cancelled).</summary>
+    private void ClearCastBar() => CastBarStartedAtUtc = DateTime.MinValue;
+
     /// <summary>When the bot last LANDED a hit on something (Attacker==self in a SWING_DAMAGE/
     /// SOMEONESWING_DAMAGE broadcast) — UtcMinValue if never. Distinct from <see cref="LastHitAtUtc"/>
     /// (us being hit): a mob that never retaliates (weak/passive, or a facing-bug false negative)
@@ -1754,6 +1792,7 @@ public sealed class ZoneView : IDisposable
             // 0xCC02 payload = [mountHandle u16][zero...]. The mount is a separate
             // mover entity; its MOVESPEED (0xCC0D) uses this handle, not the player's.
             IsMounted = true;
+            ClearCastBar();   // the summon's cast completed — stop holding still
             var p = pkt.Payload.Span;
             if (p.Length >= 2) _mountHandle = (ushort)(p[0] | (p[1] << 8));
             _log?.Invoke($"[ZoneView] mounted (RIDE_ON, mountH={_mountHandle})");
@@ -1761,6 +1800,7 @@ public sealed class ZoneView : IDisposable
         else if (op == OpMoverRideOff)
         {
             IsMounted = false;
+            ClearCastBar();   // the dismount's cast completed
             _mountHandle = null;
             // Reset speed to default running pace (120 u/s). The server will send
             // a 0x203E / 0xCC0D shortly after to confirm or adjust, but this
@@ -1827,6 +1867,21 @@ public sealed class ZoneView : IDisposable
                 else LogV($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
                 MoveFailed?.Invoke((bx, by));
             }
+        }
+        else if (op == OpCreateCastBar)
+        {
+            // A timed action started on us (mount summon, skill). MOVING CANCELS IT — see CastBarActive.
+            CastBarStartedAtUtc = DateTime.UtcNow;
+            _logLevel?.Invoke(BotLogLevel.Note, "[ZoneView] CASTBAR opened (0x2047) — holding still; moving would cancel it");
+        }
+        else if (op == OpCancelCastBar)
+        {
+            // Note (not Verbose): a cancelled cast is a FAILED action, and until now it was completely
+            // invisible — we spent two passes calling our own self-cancelled mount "a refused summon".
+            var held = CastBarStartedAtUtc > DateTime.MinValue
+                ? $" after {(DateTime.UtcNow - CastBarStartedAtUtc).TotalMilliseconds:F0}ms" : "";
+            ClearCastBar();
+            _logLevel?.Invoke(BotLogLevel.Note, $"[ZoneView] CASTBAR CANCELLED (0x2048){held} — the cast did NOT complete");
         }
         else if (op == OpAbStateSet || op == OpAbStateReset)
         {

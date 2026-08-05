@@ -2362,6 +2362,14 @@ public sealed class BotManager : IAsyncDisposable
                         // Interpolate the next intermediate point along the segment.
                         var sx = (uint)Math.Round(fx + (tx - (double)fx) * k / subSteps);
                         var sy = (uint)Math.Round(fy + (ty - (double)fy) * k / subSteps);
+                        // ⛔ HOLD STILL WHILE A CAST BAR IS OPEN — moving cancels the cast. This streamer sends
+                        // MOVERUN *directly* rather than through WalkAsync, so it needs its own gate: gating only
+                        // WalkAsync would have missed the exact packet that was cancelling our mount summon
+                        // (see ZoneView.CastBarActive for the trace). Wait it out rather than skipping the step,
+                        // so the path is still walked in full once the cast resolves. CastBarActive is bounded
+                        // (4.5s) so this can never block forever.
+                        while (handle.ZoneView is { CastBarActive: true } && !ct.IsCancellationRequested)
+                            await Task.Delay(100, ct);
                         var p = new byte[16];
                         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), (uint)Math.Round(cx));
                         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), (uint)Math.Round(cy));
@@ -2391,9 +2399,25 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>Walk from one map coordinate to another (one MoverunCmd step).</summary>
+    /// <summary>Walk from one map coordinate to another (one MoverunCmd step).
+    /// <para>⛔ SUPPRESSED WHILE A CAST BAR IS OPEN. Moving cancels a server-side cast, and this is the single
+    /// choke point every MOVERUN goes through — so gating here covers the nav re-path, the travel driver and
+    /// the Lua tick at once. Proven cause of the mount never landing: the summon's own root arrived as a
+    /// MOVEFAIL, nav called it a desync and re-pathed 71ms later, and the server cancelled our summon
+    /// (see <see cref="ZoneView.CastBarActive"/> for the packet trace).</para></summary>
     public async Task<ActionResult> WalkAsync(string id, uint fromX, uint fromY, uint toX, uint toY, CancellationToken ct = default)
     {
+        if (_bots.TryGetValue(id, out var casting) && casting.ZoneView is { CastBarActive: true } zvCast)
+        {
+            // Throttled: a suppressed walk is a decision worth seeing, but the nav retries fast.
+            if (DateTime.UtcNow - casting.LastCastBarWalkLogUtc > TimeSpan.FromMilliseconds(900))
+            {
+                casting.LastCastBarWalkLogUtc = DateTime.UtcNow;
+                casting.Log($"[nav] walk SUPPRESSED — cast bar open {(DateTime.UtcNow - zvCast.CastBarStartedAtUtc).TotalMilliseconds:F0}ms " +
+                            "(moving would cancel the cast); holding still until it resolves");
+            }
+            return ActionResult.Sent;   // treat as handled: the caller must not escalate/re-path on this
+        }
         var result = await ActAsync(id, $"walk ({fromX},{fromY})->({toX},{toY})", s =>
         {
             var p = new byte[16];
