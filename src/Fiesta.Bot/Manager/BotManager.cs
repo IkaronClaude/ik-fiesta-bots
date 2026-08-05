@@ -1805,6 +1805,7 @@ public sealed class BotManager : IAsyncDisposable
         var to = (ushort)((deposit ? storageBox : MainBagBox) << 10 | toSlot);
 
         var before = view.CellChangeCount;
+        var ackBefore = view.LastRelocAckAtUtc;   // so we report THIS move's ack, never a stale one
         await s.SendAsync(new PROTO_NC_ITEM_RELOC_REQ
         {
             from = new FiestaLibReloaded.Networking.Structs.ITEM_INVEN { Inven = from },
@@ -1821,8 +1822,15 @@ public sealed class BotManager : IAsyncDisposable
             }
             await Task.Delay(50, ct);
         }
+        // The server DOES answer every RELOC with NC_ITEM_RELOC_ACK (0x300C) — we were just throwing it away,
+        // so this line could only ever say "nothing arrived". Report the code the server actually sent.
+        // Observed: a refused storage deposit answered 586 (0x024A); relocs during a bag auto-arrange answered
+        // 577 (0x0241). No error table exists for these yet, so the code is REPORTED, not interpreted.
+        var ackTxt = view.LastRelocAckAtUtc > ackBefore
+            ? $"server answered RELOC_ACK code={view.LastRelocAckCode} (0x{view.LastRelocAckCode:X4}) — the move was REFUSED, not lost"
+            : "and NO RELOC_ACK either — the request itself never landed";
         handle.Log(BotLogLevel.Note, $"CRUTCH[CRIT] storage {(deposit ? "DEPOSIT" : "WITHDRAW")} FAILED — no CELLCHANGE in 3s for " +
-            $"box{from >> 10} slot{from & 0xFF} -> box{to >> 10} slot{to & 0xFF} (item did NOT move; a MISSING ack is a failure, not success)");
+            $"box{from >> 10} slot{from & 0xFF} -> box{to >> 10} slot{to & 0xFF}: {ackTxt}");
         return ActionResult.NotInZone;
     }
 

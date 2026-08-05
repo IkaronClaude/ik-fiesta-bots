@@ -143,6 +143,10 @@ public sealed class ZoneView : IDisposable
     // ⭐ CAST BAR (PDB-extracted names, NC_ACT_CREATECASTBAR=71 / NC_ACT_CANCELCASTBAR=72 in the ACT dept).
     // Neither was handled at all until 2026-08-05, and that gap silently cancelled our own mount every time —
     // see CastBarActive below for the wire trace.
+    // NC_ITEM_RELOC_ACK — the RESULT of a RELOC_REQ (item move, incl. every storage deposit/withdraw).
+    // Was never decoded, so a refused deposit produced only "no CELLCHANGE arrived" and the server's actual
+    // reason was thrown away. See LastRelocAckCode.
+    private const ushort OpItemRelocAck = 0x300C;
     private const ushort OpCreateCastBar = 0x2047;
     private const ushort OpCancelCastBar = 0x2048;
     private const ushort OpActMoveSpeed = 0x203E;
@@ -1012,6 +1016,19 @@ public sealed class ZoneView : IDisposable
     /// <summary>Clear the in-flight cast bar (the cast finished or was cancelled).</summary>
     private void ClearCastBar() => CastBarStartedAtUtc = DateTime.MinValue;
 
+    /// <summary>Result code from the most recent <c>NC_ITEM_RELOC_ACK</c> (0x300C), -1 if none seen. This is
+    /// the server's answer to every item move, including storage deposits/withdrawals.
+    /// <para>Observed codes (packets-JcqFresh.log, 2026-08-05): a storage deposit that produced NO cell change
+    /// answered <b>586</b> (0x024A); eighteen relocs during a bag auto-arrange in the same session answered
+    /// <b>577</b> (0x0241). No error table for these exists in the PDB extract yet, so the meanings are NOT
+    /// established — the code is recorded and logged so the mapping can be built from evidence instead of
+    /// guessed. Do not assume 577==OK / 586==FAIL in logic until that is confirmed.</para></summary>
+    public int LastRelocAckCode { get; private set; } = -1;
+
+    /// <summary>When <see cref="LastRelocAckCode"/> was set (UtcMinValue if never) — lets a caller tell a
+    /// fresh ack from a stale one when a move times out.</summary>
+    public DateTime LastRelocAckAtUtc { get; private set; } = DateTime.MinValue;
+
     /// <summary>When the bot last LANDED a hit on something (Attacker==self in a SWING_DAMAGE/
     /// SOMEONESWING_DAMAGE broadcast) — UtcMinValue if never. Distinct from <see cref="LastHitAtUtc"/>
     /// (us being hit): a mob that never retaliates (weak/passive, or a facing-bug false negative)
@@ -1869,6 +1886,20 @@ public sealed class ZoneView : IDisposable
                 }
                 else LogV($"[ZoneView] MOVEFAIL — server snapped us to ({bx},{by})");
                 MoveFailed?.Invoke((bx, by));
+            }
+        }
+        else if (op == OpItemRelocAck)
+        {
+            // 2-byte payload = a u16 result code. Log EVERY one at Info: this is the only signal that says
+            // why an item move did or didn't happen, and it is what turns "no CELLCHANGE arrived" (a symptom)
+            // into the server's own answer (a cause).
+            var rp = pkt.Payload.Span;
+            if (rp.Length >= 2)
+            {
+                LastRelocAckCode = rp[0] | (rp[1] << 8);
+                LastRelocAckAtUtc = DateTime.UtcNow;
+                _logLevel?.Invoke(BotLogLevel.Info,
+                    $"[ZoneView] RELOC_ACK (0x300C) code={LastRelocAckCode} (0x{LastRelocAckCode:X4})");
             }
         }
         else if (op == OpCreateCastBar)
