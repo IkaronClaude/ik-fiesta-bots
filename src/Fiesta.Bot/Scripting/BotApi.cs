@@ -813,6 +813,32 @@ public sealed class BotApi
     /// successful use or an HP-stone buy.</summary>
     public bool hpStoneDepleted() => View?.HpStoneDepleted ?? false;
 
+    /// <summary>Hardest hit ever observed from this mob id, or -1 if we have NEVER been hit by it.
+    /// <para>⚠️ -1 means NO EVIDENCE, which is NOT the same as "safe" — do not treat an unknown mob as
+    /// harmless. Check <see cref="mobHitSamples"/> before trusting a comparison.</para>
+    /// <para>Learned from the wire (client MobInfo carries no attack stats, so observation is the only
+    /// source). Motivating case 2026-08-05: mob4002 hits for 208-246 against 881 maxHp — four hits kill —
+    /// and the bot travelled five hops to fight it, dying twice in 90s for -528 exp, because nothing in
+    /// quest selection could ask this question.</para></summary>
+    public int mobHitMax(int mobId) => View?.MobHitMax(mobId) ?? -1;
+
+    /// <summary>Mean damage per connecting hit from this mob id, -1 if never observed.</summary>
+    public double mobHitAvg(int mobId) => View?.MobHitAvg(mobId) ?? -1;
+
+    /// <summary>How many hits from this mob we have sampled. 0 = no evidence.</summary>
+    public int mobHitSamples(int mobId) => View?.MobHitSamples(mobId) ?? 0;
+
+    /// <summary>How many of this mob's hardest hits it would take to kill us from full, or -1 if unknown.
+    /// The direct survivability question: &lt;=3 means a single mob can burst us down, and quest targets
+    /// like that need a different plan (or to be skipped) rather than a straight melee trade.</summary>
+    public int mobHitsToKillUs(int mobId)
+    {
+        var max = View?.MobHitMax(mobId) ?? -1;
+        var maxHp = View?.MaxHp ?? 0;
+        if (max <= 0 || maxHp <= 0) return -1;
+        return (int)Math.Ceiling((double)maxHp / max);
+    }
+
     /// <summary>Milliseconds until the HP soul stone can heal again — <b>0 = ready now</b>, -1 = the cooldown
     /// has not been learned yet. This is the difference between "I asked to heal" and "I healed".
     /// <para>The stone has a server-side cooldown (~6.9s, LEARNED from the min gap between successful uses,

@@ -1016,6 +1016,34 @@ public sealed class ZoneView : IDisposable
     /// <summary>Clear the in-flight cast bar (the cast finished or was cancelled).</summary>
     private void ClearCastBar() => CastBarStartedAtUtc = DateTime.MinValue;
 
+    // ⚔️ LEARNED INCOMING DAMAGE PER MOB. The [dmgtaken] log line has resolved the attacker's stable MobId
+    // since 2026-07-29 explicitly as "a data point for the survivability model" — but nothing ever consumed
+    // it, so the model was never built and every sample was logged and thrown away.
+    // Why it matters (2026-08-05, two deaths in 90s on RouTemDn02, -528 exp): mob4002 hits for 208-246
+    // against our 881 maxHp — FOUR hits kill us — with mob4001 adding 71-83 each and 6-8 aggressors. HP fell
+    // 480 -> 16 in 0.9s (~500 dps). No heal on a ~7s cooldown can cover that. The bot had travelled FIVE
+    // hops to reach those mobs. Nothing in quest selection could ask "can I survive this mob?" because the
+    // answer was never retained. Learned from the wire per the no-hardcoding rule — client MobInfo carries
+    // no attack stats, so observation is the only source.
+    private readonly ConcurrentDictionary<int, (int Max, int Count, long Sum)> _mobHits = new();
+
+    /// <summary>Hardest hit ever taken from <paramref name="mobId"/>, or -1 if we have never been hit by it.
+    /// Compare against MaxHp to answer "how many hits can this thing kill me in?".</summary>
+    public int MobHitMax(int mobId) => _mobHits.TryGetValue(mobId, out var s) ? s.Max : -1;
+
+    /// <summary>Mean damage per connecting hit from <paramref name="mobId"/>, or -1 if never observed.</summary>
+    public double MobHitAvg(int mobId) => _mobHits.TryGetValue(mobId, out var s) && s.Count > 0
+        ? (double)s.Sum / s.Count : -1;
+
+    /// <summary>How many hits from <paramref name="mobId"/> we have sampled (0 = no evidence; treat an
+    /// unknown mob as unknown, NOT as safe — see [[fiesta-nothing-yet-read-as-an-answer]]).</summary>
+    public int MobHitSamples(int mobId) => _mobHits.TryGetValue(mobId, out var s) ? s.Count : 0;
+
+    /// <summary>Every mob we have damage evidence for: mobId → (max, samples, avg).</summary>
+    public IReadOnlyDictionary<int, (int Max, int Count, double Avg)> LearnedMobHits =>
+        _mobHits.ToDictionary(kv => kv.Key,
+            kv => (kv.Value.Max, kv.Value.Count, kv.Value.Count > 0 ? (double)kv.Value.Sum / kv.Value.Count : 0d));
+
     /// <summary>When the HP soul stone last ACTUALLY healed (0x5008), UtcMinValue if never.</summary>
     public DateTime LastHpStoneSuccessUtc { get; private set; } = DateTime.MinValue;
 
@@ -1155,6 +1183,23 @@ public sealed class ZoneView : IDisposable
                 int atkMob = _npcs.TryGetValue(h.Attacker, out var an) ? an.MobId
                            : _recentNpcs.TryGetValue(h.Attacker, out var ar) ? ar.Npc.MobId : 0;
                 _logLevel?.Invoke(BotLogLevel.Info, $"[dmgtaken] mob={atkMob} dmg={h.Damage} resthp={h.RestHp} h={h.Attacker}");
+                // RETAIN the sample (mobId 0 = unresolved attacker, worthless as a key — skip it).
+                if (atkMob > 0)
+                {
+                    var prevMax = _mobHits.TryGetValue(atkMob, out var old) ? old.Max : -1;
+                    var upd = _mobHits.AddOrUpdate(atkMob,
+                        _ => (h.Damage, 1, h.Damage),
+                        (_, s) => (Math.Max(s.Max, h.Damage), s.Count + 1, s.Sum + h.Damage));
+                    // Announce a new worst-case only — the headline a human needs is "this thing can take
+                    // N of my HP in one hit", not every sample. Note level, and only on a real increase.
+                    if (upd.Max > prevMax && MaxHp > 0)
+                    {
+                        var hitsToKill = (int)Math.Ceiling((double)MaxHp / Math.Max(1, upd.Max));
+                        _logLevel?.Invoke(BotLogLevel.Note,
+                            $"[threat] mob{atkMob} hits for up to {upd.Max} (avg {(double)upd.Sum / upd.Count:F0} " +
+                            $"over {upd.Count}) — that is {hitsToKill} hit(s) to kill us at {MaxHp} maxHp");
+                    }
+                }
             }
         }
         if (SelfHandle is { } me && h.Attacker == me)
