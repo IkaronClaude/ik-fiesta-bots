@@ -162,7 +162,15 @@ public static class BotEndpoints
             var deadline = DateTime.UtcNow.AddSeconds(Math.Clamp(maxSeconds ?? 3600, 1, 86_400));
             ctx.Response.ContentType = "application/x-ndjson";
             ctx.Response.Headers.CacheControl = "no-cache";
-            var opts = new System.Text.Json.JsonSerializerOptions { WriteIndented = false };
+            // ⚠️ MUST use the Web defaults (camelCase). Results.Json — which GET /metrics uses — applies them
+            // automatically, so a bare `new JsonSerializerOptions()` here emits PascalCase and the SAME
+            // payload arrives with different key casing depending on which endpoint you call. Caught live:
+            // the stream's `live.Map/Hp` read as null against a parser written for `/metrics`'s `live.map/hp`,
+            // which looks exactly like "the bot has no data" rather than "the keys are spelled differently".
+            var opts = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)
+            {
+                WriteIndented = false,
+            };
             while (!ct.IsCancellationRequested && DateTime.UtcNow < deadline)
             {
                 var payload = new
