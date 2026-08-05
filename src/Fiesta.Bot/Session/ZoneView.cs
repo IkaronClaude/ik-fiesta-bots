@@ -2629,10 +2629,24 @@ public sealed class ZoneView : IDisposable
                             }
                             else
                             {
-                                _aggressors[hnd] = DateTime.UtcNow;
+                                // Note on the TRANSITION into the aggressor set, Verbose while it stays there.
+                                // Every MOVERUN frame from a chaser re-stamps this, so logging it unconditionally
+                                // at Note made ONE line 29% of the entire Note log (1879 of 6473 lines over a
+                                // 69-min session — 6x the next-biggest category, all of it the same handful of
+                                // handles at ~10/s). That drowns the headline channel used for diagnosis and
+                                // burns ~a third of the 100k ring buffer's retained history. "mob X started
+                                // chasing us" is a headline; "mob X is still chasing us" is per-frame perception.
+                                // Same wasActive?Note:Verbose shape as the CEASE_FIRE line above.
+                                var aggroNow = DateTime.UtcNow;
+                                bool wasAggro = _aggressors.TryGetValue(hnd, out var prevAggroAt)
+                                                && aggroNow - prevAggroAt < CombatWindow;
+                                _aggressors[hnd] = aggroNow;
                                 FreezeMobAnchor(hnd);             // chasing → freeze its spawn anchor
-                                LastHitAtUtc = DateTime.UtcNow;   // charging at me -> in combat
-                                _log?.Invoke($"[ZoneView] mob {npc.MobId} (h={hnd}) running at us — AGGRO");
+                                LastHitAtUtc = aggroNow;          // charging at me -> in combat
+                                var aggroMsg = $"[ZoneView] mob {npc.MobId} (h={hnd}) running at us — AGGRO";
+                                if (_logLevel is not null)
+                                    _logLevel(wasAggro ? BotLogLevel.Verbose : BotLogLevel.Note, aggroMsg);
+                                else if (!wasAggro) _log?.Invoke(aggroMsg);
                             }
                         }
                     }
