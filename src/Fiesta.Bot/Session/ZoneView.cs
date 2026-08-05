@@ -832,6 +832,63 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<ushort, DateTime> _maybeAggressors = new();  // running our way, but a player shares the angle
     private static readonly TimeSpan CombatWindow = TimeSpan.FromSeconds(8);
 
+    // 🏠 SPAWN ANCHORS — "for each aggro'd enemy track where it spawned to calculate how far it will chase"
+    // (operator 2026-08-05). A mob's leash is anchored to its SPAWN, not to us: it gives up at some radius from
+    // home, which is why running in a straight line sheds a tail PROGRESSIVELY (each mob hits its own limit at a
+    // different moment, because each has a different anchor). Distance-from-us can't express that.
+    //
+    // Where the anchor comes from — entirely off the wire, nothing baked: a mob WALKS (0x2018) when idle and RUNS
+    // (0x201A) when aggro'd (already decoded below). So its position while idle IS its spawn neighbourhood. We
+    // seed the anchor on first sighting, keep refreshing it while it walks (idle wander stays near home), and
+    // FREEZE it the moment it becomes a confirmed aggressor — from then on every step is measured from home.
+    private readonly ConcurrentDictionary<ushort, (uint X, uint Y, bool Frozen)> _mobAnchor = new();
+    // LEARNED per-mob chase limit: the furthest from its own anchor a mob of this id has been seen while STILL
+    // confirmed aggroing. A lower bound on its leash that only ever tightens upward as we observe more — the
+    // measured alternative to a hardcoded leash constant.
+    private readonly ConcurrentDictionary<int, double> _mobChase = new();
+
+    /// <summary>The spawn anchor we've learned for a live mob handle, or null if never seen.</summary>
+    public (uint X, uint Y)? MobAnchor(ushort handle) =>
+        _mobAnchor.TryGetValue(handle, out var a) ? (a.X, a.Y) : null;
+
+    /// <summary>How far this mob currently is from its own spawn anchor, or null if unknown. This is the
+    /// quantity that predicts a shed: compare it against <see cref="MobChaseLimit"/> for the mob's id.</summary>
+    public double? AnchorDistance(ushort handle)
+    {
+        if (!_mobAnchor.TryGetValue(handle, out var a)) return null;
+        foreach (var n in NearbyNpcs)
+            if (n.Handle == handle)
+                return Math.Sqrt(Math.Pow((double)n.X - a.X, 2) + Math.Pow((double)n.Y - a.Y, 2));
+        return null;
+    }
+
+    /// <summary>Furthest-from-spawn this mob id has been observed while still aggroing us (0 = never measured).
+    /// LEARNED from the wire, never hardcoded.</summary>
+    public double MobChaseLimit(int mobId) => _mobChase.TryGetValue(mobId, out var d) ? d : 0;
+
+    /// <summary>Seed/refresh a mob's spawn anchor. <paramref name="idle"/> = the mob was WALKING (0x2018), i.e.
+    /// still at home and not chasing, so the anchor may be moved. A frozen anchor never moves again.</summary>
+    private void NoteMobAnchor(ushort handle, uint x, uint y, bool idle)
+    {
+        _mobAnchor.AddOrUpdate(handle, (x, y, false),
+            (_, old) => old.Frozen || !idle ? old : (x, y, false));
+    }
+
+    /// <summary>Freeze a mob's anchor (it just started chasing us) and fold its current distance-from-home into
+    /// the learned chase limit for its id.</summary>
+    private void FreezeMobAnchor(ushort handle)
+    {
+        if (_mobAnchor.TryGetValue(handle, out var a) && !a.Frozen)
+            _mobAnchor[handle] = (a.X, a.Y, true);
+        if (AnchorDistance(handle) is not { } d) return;
+        foreach (var n in NearbyNpcs)
+            if (n.Handle == handle)
+            {
+                _mobChase.AddOrUpdate(n.MobId, d, (_, old) => d > old ? d : old);
+                return;
+            }
+    }
+
     /// <summary>Mobs we're confident are aggroing us within the combat window — hit us
     /// (incoming SWING_DAMAGE, defender==self) or ran unambiguously at us.</summary>
     public IReadOnlyCollection<ushort> Aggressors =>
@@ -948,6 +1005,7 @@ public sealed class ZoneView : IDisposable
             if (DateTime.UtcNow - LastHitAtUtc > CombatWindow)
                 _log?.Invoke($"[combat] START vs mob h={h.Attacker}");
             _aggressors[h.Attacker] = DateTime.UtcNow;
+            FreezeMobAnchor(h.Attacker);   // it's on us now → its anchor stops moving; measure the chase from home
             LastHitAtUtc = DateTime.UtcNow;
             // DAMAGE-TAKEN SAMPLE for the survivability model (operator 2026-07-29): every incoming hit,
             // labeled by the attacker's stable MobId (resolve live→recent→0), is a data point to fit
@@ -2331,6 +2389,24 @@ public sealed class ZoneView : IDisposable
                     // the uncertainty) rather than a confident aggro.
                     var (ox, oy) = (npc.X, npc.Y);
                     _npcs[hnd] = npc with { X = toX, Y = toY };
+                    // WALK (0x2018) = idle wander → the mob is still around home, so let the anchor follow it.
+                    // RUN (0x201A) = chasing → leave the anchor where it is; every step now measures the chase.
+                    NoteMobAnchor(hnd, toX, toY, idle: op == OpSomeoneMoveWalk);
+                    // While it is STILL chasing us, every step is a fresh lower bound on how far this mob id
+                    // is willing to leave home. This is where the leash is actually measured — the freeze above
+                    // only sets distance 0. Grows monotonically; never guessed.
+                    if (op == OpSomeoneMoveRun && _aggressors.ContainsKey(hnd)
+                        && _mobAnchor.TryGetValue(hnd, out var anc))
+                    {
+                        var away = Math.Sqrt(Math.Pow((double)toX - anc.X, 2) + Math.Pow((double)toY - anc.Y, 2));
+                        var prev = _mobChase.TryGetValue(npc.MobId, out var pv) ? pv : 0;
+                        _mobChase.AddOrUpdate(npc.MobId, away, (_, old) => away > old ? away : old);
+                        // Only fires on a NEW maximum, so it's self-throttling: the tail shows the leash being
+                        // learned, mob by mob, and stops talking once each type's limit has settled.
+                        if (away > prev + 25)
+                            _log?.Invoke($"[leash] mob {npc.MobId} (h={hnd}) chased {away:F0}u from its spawn " +
+                                         $"(prev max {prev:F0}u) — learned chase limit now {away:F0}u");
+                    }
                     // A player-side mob (town guard) running near us isn't aggro — skip it.
                     if (op == OpSomeoneMoveRun && IsHuntableMob?.Invoke(npc.MobId) != false
                         && SelfPositionProvider?.Invoke() is { } me)
@@ -2348,6 +2424,7 @@ public sealed class ZoneView : IDisposable
                             else
                             {
                                 _aggressors[hnd] = DateTime.UtcNow;
+                                FreezeMobAnchor(hnd);             // chasing → freeze its spawn anchor
                                 LastHitAtUtc = DateTime.UtcNow;   // charging at me -> in combat
                                 _log?.Invoke($"[ZoneView] mob {npc.MobId} (h={hnd}) running at us — AGGRO");
                             }
@@ -2787,6 +2864,8 @@ public sealed class ZoneView : IDisposable
         var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap, team);
         var isNew = !_npcs.ContainsKey(handle);
         _npcs[handle] = npc;
+        // First sighting of this handle = it's standing where it lives → seed its spawn anchor (see _mobAnchor).
+        if (flag != 1) NoteMobAnchor(handle, x, y, idle: isNew);
         _recentNpcs.TryRemove(handle, out _); // back in view (live) → drop the sticky flicker-bridge copy
         // THE SEED: record every NPC/gate by mobId (the bulk 0x1C09 on map-enter populates this fully).
         // Authoritative roster, kept until map change — the navigation source of truth.

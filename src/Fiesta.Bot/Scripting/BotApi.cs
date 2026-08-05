@@ -1056,6 +1056,40 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>Every current aggressor with its SPAWN ANCHOR and how far it has already been dragged from it
+    /// (operator 2026-08-05: "for each aggro'd enemy track where it spawned to calculate how far it will chase").
+    /// Rows: {handle, mobId, x, y, anchorX, anchorY, fromSpawn, chaseLimit, willDropIn}.
+    /// <para><c>fromSpawn</c> = how far this individual is from home right now. <c>chaseLimit</c> = the furthest
+    /// any mob of its id has been observed to chase, LEARNED from the wire (0 = not measured yet).
+    /// <c>willDropIn</c> = chaseLimit - fromSpawn, i.e. roughly how much further we must drag it before it gives
+    /// up — negative/zero means it is already past everything we've ever seen this mob type do.</para>
+    /// This is what makes a shed predictable per-mob instead of one global guess: each chaser has its own anchor,
+    /// so a tail sheds progressively as each one runs out of leash.</summary>
+    public DynValue aggressorSpawns()
+    {
+        var t = NewTable();
+        var v = View; if (v is null) return DynValue.NewTable(t);
+        var aggro = v.Aggressors;
+        int i = 1;
+        foreach (var n in v.NearbyNpcs)
+        {
+            if (!aggro.Contains(n.Handle)) continue;
+            var row = NewTable();
+            row["handle"] = n.Handle; row["mobId"] = n.MobId; row["x"] = n.X; row["y"] = n.Y;
+            if (v.MobAnchor(n.Handle) is { } a) { row["anchorX"] = a.X; row["anchorY"] = a.Y; }
+            var from = v.AnchorDistance(n.Handle) ?? 0;
+            var limit = v.MobChaseLimit(n.MobId);
+            row["fromSpawn"] = from; row["chaseLimit"] = limit;
+            row["willDropIn"] = limit > 0 ? limit - from : 0;
+            t[i++] = row;
+        }
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Learned chase limit for a mob id — furthest from its spawn one has been seen while still
+    /// aggroing. 0 = never measured. Read from the wire, never hardcoded.</summary>
+    public double mobChaseLimit(int mobId) => View?.MobChaseLimit(mobId) ?? 0;
+
     /// <summary>World position { x, y } of ANY tracked entity by handle — a mob (<c>_npcs</c>) OR a
     /// character (<c>_nearby</c>). Nil if the handle isn't in view. Needed because scenario/instance
     /// enemies (the JCQ "shadow" clones) arrive as CHARACTERS via LOGINCHARACTER and so aren't in
