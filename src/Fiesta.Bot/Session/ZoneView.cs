@@ -1163,6 +1163,21 @@ public sealed class ZoneView : IDisposable
             // A CONNECTING hit (Damage>0) vs a whiff/out-of-range (Damage==0). LastDamageDealtAtUtc fires
             // on any self-swing; this one only on real damage — so the driver can tell a kite-chip skill
             // actually landed (operator 2026-07-07: "check it didn't miss via packets") vs it whiffed.
+            // ⚔️ DAMAGE WE DEAL — the missing half of combat observability. Every point of damage TAKEN is
+            // logged ([dmgtaken]) but nothing was logged for damage DEALT, so "is the bot actually hurting
+            // this mob?" could not be answered from the tail at all. That is the FIRST question whenever
+            // kills stall: on 2026-08-05 the bot spent 8 minutes for ONE kill (+63 exp) with 21 CEASE_FIRE
+            // and dur= climbing past 8s on a single mob, and the log could not say whether a single swing
+            // connected. Symmetric with [dmgtaken]: same Info level, same fields, defender's MobId resolved
+            // the same way. A whiff (Damage==0) is logged too — "we are swinging and MISSING" and "we are
+            // not swinging at all" are different bugs and must not look identical in the tail.
+            {
+                int defMob = _npcs.TryGetValue(h.Defender, out var dnm) ? dnm.MobId
+                           : _recentNpcs.TryGetValue(h.Defender, out var drm) ? drm.Npc.MobId : 0;
+                _logLevel?.Invoke(BotLogLevel.Info,
+                    $"[dmgdealt] mob={defMob} dmg={h.Damage} resthp={h.RestHp} h={h.Defender}" +
+                    (h.Damage > 0 ? "" : " — WHIFF (no connect)"));
+            }
             if (h.Damage > 0)
             {
                 LastRealDamageDealtAtUtc = DateTime.UtcNow;
