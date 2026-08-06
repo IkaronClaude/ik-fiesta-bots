@@ -2908,16 +2908,16 @@ public sealed class BotManager : IAsyncDisposable
                 // respawns constantly, so without this a mob has to hurt us again in EVERY session before the
                 // lethality check can see it — mob4002 killed the bot twice and was absent from the table in
                 // the very next session. Learned once, remembered thereafter.
-                zoneView.SeedMobHits(Knowledge.MobThreatsFor(handle.Options.Host)
+                zoneView.SeedMobHits(Knowledge.MobThreatsFor(handle.KnowledgeScope)
                     .Select(kv => (kv.Key, kv.Value.Max, kv.Value.Count, kv.Value.Sum)));
-                zoneView.MobHitSampled = (mobId, dmg) => Knowledge.RecordMobHit(handle.Options.Host, mobId, dmg);
+                zoneView.MobHitSampled = (mobId, dmg) => Knowledge.RecordMobHit(handle.KnowledgeScope, mobId, dmg);
                 // 📊 Learned scalars (HP-stone cooldown + heal size). These need REPEATED observation — the
                 // cooldown is the min gap between two successful heals — so without persistence the
                 // survivability inequality is unavailable for most of every session (measured: 8 minutes in,
                 // still unlearned, SustainableHealDps still -1). Seed, then keep learning.
-                zoneView.ScalarLearned = (name, val) => Knowledge.RecordScalar(handle.Options.Host, name, val);
-                var cdStat = Knowledge.Scalar(handle.Options.Host, ZoneView.ScalarStoneCooldownMs);
-                var healStat = Knowledge.Scalar(handle.Options.Host, ZoneView.ScalarStoneHeal);
+                zoneView.ScalarLearned = (name, val) => Knowledge.RecordScalar(handle.KnowledgeScope, name, val);
+                var cdStat = Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarStoneCooldownMs);
+                var healStat = Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarStoneHeal);
                 zoneView.SeedScalars(
                     cdStat?.Min ?? -1,                                            // MIN: converges from above
                     healStat is { Count: > 0 } ? healStat.Sum / healStat.Count : -1,
@@ -2926,7 +2926,7 @@ public sealed class BotManager : IAsyncDisposable
                 // Attack range survives the handoff now. It reset to 0 on every cross-server transition,
                 // and since the bot closes to ~1u before swinging, the first hit after a reset pinned it at
                 // ~2u — after which the cast path judged nearly everything OUT OF RANGE. Max ⇒ seed the max.
-                zoneView.SeedMeleeRange(Knowledge.Scalar(handle.Options.Host, ZoneView.ScalarMeleeRange)?.Max ?? -1);
+                zoneView.SeedMeleeRange(Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarMeleeRange)?.Max ?? -1);
                 zoneView.IsInsideScenarioArea = (areaName, pos) =>          // hold AREAENTRY_ACK until inside the .aid box
                 {
                     if (handle.CurrentMap is not { } m || AreaProvider?.Invoke(m) is not { } areas) return true; // no data → ack now

@@ -211,11 +211,11 @@ public sealed class BotApi
     /// so a rebuild-cycle doesn't forget it and immediately re-trigger the same overwhelming fight.
     /// Compare against <see cref="level"/> — once you've gained a level since, treat it as expired
     /// (operator 2026-07-01: "after 1 level up, reset this").</summary>
-    public int questDeprioritizedAtLevel(int questId) => _mgr.Knowledge.QuestDeprioritizedAtLevel(_handle.Options.Host, questId);
+    public int questDeprioritizedAtLevel(int questId) => _mgr.Knowledge.QuestDeprioritizedAtLevel(_handle.KnowledgeScope, questId);
 
     /// <summary>Record + PERSIST that a flee happened while pursuing this quest's objective mob, at the
     /// current character level — deprioritizes it to "last resort" until a level-up.</summary>
-    public void recordQuestDeprioritized(int questId, int atLevel) => _mgr.Knowledge.RecordQuestDeprioritized(_handle.Options.Host, questId, atLevel);
+    public void recordQuestDeprioritized(int questId, int atLevel) => _mgr.Knowledge.RecordQuestDeprioritized(_handle.KnowledgeScope, questId, atLevel);
 
     /// <summary>Has the server already refused to STORE this item? Persisted, so a timed/bound item like
     /// "Angel Wings (7 Days)" is never re-attempted on a later trip. Check it before offering an item to
@@ -237,19 +237,19 @@ public sealed class BotApi
     /// not enough of an expiry: marks are written at the level we fled at, so a handful at the CURRENT
     /// level flattens the whole board into the last-resort grind, which is the slowest route to the
     /// level-up that would clear them.</summary>
-    public bool clearQuestDeprioritized(int questId) => _mgr.Knowledge.ClearQuestDeprioritized(_handle.Options.Host, questId);
+    public bool clearQuestDeprioritized(int questId) => _mgr.Knowledge.ClearQuestDeprioritized(_handle.KnowledgeScope, questId);
 
     /// <summary>How many times we have DIED pursuing this quest, across ALL sessions. PERSISTED —
     /// use this to rank a repeatedly-lethal quest last, NOT a script-local counter: script locals are
     /// wiped on every re-apply and this bot respawns constantly, so a local count never survives long
     /// enough to influence the choice it was written for (measured 2026-08-05).</summary>
-    public int questDeaths(int questId) => _mgr.Knowledge.QuestDeaths(_handle.Options.Host, questId);
+    public int questDeaths(int questId) => _mgr.Knowledge.QuestDeaths(_handle.KnowledgeScope, questId);
 
     /// <summary>Record + PERSIST a death while pursuing this quest. Returns the new lifetime total.</summary>
     /// <summary>Record a death on this quest. Returns the count AT THE CURRENT LEVEL (not lifetime) when a
     /// level is supplied — that is what a deprioritize threshold must use, because the mark it produces is
     /// itself level-scoped. Passing no level keeps the old lifetime semantics for ranking.</summary>
-    public int recordQuestDeath(int questId, int level = -1) => _mgr.Knowledge.RecordQuestDeath(_handle.Options.Host, questId, level);
+    public int recordQuestDeath(int questId, int level = -1) => _mgr.Knowledge.RecordQuestDeath(_handle.KnowledgeScope, questId, level);
 
     /// <summary>Contents of personal storage as of the last open: a table of
     /// <c>{slot=..., id=...}</c>. Empty until storage has been opened. Read with

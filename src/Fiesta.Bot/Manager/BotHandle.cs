@@ -303,6 +303,22 @@ public sealed class BotHandle
     /// reached its first decision) — which is NOT the same as "idle".</para></summary>
     public BotFocus? Focus { get; internal set; }
 
+    /// <summary>Key for durable knowledge that belongs to THIS CHARACTER, not to the server.
+    /// <para>⛔ The learned stores were keyed by HOST ALONE, which was harmless with one bot and became a
+    /// correctness bug the moment five ran side by side on 2026-08-06: every bot on <c>fiesta-proxy</c>
+    /// shared one bucket, so a level-1 Mage was seeded with a level-26 Priest's soul-stone heal capacity
+    /// and melee range — and wrote its own back over them. The operator saw it first as "heal cap shows
+    /// the same JcqFresh value for every bot"; that display was telling the truth about the data.</para>
+    /// <para>Quest deprioritization and death counts are the worse half: one character's "this quest
+    /// killed me" verdict applied to every other character, including ones 25 levels below it.</para>
+    /// <para>Use this for anything learned ABOUT the character (heal capacity, melee range, quest
+    /// verdicts, per-mob threat). Keep plain <see cref="BotSpawnOptions.Host"/> for facts about the WORLD
+    /// that every character shares — where a shop NPC stands, which items the warehouse refuses.</para>
+    /// <para>Falls back through CharName → the requested Character → the bot id, so a bot that has not yet
+    /// selected a character still gets a stable, non-colliding scope rather than silently sharing one.</para></summary>
+    public string KnowledgeScope =>
+        $"{Options.Host}|{CharName ?? Options.Character ?? Id}";
+
     /// <summary>Cancellation for the currently-running <see cref="Manager.BotManager.WalkPath"/>,
     /// if any — cancelled to abort a walk early (e.g. on a server MOVEFAIL so the bot
     /// stops banging into an off-grid obstacle). Set/cleared by the walk task.</summary>

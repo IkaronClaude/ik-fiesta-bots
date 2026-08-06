@@ -324,7 +324,7 @@ public static class BotEndpoints
                     objectives,
                     // The verdict fields — what a targeting decision should hinge on.
                     targetsBoss = maxGrade >= 1,
-                    deprioritizedAtLevel = manager.Knowledge.QuestDeprioritizedAtLevel(bot.Options.Host, qid),
+                    deprioritizedAtLevel = manager.Knowledge.QuestDeprioritizedAtLevel(bot.KnowledgeScope, qid),
                 });
             }
             return Results.Ok(new { level = bot.Level, count = rows.Count, quests = rows });
@@ -732,9 +732,9 @@ public static class BotEndpoints
             if (bot is null) return Results.NotFound();
             var knowledge = manager.Knowledge;
             if (knowledge is null) return Results.Problem("knowledge store unavailable");
-            var was = knowledge.QuestDeprioritizedAtLevel(bot.Options.Host, questId);
-            var cleared = knowledge.ClearQuestDeprioritized(bot.Options.Host, questId);
-            var deaths = knowledge.ClearQuestDeathsAtLevel(bot.Options.Host, questId, (int)bot.Level);
+            var was = knowledge.QuestDeprioritizedAtLevel(bot.KnowledgeScope, questId);
+            var cleared = knowledge.ClearQuestDeprioritized(bot.KnowledgeScope, questId);
+            var deaths = knowledge.ClearQuestDeathsAtLevel(bot.KnowledgeScope, questId, (int)bot.Level);
             var name = manager.ClientData?.QuestName(questId) ?? $"q{questId}";
             // Log it on the BOT's own tail. An operator override that only shows in an HTTP response is
             // invisible in the log everyone actually reads to explain what the bot did next.
@@ -1185,7 +1185,7 @@ public static class BotEndpoints
             // Short LABEL for the column, full story in `detail` (the page shows it on hover). The long
             // form was blowing the panel width out on its own.
             string? reason = null, detail = null;
-            var deprioAt = knowledge?.QuestDeprioritizedAtLevel(bot.Options.Host, qid) ?? -1;
+            var deprioAt = knowledge?.QuestDeprioritizedAtLevel(bot.KnowledgeScope, qid) ?? -1;
             if (deprioAt >= 0 && deprioAt >= (int)bot.Level)
             {
                 reason = "deaths";
