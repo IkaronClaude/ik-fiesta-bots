@@ -259,6 +259,37 @@ public sealed class BotHandle
     /// facing/range genuinely needs adjusting (operator 2026-08-04).</summary>
     internal double FacingDx, FacingDy;
 
+    /// <summary>
+    /// Commit a movement: advance the tracked position AND the tracked facing, because moving from A to B
+    /// IS what turns the character to face B — the same authority as an explicit face-step.
+    ///
+    /// ⚠️ This exists because facing was previously updated ONLY in FaceAndStopAsync. Every ordinary walk
+    /// step committed position and left the heading untouched, so after any walk the "facing" used by the
+    /// UsableDegree arc check described where we were last deliberately pointed, which could be anywhere.
+    /// A stale heading makes the arc test answer a question about the past.
+    /// </summary>
+    internal void CommitMove(uint fromX, uint fromY, uint toX, uint toY)
+    {
+        double dx = (double)toX - fromX, dy = (double)toY - fromY;
+        var d = Math.Sqrt(dx * dx + dy * dy);
+        if (d > 1) { FacingDx = dx / d; FacingDy = dy / d; }   // sub-unit hops carry no reliable direction
+        SetPosition(toX, toY);
+    }
+
+    /// <summary>Facing as a compass angle in degrees (0-360), or -1 when nothing has set a heading yet.
+    /// ⚠️ This is OUR heading in game-coordinate space (atan2 of the facing vector). It is NOT in the same
+    /// units as a mob's <c>dir</c> byte (0-255) from SHINE_COORD_TYPE — that scale has not been pinned yet,
+    /// so the two are reported side by side but must not be compared numerically.</summary>
+    internal double FacingDeg
+    {
+        get
+        {
+            if (FacingDx == 0 && FacingDy == 0) return -1;
+            var deg = Math.Atan2(FacingDy, FacingDx) * 180.0 / Math.PI;
+            return deg < 0 ? deg + 360.0 : deg;
+        }
+    }
+
     /// <summary>Cancellation for the currently-running <see cref="Manager.BotManager.WalkPath"/>,
     /// if any — cancelled to abort a walk early (e.g. on a server MOVEFAIL so the bot
     /// stops banging into an off-grid obstacle). Set/cleared by the walk task.</summary>

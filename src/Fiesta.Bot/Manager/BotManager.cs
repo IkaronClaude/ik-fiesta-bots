@@ -998,7 +998,7 @@ public sealed class BotManager : IAsyncDisposable
                                 System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), nx);
                                 System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), ny);
                                 await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
-                                handle.SetPosition(nx, ny);
+                                handle.CommitMove(pos.X, pos.Y, nx, ny);   // position AND facing
                             }
                         }
                     }
@@ -2548,7 +2548,8 @@ public sealed class BotManager : IAsyncDisposable
                         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), sy);
                         await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
                         handle.LastMoveTarget = (sx, sy);  // the tile we're trying to enter (for MOVEFAIL learning)
-                        handle.SetPosition(sx, sy); // advance tracked position as we walk
+                        // advance tracked position AND facing as we walk — a walk turns us toward the step
+                        handle.CommitMove((uint)Math.Round(cx), (uint)Math.Round(cy), sx, sy);
                         var stepDist = Math.Sqrt(Math.Pow(sx - cx, 2) + Math.Pow(sy - cy, 2));
                         cx = sx; cy = sy; steps++;
                         // Pace using the bot's live MOVESPEED-tracked walk speed.
@@ -2598,7 +2599,7 @@ public sealed class BotManager : IAsyncDisposable
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), toY);
             return s.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
         });
-        if (result == ActionResult.Sent && _bots.TryGetValue(id, out var h)) h.SetPosition(toX, toY);
+        if (result == ActionResult.Sent && _bots.TryGetValue(id, out var h)) h.CommitMove(fromX, fromY, toX, toY);
         return result;
     }
 

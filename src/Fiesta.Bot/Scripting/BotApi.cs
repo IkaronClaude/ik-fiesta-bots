@@ -1574,6 +1574,23 @@ public sealed class BotApi
     /// learned — it takes two heals in a session to measure it).</summary>
     public double hpStoneReadyInMs() => View?.HpStoneReadyInMs ?? -1;
 
+    /// <summary>Our FACING as a compass angle in degrees (0-360), or -1 if no heading has been set yet.
+    /// A core stat that belongs next to x()/y(): the server enforces a skill's <c>UsableDegree</c> arc
+    /// against it, so "can this cast proceed, or must I turn first?" is answered from here.
+    /// ⚠️ Degrees here are OUR heading in game-coordinate space (atan2 of the facing vector). A mob's
+    /// <c>dir</c> from nearbyMobs() is the raw wire byte (0-255) whose scale is NOT yet pinned — report
+    /// them side by side, never subtract one from the other.</summary>
+    public double facingDeg() => _handle.FacingDeg;
+
+    /// <summary>Facing as its raw unit vector { dx, dy } plus <c>deg</c>, for callers doing their own
+    /// geometry rather than re-deriving it from the angle.</summary>
+    public DynValue facing()
+    {
+        var t = NewTable();
+        t["dx"] = _handle.FacingDx; t["dy"] = _handle.FacingDy; t["deg"] = _handle.FacingDeg;
+        return DynValue.NewTable(t);
+    }
+
     public DynValue nearbyPlayers()
     {
         var t = NewTable();
