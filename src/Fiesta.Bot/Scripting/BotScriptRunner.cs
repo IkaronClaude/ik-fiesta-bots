@@ -359,7 +359,26 @@ end
         if (f.Type != DataType.Function) return;
         try { _lua.Call(f, args); }
         catch (ScriptRuntimeException ex) { _lastError = ex.DecoratedMessage; _log($"[script:{_name}] {fn} error: {ex.DecoratedMessage}"); }
-        catch (Exception ex) { _lastError = ex.Message; _log($"[script:{_name}] {fn} error: {ex.Message}"); }
+        // ⚠️ A .NET exception thrown INSIDE a bot.* callback is NOT a ScriptRuntimeException, so it lands
+        // here — and this used to log ex.Message alone. For a NullReferenceException that means the entire
+        // report is "Object reference not set to an instance of an object.": no type, no Lua line, no clue
+        // which of ~200 bot.* methods threw. That single missing detail is why the recurring tick-abort
+        // (bursts of 5, 2026-08-06) survived several investigations — it is an OBSERVABILITY gap, not a
+        // hard bug, exactly the shape the silver rule says to fix by building the read path.
+        // So: name the exception TYPE, and include the top CLR frames, which identify the throwing method.
+        catch (Exception ex)
+        {
+            _lastError = ex.Message;
+            var frames = (ex.StackTrace ?? "").Split('\n')
+                .Select(l => l.Trim())
+                .Where(l => l.StartsWith("at ", StringComparison.Ordinal))
+                .Take(4)
+                // Drop the noisy generic/async plumbing so the useful frame is visible at a glance.
+                .Select(l => l.Replace("Fiesta.Bot.Scripting.", "").Replace("Fiesta.Bot.", ""));
+            var where = string.Join(" <- ", frames);
+            _log($"[script:{_name}] {fn} error: {ex.GetType().Name}: {ex.Message}" +
+                 (where.Length > 0 ? $"  |  {where}" : "  |  (no stack)"));
+        }
     }
 
     private DynValue ChatTable(ChatMessage m)
