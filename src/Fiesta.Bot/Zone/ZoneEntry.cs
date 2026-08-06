@@ -174,6 +174,19 @@ public sealed class ZoneEntry
                         charLevel = p[25];
                         _log($"[Zone] exp = {exp} (level {p[25]})");
                     }
+                    else
+                    {
+                        // ⛔ A REAL CLIENT ALWAYS HAS EXP ON LOGIN — it draws the exp bar immediately
+                        // (operator 2026-08-06: "'no exp seed packet' is not a failure that happens to a
+                        // real client => our bug"). So a CHAR_BASE too short to hold Experience@26 is a
+                        // DECODE GAP on our side, not a server quirk, and it must not pass silently: it
+                        // left Exp at -1, which then silently discarded every later gain (see
+                        // ZoneView._expPendingDelta) and made a levelling bot report exp:null for an hour.
+                        // Name the actual length so the next pass can pin the real layout instead of
+                        // re-deriving that something went missing.
+                        _log($"[Zone] ⛔ CHAR_BASE too short for Experience@26 — len={p.Length} (need >=34). " +
+                             "exp NOT seeded; this is OUR decode gap, the real client always has exp at login.");
+                    }
                     if (p.Length >= 42)
                     {
                         curHpStone = p[38] | (p[39] << 8);
@@ -375,6 +388,9 @@ public sealed class ZoneEntry
                         _log($"[stats] STR={charStats.Str} END={charStats.End} DEX={charStats.Dex} INT={charStats.Int} SPR={charStats.Spr} | " +
                              $"Dmg={charStats.DmgMin}~{charStats.DmgMax} DEF={charStats.Def} Aim={charStats.Aim} Evasion={charStats.Evasion} M.Dmg={charStats.MagicDmg} M.Def={charStats.MagicDef}");
                     }
+                    if (exp is null)
+                        _log("[Zone] ⛔ MAP_LOGIN_ACK reached with NO exp seed — CHAR_BASE never arrived or " +
+                             "was too short. OUR decode gap: a real client has exp the instant it logs in.");
                     return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel, charStats);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
@@ -383,7 +399,12 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
+            {
+                if (exp is null)
+                    _log("[Zone] ⛔ zone-enter burst completed with NO exp seed — CHAR_BASE never arrived. " +
+                         "OUR bug, not the server's: the real client shows exp from the moment it logs in.");
                 return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen, exp, charLevel, null);
+            }
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
