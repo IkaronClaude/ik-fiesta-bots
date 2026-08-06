@@ -1734,9 +1734,11 @@ public sealed class ZoneView : IDisposable
     /// the bag's box 9 and equipment's box 8), never hard-coded.
     /// <para>Seeded from the wire-verified <see cref="StorageBoxId"/> so a deposit works even when storage
     /// is EMPTY (an empty item array carries no location to learn from — the old -1 default made the first
-    /// deposit impossible, a gate depending on the very thing it gated). A storage-open still OVERWRITES
-    /// this from the actual item locations, so if a server ever used a different container the observed
-    /// value wins over the constant.</para></summary>
+    /// deposit impossible, a gate depending on the very thing it gated).
+    /// <para>A storage-open overwrites this ONLY when EVERY item agrees on the same container. Adopting
+    /// per-item flip-flopped it (6 → 0 → 6 within one open) and every deposit that landed on box 0 was
+    /// refused with RELOC_ACK 589; disagreement means those high bits are not a container id here (storage
+    /// is paged), so the proven constant stands and the disagreement is logged.</para></summary>
     public int StorageBox { get; private set; } = StorageBoxId;
 
     /// <summary>Money currently held IN storage (the `cen` field of the storage-open packet). Storage
@@ -2857,6 +2859,7 @@ public sealed class ZoneView : IDisposable
                 var openType = p[10];
                 int count = p[11];
                 var items = new List<(byte Slot, ushort ItemId)>(count);
+                var boxesSeen = new HashSet<byte>();
                 var off = 12;
                 for (var i = 0; i < count && off + 3 <= p.Length; i++)
                 {
@@ -2866,16 +2869,35 @@ public sealed class ZoneView : IDisposable
                     var slot = (byte)(loc & 0xFF);
                     // itemId is the first field of SHINE_ITEM_STRUCT, immediately after `location`.
                     var itemId = off + 5 <= p.Length ? (ushort)(p[off + 3] | (p[off + 4] << 8)) : (ushort)0;
-                    // OBSERVED beats the constant: if this server ever placed storage in a different
-                    // container, the item's own location is the authority.
-                    if (box != StorageBox)
-                    {
-                        _log?.Invoke($"[ZoneView] STORAGE container is box {box} (expected {StorageBox}) — using the observed value");
-                        StorageBox = box;
-                    }
+                    // ⛔ DO NOT adopt per-item. Every item used to overwrite StorageBox, so a list whose
+                    // entries disagree flip-flopped it: live 2026-08-06 the same open logged "container is
+                    // box 6 (expected 0)" then "box 0 (expected 6)", and whichever value landed last was
+                    // used — every deposit addressed to box0 was then REFUSED with RELOC_ACK 589 (0x024D),
+                    // while box6 (the pcap-proven StorageBoxId) worked. Collect first, decide after the loop:
+                    // one dissenting entry must not overturn a proven constant.
+                    boxesSeen.Add(box);
                     items.Add((slot, itemId));
                     if (datasize == 0) break;           // malformed; don't spin
                     off += datasize;
+                }
+                // Adopt an observed container ONLY when every item agrees on it. Disagreement means the
+                // high bits of `location` are not (only) a container id here — storage is PAGED (16 pages),
+                // so they plausibly carry the page — and in that case the pcap-proven StorageBoxId stands.
+                // Either way, DISAGREEMENT IS THE SIGNAL: log it instead of silently picking the last one.
+                if (boxesSeen.Count == 1)
+                {
+                    var only = boxesSeen.First();
+                    if (only != StorageBox)
+                    {
+                        _log?.Invoke($"[ZoneView] STORAGE container is box {only} (was {StorageBox}) — all {count} item(s) agree, adopting");
+                        StorageBox = only;
+                    }
+                }
+                else if (boxesSeen.Count > 1)
+                {
+                    _log?.Invoke($"[ZoneView] STORAGE location high-bits DISAGREE across items ({string.Join(",", boxesSeen.OrderBy(b => b))}) " +
+                                 $"— NOT a container id; keeping box {StorageBox}. Storage is paged ({StorageMaxPage} pages), so these are " +
+                                 "likely page numbers — decode the page model (tickets.md) rather than treating them as boxes.");
                 }
                 _storageItems = items.ToArray();
                 StorageOpenUtc = DateTime.UtcNow;
