@@ -1916,6 +1916,8 @@ public sealed class BotManager : IAsyncDisposable
 
         var before = view.CellChangeCount;
         var ackBefore = view.LastRelocAckAtUtc;   // so we report THIS move's ack, never a stale one
+        // What the SOURCE bag cell holds right now. A deposit only counts if THIS cell empties — see below.
+        var srcHadItem = view.Inventory.TryGetValue(fromSlot, out var srcItem);
         await s.SendAsync(new PROTO_NC_ITEM_RELOC_REQ
         {
             from = new FiestaLibReloaded.Networking.Structs.ITEM_INVEN { Inven = from },
@@ -1924,14 +1926,29 @@ public sealed class BotManager : IAsyncDisposable
         // Wait for the server's CELLCHANGE pair. Confirmation is the ONLY evidence the move happened.
         for (var waited = 0; waited < 3000; waited += 50)
         {
-            if (view.CellChangeCount > before)
+            // ⛔ "ANY CELLCHANGE HAPPENED" IS NOT PROOF THIS MOVE HAPPENED. CellChangeCount is a GLOBAL
+            // counter, so an unrelated cell update (another slot, the storage side, a stack merge) satisfied
+            // it and the move was reported ok. Live 2026-08-06: SIX deposits logged "ok" and the bag was
+            // still 48/48 afterwards — the whole point of the trip (free a bag slot) had not happened once.
+            // A DEPOSIT succeeded iff the SOURCE BAG CELL EMPTIED; that is the effect we actually want, and
+            // it is directly observable. (Withdraw's source is a storage cell we don't model per-slot yet,
+            // so it still falls back to the counter — flagged in tickets.md rather than pretended away.)
+            var confirmed = deposit
+                ? srcHadItem && !(view.Inventory.TryGetValue(fromSlot, out var nowItem) && nowItem == srcItem)
+                : view.CellChangeCount > before;
+            if (confirmed)
             {
                 handle.Log(BotLogLevel.Note, $"storage {(deposit ? "DEPOSIT" : "WITHDRAW")} ok: " +
-                    $"box{from >> 10} slot{from & 0xFF} -> box{to >> 10} slot{to & 0xFF}");
+                    $"box{from >> 10} slot{from & 0xFF} -> box{to >> 10} slot{to & 0xFF}" +
+                    (deposit ? " (bag cell cleared)" : ""));
                 return ActionResult.Sent;
             }
             await Task.Delay(50, ct);
         }
+        // A deposit whose source cell never cleared is a FAILURE even if cells changed elsewhere.
+        if (deposit && view.CellChangeCount > before)
+            handle.Log(BotLogLevel.Note, $"storage DEPOSIT: cells DID change but bag slot {fromSlot} still holds " +
+                $"item {srcItem} — the move did not free the slot (this is what the old any-cellchange check mis-read as success)");
         // The server DOES answer every RELOC with NC_ITEM_RELOC_ACK (0x300C) — we were just throwing it away,
         // so this line could only ever say "nothing arrived". Report the code the server actually sent.
         // Observed: a refused storage deposit answered 586 (0x024A); relocs during a bag auto-arrange answered
