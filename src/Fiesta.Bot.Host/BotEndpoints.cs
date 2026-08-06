@@ -1042,12 +1042,53 @@ public static class BotEndpoints
             FreeStatPoints = zv is { FreeStatPoints: >= 0 } ? zv.FreeStatPoints : (int?)null,
             Passives = zv?.LearnedPassives?.Select(pid => new { Id = (int)pid, Name = cd?.PassiveSkillName(pid) ?? "" }).ToArray(),
             Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
+            // Live quest board: what is accepted, how far along, and what each one wants. Progress is the
+            // SERVER's credited count (NC_QUEST_NOTIFY_MOB_KILL), not our own kill tally — a mob dying
+            // credits nothing if the quest is not actually tracking it.
+            Quests = QuestPanel(bot, cd),
             // Entities for the zoomed combat map. Positions are RAW game coords; the page centres on self.
             Entities = EntityPanel(bot, cd),
             // The survivability inequality, surfaced where a human can see both sides at once.
             SustainableHealDps = zv is { SustainableHealDps: > 0 } ? zv.SustainableHealDps : (double?)null,
             IncomingDps5s = zv?.IncomingDamageSince(TimeSpan.FromSeconds(5)),
         };
+    }
+
+    /// <summary>The accepted-quest board with live state. <c>Need</c> is summed over the quest's kill and
+    /// collect objectives from client data; <c>Progress</c> is the server-credited count. A quest whose
+    /// definition is missing from client data is still listed (with its id) rather than dropped — a silent
+    /// omission would hide exactly the QuestData decode gaps we care about.</summary>
+    private static object[] QuestPanel(BotHandle bot, GameData.ClientData? cd)
+    {
+        var zv = bot.ZoneView;
+        if (zv is null) return [];
+        var outp = new List<object>();
+        foreach (var (qid, status) in zv.ActiveQuests)
+        {
+            var qd = cd?.Quest(qid);
+            var need = 0; var mobs = new List<string>();
+            if (qd is not null)
+                foreach (var o in qd.Objectives)
+                {
+                    need += o.Count;
+                    if (o.Mob > 0) mobs.Add(cd?.Mob(o.Mob)?.Name ?? $"mob{o.Mob}");
+                }
+            var prog = zv.QuestProgress(qid);
+            outp.Add(new
+            {
+                Id = qid,
+                Name = cd?.QuestName(qid) ?? $"q{qid}",
+                Status = (int)status,
+                Progress = prog,
+                Need = need,
+                Ready = need > 0 && prog >= need,
+                Targets = mobs,
+                ExpReward = qd?.ExpReward ?? 0,
+                Repeatable = qd?.Repeatable ?? false,
+                Known = qd is not null,
+            });
+        }
+        return outp.OrderByDescending(o => ((dynamic)o).Ready).ThenByDescending(o => ((dynamic)o).Progress).ToArray();
     }
 
     /// <summary>Everything currently in AoI that the combat map draws: mobs (with facing, cur/max hp and

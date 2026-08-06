@@ -46,6 +46,23 @@
   .tile .sweep { position:absolute; inset:0; z-index:1; pointer-events:none }
 
   .maps { display:grid; grid-template-columns:1fr 1fr; gap:10px }
+
+  /* fold-out death reports under the console */
+  #deaths { max-height:300px; overflow:auto; margin-top:6px }
+  #deaths details { border:1px solid var(--line); border-radius:5px; margin-bottom:5px; background:#0b0e13 }
+  #deaths summary { cursor:pointer; padding:4px 6px; color:var(--crit) }
+  #deaths pre { margin:0; padding:6px; white-space:pre-wrap; word-break:break-word; color:var(--dim); font-size:11px }
+
+  /* toaster — bottom-right, newest on top, auto-expiring */
+  #toasts { position:fixed; right:14px; bottom:14px; display:flex; flex-direction:column-reverse; gap:6px; z-index:50 }
+  .toast { background:#161b22; border:1px solid var(--line); border-left:3px solid var(--accent);
+           border-radius:5px; padding:6px 10px; box-shadow:0 2px 10px rgba(0,0,0,.45);
+           animation:tin .18s ease-out; max-width:360px }
+  .toast.kill  { border-left-color:var(--accent) }
+  .toast.goal  { border-left-color:var(--warn) }
+  .toast.hand  { border-left-color:var(--ok) }
+  .toast .q { color:var(--fg) } .toast .sep { color:var(--dim); margin:0 6px }
+  @keyframes tin { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }
   .legend { margin-top:6px; display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; color:var(--dim) }
   .legend b { color:var(--fg); font-weight:normal }
 </style>
@@ -61,6 +78,8 @@
   <label><input type="checkbox" id="recent" checked> heatmap: last 30m only</label>
   <span id="status" class="muted"></span>
 </header>
+
+<div id="toasts"></div>
 
 <div class="wrap">
   <div>
@@ -97,8 +116,17 @@
     </div>
 
     <div class="panel" style="margin-bottom:10px">
+      <h2>quests <span class="muted" id="qhint"></span></h2>
+      <div style="max-height:220px; overflow:auto"><table id="quests"></table></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:10px">
       <h2>console <span class="muted">(severity filter above)</span></h2>
       <div id="log"></div>
+      <details id="deathsbox" style="margin-top:8px">
+        <summary style="cursor:pointer; color:var(--dim)">recent deaths <span id="dcount"></span></summary>
+        <div id="deaths"></div>
+      </details>
     </div>
 
     <div class="panel">
@@ -265,6 +293,9 @@ async function tickMetrics() {
     $('#charsheet').innerHTML = charSheet(d.live);
     skillTiles(d.live.skills);
     drawCombat(d.live.entities, d.live.maxHp);
+    questList = d.live.quests || [];
+    questsById = new Map(questList.map(q => [q.name, q]));
+    questTable(questList);
     $('#metrics').innerHTML = metricsTable(d.metrics);
     const sel = $('#mapsel');
     const have = new Set([...sel.options].map(o=>o.value));
@@ -334,6 +365,7 @@ async function tickLog() {
       return `<div class="${cls}">${h}</div>`;
     }).join('');
     if (atBottom) el.scrollTop = el.scrollHeight;
+    scanEvents(txt);
   } catch {}
 }
 
@@ -345,4 +377,105 @@ $('#tok').onchange = () => localStorage.setItem('botwatch.tok', $('#tok').value)
 setInterval(tickMetrics, 2000); tickMetrics();
 setInterval(tickTrace, 1000);   tickTrace();
 setInterval(tickLog, 2000);     tickLog();
+
+// Deaths are fetched SEPARATELY: at level=note with a wide window, because the console runs a rolling
+// 400-line window at the user's chosen level and a single death report is far bigger than that. Low
+// cadence — deaths are rare and this asks for a lot of history.
+async function tickDeaths() {
+  try {
+    const r = await api('/log', { level: 'note', max: 100000 });
+    if (!r.ok) return;
+    renderDeaths(await r.text());
+  } catch {}
+}
+setInterval(tickDeaths, 20000);  tickDeaths();
+
+// ── quest board ───────────────────────────────────────────────────────────────────────────────────
+// Progress is the SERVER's credited count, not our kill tally — a mob dying credits nothing if the
+// quest isn't tracking it. A quest missing from client data is shown with `?` rather than hidden,
+// because a silent omission would conceal exactly the QuestData decode gaps worth seeing.
+function questTable(qs) {
+  if (!qs || !qs.length) { $('#quests').innerHTML = ''; $('#qhint').textContent = '· none accepted'; return; }
+  const ready = qs.filter(q => q.ready).length;
+  $('#qhint').textContent = `· ${qs.length} accepted${ready ? ` · ${ready} READY to hand in` : ''}`;
+  let h = '<tr><th>quest</th><th>target</th><th>progress</th><th>exp</th></tr>';
+  for (const q of qs) {
+    const pct = q.need > 0 ? Math.round(100*Math.min(1, q.progress/q.need)) : null;
+    const prog = q.need > 0 ? `${q.progress}/${q.need}` : `${q.progress}/<span class="muted">?</span>`;
+    h += `<tr>
+      <td>${q.ready ? '<span class="hit-ok">✓</span> ' : ''}${q.name}${q.repeatable ? ' <span class="muted">(rep)</span>' : ''}
+           ${q.known ? '' : ' <span class="hit-warn" title="no QuestData entry — decode gap">?</span>'}</td>
+      <td class="muted">${(q.targets||[]).join(', ') || '—'}</td>
+      <td>${prog}${pct!=null?` <span class="muted">${pct}%</span>`:''}</td>
+      <td>${q.expReward || '—'}</td></tr>`;
+  }
+  $('#quests').innerHTML = h;
+}
+
+// ── death reports (fold-out under the console) ────────────────────────────────────────────────────
+// Grouped client-side out of the [death] lines the driver emits. Bounded by whatever is still in the
+// log ring, so this is "recent deaths", not an archive — labelled as such rather than implying more.
+let deathSeen = new Set();
+function renderDeaths(txt) {
+  const blocks = []; let cur = null;
+  for (const line of txt.split('\n')) {
+    const isDeath = line.includes('[death]');
+    if (isDeath) {
+      if (line.includes('[death] SELF:')) { if (cur) blocks.push(cur); cur = { t: line.slice(0,12), lines: [] }; }
+      if (!cur) cur = { t: line.slice(0,12), lines: [] };
+      cur.lines.push(line.replace(/^.*\[death\]\s?/, ''));
+    }
+  }
+  if (cur) blocks.push(cur);
+  $('#dcount').textContent = blocks.length ? `(${blocks.length} in buffer)` : '(none in buffer)';
+  $('#deaths').innerHTML = blocks.reverse().map(b => {
+    const head = (b.lines[0] || '').slice(0, 110);
+    const esc = t => t.replace(/[&<>]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch]));
+    return `<details><summary>${b.t} — ${esc(head)}</summary><pre>${esc(b.lines.join('\n'))}</pre></details>`;
+  }).join('');
+}
+
+// ── toaster ───────────────────────────────────────────────────────────────────────────────────────
+// Fired off the log stream, which is where these events are already reported. Each line is keyed by
+// its timestamp+text so a re-poll of the same window doesn't re-toast it.
+// ⚠️ The hand-in toast shows EXP but NO percentage. The operator asked for
+// exp / (nextLevelExp - currLevelExp), and that denominator is NOT available: there is no
+// level→exp table in ressystem and no "exp to next level" field anywhere in the PDB protocol
+// structs (only EXPGAIN and CurrentExp). Showing a made-up % would be worse than showing none.
+const toastSeen = new Set();
+function toast(kind, parts) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.innerHTML = parts.map((p,i) => i ? `<span class="sep">|</span>${p}` : `<span class="q">${p}</span>`).join('');
+  $('#toasts').appendChild(el);
+  setTimeout(() => { el.style.transition='opacity .4s'; el.style.opacity='0'; setTimeout(()=>el.remove(), 400); }, 6000);
+}
+function scanEvents(txt) {
+  for (const line of txt.split('\n')) {
+    if (toastSeen.has(line)) continue;
+    // QUEST_MOB_KILL quest=<name> credited (total N)
+    let m = line.match(/QUEST_MOB_KILL quest=(.+?) credited \(total (\d+)\)/);
+    if (m) {
+      toastSeen.add(line);
+      const q = questsById.get(m[1]) || questsByName(m[1]);
+      const need = q?.need || 0;
+      toast('kill', [m[1], lastKilledName || 'enemy', need ? `${m[2]} / ${need}` : `${m[2]}`]);
+      if (need && Number(m[2]) >= need) toast('goal', [m[1], 'Goals Reached']);
+      continue;
+    }
+    m = line.match(/\[lq\] ENGAGE (.+?) h=/) || line.match(/\[combat\] KILLED (.+?) /);
+    if (m) { lastKilledName = m[1]; }
+    m = line.match(/(.+?) HANDED IN /);
+    if (m && line.includes('CRUTCH')) {
+      toastSeen.add(line);
+      const nm = m[1].replace(/^.*CRUTCH\[OK\]\s*/, '');
+      const q = questsByName(nm);
+      toast('hand', [nm, 'Handed In', q?.expReward ? `${q.expReward} EXP` : 'reward granted']);
+    }
+  }
+  if (toastSeen.size > 4000) toastSeen.clear();
+}
+let lastKilledName = null;
+let questsById = new Map(), questList = [];
+function questsByName(n) { return questList.find(q => q.name === n); }
 </script>
