@@ -81,14 +81,31 @@ public sealed class BotScriptRunner : IDisposable
         _thread.Start();
     }
 
+    // Published BY the script thread, read by everyone else. Never enumerate the live VM off-thread.
+    private IReadOnlyList<string>? _globalsSnapshot;
+    private void RefreshGlobalsSnapshot()
+    {
+        try { _globalsSnapshot = _lua?.Globals.Keys.Select(k => k.ToPrintString()).Where(x => x.Length > 0).Take(64).ToArray() ?? []; }
+        catch { /* best-effort debug surface */ }
+    }
+
     public ScriptStatus Status()
     {
-        IReadOnlyList<string> globals;
-        // Reading globals from another thread touches the VM, which isn't thread-safe —
-        // but we only enumerate the keys (a snapshot of names), tolerating a race, and
-        // never call into Lua. Good enough for a debug surface.
-        try { globals = _lua?.Globals.Keys.Select(k => k.ToPrintString()).Where(s => s.Length > 0).Take(64).ToArray() ?? []; }
-        catch { globals = []; }
+        // ⛔ THIS USED TO ENUMERATE _lua.Globals.Keys FROM THE CALLER'S THREAD. The old comment said
+        // "touches the VM, which isn't thread-safe — but we only enumerate the keys, tolerating a race,
+        // and never call into Lua. Good enough for a debug surface." That risk assessment was wrong, and
+        // it is the prime suspect for the P0 tick-abort:
+        //   • Status() is called by EVERY /api/bots/{id} and /metrics request, so this ran constantly and
+        //     concurrently with the script thread executing bytecode.
+        //   • Enumerating a MoonSharp Table while the VM inserts/rehashes it is a real data race on the
+        //     interpreter's internal structures. "Only reading" does not make a race safe: the reader can
+        //     observe torn state, and the catch here hides the throw while leaving the damage.
+        //   • It fits BOTH symptoms exactly — NullReferenceException raised INSIDE Processing_Loop with no
+        //     method of ours on the stack, and a value that was provably a number at one line and a table
+        //     three lines later.
+        // The snapshot is now taken ON THE SCRIPT THREAD and published for readers, so no caller ever
+        // touches the VM. A slightly stale name list is a fine trade for not corrupting the interpreter.
+        var globals = Volatile.Read(ref _globalsSnapshot) ?? [];
         return new ScriptStatus(
             _name, _state, Interlocked.Read(ref _ticks), Interlocked.Read(ref _eventsHandled),
             _lastError, Math.Round((DateTime.UtcNow - _startedUtc).TotalSeconds, 1), globals, _smState);
@@ -142,6 +159,7 @@ public sealed class BotScriptRunner : IDisposable
         {
             Setup();
             SafeCall("on_start");
+            RefreshGlobalsSnapshot();
             _state = "running";
 
             var nextTick = Environment.TickCount64;
@@ -191,6 +209,8 @@ public sealed class BotScriptRunner : IDisposable
                     }
                     Interlocked.Increment(ref _ticks);
                     SafeCall("tick");
+                    // Cheap, and on the ONLY thread allowed to touch the VM.
+                    if (Interlocked.Read(ref _ticks) % 25 == 0) RefreshGlobalsSnapshot();
                     nextTick = Environment.TickCount64 + _tickMs;
                 }
             }
