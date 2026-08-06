@@ -251,6 +251,10 @@ public sealed class BotManager : IAsyncDisposable
         var runner = new BotScriptRunner(handle, new BotApi(this, handle), name, source, ScriptLog, handle.Cts.Token, tickMs, trace);
         handle.ScriptRunner = runner;
         handle.LastScriptName = name; handle.LastScriptSource = source; handle.LastScriptTickMs = tickMs; // for bot.relog re-apply
+        // PERSIST it too. The fields above are process memory, so a pod restart loses them and the
+        // watchdog below has nothing to restore from — which is exactly how every deploy left the bots
+        // standing in the field with no driver (operator 2026-08-06, raised above P0).
+        Knowledge?.SaveScript(handle.KnowledgeScope, name, source, tickMs);
         handle.Log($"script '{name}' applied ({source.Length} chars, tick={tickMs}ms{(trace ? ", trace" : "")})");
         runner.Start();
         return runner;
@@ -3406,6 +3410,20 @@ public sealed class BotManager : IAsyncDisposable
 
                         // (a) IN ZONE WITH NO SCRIPT — the exact failure above. Self-heal from the retained
                         // source rather than just complaining; a bot with no driver can never recover alone.
+                        // Fall back to the PERSISTED copy when this process never saw an apply — i.e. the
+                        // bot was spawned after a pod restart. Without this the watchdog could only heal a
+                        // script lost WITHIN a session, and the far more common case (deploy → respawn)
+                        // needed a human.
+                        if (handle.ScriptRunner is null && handle.LastScriptSource is null
+                            && Knowledge?.LoadScript(handle.KnowledgeScope) is { } saved)
+                        {
+                            handle.LastScriptName = saved.Name;
+                            handle.LastScriptSource = saved.Source;
+                            handle.LastScriptTickMs = saved.TickMs;
+                            handle.Log(BotLogLevel.Note,
+                                $"WATCHDOG: no script in this process — restored '{saved.Name}' from durable " +
+                                "knowledge (this bot ran it before a restart). Applying it.");
+                        }
                         if (handle.ScriptRunner is null && handle.LastScriptSource is { } src)
                         {
                             handle.Log(BotLogLevel.Note,

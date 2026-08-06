@@ -44,6 +44,7 @@ public sealed class NpcKnowledge
         _unstorablePath = Path.Combine(baseDir, "unstorable-items.json");
         _mobThreatPath = Path.Combine(baseDir, "mob-threats.json");
         _scalarPath = Path.Combine(baseDir, "learned-scalars.json");
+        _scriptDir = Path.Combine(baseDir, "scripts");
         Load();
         LoadQuestDeprio();
         LoadQuestDeaths();
@@ -157,6 +158,51 @@ public sealed class NpcKnowledge
         if (!_questDeathsAtLevel.TryRemove(LKey(host, questId, level), out var n)) return 0;
         SaveQuestDeaths();
         return n;
+    }
+
+    private readonly string _scriptDir;
+    private readonly object _scriptIoLock = new();
+
+    /// <summary>Remember the driver script a bot is running, so it can be restored after the PROCESS dies.
+    /// <para>⛔ THIS IS THE HALF THAT WAS MISSING. <c>BotHandle.LastScript*</c> already let the in-process
+    /// watchdog re-apply a lost script, but those fields live in process memory — a pod restart wipes them,
+    /// and a freshly spawned bot has none. So every deploy left the bots running with NO DRIVER until a
+    /// human re-applied it, and a bot with no script is not paused: it stands in the field and dies
+    /// (operator 2026-08-06, raised above P0).</para>
+    /// <para>Keyed by the caller's scope (host|character) so each character restores its own.</para></summary>
+    public void SaveScript(string scope, string name, string source, int tickMs)
+    {
+        if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(source)) return;
+        lock (_scriptIoLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(_scriptDir);
+                File.WriteAllText(Path.Combine(_scriptDir, ScriptFile(scope)), JsonSerializer.Serialize(
+                    new SavedScript(name, source, tickMs), new JsonSerializerOptions { WriteIndented = false }));
+            }
+            catch { /* best-effort: never let persistence break an apply */ }
+        }
+    }
+
+    /// <summary>The last script this scope applied, or null if none was ever saved (a genuinely new bot).</summary>
+    public SavedScript? LoadScript(string scope)
+    {
+        if (string.IsNullOrEmpty(scope)) return null;
+        try
+        {
+            var f = Path.Combine(_scriptDir, ScriptFile(scope));
+            return File.Exists(f) ? JsonSerializer.Deserialize<SavedScript>(File.ReadAllText(f)) : null;
+        }
+        catch { return null; }
+    }
+
+    // The scope contains '|' and a character name, neither of which is guaranteed path-safe.
+    private static string ScriptFile(string scope)
+    {
+        var sb = new System.Text.StringBuilder(scope.Length + 5);
+        foreach (var ch in scope) sb.Append(char.IsLetterOrDigit(ch) || ch is '-' or '_' ? ch : '_');
+        return sb.Append(".json").ToString();
     }
 
     /// <summary>How many times the bot has DIED while pursuing this quest, ever (across every
@@ -450,3 +496,6 @@ public sealed class NpcKnowledge
         }
     }
 }
+
+/// <summary>A driver script persisted across process restarts — see <see cref="NpcKnowledge.SaveScript"/>.</summary>
+public sealed record SavedScript(string Name, string Source, int TickMs);
