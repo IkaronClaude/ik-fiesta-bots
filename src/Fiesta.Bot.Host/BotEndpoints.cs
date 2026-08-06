@@ -1134,6 +1134,13 @@ public static class BotEndpoints
                     if (md is null) continue;
                     // GradeType >= 1 is a boss/elite per MobInfo — the same field the driver's TOO HARD
                     // check uses, read straight from client data rather than mirrored from the Lua.
+                    // TOWER OF IYZEL: instance-only mobs, so a solo bot can never reach them. Detect by MOB
+                    // ID RANGE — hardcoding these ids is explicitly authorised (CLAUDE.md) precisely because
+                    // classifying by quest NAME is banned and unreliable. Without this the panel sorted the
+                    // Iyzel quests to the TOP on their fat exp and advertised as "next up" work the driver
+                    // has permanently shelved — the panel lying about priority is worse than showing nothing.
+                    if ((o.Mob >= 8100 && o.Mob <= 8138) || o.Mob == 9186 || o.Mob == 9187)
+                    { reason = $"instance-only (Tower of Iyzel) — needs a party; shelved"; break; }
                     if (md.GradeType >= 1) { reason = $"too dangerous — {md.Name} is a boss/elite (L{md.Level}, {md.MaxHp} hp)"; break; }
                     if (md.Level > (int)bot.Level + 3) { reason = $"over-level — {md.Name} is L{md.Level} vs our {bot.Level}"; break; }
                 }
