@@ -1106,6 +1106,8 @@ public sealed class ZoneView : IDisposable
         if (maxObserved <= 0 || maxObserved > 150) return;
         if (maxObserved <= LearnedMeleeRange) return;
         LearnedMeleeRange = maxObserved;
+        _rangeMax1 = Math.Max(_rangeMax1, maxObserved);
+        _rangeMax2 = Math.Max(_rangeMax2, maxObserved);   // the seed is already a trusted 2nd-highest
         _logLevel?.Invoke(BotLogLevel.Note,
             $"[combat] seeded attack-range {maxObserved:F0}u from durable knowledge — no re-learning from 0 after this handoff");
     }
@@ -1289,10 +1291,9 @@ public sealed class ZoneView : IDisposable
     /// every swing is ~weapon range so the max ≈ the range; a clamp excludes any long-range skill damage.</summary>
     public double LearnedMeleeRange { get; private set; }
 
-    // An unconfirmed high-water candidate: applied only when a SECOND connect reaches about as far.
-    // Keeps a one-off position desync from latching (and then being persisted) as the weapon range.
-    private double _rangeCandidate;
-    private const double RangeCorroborationSlack = 8.0;   // two connects within this are the same distance
+    // Top TWO connect distances ever seen. The learned range is the SECOND highest — a one-line robust
+    // max that simply discards the single largest sample, so one position desync cannot define the range.
+    private double _rangeMax1, _rangeMax2;
 
     /// <summary>True while the bot is dead (DEADMENU opened, not yet revived). Behaviours
     /// can wait for an in-place revive (cleric) before respawning to town, or respawn via
@@ -1393,22 +1394,26 @@ public sealed class ZoneView : IDisposable
                         // A genuine weapon range is reproducible; a desync is not. So a NEW high only counts
                         // once a SECOND connect corroborates it — the first is held as a candidate and
                         // discarded if nothing else reaches that far. Real connects here were 15-48u.
-                        if (dist > 0 && dist < 150 && dist > LearnedMeleeRange + 0.5)
+                        // SECOND-HIGHEST of all connect distances = a robust max: it ignores exactly one
+                        // outlier, needs no threshold, and cannot stall.
+                        // Two failures got us here, both mine:
+                        //   • raw MAX  -> one 148.8u desync latched, and persistence made it permanent; the
+                        //     server then rejected casts at 45u while our model said 149u.
+                        //   • pair-corroboration -> the bot fights ON TOP of mobs, so connects cluster at
+                        //     ~2u and a far connect almost never repeats before the next near one. It pinned
+                        //     the range at 2u — re-creating the ORIGINAL reach=2 bug, and persisting it.
+                        // Top-2 fixes both: the ~2u crowd fills max2 early, and as soon as a SECOND genuine
+                        // far connect arrives max2 rises to it, while a lone desync only ever occupies max1.
+                        if (dist > 0 && dist < 150)
                         {
-                            if (_rangeCandidate > 0 && dist >= _rangeCandidate - RangeCorroborationSlack)
+                            if (dist > _rangeMax1) { _rangeMax2 = _rangeMax1; _rangeMax1 = dist; }
+                            else if (dist > _rangeMax2) { _rangeMax2 = dist; }
+                            if (_rangeMax2 > LearnedMeleeRange + 0.5)
                             {
-                                LearnedMeleeRange = Math.Min(dist, _rangeCandidate);   // the corroborated pair
-                                _rangeCandidate = 0;
-                                _log?.Invoke($"[combat] LEARNED attack-range ↑ {LearnedMeleeRange:F0}u — CORROBORATED by a second " +
-                                             $"connect (h={h.Defender}, dmg={h.Damage})");
+                                LearnedMeleeRange = _rangeMax2;
+                                _log?.Invoke($"[combat] LEARNED attack-range ↑ {LearnedMeleeRange:F0}u (2nd-highest of " +
+                                             $"connects; top={_rangeMax1:F0}u ignored as a possible outlier, h={h.Defender})");
                                 ScalarLearned?.Invoke(ScalarMeleeRange, LearnedMeleeRange);
-                            }
-                            else
-                            {
-                                _rangeCandidate = dist;   // held, NOT applied and NOT persisted
-                                _logLevel?.Invoke(BotLogLevel.Info,
-                                    $"[combat] attack-range candidate {dist:F0}u (h={h.Defender}) — waiting for a second " +
-                                    $"connect at that distance before trusting it; still using {LearnedMeleeRange:F0}u");
                             }
                         }
                     }
