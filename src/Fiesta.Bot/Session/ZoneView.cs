@@ -1289,6 +1289,11 @@ public sealed class ZoneView : IDisposable
     /// every swing is ~weapon range so the max ≈ the range; a clamp excludes any long-range skill damage.</summary>
     public double LearnedMeleeRange { get; private set; }
 
+    // An unconfirmed high-water candidate: applied only when a SECOND connect reaches about as far.
+    // Keeps a one-off position desync from latching (and then being persisted) as the weapon range.
+    private double _rangeCandidate;
+    private const double RangeCorroborationSlack = 8.0;   // two connects within this are the same distance
+
     /// <summary>True while the bot is dead (DEADMENU opened, not yet revived). Behaviours
     /// can wait for an in-place revive (cleric) before respawning to town, or respawn via
     /// <see cref="Manager.BotManager.RespawnAsync"/>; the server auto-respawns after ~2 min.</summary>
@@ -1379,11 +1384,32 @@ public sealed class ZoneView : IDisposable
                     {
                         var ddx = (double)sp.X - dx; var ddy = (double)sp.Y - dy;
                         var dist = Math.Sqrt(ddx * ddx + ddy * ddy);
+                        // ⛔ CORROBORATE BEFORE RAISING. A raw max latches on ONE bad sample, and persisting
+                        // it makes that permanent: live 2026-08-06 a single 148.8u "connect" (a position
+                        // desync — our tracked position or the mob's cached one was stale) pinned the range
+                        // at 149u across every session. The SERVER then rejected casts as out-of-range at
+                        // 45u and even 31u while our model said 149u, so NeedsFacingAdjust reported "in
+                        // range", the bot never closed, and the cast failed 0x0FCA.
+                        // A genuine weapon range is reproducible; a desync is not. So a NEW high only counts
+                        // once a SECOND connect corroborates it — the first is held as a candidate and
+                        // discarded if nothing else reaches that far. Real connects here were 15-48u.
                         if (dist > 0 && dist < 150 && dist > LearnedMeleeRange + 0.5)
                         {
-                            LearnedMeleeRange = dist;
-                            _log?.Invoke($"[combat] LEARNED attack-range ↑ {dist:F0}u (connecting swing on h={h.Defender}, dmg={h.Damage})");
-                            ScalarLearned?.Invoke(ScalarMeleeRange, dist);   // persist: a MAX, so it converges from below
+                            if (_rangeCandidate > 0 && dist >= _rangeCandidate - RangeCorroborationSlack)
+                            {
+                                LearnedMeleeRange = Math.Min(dist, _rangeCandidate);   // the corroborated pair
+                                _rangeCandidate = 0;
+                                _log?.Invoke($"[combat] LEARNED attack-range ↑ {LearnedMeleeRange:F0}u — CORROBORATED by a second " +
+                                             $"connect (h={h.Defender}, dmg={h.Damage})");
+                                ScalarLearned?.Invoke(ScalarMeleeRange, LearnedMeleeRange);
+                            }
+                            else
+                            {
+                                _rangeCandidate = dist;   // held, NOT applied and NOT persisted
+                                _logLevel?.Invoke(BotLogLevel.Info,
+                                    $"[combat] attack-range candidate {dist:F0}u (h={h.Defender}) — waiting for a second " +
+                                    $"connect at that distance before trusting it; still using {LearnedMeleeRange:F0}u");
+                            }
                         }
                     }
                 }
