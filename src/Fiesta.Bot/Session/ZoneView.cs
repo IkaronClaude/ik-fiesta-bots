@@ -1582,7 +1582,24 @@ public sealed class ZoneView : IDisposable
     /// relog exp loss" is now an explicit, attributable figure (operator 2026-07-29).</summary>
     public long SessionExpLost { get; private set; }
     /// <summary>Seed the absolute exp from the zone-enter char-info (NC_CHAR_BASE Experience).</summary>
-    public void SeedExp(long exp) => Exp = exp;
+    public void SeedExp(long exp)
+    {
+        // Apply anything that accrued BEFORE the seed arrived. Without this the pre-seed gains were lost.
+        Exp = exp + _expPendingDelta;
+        _expPendingDelta = 0;
+    }
+
+    /// <summary>Exp gained/lost while <see cref="Exp"/> was still unseeded, held until a seed or an
+    /// authoritative absolute arrives to reconcile against.
+    /// <para>⛔ THIS EXISTS BECAUSE THE ACCUMULATOR WAS GATED ON ITS OWN OUTPUT. The EXPGAIN handler read
+    /// <c>if (Exp >= 0) Exp += gain;</c> — so when the login burst did not carry the exp seed (observed
+    /// live 2026-08-06 on JcqFighter: skills, bag and quests all seeded, exp did not), Exp stayed -1 and
+    /// EVERY subsequent gain was silently discarded. It could never recover, because the only thing that
+    /// would have restored it was the accumulation the missing seed was blocking. The bot levelled 4→6
+    /// while reporting <c>exp: null</c> the whole way.</para>
+    /// <para>Same failure shape as the deprioritization ratchet: a gate whose release depends on the very
+    /// thing it is blocking. Accumulate unconditionally; reconcile when ground truth shows up.</para></summary>
+    private long _expPendingDelta;
 
     /// <summary>The raw 2-byte code from the last NC_ITEM_SELL_ACK (0x3005), or -1 if none yet.
     /// 0x0381 = the success code a real client sees; a different code (e.g. 0x0383) = rejected.</summary>
@@ -2534,7 +2551,9 @@ public sealed class ZoneView : IDisposable
                 long gain = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(0, 4));
                 SessionExpGained += gain;
                 MetricSink?.Invoke("expGained", gain);
-                if (Exp >= 0) Exp += gain;
+                // Accumulate ALWAYS. When unseeded this banks the gain instead of dropping it (see
+                // _expPendingDelta) — the old `if (Exp >= 0)` threw away every gain of an unseeded session.
+                if (Exp >= 0) Exp += gain; else _expPendingDelta += gain;
                 // Attribute this kill's exp to the MOB that gave it (handle @4) so the leveler can learn per-mob
                 // exp (decode → log). The mob just died → resolve its MobId from _npcs, else the _recentNpcs stash.
                 string mobTag = "";
@@ -2549,7 +2568,7 @@ public sealed class ZoneView : IDisposable
                         mobTag = $" from mob{mobId} (avg {acc.Total / acc.Kills}/kill over {acc.Kills})";
                     }
                 }
-                _logLevel?.Invoke(BotLogLevel.Info, $"[exp] +{gain} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session +{SessionExpGained}){mobTag}");
+                _logLevel?.Invoke(BotLogLevel.Info, $"[exp] +{gain} -> {(Exp >= 0 ? Exp.ToString() : $"UNSEEDED (banked {_expPendingDelta}; login burst carried no exp — absolute unknown until the server sends one)")} (session +{SessionExpGained}){mobTag}");
             }
         }
         else if (op == OpBatExpLost)
@@ -2564,7 +2583,7 @@ public sealed class ZoneView : IDisposable
                 SessionExpLost += lost;
                 MetricSink?.Invoke("expLostToDeath", lost);
                 MetricSink?.Invoke("deaths", 1);
-                if (Exp >= 0) Exp = Math.Max(0, Exp - lost);
+                if (Exp >= 0) Exp = Math.Max(0, Exp - lost); else _expPendingDelta -= lost;
                 _logLevel?.Invoke(BotLogLevel.Note, $"[exp] DEATH -{lost} -> {(Exp >= 0 ? Exp.ToString() : "?")} (session lost {SessionExpLost})");
             }
         }

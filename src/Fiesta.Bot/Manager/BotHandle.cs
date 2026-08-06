@@ -530,6 +530,10 @@ public sealed class BotHandle
             Level: _level == 0 ? null : _level,
             Class: _class == 0 ? null : _class,
             Exp: view is { Exp: >= 0 } ? view.Exp : null,
+            // Exp gained THIS SESSION. Reported alongside the absolute because the absolute can be
+            // genuinely unknown (a login burst that carried no exp seed), and "unknown absolute" must not
+            // read as "not progressing" — a bot levelling 4→6 with exp:null looked stalled to the operator.
+            SessionExp: view?.SessionExpGained ?? 0,
             Connected: state?.Connected ?? false,
             InboundFrames: state?.InboundCount ?? 0,
             Heartbeats: state?.HeartbeatCount ?? 0,
@@ -590,6 +594,9 @@ public sealed record BotSnapshot(
     uint? Level,
     int? Class,
     long? Exp,
+    /// <summary>Exp accumulated since this zone session started. Always meaningful, even when
+    /// <see cref="Exp"/> is null because the login burst carried no seed.</summary>
+    long SessionExp,
     bool Connected,
     long InboundFrames,
     long Heartbeats,
