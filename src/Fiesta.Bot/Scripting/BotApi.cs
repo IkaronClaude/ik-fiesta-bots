@@ -43,6 +43,18 @@ public sealed class BotApi
     /// state to C# (surfaced in the script status). Not normally called by hand.</summary>
     public void __state(string name) => StateReporter?.Invoke(name);
 
+    /// <summary>Publish what the driver is working on RIGHT NOW: the focused quest (0 for none), its own
+    /// phase name, where it is travelling to and why. Surfaced on the live panel so the watch page can mark
+    /// the focused quest and say where the bot is going.
+    /// <para>The host deliberately does NOT derive any of this. Its quest board is ordered by a rule that
+    /// only <i>mirrors</i> the driver's sort — documented in QuestPanel as "roughly what it will pick next" —
+    /// so it can show a plausible order while the driver is actually on something else entirely. Only the
+    /// driver knows which quest it picked, so only the driver reports it. Cheap enough to call every tick
+    /// (it writes one record); call it whenever the intent changes, not just on travel.</para></summary>
+    public void setFocus(int questId, string phase, string dest, string reason) =>
+        _handle.Focus = new Manager.BotFocus(questId, phase ?? "", dest ?? "", reason ?? "",
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
     /// <summary>Set by the behaviour-graph runner so a state script can request a graph
     /// transition (<c>bot.requestState("stay_alive")</c>).</summary>
     internal Action<string>? RequestStateHandler;

@@ -92,6 +92,12 @@
   #quests col.c-here { width:70px }
   tr.qh td { border-bottom:none; padding-top:6px }
   tr.qg td { color:var(--dim); font-size:11px; border-bottom:1px solid var(--line) }
+  tr.qfocus td { background:rgba(88,166,255,.08) }
+  .focus { border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:5px;
+           background:#0b0e13; padding:5px 8px; margin-bottom:6px; font-size:12px }
+  button.mini { background:#0b0e13; color:var(--dim); border:1px solid var(--line); border-radius:3px;
+                font:inherit; font-size:10px; padding:0 5px; cursor:pointer; margin-left:6px }
+  button.mini:hover { color:var(--fg); border-color:var(--accent) }
 </style>
 
 <header>
@@ -152,7 +158,13 @@
 
     <div class="panel" style="margin-bottom:10px">
       <h2 class="fold" data-card="quests"><span class="chev">▼</span>quests <span class="muted" id="qhint"></span></h2>
-      <div class="body"><div style="max-height:220px; overflow:auto"><table id="quests"></table></div></div>
+      <div class="body">
+        <!-- The DRIVER's own statement of intent, above the board. The board's ORDER only mirrors the
+             driver's sort, so without this there is no way to tell which quest it actually picked, or
+             why it is walking somewhere. -->
+        <div id="focus" class="focus"></div>
+        <div style="max-height:220px; overflow:auto"><table id="quests"></table></div>
+      </div>
     </div>
 
     <div class="panel" style="margin-bottom:10px">
@@ -179,11 +191,11 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const api = (p, q={}) => {
+const api = (p, q={}, method='GET') => {
   const u = new URL(`/api/bots/${encodeURIComponent($('#bot').value)}${p}`, location.origin);
-  for (const [k,v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') u.searchParams.set(k,v);
+  for (const [k,v] of Object.entries(q || {})) if (v !== undefined && v !== null && v !== '') u.searchParams.set(k,v);
   const tok = $('#tok').value.trim();
-  return fetch(u, tok ? { headers:{ Authorization:'Bearer '+tok } } : {});
+  return fetch(u, { method, headers: tok ? { Authorization:'Bearer '+tok } : {} });
 };
 const num = v => v === null || v === undefined ? '—'
   : (typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : v);
@@ -386,22 +398,38 @@ async function tickMetrics() {
     lastLive = d.live;
     questList = d.live.quests || [];
     questsById = new Map(questList.map(q => [q.name, q]));
+    focusLine(d.live.focus);
     questTable(questList);
     $('#metrics').innerHTML = metricsTable(d.metrics);
     const sel = $('#mapsel');
     const have = new Set([...sel.options].map(o=>o.value));
     for (const k of Object.keys(d.maps||{})) if (!have.has(k)) sel.add(new Option(k,k));
-    $('#mapinfo').textContent = `${d.tracePoints} trace points · ` +
-      Object.entries(d.maps||{}).map(([k,v])=>`${k}:${v}`).join('  ');
+    // Name the map being DRAWN first — the legend used to list every map's counts with no indication of
+    // which one the canvas showed, which read as "it is drawing all of these at once" (it was).
+    const drawn = selectedMap();
+    const drawnName = d.live.mapDisplay && drawn === d.live.map ? `${d.live.mapDisplay} (${drawn})` : (drawn || '—');
+    const others = Object.entries(d.maps||{}).filter(([k]) => k !== drawn)
+      .map(([k,v])=>`${k}:${v}`).join('  ');
+    $('#mapinfo').innerHTML = `showing <b>${drawnName}</b>: ${(d.maps||{})[drawn] ?? 0} pts` +
+      (others ? ` <span class="muted">· other maps (not drawn): ${others}</span>` : '');
     $('#status').textContent = 'ok ' + new Date().toLocaleTimeString();
   } catch (e) { $('#status').textContent = 'metrics: ' + e.message; }
 }
 
 // ── heatmap (rendered client-side from raw points, per the epic) ──────────────────────────────────
+// ⭐ "(current)" MEANS THE CURRENT MAP — it used to mean NO FILTER, which overlaid every map the bot has
+// ever walked into one canvas: the bounding box spanned all of them at once, so the shapes sat on top of
+// each other and the legend counted four maps ("EldCem01:45 Eld:61 RouCos03:84 RouVal02:48") while the
+// option said "(current)". Resolve it to the map the bot is standing on (lastLive.map) so the default
+// view is one map, and follow the bot when it changes map.
+function selectedMap() {
+  const v = $('#mapsel').value;
+  return v || (lastLive && lastLive.map) || null;
+}
 let pts = [], sinceT = 0, lastMap = null;
 async function tickTrace() {
   try {
-    const map = $('#mapsel').value || undefined;
+    const map = selectedMap() || undefined;
     if (map !== lastMap) { pts = []; sinceT = 0; lastMap = map; }   // map switch = fresh canvas
     const r = await api('/trace', { since: sinceT, map, recent: $('#recent').checked });
     if (!r.ok) return;
@@ -416,7 +444,9 @@ function draw(now) {
   const c = $('#heat'), g = c.getContext('2d');
   const W = c.width, H = c.height;
   g.clearRect(0,0,W,H);
-  const shown = $('#mapsel').value ? pts.filter(p=>p.map===$('#mapsel').value) : pts;
+  // Always filter to ONE map. Mixing maps in a single bounding box is not a heatmap, it is a collage.
+  const mapKey = selectedMap();
+  const shown = mapKey ? pts.filter(p=>p.map===mapKey) : pts;
   if (!shown.length) { g.fillStyle='#30363d'; g.fillText('no trace yet', 10, 20); return; }
   let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
   for (const p of shown) { if(p.x<x0)x0=p.x; if(p.x>x1)x1=p.x; if(p.y<y0)y0=p.y; if(p.y>y1)y1=p.y; }
@@ -531,9 +561,37 @@ setInterval(tickCombat, 200);   tickCombat();
 // EXP with a thousands separator, as the client shows it: 12345 -> "12.345 EXP".
 const expStr = n => !n ? '—' : `${Number(n).toLocaleString('de-DE')} EXP`;
 
+// The DRIVER's own answer to "what are you doing and why" (bot.setFocus -> live.focus). The board's
+// order only MIRRORS the driver's sort, so it can look plausible while the driver is on something else
+// entirely; this is the one authoritative statement of the current target.
+function focusLine(f) {
+  if (!f) { $('#focus').innerHTML = '<span class="muted">driver has not reported an intent yet</span>'; return; }
+  const stale = f.ageMs > 15000 ? ` <span class="hit-warn">(last said ${Math.round(f.ageMs/1000)}s ago)</span>` : '';
+  const q = f.questName ? ` for <b>${f.questName}</b>` : '';
+  const dest = f.destination ? ` &rarr; <b>${f.destination}</b>` : '';
+  const why = f.reason ? ` <span class="muted">· ${f.reason}</span>` : '';
+  $('#focus').innerHTML = `<b>${f.phase || '?'}</b>${dest}${q}${why}${stale}`;
+}
+
+// Operator override: clear a quest's flee-deprioritization. The mark's only automatic expiry is a
+// level-up, and every mark is written at the level we fled at — so a handful of marks at the current
+// level takes the whole board dark and the bot grinds instead of levelling, which is the slowest route
+// to the level that would clear them. A human can see a mark is stale; this is how they say so.
+async function undeprio(qid, name) {
+  try {
+    const r = await api(`/quest/${qid}/undeprioritize`, null, 'POST');
+    if (!r.ok) { toast('goal', [name, 'un-deprio FAILED', `HTTP ${r.status}`]); return; }
+    const d = await r.json();
+    toast('hand', [name, d.clearedMark ? 'Un-deprioritized' : 'had no mark',
+                   d.clearedDeathsAtLevel ? `cleared ${d.clearedDeathsAtLevel} death(s) @lvl${d.level}` : `lvl${d.level}`]);
+    tickMetrics();
+  } catch (e) { toast('goal', [name, 'un-deprio FAILED', e.message]); }
+}
+
 function questTable(qs) {
   if (!qs || !qs.length) { $('#quests').innerHTML = ''; $('#qhint').textContent = '· none accepted'; return; }
   const ready = qs.filter(q => q.ready).length;
+  const focusId = (lastLive && lastLive.focus && lastLive.focus.questId) || 0;
   // Order MIRRORS the driver's documented sort (ready > no-objection > LOCAL > closer-to-done > exp).
   // It is not the driver's own queue — that lives in the Lua — so it reads as "roughly what's next".
   $('#qhint').textContent = `· ${qs.length} accepted${ready ? ` · ${ready} READY` : ''} · order mirrors the driver's sort`;
@@ -544,8 +602,15 @@ function questTable(qs) {
     const status = q.ready ? '<span class="hit-ok">READY</span>'
                  : q.reason ? `<span class="hit-warn" title="${(q.reasonDetail||q.reason).replace(/"/g,"")}">${q.reason}</span>`
                  : '<span class="muted">working</span>';
-    h += `<tr class="qh">
-            <td><b>${q.name}</b>${q.repeatable ? ' <span class="muted">(rep)</span>' : ''}</td>
+    // ★ = the quest the DRIVER says it is on, not the one this table happens to sort first.
+    const isFocus = focusId && q.id === focusId;
+    // The un-deprio button belongs only on a quest that actually carries a mark; showing it everywhere
+    // would invite clicks that do nothing and read as a broken button.
+    const undep = q.reason === 'deaths'
+      ? ` <button class="mini" onclick="undeprio(${q.id}, '${(q.name||'').replace(/'/g,"\\'")}')" title="Clear the flee-deprioritization and the per-level death count, so the driver re-evaluates this quest now">un-deprio</button>`
+      : '';
+    h += `<tr class="qh${isFocus ? ' qfocus' : ''}">
+            <td>${isFocus ? '<span class="hit-ok" title="the driver says it is working this one">★</span> ' : ''}<b>${q.name}</b>${q.repeatable ? ' <span class="muted">(rep)</span>' : ''}${undep}</td>
             <td>${expStr(q.expReward)}</td>
             <td>${status}</td>
             <td>${q.onCurrentMap ? '<span class="hit-ok">here</span>' : '<span class="muted">—</span>'}</td>

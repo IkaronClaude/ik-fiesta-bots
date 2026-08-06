@@ -290,6 +290,19 @@ public sealed class BotHandle
         }
     }
 
+    /// <summary>What the driver is working on RIGHT NOW, as the driver itself sees it — the quest it has
+    /// focused, the phase it is in, and (when travelling) where it is heading and why.
+    /// <para>⚠️ This is the DRIVER's own answer, published by the Lua as it decides. It is NOT the host's
+    /// re-derivation: the quest board the page renders is ordered by a rule that merely <i>mirrors</i> the
+    /// driver's sort and is documented as "roughly what it will pick next" — which cannot answer "which
+    /// quest is it actually on, and why is it walking there". Operator 2026-08-06: "mark the current target
+    /// quest in the list … I wanna be able to see *why* the bot is currently travelling or where it's
+    /// travelling to." A second copy of the decision logic would drift and lie; the driver reporting itself
+    /// cannot.</para>
+    /// <para>Null until the driver has published anything (a bot with no script, or one that has not yet
+    /// reached its first decision) — which is NOT the same as "idle".</para></summary>
+    public BotFocus? Focus { get; internal set; }
+
     /// <summary>Cancellation for the currently-running <see cref="Manager.BotManager.WalkPath"/>,
     /// if any — cancelled to abort a walk early (e.g. on a server MOVEFAIL so the bot
     /// stops banging into an off-grid obstacle). Set/cleared by the walk task.</summary>
@@ -415,6 +428,13 @@ public sealed class BotHandle
     }
 
     internal void Log(string message) => Log(BotLogLevel.Note, message);
+
+    /// <summary>Record a HUMAN-INITIATED action on the bot's own tail, at Note level.
+    /// <para>The tail is the one place the bot's story is read end to end, so an operator override that
+    /// appears only in an HTTP response is invisible exactly when it matters — right before the behaviour
+    /// change it caused. Narrower than exposing <see cref="Log(string)"/>: the host can record that a human
+    /// did something, and nothing else.</para></summary>
+    public void LogOperatorAction(string message) => Log(BotLogLevel.Note, message);
 
     /// <summary>Append a log line at the given verbosity. The level is stamped into the
     /// text (<c>N</c>/<c>I</c>/<c>V</c> after the timestamp) so a raw tail is still readable,
@@ -586,3 +606,19 @@ public sealed record BotSnapshot(
     string? Script,
     DateTime CreatedAtUtc,
     IReadOnlyList<string> RecentLog);
+
+/// <summary>The driver's self-reported current intent — see <see cref="BotHandle.Focus"/>.
+/// <para>Every field is what the DRIVER said, verbatim; the host neither invents nor validates it. A
+/// value of 0/"" means the driver did not report that part (e.g. no quest focused while restocking),
+/// which is "not applicable / not said", never "none exists".</para></summary>
+/// <param name="QuestId">The quest the driver is currently working, or 0 when the current phase is not
+/// quest-driven (a storage trip, a restock, a death recovery).</param>
+/// <param name="Phase">The driver's own phase name — the same token it logs as <c>PHASE =&gt; x</c>
+/// and accounts time under, so the page and the TIME-BUDGET line speak one vocabulary.</param>
+/// <param name="Destination">Where it is heading: a map code for a cross-map route, an NPC/mob name or
+/// a coordinate for a local one. Empty when it is not travelling.</param>
+/// <param name="Reason">Why — the same reason string <c>travelToLogged()</c> puts in the MAP-CHANGE
+/// trail, so a confusing route in the UI can be grepped straight out of the log.</param>
+/// <param name="AtUnixMs">When the driver published this, so the page can show staleness rather than
+/// presenting a frozen intent as current.</param>
+public sealed record BotFocus(int QuestId, string Phase, string Destination, string Reason, long AtUnixMs);

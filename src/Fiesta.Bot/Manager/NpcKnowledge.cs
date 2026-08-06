@@ -141,6 +141,24 @@ public sealed class NpcKnowledge
         return true;
     }
 
+    /// <summary>Reset the PER-LEVEL death counter for a quest at the given level, so a cleared mark is not
+    /// re-applied by the very next death.
+    /// <para>Needed for the operator's manual un-deprioritize. The mark and the counter are two separate
+    /// facts: clearing only the mark leaves the counter sitting at or above the threshold, so one more
+    /// death re-marks the quest instantly and the override reads as a no-op. Clearing the counter is what
+    /// makes "give this quest another chance" actually mean a fresh chance.</para>
+    /// <para>⚠️ Deliberately leaves the LIFETIME total alone. That total ranks a historically deadly quest
+    /// lower and is evidence, not a gate — an override should re-open the decision, not erase what
+    /// happened.</para>
+    /// Returns the count that was cleared (0 if there was none).</summary>
+    public int ClearQuestDeathsAtLevel(string host, int questId, int level)
+    {
+        if (string.IsNullOrEmpty(host) || level < 0) return 0;
+        if (!_questDeathsAtLevel.TryRemove(LKey(host, questId, level), out var n)) return 0;
+        SaveQuestDeaths();
+        return n;
+    }
+
     /// <summary>How many times the bot has DIED while pursuing this quest, ever (across every
     /// session). 0 if never.</summary>
     public int QuestDeaths(string host, int questId) =>

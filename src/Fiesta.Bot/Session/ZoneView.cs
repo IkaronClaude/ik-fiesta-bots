@@ -1902,7 +1902,15 @@ public sealed class ZoneView : IDisposable
     /// handed in (and re-accepted server-side to 0/N) kept a stale N/N here, which stranded it: the leveler read
     /// it as both "done" (not grindable) AND "ready to hand in" (re-attempt loop) → frozen. The leveler calls
     /// this on a CONCLUDED hand-in (bot.dialogConcluded) so the re-accepted repeatable is grindable again.</summary>
-    public void ResetQuestProgress(int id) => _questProgress[id] = 0;
+    public void ResetQuestProgress(int id)
+    {
+        _questProgress[id] = 0;
+        // The per-objective counters must reset with the aggregate, or a repeatable's second run shows
+        // the previous run's credit under a 0/N header — the same split-brain the seeding fix closed,
+        // just in the other direction. PLAYER_QUEST_DATA carries End_NPCMobCount[5], so five is the
+        // objective ceiling the wire itself defines, not a guess.
+        for (var oi = 0; oi < 5; oi++) _questObjProgress.TryRemove((id << 16) | oi, out _);
+    }
 
     /// <summary>Quest ids the character can accept right now — the server's available list from
     /// the login QUEST_READ burst (0x10CE). This is the authoritative orange-! set (the client
@@ -1924,7 +1932,8 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Seed completed + in-progress quest ids from the zone-login burst
     /// (NC_CHAR_QUEST_DONE_CMD / QUEST_DOING, captured by <see cref="Zone.ZoneEntry"/>).</summary>
-    public void SeedQuests(IEnumerable<ushort>? done, IEnumerable<(ushort id, byte status, int progress)>? active,
+    public void SeedQuests(IEnumerable<ushort>? done,
+        IEnumerable<(ushort id, byte status, int progress, IReadOnlyList<int> objCounts)>? active,
         IEnumerable<ushort>? available = null)
     {
         if (done is not null) foreach (var d in done) _doneQuests.Add(d);
@@ -1935,7 +1944,17 @@ public sealed class ZoneView : IDisposable
         // now even if a PRIOR completion left it in the done set — a REPEATABLE quest re-accepted after
         // completion is the case that bit us (q11 looped "COMPLETE" forever because IsQuestDone stayed
         // true while it was active again, so handin short-circuited and never drove the turn-in).
-        if (active is not null) foreach (var (id, st, prog) in active) { _activeQuests[id] = st; _questProgress[id] = prog; _doneQuests.Remove(id); }
+        if (active is not null) foreach (var (id, st, prog, objCounts) in active)
+        {
+            _activeQuests[id] = st; _questProgress[id] = prog; _doneQuests.Remove(id);
+            // ⭐ Seed the PER-OBJECTIVE counters from the same snapshot. Without this only the aggregate
+            // survived a relog, so every goal row read 0/N under a header showing the real total — the
+            // watch page reported "Kid Woz's Small Wish 7/8 … kill Skeleton 0/8" (live 2026-08-06). The
+            // per-objective array is in End_NPCMobCount[5] on the wire; it was being summed and dropped.
+            if (objCounts is null) continue;
+            for (var oi = 0; oi < objCounts.Count; oi++)
+                if (objCounts[oi] > 0) _questObjProgress[(id << 16) | (oi & 0xFFFF)] = objCounts[oi];
+        }
         if (available is not null) foreach (var a in available) _availableQuests.Add(a);
         if (_doneQuests.Count > 0 || _activeQuests.Count > 0 || _availableQuests.Count > 0)
             _log?.Invoke($"[ZoneView] seeded quests: done={_doneQuests.Count} active={_activeQuests.Count} available={_availableQuests.Count}");
@@ -3329,6 +3348,7 @@ public sealed class ZoneView : IDisposable
                 int err = p.Length >= 4 ? (p[2] | (p[3] << 8)) : 0;
                 _activeQuests.TryRemove(qid, out _);
                 _questProgress.TryRemove(qid, out _);
+                for (var oi = 0; oi < 5; oi++) _questObjProgress.TryRemove((qid << 16) | oi, out _);
                 _log?.Invoke($"[ZoneView] QUEST_GIVE_UP_ACK quest={qid} err={err} — removed from active");
             }
         }

@@ -132,7 +132,7 @@ public sealed class ZoneEntry
             List<ushort>? passives = null;
             List<(byte box, ushort inven, ushort itemId, int count)>? items = null;
             List<ushort>? doneQuests = null;
-            List<(ushort id, byte status, int progress)>? activeQuests = null;
+            List<(ushort id, byte status, int progress, IReadOnlyList<int> objCounts)>? activeQuests = null;
             List<ushort>? readQuests = null;
             int? curHpStone = null, curSpStone = null;
             ulong? cen = null, exp = null;
@@ -267,11 +267,20 @@ public sealed class ZoneEntry
                             // kill counts; their sum = the quest's credited progress. The zone re-sends
                             // this authoritatively on every entry (incl. after a handover), so it's how
                             // progress survives without a persistent cache.
+                            // ⭐ KEEP THE PER-OBJECTIVE ARRAY, don't only sum it. Summing here and
+                            // discarding the parts is why every goal row on the watch page read 0/N while
+                            // the quest header showed the true total: the aggregate was seeded on zone
+                            // entry and the per-objective counters were not, so after ANY relog (and this
+                            // bot relogs constantly) the only per-goal numbers came from kills credited
+                            // since that login. Live 2026-08-06: "Kid Woz's Small Wish" 7/8 in the header,
+                            // "kill Skeleton 0/8" underneath it. The data was on the wire the whole time.
                             int prog = 0;
-                            if (o + 29 <= p.Length) for (int k = 0; k < 5; k++) prog += p[o + 24 + k];
-                            activeQuests.Add(((ushort)(p[o] | (p[o + 1] << 8)), p[o + 2], prog));
+                            var objCounts = new int[5];
+                            if (o + 29 <= p.Length)
+                                for (int k = 0; k < 5; k++) { objCounts[k] = p[o + 24 + k]; prog += objCounts[k]; }
+                            activeQuests.Add(((ushort)(p[o] | (p[o + 1] << 8)), p[o + 2], prog, objCounts));
                         }
-                        _log($"[Zone] quests active ({activeQuests.Count}): {string.Join(",", activeQuests.Select(q => $"{q.id}(s{q.status},{q.progress}))"))}");
+                        _log($"[Zone] quests active ({activeQuests.Count}): {string.Join(",", activeQuests.Select(q => $"{q.id}(s{q.status},{q.progress}=[{string.Join('/', q.objCounts)}])"))}");
                     }
                     continue;
                 }
@@ -380,7 +389,7 @@ public sealed class ZoneEntry
         FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, ushort? charHandle,
         uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills, IReadOnlyList<ushort>? passives,
         IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? items,
-        IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress)>? activeQuests,
+        IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress, IReadOnlyList<int> objCounts)>? activeQuests,
         IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null,
         uint? maxHpStone = null, uint? maxSpStone = null, ulong? cen = null, ulong? exp = null, byte? charLevel = null,
         CharStats? stats = null)
@@ -465,7 +474,7 @@ public sealed record ZoneEntryResult(
     IReadOnlyList<ushort>? Passives = null,
     IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? Items = null,
     IReadOnlyList<ushort>? DoneQuests = null,
-    IReadOnlyList<(ushort id, byte status, int progress)>? ActiveQuests = null,
+    IReadOnlyList<(ushort id, byte status, int progress, IReadOnlyList<int> objCounts)>? ActiveQuests = null,
     IReadOnlyList<ushort>? ReadQuests = null,
     int? CurHpStone = null, int? CurSpStone = null,
     uint? MaxHpStone = null, uint? MaxSpStone = null,

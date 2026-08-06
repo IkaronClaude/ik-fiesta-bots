@@ -716,6 +716,45 @@ public static class BotEndpoints
             "served script pages, exactly as captured in Z:/QuestsRemoteAndMulti.pcapng. `active` in the response is read " +
             "back from the bot's own quest state, so a false there means it genuinely did not take.");
 
+        // OPERATOR OVERRIDE: give a deprioritized quest another chance, without waiting for a level-up.
+        // The mark's only automatic expiry is LEVEL-UP, and every mark is written at the level we fled at —
+        // so once a few quests are marked at the CURRENT level the whole board reads deprioritized and the
+        // bot drops to the last-resort grind, which is the slowest possible route to the level that would
+        // clear them. That ratchet is live right now (seven quests marked at 26 with the char at 26).
+        // A human can see from the watch page that a mark is stale; this is the button that says so.
+        // ⚠️ Clears BOTH the mark and the per-level death counter — clearing only the mark leaves the
+        // counter at the threshold, so the next death re-marks instantly and the override reads as a no-op.
+        // The LIFETIME death total is deliberately kept (it ranks a historically deadly quest lower; the
+        // override re-opens the decision, it does not erase the history).
+        group.MapPost("/{id}/quest/{questId:int}/undeprioritize", (string id, int questId) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var knowledge = manager.Knowledge;
+            if (knowledge is null) return Results.Problem("knowledge store unavailable");
+            var was = knowledge.QuestDeprioritizedAtLevel(bot.Options.Host, questId);
+            var cleared = knowledge.ClearQuestDeprioritized(bot.Options.Host, questId);
+            var deaths = knowledge.ClearQuestDeathsAtLevel(bot.Options.Host, questId, (int)bot.Level);
+            var name = manager.ClientData?.QuestName(questId) ?? $"q{questId}";
+            // Log it on the BOT's own tail. An operator override that only shows in an HTTP response is
+            // invisible in the log everyone actually reads to explain what the bot did next.
+            bot.LogOperatorAction($"[operator] UN-DEPRIORITIZED {name}(q{questId}) — mark was lvl{was}" +
+                    (deaths > 0 ? $", cleared {deaths} death(s) recorded at lvl{bot.Level}" : "") +
+                    " — the driver will re-evaluate it on its next quest pass.");
+            return Results.Ok(new
+            {
+                id, questId, name,
+                clearedMark = cleared,
+                wasDeprioritizedAtLevel = was,
+                clearedDeathsAtLevel = deaths,
+                level = (int)bot.Level,
+            });
+        })
+        .WithSummary("Clear a quest's flee-deprioritization (operator override)")
+        .WithDescription("Clears the persisted mark AND the per-level death counter that would immediately " +
+            "re-apply it. The lifetime death total is kept. `clearedMark:false` means there was no mark to " +
+            "clear — which is not an error, just nothing to do.");
+
         group.MapGet("/{id}/quest-dialog/{dialogId:int}", (string id, int dialogId) =>
         {
             var cd = manager.ClientData;
@@ -1074,6 +1113,21 @@ public static class BotEndpoints
             // SERVER's credited count (NC_QUEST_NOTIFY_MOB_KILL), not our own kill tally — a mob dying
             // credits nothing if the quest is not actually tracking it.
             Quests = QuestPanel(bot, cd, knowledge),
+            // What the DRIVER says it is doing right now — which quest it picked, what phase it is in, and
+            // where it is walking and why. Published by the Lua (bot.setFocus); the host does not re-derive
+            // it, because its own quest ordering only MIRRORS the driver's sort and can disagree with what
+            // the driver actually chose. Null until the driver has published (no script, or not yet decided).
+            Focus = bot.Focus is { } f ? new
+            {
+                f.QuestId,
+                QuestName = f.QuestId > 0 ? (cd?.QuestName(f.QuestId) ?? $"q{f.QuestId}") : null,
+                f.Phase,
+                f.Destination,
+                f.Reason,
+                // Staleness, so the page can show an intent going cold instead of presenting a frozen one
+                // as current — a driver that stopped publishing looks identical to one that is still going.
+                AgeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - f.AtUnixMs,
+            } : null,
             // Entities for the zoomed combat map. Positions are RAW game coords; the page centres on self.
             Entities = EntityPanel(bot, cd),
             // The survivability inequality, surfaced where a human can see both sides at once.
