@@ -77,6 +77,15 @@
   @keyframes tin { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }
   .legend { margin-top:6px; display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; color:var(--dim) }
   .legend b { color:var(--fg); font-weight:normal }
+  /* The global `th,td { white-space:nowrap }` made this table refuse to wrap, so a long status string
+     ("instance-only (Tower of Iyzel) — needs a party; shelved") forced the panel far wider than the
+     screen while the rest of the row sat empty. Fixed layout + wrapping keeps it inside the card. */
+  #quests { table-layout:fixed; width:100% }
+  #quests td { white-space:normal; overflow-wrap:anywhere }
+  #quests col.c-name { width:auto }
+  #quests col.c-num  { width:88px }
+  #quests col.c-stat { width:34% }
+  #quests col.c-here { width:70px }
   tr.qh td { border-bottom:none; padding-top:6px }
   tr.qg td { color:var(--dim); font-size:11px; border-bottom:1px solid var(--line) }
 </style>
@@ -180,7 +189,7 @@ function vitals(l) {
   return `
     <div class="kv">
       <div>phase</div><div>${l.phase ?? '—'}</div>
-      <div>map</div><div>${l.map ?? '—'} <span class="muted">${l.position ?? ''}</span></div>
+      <div>map</div><div>${l.mapDisplay ? `${l.mapDisplay} <span class="muted">(${l.map})</span>` : (l.map ?? '—')} <span class="muted">${l.position ?? ''}</span></div>
       <div>level</div><div>${num(l.level)} <span class="muted">exp ${num(l.exp)}</span></div>
       <div>money</div><div>${num(l.money)}</div>
     </div>
@@ -475,7 +484,7 @@ async function tickCombat() {
     const r = await api('/entities');
     if (!r.ok) return;
     const d = await r.json();
-    $('#mapname').textContent = d.map ? `· ${d.map}` : '';
+    $('#mapname').textContent = d.mapDisplay ? `· ${d.mapDisplay} (${d.map})` : (d.map ? `· ${d.map}` : '');
     drawCombat(d.entities, d.maxHp);
   } catch {}
 }
@@ -485,30 +494,39 @@ setInterval(tickCombat, 200);   tickCombat();
 // Progress is the SERVER's credited count, not our kill tally — a mob dying credits nothing if the
 // quest isn't tracking it. A quest missing from client data is shown with `?` rather than hidden,
 // because a silent omission would conceal exactly the QuestData decode gaps worth seeing.
+// EXP with a thousands separator, as the client shows it: 12345 -> "12.345 EXP".
+const expStr = n => !n ? '—' : `${Number(n).toLocaleString('de-DE')} EXP`;
+
 function questTable(qs) {
   if (!qs || !qs.length) { $('#quests').innerHTML = ''; $('#qhint').textContent = '· none accepted'; return; }
   const ready = qs.filter(q => q.ready).length;
   // Order MIRRORS the driver's documented sort (ready > no-objection > LOCAL > closer-to-done > exp).
   // It is not the driver's own queue — that lives in the Lua — so it reads as "roughly what's next".
   $('#qhint').textContent = `· ${qs.length} accepted${ready ? ` · ${ready} READY` : ''} · order mirrors the driver's sort`;
-  let h = '';
+  // Goal progress shares the reward column: a goal row's X/Y sits under its quest's exp, so the numbers
+  // line up in one narrow column instead of each claiming its own.
+  let h = '<colgroup><col class="c-name"><col class="c-num"><col class="c-stat"><col class="c-here"></colgroup>';
   for (const q of qs) {
     const status = q.ready ? '<span class="hit-ok">READY</span>'
                  : q.reason ? `<span class="hit-warn">${q.reason}</span>`
                  : '<span class="muted">working</span>';
     h += `<tr class="qh">
             <td><b>${q.name}</b>${q.repeatable ? ' <span class="muted">(rep)</span>' : ''}</td>
-            <td>${q.expReward || '—'}</td>
+            <td>${expStr(q.expReward)}</td>
             <td>${status}</td>
-            <td>${q.onCurrentMap ? '<span class="hit-ok">here</span>' : '<span class="muted">elsewhere</span>'}</td>
+            <td>${q.onCurrentMap ? '<span class="hit-ok">here</span>' : '<span class="muted">—</span>'}</td>
           </tr>`;
     for (const g of (q.goals || [])) {
       const done = g.need > 0 && g.progress >= g.need;
-      h += `<tr class="qg"><td colspan="2">&nbsp;&nbsp;&nbsp;${g.kind} ${g.target}</td>
+      h += `<tr class="qg">
+              <td>&nbsp;&nbsp;&nbsp;${g.kind} ${g.target}</td>
               <td class="${done ? 'hit-ok' : ''}">${g.progress}/${g.need || '?'}</td>
-              <td>${g.onCurrentMap ? '<span class="hit-ok">here</span>' : ''}</td></tr>`;
+              <td></td>
+              <td>${g.onCurrentMap ? '<span class="hit-ok">here</span>' : ''}</td>
+            </tr>`;
     }
-    if (!(q.goals || []).length) h += `<tr class="qg"><td colspan="4">&nbsp;&nbsp;&nbsp;<span class="muted">no objectives resolved</span></td></tr>`;
+    if (!(q.goals || []).length)
+      h += `<tr class="qg"><td colspan="4">&nbsp;&nbsp;&nbsp;<span class="muted">no objectives resolved</span></td></tr>`;
   }
   $('#quests').innerHTML = h;
 }

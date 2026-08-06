@@ -140,6 +140,7 @@ public static class BotEndpoints
             {
                 id = bot.Id,
                 map = bot.CurrentMap,
+                mapDisplay = manager.ClientData?.MapDisplayName(bot.CurrentMap),
                 facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
                 maxHp = bot.ZoneView?.MaxHp ?? 0,
                 entities = EntityPanel(bot, manager.ClientData),
@@ -1033,6 +1034,10 @@ public static class BotEndpoints
         return new
         {
             snap.Phase, snap.Map, snap.Position, snap.Level, snap.Exp,
+            // The map's DISPLAY name from MapInfo.shn's `Name` column ("Elderine Cemetery"), beside the
+            // internal code in snap.Map ("EldCem01"). Null when unknown — the page falls back to the code
+            // rather than showing an invented name.
+            MapDisplay = cd?.MapDisplayName(snap.Map),
             snap.Hp, snap.MaxHp, snap.Sp, snap.MaxSp,
             snap.HpStones, snap.SpStones, snap.InCombat, snap.Aggressors,
             snap.NearestAggressorDist, snap.Mounted, snap.Dead, snap.Drops, snap.Script,

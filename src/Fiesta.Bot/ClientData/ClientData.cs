@@ -203,6 +203,25 @@ public sealed class ClientData
         return string.IsNullOrEmpty(n) ? null : n;
     }
 
+    /// <summary>The map's DISPLAY name — MapInfo.shn's <c>Name</c> column (e.g. "Elderine Cemetery"), as
+    /// opposed to <see cref="MapName"/> which returns the internal CODE (<c>EldCem01</c>). Both columns
+    /// have always been in the table; we only ever read the code, so every surface showed operators a
+    /// filename-ish token where the game shows a place. Accepts the CODE because that is what the bot
+    /// tracks as CurrentMap. Null when unknown — callers fall back to the code rather than inventing one.</summary>
+    public string? MapDisplayName(string? mapCode)
+    {
+        if (string.IsNullOrEmpty(mapCode)) return null;
+        var t = Table("MapInfo");
+        if (t is null) return null;
+        foreach (var row in t.Rows)
+            if (string.Equals(GetStr(row, "MapName"), mapCode, StringComparison.OrdinalIgnoreCase))
+            {
+                var n = GetStr(row, "Name");
+                return string.IsNullOrEmpty(n) ? null : n;
+            }
+        return null;
+    }
+
     private HashSet<string>? _insideMaps;
     /// <summary>True if the map (by MapName) is an INDOOR/dungeon/instance map — MapInfo.shn <c>InSide=1</c>
     /// (e.g. RouTemDn01 "Luminous Stone 1"); field/town maps are InSide=0. A solo field-leveling char must not
