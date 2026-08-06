@@ -2487,10 +2487,16 @@ public sealed class ZoneView : IDisposable
             // SWING_DAMAGE (0x2448) only, so every skill hit was invisible: a window showing "5 dmgdealt"
             // was the melee half of 5 + 20 skill hits. Counting both is the difference between "the bot
             // barely attacks" and "the bot attacks mostly with skills", which are opposite diagnoses.
-            // Header only: {index u16, caster u16, targetnum u8} — the per-target SkillDamage[] array that
-            // follows is NOT decoded here on purpose. FiestaLib marks it "unsupported type" and the PDB
-            // extract has no SkillDamage layout, so its damage/resthp offsets would be a GUESS. Log what
-            // the struct actually defines; a P1 covers decoding the array once the layout is established.
+            // {index u16, caster u16, targetnum u8} then targetnum × SkillDamage[14]:
+            //   +0 u16 target handle · +2 u16 flags · +4 u32 DAMAGE · +8 u32 RESTHP · +12 u16 (unidentified)
+            // DERIVED FROM THE WIRE 2026-08-06, not guessed — FiestaLib marks this array "unsupported" and
+            // the PDB extract has no layout for it, so it was left undecoded and `damageDealt` counted only
+            // MELEE swings. That made our own skill output invisible: the combat P0 was diagnosed against a
+            // metric that structurally could not see half the damage.
+            // PROOF (70 frames from a live packet log): for consecutive skill hits on the same target,
+            // `prev_restHp - damage == restHp` held **39/39** times where nothing else hit the mob in
+            // between, and ALL 16 remaining chain breaks were explained by an intervening 0x2448 melee
+            // SWING on that same target — ZERO unexplained. The offsets are pinned by that arithmetic.
             var hp2 = pkt.Payload.Span;
             if (hp2.Length >= 5)
             {
@@ -2498,7 +2504,29 @@ public sealed class ZoneView : IDisposable
                 int targets = hp2[4];
                 if (SelfHandle is { } meC && caster == meC)
                 {
-                    _logLevel?.Invoke(BotLogLevel.Info, $"[skillhit] OUR skill landed on {targets} target(s) (0x2452)");
+                    const int HeaderLen = 5, EntryLen = 14;
+                    long dealt = 0; var hits = 0; var parts = new List<string>();
+                    for (var i = 0; i < targets; i++)
+                    {
+                        var off = HeaderLen + i * EntryLen;
+                        if (off + EntryLen > hp2.Length) break;   // truncated/short frame — take what parsed
+                        var tgt = (ushort)(hp2[off] | (hp2[off + 1] << 8));
+                        var dmg = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(hp2[(off + 4)..]);
+                        var rest = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(hp2[(off + 8)..]);
+                        var tMob = _npcs.TryGetValue(tgt, out var tn) ? tn.MobId
+                                 : _recentNpcs.TryGetValue(tgt, out var tr) ? tr.Npc.MobId : 0;
+                        hits++; dealt += dmg;
+                        parts.Add($"mob{tMob} h={tgt} dmg={dmg} resthp={rest}" + (dmg == 0 ? " — WHIFF" : ""));
+                        if (dmg > 0)
+                        {
+                            MetricSink?.Invoke("damageDealt", dmg);
+                            // A landing SKILL is proof we are in range and faced, exactly like a landing
+                            // swing — NeedsFacingAdjust keys off this to skip the swing-breaking MOVERUN.
+                            LastRealDamageDealtAtUtc = DateTime.UtcNow;
+                        }
+                    }
+                    _logLevel?.Invoke(BotLogLevel.Info,
+                        $"[skillhit] OUR skill hit {hits} target(s) for {dealt} total — {string.Join(" | ", parts)}");
                     MetricSink?.Invoke("skillHits", targets > 0 ? targets : 1);
                 }
             }
