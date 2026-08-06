@@ -102,7 +102,10 @@
 
 <header>
   <strong>bot watch</strong>
-  <label>bot <input id="bot" value="JcqFresh" size="12"></label>
+  <!-- A DROPDOWN of the bots that actually exist, not a name to retype. With several bots running at
+       once, typing an id to switch is both slow and silently wrong when you fat-finger it — a bad name
+       just makes every panel 404 with no hint that the NAME is what is wrong. -->
+  <label>bot <select id="bot"></select></label>
   <label>token <input id="tok" type="password" size="16" placeholder="bearer"></label>
   <label>log level
     <select id="lvl"><option>note</option><option selected>info</option><option>verbose</option></select>
@@ -192,7 +195,12 @@
 <script>
 const $ = s => document.querySelector(s);
 const api = (p, q={}, method='GET') => {
-  const u = new URL(`/api/bots/${encodeURIComponent($('#bot').value)}${p}`, location.origin);
+  // The picker is populated asynchronously, so the first tick can fire before any bot is selected.
+  // Return a not-ok response rather than requesting /api/bots//metrics, which 404s and paints an error
+  // over a page that is merely still starting up.
+  const who = $('#bot').value;
+  if (!who) return Promise.resolve({ ok:false, status:0, json:async()=>({}), text:async()=>'' });
+  const u = new URL(`/api/bots/${encodeURIComponent(who)}${p}`, location.origin);
   for (const [k,v] of Object.entries(q || {})) if (v !== undefined && v !== null && v !== '') u.searchParams.set(k,v);
   const tok = $('#tok').value.trim();
   return fetch(u, { method, headers: tok ? { Authorization:'Bearer '+tok } : {} });
@@ -496,6 +504,44 @@ $('#mapsel').onchange = () => { pts=[]; sinceT=0; };
 $('#recent').onchange = () => { pts=[]; sinceT=0; };
 const saved = localStorage.getItem('botwatch.tok'); if (saved) $('#tok').value = saved;
 $('#tok').onchange = () => localStorage.setItem('botwatch.tok', $('#tok').value);
+
+// ── bot picker ────────────────────────────────────────────────────────────────────────────────────
+// Populated from GET /api/bots and refreshed, so a bot spawned (or lost) while the page is open shows up
+// without a reload. The chosen bot persists in localStorage — reopening the page returns to the one you
+// were watching rather than whichever id happens to sort first.
+// Rebuild only when the SET of bots changes: replacing the options every poll would slam an open
+// dropdown shut while the operator is choosing from it.
+let botListKey = '';
+async function tickBots() {
+  try {
+    const u = new URL('/api/bots', location.origin);
+    const tok = $('#tok').value.trim();
+    const r = await fetch(u, { headers: tok ? { Authorization:'Bearer '+tok } : {} });
+    if (!r.ok) return;
+    const bots = await r.json();
+    // Label with the state that decides whether the panels will have anything in them, so a bot that
+    // died or never entered a zone is obvious IN THE PICKER instead of looking like empty panels.
+    const key = bots.map(b => `${b.id}:${b.phase}:${b.level ?? ''}`).join('|');
+    if (key === botListKey) return;
+    botListKey = key;
+    const sel = $('#bot');
+    const want = sel.value || localStorage.getItem('botwatch.bot') || (bots[0] && bots[0].id) || '';
+    sel.innerHTML = bots.map(b => {
+      const lvl = b.level ? ` L${b.level}` : '';
+      const bad = b.phase !== 'InZone' ? ` — ${b.phase}` : '';
+      return `<option value="${b.id}"${b.id === want ? ' selected' : ''}>${b.id}${lvl}${bad}</option>`;
+    }).join('');
+    if (!bots.some(b => b.id === want) && bots.length) sel.value = bots[0].id;
+  } catch {}
+}
+$('#bot').onchange = () => {
+  localStorage.setItem('botwatch.bot', $('#bot').value);
+  // Everything on the page belongs to ONE bot. Switching without clearing leaves the previous bot's
+  // trace, quests and toasts on screen under the new bot's name — which is worse than a blank panel.
+  pts = []; sinceT = 0; lastMap = null; lastLive = null; questList = []; questsById = new Map();
+  tickMetrics(); tickTrace(); tickLog(); tickCombat();
+};
+setInterval(tickBots, 5000); tickBots();
 
 setInterval(tickMetrics, 2000); tickMetrics();
 setInterval(tickTrace, 1000);   tickTrace();
