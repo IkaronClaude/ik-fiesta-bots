@@ -49,7 +49,7 @@
   /* the radial sweep: conic-gradient darkens the portion of the cooldown still to run */
   .tile .sweep { position:absolute; inset:0; z-index:1; pointer-events:none }
 
-  .maps { display:grid; grid-template-columns:1fr 1fr; gap:10px; max-width:440px }  /* -33% */
+  .maps { display:grid; grid-template-columns:1fr 1fr; gap:10px; max-width:660px }  /* 1.5x the -33% pass */
 
   /* Foldable cards. Default OPEN; the open/closed choice persists in localStorage. */
   h2.fold { cursor:pointer; user-select:none; display:flex; align-items:center; gap:6px }
@@ -75,7 +75,11 @@
   .toast.hand  { border-left-color:var(--ok) }
   .toast .q { color:var(--fg) } .toast .sep { color:var(--dim); margin:0 6px }
   @keyframes tin { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }
-  .legend { margin-top:6px; display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; color:var(--dim) }
+  /* Fixed height, not auto: the legend's line count changes with whatever wandered into view, and an
+     auto-height box shifted every panel below it up and down on a 5/sec redraw. Reserve the space and
+     scroll inside it instead. */
+  .legend { margin-top:6px; display:flex; flex-wrap:wrap; align-content:flex-start; gap:4px 10px;
+            font-size:11px; color:var(--dim); height:78px; overflow-y:auto }
   .legend b { color:var(--fg); font-weight:normal }
   /* The global `th,td { white-space:nowrap }` made this table refuse to wrap, so a long status string
      ("instance-only (Tower of Iyzel) — needs a party; shelved") forced the panel far wider than the
@@ -152,7 +156,11 @@
     </div>
 
     <div class="panel" style="margin-bottom:10px">
-      <h2 class="fold" data-card="console"><span class="chev">▼</span>console <span class="muted">(severity filter above)</span></h2>
+      <h2 class="fold" data-card="console"><span class="chev">▼</span>console
+        <span class="muted">(severity filter above)</span>
+        <label class="muted" style="margin-left:auto; font-size:11px; display:flex; align-items:center; gap:4px; cursor:pointer"
+               onclick="event.stopPropagation()"><input type="checkbox" id="noscroll"> stop autoscroll</label>
+      </h2>
       <div class="body">
       <div id="log"></div>
       <details id="deathsbox" style="margin-top:8px">
@@ -425,7 +433,9 @@ async function tickLog() {
            .replace(/\bDIED\b|\bDEATH\b/g,'<span class="hit-crit">$&</span>');
       return `<div class="${cls}">${h}</div>`;
     }).join('');
-    if (atBottom) el.scrollTop = el.scrollHeight;
+    // Hold position when the operator is reading back through the log. The checkbox sits in the card
+    // header, so its click must not also toggle the fold — hence stopPropagation on the label.
+    if (atBottom && !$('#noscroll').checked) el.scrollTop = el.scrollHeight;
     scanEvents(txt);
   } catch {}
 }
@@ -473,6 +483,8 @@ for (const [el, key] of [[$('#tok'), 'watch:tok'], [$('#bot'), 'watch:bot']]) {
   el.addEventListener('change', () => localStorage.setItem(key, el.value));
   el.addEventListener('blur',   () => localStorage.setItem(key, el.value));
 }
+if (localStorage.getItem('watch:noscroll') === '1') $('#noscroll').checked = true;
+$('#noscroll').addEventListener('change', e => localStorage.setItem('watch:noscroll', e.target.checked ? '1' : '0'));
 $('#skmisc').addEventListener('change', () => lastLive && skillTiles(lastLive.skills));
 $('#sklevels').addEventListener('change', () => lastLive && skillTiles(lastLive.skills));
 
