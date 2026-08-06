@@ -274,10 +274,20 @@ public sealed class ZoneEntry
                             // bot relogs constantly) the only per-goal numbers came from kills credited
                             // since that login. Live 2026-08-06: "Kid Woz's Small Wish" 7/8 in the header,
                             // "kill Skeleton 0/8" underneath it. The data was on the wire the whole time.
+                            // ⭐ OFFSET 25, NOT 24 — measured, not assumed. With the array read at 24 the
+                            // live burst reported `48(s6,7=[0/7/0/0/0])` and `52(s8,8=[0/8/0/0/0])`: both
+                            // are SINGLE-objective quests whose only objective is index 0, yet the count
+                            // landed in slot 1 every time, and slot 0 was 0 for all 30 active quests. One
+                            // byte early. The aggregate never showed it, because summing five bytes from
+                            // one byte early still catches the real values while that leading byte is 0 —
+                            // which is why this survived undetected behind a correct-looking total.
+                            // Cross-check that this is the ARRAY and not the indexing: the live 0x440D
+                            // credit for "Secret Hideout 2" arrived with objIdx 1 for its second
+                            // objective, so the wire's objIdx does match QuestData's ordering.
                             int prog = 0;
                             var objCounts = new int[5];
-                            if (o + 29 <= p.Length)
-                                for (int k = 0; k < 5; k++) { objCounts[k] = p[o + 24 + k]; prog += objCounts[k]; }
+                            if (o + 30 <= p.Length)
+                                for (int k = 0; k < 5; k++) { objCounts[k] = p[o + 25 + k]; prog += objCounts[k]; }
                             activeQuests.Add(((ushort)(p[o] | (p[o + 1] << 8)), p[o + 2], prog, objCounts));
                         }
                         _log($"[Zone] quests active ({activeQuests.Count}): {string.Join(",", activeQuests.Select(q => $"{q.id}(s{q.status},{q.progress}=[{string.Join('/', q.objCounts)}])"))}");
