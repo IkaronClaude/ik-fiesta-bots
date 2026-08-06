@@ -1124,12 +1124,17 @@ public static class BotEndpoints
             // the driver's own verdicts (PASSIVE/shelved, UNSOLVABLE) live in Lua and are not duplicated
             // here, because a second half-copy of that logic would drift and lie. Absent reason = "nothing
             // known against it", NOT "definitely fine".
-            string? reason = null;
+            // Short LABEL for the column, full story in `detail` (the page shows it on hover). The long
+            // form was blowing the panel width out on its own.
+            string? reason = null, detail = null;
             var deprioAt = knowledge?.QuestDeprioritizedAtLevel(bot.Options.Host, qid) ?? -1;
             if (deprioAt >= 0 && deprioAt >= (int)bot.Level)
-                reason = $"deprioritized at lvl{deprioAt} (it killed us) — frees at lvl{deprioAt + 1}";
-            else if (qd is null) reason = "no QuestData entry (decode gap)";
-            else if (need == 0 && qd.Objectives.Count == 0) reason = "no objectives resolved";
+            {
+                reason = "deaths";
+                detail = $"deprioritized at lvl{deprioAt} because it killed us — frees at lvl{deprioAt + 1}";
+            }
+            else if (qd is null) { reason = "no data"; detail = "no QuestData entry for this quest (decode gap)"; }
+            else if (need == 0 && qd.Objectives.Count == 0) { reason = "no goals"; detail = "active, but no objectives resolved from client data"; }
             else
             {
                 foreach (var o in qd.Objectives)
@@ -1137,17 +1142,22 @@ public static class BotEndpoints
                     if (o.Mob <= 0) continue;
                     var md = cd?.Mob(o.Mob);
                     if (md is null) continue;
-                    // GradeType >= 1 is a boss/elite per MobInfo — the same field the driver's TOO HARD
-                    // check uses, read straight from client data rather than mirrored from the Lua.
-                    // TOWER OF IYZEL: instance-only mobs, so a solo bot can never reach them. Detect by MOB
-                    // ID RANGE — hardcoding these ids is explicitly authorised (CLAUDE.md) precisely because
-                    // classifying by quest NAME is banned and unreliable. Without this the panel sorted the
-                    // Iyzel quests to the TOP on their fat exp and advertised as "next up" work the driver
-                    // has permanently shelved — the panel lying about priority is worse than showing nothing.
+                    // TOWER OF IYZEL: instance-only mobs a solo bot can never reach. Detect by MOB ID RANGE —
+                    // hardcoding these is explicitly authorised (CLAUDE.md) precisely because classifying by
+                    // quest NAME is banned. Without it the Iyzel quests sorted to the TOP on their fat exp and
+                    // the panel advertised permanently-shelved work as "next up".
                     if ((o.Mob >= 8100 && o.Mob <= 8138) || o.Mob == 9186 || o.Mob == 9187)
-                    { reason = $"instance-only (Tower of Iyzel) — needs a party; shelved"; break; }
-                    if (md.GradeType >= 1) { reason = $"too dangerous — {md.Name} is a boss/elite (L{md.Level}, {md.MaxHp} hp)"; break; }
-                    if (md.Level > (int)bot.Level + 3) { reason = $"over-level — {md.Name} is L{md.Level} vs our {bot.Level}"; break; }
+                    { reason = "instance"; detail = $"Tower of Iyzel — instance-only ({md.Name}); needs a party"; break; }
+                    // ⛔ ONLY judge danger on something that can actually FIGHT. Gathering nodes and prop NPCs
+                    // live in MobInfo too and carry nonsense combat columns — live 2026-08-06 the panel
+                    // announced "Herb is a boss/elite (L150, 0 hp)" on a PLANT-COLLECTION quest, because
+                    // GradeType alone said elite. Zero MaxHp or an NPC flag means it is not a fight, so
+                    // neither the boss nor the over-level test means anything for it.
+                    if (md.IsNpc || md.MaxHp <= 0) continue;
+                    if (md.GradeType >= 1)
+                    { reason = "boss"; detail = $"{md.Name} is a boss/elite — L{md.Level}, {md.MaxHp} hp"; break; }
+                    if (md.Level > (int)bot.Level + 3)
+                    { reason = "over-level"; detail = $"{md.Name} is L{md.Level} vs our {bot.Level}"; break; }
                 }
             }
             outp.Add(new
@@ -1155,6 +1165,7 @@ public static class BotEndpoints
                 Id = qid,
                 Name = cd?.QuestName(qid) ?? $"q{qid}",
                 Reason = reason,
+                ReasonDetail = detail,
                 Status = (int)status,
                 Progress = prog,
                 Need = need,

@@ -508,7 +508,7 @@ function questTable(qs) {
   let h = '<colgroup><col class="c-name"><col class="c-num"><col class="c-stat"><col class="c-here"></colgroup>';
   for (const q of qs) {
     const status = q.ready ? '<span class="hit-ok">READY</span>'
-                 : q.reason ? `<span class="hit-warn">${q.reason}</span>`
+                 : q.reason ? `<span class="hit-warn" title="${(q.reasonDetail||q.reason).replace(/"/g,"")}">${q.reason}</span>`
                  : '<span class="muted">working</span>';
     h += `<tr class="qh">
             <td><b>${q.name}</b>${q.repeatable ? ' <span class="muted">(rep)</span>' : ''}</td>
