@@ -194,7 +194,12 @@ public sealed class ZoneView : IDisposable
         /// having sent the STOP — never with distance.</para>
         /// <para>Same failure shape as 0x0FC0's old "dead / invalid state" label: an unverified name that
         /// reads like an explanation and steers every later investigation toward the wrong variable. I
-        /// reasoned about distance for two passes because of this name.</para></summary>
+        /// reasoned about distance for two passes because of this name.</para>
+        /// <para>⚠️ UPDATE 2026-08-06 — the follow-up "missing STOP" theory is ALSO dead. Splitting the
+        /// pre-cast paths three ways showed the no-STOP branch <b>never fires</b> (0 of 16 casts): every
+        /// cast already commits a STOP, and 0x0FCA still fails ~50%. It cannot be explained by something
+        /// that never happens. Two eliminations banked — NOT distance (fires at dist=1u), NOT missing-STOP
+        /// — and no confirmed meaning yet. Do not add a third guess to this comment; test it.</para></summary>
         public const ushort OutOfRange = 0x0FCA;
 
         /// <summary>The skill is NOT READY — still on cooldown (or a cast is already running).
