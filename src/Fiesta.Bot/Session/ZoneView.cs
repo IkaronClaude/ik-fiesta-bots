@@ -1071,6 +1071,8 @@ public sealed class ZoneView : IDisposable
     /// <summary>Names of the persisted scalars (shared between the seeder and the learner).</summary>
     public const string ScalarStoneCooldownMs = "hpStoneCooldownMs";
     public const string ScalarStoneHeal = "hpStoneHeal";
+    /// <summary>Durable name for <see cref="LearnedMeleeRange"/> — see SeedMeleeRange for why it must persist.</summary>
+    public const string ScalarMeleeRange = "meleeRange";
 
     /// <summary>Seed learned scalars from durable knowledge so the survivability inequality is answerable
     /// from the FIRST tick instead of after the second heal of each session.</summary>
@@ -1086,6 +1088,26 @@ public sealed class ZoneView : IDisposable
                 $"[heal] seeded from durable knowledge — stone cooldown {(cooldownMsMin > 0 ? $"{cooldownMsMin:F0}ms" : "unknown")}, " +
                 $"heal avg {(healAvg > 0 ? $"{healAvg:F0}" : "unknown")} ⇒ sustainable {(SustainableHealDps > 0 ? $"{SustainableHealDps:F0} HP/s" : "unknown")} " +
                 "(no need to heal twice before we can judge a fight)");
+    }
+
+    /// <summary>Seed <see cref="LearnedMeleeRange"/> from durable knowledge.
+    /// <para>Without this it RESET on every map handoff — each cross-server transition builds a fresh
+    /// ZoneView. Measured 2026-08-06: <c>2u → 46u → 98u</c>, then a handoff and straight back to <c>2u</c>.
+    /// Because the bot closes to ~1u before swinging, the first connecting hit after a reset pins the
+    /// "range" at ~2u, and the cast path then reads almost everything as OUT OF RANGE → it fires the
+    /// face+stop MOVERUN → which this codebase already documents as the thing that BREAKS the swing
+    /// stream → fewer connecting hits → the range never recovers. Same shape as the mob threat table and
+    /// the quest death counts: knowledge that resets every session cannot help a bot that transitions
+    /// constantly.</para>
+    /// <para>It is a MAX, so it converges from BELOW and seeding can only ever help — unlike the
+    /// HP-stone cooldown (a min-gap that converges from ABOVE and must never be used to suppress).</para></summary>
+    public void SeedMeleeRange(double maxObserved)
+    {
+        if (maxObserved <= 0 || maxObserved > 150) return;
+        if (maxObserved <= LearnedMeleeRange) return;
+        LearnedMeleeRange = maxObserved;
+        _logLevel?.Invoke(BotLogLevel.Note,
+            $"[combat] seeded attack-range {maxObserved:F0}u from durable knowledge — no re-learning from 0 after this handoff");
     }
 
     /// <summary>Seed the threat table from durable knowledge at zone-enter, so a mob learned in an earlier
@@ -1360,7 +1382,8 @@ public sealed class ZoneView : IDisposable
                         if (dist > 0 && dist < 150 && dist > LearnedMeleeRange + 0.5)
                         {
                             LearnedMeleeRange = dist;
-                            _log?.Invoke($"[combat] LEARNED attack-range ↑ {dist:F0}u (connecting swing on h={h.Defender}, dmg={h.Damage}) — new session max");
+                            _log?.Invoke($"[combat] LEARNED attack-range ↑ {dist:F0}u (connecting swing on h={h.Defender}, dmg={h.Damage})");
+                            ScalarLearned?.Invoke(ScalarMeleeRange, dist);   // persist: a MAX, so it converges from below
                         }
                     }
                 }

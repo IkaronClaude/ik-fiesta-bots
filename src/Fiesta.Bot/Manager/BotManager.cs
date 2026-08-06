@@ -2889,6 +2889,10 @@ public sealed class BotManager : IAsyncDisposable
                     healStat is { Count: > 0 } ? healStat.Sum / healStat.Count : -1,
                     healStat?.Count ?? 0,
                     healStat?.Max ?? -1);
+                // Attack range survives the handoff now. It reset to 0 on every cross-server transition,
+                // and since the bot closes to ~1u before swinging, the first hit after a reset pinned it at
+                // ~2u — after which the cast path judged nearly everything OUT OF RANGE. Max ⇒ seed the max.
+                zoneView.SeedMeleeRange(Knowledge.Scalar(handle.Options.Host, ZoneView.ScalarMeleeRange)?.Max ?? -1);
                 zoneView.IsInsideScenarioArea = (areaName, pos) =>          // hold AREAENTRY_ACK until inside the .aid box
                 {
                     if (handle.CurrentMap is not { } m || AreaProvider?.Invoke(m) is not { } areas) return true; // no data → ack now
