@@ -686,8 +686,14 @@ public sealed class ClientData
     private static int GetInt(IReadOnlyDictionary<string, object?> row, string col)
         => row.TryGetValue(col, out var v) && ShnTable.TryToLong(v, out var l) ? (int)l : 0;
 
+    /// <summary>A string cell, with SHN's fixed-width padding removed. Columns are fixed-width and
+    /// NUL-padded (MapName is 12 bytes, Name 32), so the raw value of "RouCos03" is
+    /// <c>"RouCos03    "</c>. That PRINTS identically to the trimmed form — including through JSON —
+    /// so a padded value looks perfectly correct while failing every string comparison against it. That is
+    /// exactly how MapDisplayName silently returned null for every map (found 2026-08-06). Trim once, here,
+    /// so no caller has to know.</summary>
     private static string GetStr(IReadOnlyDictionary<string, object?> row, string col)
-        => row.TryGetValue(col, out var v) ? v?.ToString() ?? "" : "";
+        => row.TryGetValue(col, out var v) ? (v?.ToString() ?? "").Trim(' ').Trim() : "";
 }
 
 /// <summary>Display fields of a <c>MobInfo</c> row: the human-readable <see cref="Name"/>
