@@ -356,6 +356,10 @@ public sealed class BotManager : IAsyncDisposable
         m.InitMetric("distance", MetricDirection.HigherIsBetter, MetricKind.Counter);
         m.InitMetric("mapChanges", MetricDirection.LowerIsBetter, MetricKind.Counter);
         m.InitMetric("stuns", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        // Split from stuns 2026-08-06: both block movement, but a root still lets us cast. Conflated, it was
+        // impossible to tell which one was costing us time — and the combined counter double-counted anyway.
+        m.InitMetric("roots", MetricDirection.LowerIsBetter, MetricKind.Counter);
+        m.InitMetric("doorsOpened", MetricDirection.HigherIsBetter, MetricKind.Counter);
         m.InitMetric("moveFails", MetricDirection.LowerIsBetter, MetricKind.Counter);
         m.InitMetric("itemsPickedUp", MetricDirection.HigherIsBetter, MetricKind.Counter);
         m.InitMetric("pickupFails", MetricDirection.LowerIsBetter, MetricKind.Counter);
@@ -2872,7 +2876,11 @@ public sealed class BotManager : IAsyncDisposable
                     return Math.Abs(pos.X - a.CenterX) <= a.HalfX && Math.Abs(pos.Y - a.CenterY) <= a.HalfY;
                 };
                 if (ClientData is { } cdata) zoneView.IsHuntableMob = mobId => cdata.IsHuntableEnemy(mobId); // ignore guards
-                if (ClientData is { } cdata2) zoneView.IsMoveBlockingAbstate = idx => cdata2.IsMoveBlockingAbstate(idx); // root/stun → don't learn walls
+                if (ClientData is { } cdata2)
+                {
+                    zoneView.IsMoveBlockingAbstate = idx => cdata2.IsMoveBlockingAbstate(idx); // root/stun → don't learn walls
+                    zoneView.IsStunAbstate = idx => cdata2.IsStunAbstate(idx);                 // stun vs root, for the metrics
+                }
                 zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);
                 zoneView.SeedMaxStones(entry.MaxHpStone, entry.MaxSpStone); // reserve capacity from [1802]
                 zoneView.SeedStones(entry.CurHpStone, entry.CurSpStone); // real reserve from zone-enter char-info

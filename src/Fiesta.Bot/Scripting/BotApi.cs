@@ -154,6 +154,22 @@ public sealed class BotApi
         return _mgr.Knowledge.ShopKind(_handle.Options.Host, map!, npcId) ?? "";
     }
 
+    /// <summary>Record a metric sample from the driver (the operator's <c>LogMetric("HP", v)</c>). Counters
+    /// sum within the batch window, gauges average — an unknown name auto-registers rather than dropping the
+    /// data. This is how QUEST-LEVEL facts get measured at all: whether a quest was given up, deprioritized
+    /// or completed is a decision only the Lua makes, so without this the epic's quest metrics were
+    /// unreachable from C#.</summary>
+    public void metric(string name, double value = 1) => _handle.Metrics.LogMetric(name, value);
+
+    /// <summary>Declare a metric up front (direction + kind), so it appears on <c>/metrics</c> with the right
+    /// percentile tail even before anything is logged to it. Optional — <see cref="metric"/> auto-registers.</summary>
+    public void initMetric(string name, string direction = "higher", string kind = "counter")
+        => _handle.Metrics.InitMetric(name,
+            direction.StartsWith("lower", StringComparison.OrdinalIgnoreCase)
+                ? Metrics.MetricDirection.LowerIsBetter : Metrics.MetricDirection.HigherIsBetter,
+            kind.StartsWith("gauge", StringComparison.OrdinalIgnoreCase)
+                ? Metrics.MetricKind.Gauge : Metrics.MetricKind.Counter);
+
     /// <summary>Every KNOWN shop of a kind across ALL maps, as <c>{map=..., npc=...}</c> — PERSISTED, so it
     /// answers "where is there a storage keeper / smith?" even for a town the bot is not standing in.
     /// <para><see cref="knownShopKind"/> can only answer for the CURRENT map, which meant the driver could

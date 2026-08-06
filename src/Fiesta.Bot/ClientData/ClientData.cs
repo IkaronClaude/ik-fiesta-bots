@@ -398,6 +398,55 @@ public sealed class ClientData
         }
     }
 
+    // A stun ALSO carries the action-block action (25) alongside immobilize (19); a root/entangle carries
+    // 19 alone. Derived from the client SHNs exactly like the immobilize rule — the InxNames only VALIDATE
+    // it, they are never matched on. Validated over all 107 immobilizing SubAbState rows (2026-08-06):
+    //   19 + 25  (n=82) -> 46 "…Stun" names (SubStaBattleBlowStun, SubStaShockBladeStun, …)
+    //   19 alone (n=25) -> 16 "…Entangle" + 7 "…Bind" (SubStaSpiritThornEntangle, SubStaMarloneEntangle, …)
+    private const int ActionBlockActionIndex = 25;
+    private IReadOnlySet<uint>? _stunAbstates;
+
+    /// <summary>True if this abstate is a STUN (blocks actions as well as movement), as opposed to a
+    /// ROOT/entangle which only blocks movement. Both are move-blocking, so
+    /// <see cref="IsMoveBlockingAbstate"/> is true for either; this splits them so the two can be
+    /// counted and reacted to separately (a root still lets us cast; a stun does not).</summary>
+    public bool IsStunAbstate(uint abStataIndex) => StunAbstates().Contains(abStataIndex);
+
+    private IReadOnlySet<uint> StunAbstates()
+    {
+        if (_stunAbstates is { } cached) return cached;
+        lock (_abstateLock)
+        {
+            if (_stunAbstates is { } c2) return c2;
+            var set = new HashSet<uint>();
+            var sub = Table("SubAbState");
+            var ab = Table("AbState");
+            if (sub is not null && ab is not null)
+            {
+                var stunSubs = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var row in sub.Rows)
+                {
+                    var inx = GetStr(row, "InxName");
+                    if (string.IsNullOrEmpty(inx)) continue;
+                    int a = GetInt(row, "ActionIndexA"), b = GetInt(row, "ActionIndexB"),
+                        c = GetInt(row, "ActionIndexC"), d = GetInt(row, "ActionIndexD");
+                    var immobilizes = a == ImmobilizeActionIndex || b == ImmobilizeActionIndex
+                                   || c == ImmobilizeActionIndex || d == ImmobilizeActionIndex;
+                    var blocksActions = a == ActionBlockActionIndex || b == ActionBlockActionIndex
+                                     || c == ActionBlockActionIndex || d == ActionBlockActionIndex;
+                    if (immobilizes && blocksActions) stunSubs.Add(inx);
+                }
+                foreach (var row in ab.Rows)
+                {
+                    var subName = GetStr(row, "SubAbState");
+                    if (!string.IsNullOrEmpty(subName) && stunSubs.Contains(subName))
+                        set.Add((uint)GetInt(row, "AbStataIndex"));
+                }
+            }
+            return _stunAbstates = set;
+        }
+    }
+
     /// <summary>True if the mob id is a huntable enemy: not a shop NPC, not player-side
     /// (a town guard reads <c>IsPlayerSide!=0</c> and must be skipped), and not a gatherable
     /// resource node (<c>Type==9</c> = herb/wood/mushroom). The combat target filter — keeps

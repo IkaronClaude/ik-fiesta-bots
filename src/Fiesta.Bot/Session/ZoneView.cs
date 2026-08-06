@@ -1906,6 +1906,10 @@ public sealed class ZoneView : IDisposable
     /// Used to know when a self-abstate is a root/stun so nav won't learn a wall and combat waits.</summary>
     public Func<uint, bool>? IsMoveBlockingAbstate { get; set; }
 
+    /// <summary>Of the move-blocking abstates, which are STUNS (block actions too) rather than
+    /// roots/entangles (movement only). See <see cref="GameData.ClientData.IsStunAbstate"/>.</summary>
+    public Func<uint, bool>? IsStunAbstate { get; set; }
+
     // The abstate indices currently ACTIVE on SELF → EXPIRY tick (Environment.TickCount64). Fed by BOTH
     // abstate channels: NC_BAT_ABSTATESET/RESET (0x2427/0x2428, no duration → expiry long.MaxValue, cleared
     // only by an explicit RESET) AND NC_BRIEFINFO_ABSTATE_CHANGE/_LIST (0x1C18/0x1C19), which is the ONLY
@@ -1949,7 +1953,13 @@ public sealed class ZoneView : IDisposable
     private void SelfAbstate(uint idx, uint restKeeptimeMs, bool active, string src)
     {
         bool moveBlock = IsMoveBlockingAbstate?.Invoke(idx) == true;
-        if (moveBlock) MetricSink?.Invoke("stuns", 1);   // stun/root: the states that actually cost us time
+        // ⛔ COUNT THE ONSET ONLY. SelfAbstate runs for the SET *and* the RESET, and this fired on both —
+        // so every stun was counted TWICE and the metric read double (found 2026-08-06).
+        // STUN vs ROOT are now separate: both block movement, but a stun also blocks actions (client
+        // SubAbState action 25 alongside immobilize 19), while a root/entangle still lets us cast. The
+        // operator asked for both; conflating them hid which one is actually costing us time.
+        if (moveBlock && active)
+            MetricSink?.Invoke(IsStunAbstate?.Invoke(idx) == true ? "stuns" : "roots", 1);
         long now = Environment.TickCount64;
         bool changed;
         lock (_selfAbstateLock)
@@ -2666,6 +2676,11 @@ public sealed class ZoneView : IDisposable
             uint? dx = null, dy = null;
             if (_npcs.TryGetValue(b.door, out var dn)) { dx = dn.X; dy = dn.Y; }
             else if (_doorStates.TryGetValue(b.door, out var prev)) { dx = prev.X; dy = prev.Y; } // keep last-known pos
+            // "Doors opened nearby" (operator's metric list): count the 0->1 TRANSITION only, so a repeated
+            // state broadcast doesn't inflate it and a door that was already open isn't re-counted. Nearby is
+            // implicit — DOORSTATE only arrives for doors in our area of interest.
+            var wasOpen = _doorStates.TryGetValue(b.door, out var prevState) && prevState.State != 0;
+            if (b.doorstate != 0 && !wasOpen) MetricSink?.Invoke("doorsOpened", 1);
             _doorStates[b.door] = new DoorState(b.door, b.doorstate, dx, dy);
             // Update the by-NAME state (bridged via the BUILDDOOR handle→name map) → drives the nav overlay so a
             // door that just closed becomes a wall in our collision (matching the server), state 0=closed 1=open.
