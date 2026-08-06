@@ -3222,6 +3222,17 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.CastFailed += reason =>
                 {
                     handle.Emit(new BotEvent(BotEventKind.CastFail, reason));
+                    // 📐 PAIR THE FAILURE WITH THE GEOMETRY THAT CAUSED IT, on one line. [castgeom] logs the
+                    // inputs at send time and the fail arrives separately, so every correlation so far has
+                    // meant hand-pairing two log streams by timestamp — done three times by hand already,
+                    // and each time the pairing itself was a source of error. The open question this exists
+                    // to answer: 0x0FCA ("out of range") was observed at dist=29u, which would mean the real
+                    // melee cast range is well under the driver's 45u closing distance. One grep now.
+                    var g = _lastCastGeom;
+                    handle.Log(BotLogLevel.Info,
+                        $"[castfail] 0x{reason:X4} ({ZoneView.CastFailReason.Describe(reason)}) " +
+                        $"— dist={g.Dist:F0} reach={g.Range:F0} " +
+                        $"offBy={(g.OffByDeg < 0 ? "n/a" : $"{g.OffByDeg:F0}°")} arc={g.ArcDeg}° ({g.Note})");
                     // Reactive cast-fail handling — lightweight, fire-and-forget.
                     // Runs on the session read loop so must not block; all actions
                     // go through SendAsync which serializes on the connection.
