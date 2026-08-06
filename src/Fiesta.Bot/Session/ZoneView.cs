@@ -1890,6 +1890,13 @@ public sealed class ZoneView : IDisposable
     /// while the bot lands kills, which is how the driver detects a stuck quest to abandon.</summary>
     public int QuestProgress(int id) => _questProgress.TryGetValue(id, out var n) ? n : 0;
 
+    /// <summary>Credited kills for ONE objective of a quest, from the objIdx the server sends alongside
+    /// each credit. 0 means "no credit seen for this objective yet" — which for a fresh objective is the
+    /// true answer, not a missing one.</summary>
+    private readonly ConcurrentDictionary<int, int> _questObjProgress = new();
+    public int QuestObjProgress(int questId, int objIdx) =>
+        _questObjProgress.TryGetValue((questId << 16) | (objIdx & 0xFFFF), out var n) ? n : 0;
+
     /// <summary>Reset a quest's credited-kill progress to 0. The progress counter (0x440D credits) only ever
     /// counts UP and — until now — only reset on GIVE_UP (0x4413), never on a HAND-IN. So a REPEATABLE that just
     /// handed in (and re-accepted server-side to 0/N) kept a stale N/N here, which stranded it: the leveler read
@@ -3290,8 +3297,13 @@ public sealed class ZoneView : IDisposable
                 int n = p[0];
                 for (int i = 0; i < n && 1 + i * 4 + 4 <= p.Length; i++)
                 {
+                    // MobOfQuest = {u16 objIdx, u16 questId}. We used to read only questId and collapse
+                    // every objective into ONE per-quest counter — so a 2-objective quest showed "3/8"
+                    // with no way to tell which half was moving. objIdx was decoded and discarded.
+                    int objIdx = p[1 + i * 4] | (p[1 + i * 4 + 1] << 8);
                     int qid = p[1 + i * 4 + 2] | (p[1 + i * 4 + 3] << 8);
                     _questProgress.AddOrUpdate(qid, 1, (_, v) => v + 1);
+                    _questObjProgress.AddOrUpdate((qid << 16) | (objIdx & 0xFFFF), 1, (_, v) => v + 1);
                     _log?.Invoke($"[ZoneView] QUEST_MOB_KILL quest={QName(qid)} credited (total {_questProgress[qid]})");
                     // The kill that actually COUNTED. Distinct from "kills": a mob8 grind climbs kills
                     // while completing nothing, so questMobKills is the metric that says the bot is

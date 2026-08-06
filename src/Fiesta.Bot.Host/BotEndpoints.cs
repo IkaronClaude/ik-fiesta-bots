@@ -128,6 +128,25 @@ public static class BotEndpoints
         // window was wide enough to have contained X.
         // ── METRICS / BOT-WATCH (operator epic 2026-08-05: "a window into everything going on with the bot;
         // like a stat panel, you look at it and immediately know where the bot is") ────────────────────────
+        // Lightweight companion to /metrics, for the watch page's COMBAT MAP. That map wants ~5 updates a
+        // second and mob positions change constantly, but /metrics carries the whole metric snapshot, the
+        // quest board and the trace counts — far too heavy to poll at that rate. This returns only what the
+        // map draws.
+        group.MapGet("/{id}/entities", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            return Results.Json(new
+            {
+                id = bot.Id,
+                map = bot.CurrentMap,
+                facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
+                maxHp = bot.ZoneView?.MaxHp ?? 0,
+                entities = EntityPanel(bot, manager.ClientData),
+            });
+        })
+        .WithSummary("Just the nearby mobs/party for the combat map — cheap enough to poll several times a second");
+
         group.MapGet("/{id}/metrics", (string id) =>
         {
             var bot = manager.Get(id);
@@ -136,7 +155,7 @@ public static class BotEndpoints
             {
                 id = bot.Id,
                 atUtc = DateTime.UtcNow,
-                live = LivePanel(bot, manager.ClientData),
+                live = LivePanel(bot, manager.ClientData, manager.Knowledge),
                 metrics = bot.Metrics.Snapshot(),
                 maps = bot.Trace.MapCounts(recentOnly: true),
                 tracePoints = bot.Trace.Count,
@@ -176,7 +195,7 @@ public static class BotEndpoints
                 var payload = new
                 {
                     atUtc = DateTime.UtcNow,
-                    live = LivePanel(bot, manager.ClientData),
+                    live = LivePanel(bot, manager.ClientData, manager.Knowledge),
                     metrics = bot.Metrics.Snapshot(),
                     maps = bot.Trace.MapCounts(recentOnly: true),
                     tracePoints = bot.Trace.Count,
@@ -1000,12 +1019,12 @@ public static class BotEndpoints
     /// re-deriving fields from ZoneView. Re-deriving would create a second, silently-diverging view of the
     /// same truth — the panel would eventually disagree with /api/bots/{id} and there would be no way to tell
     /// which was right. Only the genuinely NEW numbers are added here.</para></summary>
-    private static object LivePanel(BotHandle bot) => LivePanel(bot, null);
+    private static object LivePanel(BotHandle bot) => LivePanel(bot, null, null);
 
     /// <summary>Overload that can also report SKILL COOLDOWNS. The cooldown LENGTH lives in client data
     /// (ActiveSkill.DelayTime) and the last-use TIMESTAMP lives in ZoneView, so neither alone can answer
     /// "is this skill ready?" — the manager is where both are reachable, hence the optional parameter.</summary>
-    private static object LivePanel(BotHandle bot, GameData.ClientData? cd)
+    private static object LivePanel(BotHandle bot, GameData.ClientData? cd, Manager.NpcKnowledge? knowledge = null)
     {
         var snap = bot.Snapshot();
         var zv = bot.ZoneView;
@@ -1049,7 +1068,7 @@ public static class BotEndpoints
             // Live quest board: what is accepted, how far along, and what each one wants. Progress is the
             // SERVER's credited count (NC_QUEST_NOTIFY_MOB_KILL), not our own kill tally — a mob dying
             // credits nothing if the quest is not actually tracking it.
-            Quests = QuestPanel(bot, cd),
+            Quests = QuestPanel(bot, cd, knowledge),
             // Entities for the zoomed combat map. Positions are RAW game coords; the page centres on self.
             Entities = EntityPanel(bot, cd),
             // The survivability inequality, surfaced where a human can see both sides at once.
@@ -1062,7 +1081,7 @@ public static class BotEndpoints
     /// collect objectives from client data; <c>Progress</c> is the server-credited count. A quest whose
     /// definition is missing from client data is still listed (with its id) rather than dropped — a silent
     /// omission would hide exactly the QuestData decode gaps we care about.</summary>
-    private static object[] QuestPanel(BotHandle bot, GameData.ClientData? cd)
+    private static object[] QuestPanel(BotHandle bot, GameData.ClientData? cd, Manager.NpcKnowledge? knowledge)
     {
         var zv = bot.ZoneView;
         if (zv is null) return [];
@@ -1070,29 +1089,84 @@ public static class BotEndpoints
         foreach (var (qid, status) in zv.ActiveQuests)
         {
             var qd = cd?.Quest(qid);
-            var need = 0; var mobs = new List<string>();
+            var need = 0; var mobs = new List<string>(); var goals = new List<object>(); var onMap = false;
             if (qd is not null)
-                foreach (var o in qd.Objectives)
+                for (var oi = 0; oi < qd.Objectives.Count; oi++)
                 {
+                    var o = qd.Objectives[oi];
                     need += o.Count;
-                    if (o.Mob > 0) mobs.Add(cd?.Mob(o.Mob)?.Name ?? $"mob{o.Mob}");
+                    var mobName = o.Mob > 0 ? (cd?.Mob(o.Mob)?.Name ?? $"mob{o.Mob}") : null;
+                    if (mobName is not null) mobs.Add(mobName);
+                    // Is this objective's mob on the map we are standing on? MobCoordinate is client data,
+                    // the same table the driver's LOCAL-first preference uses.
+                    var here = o.Mob > 0 && cd?.MobCoordinatesAll(o.Mob)?.Any(ml =>
+                        string.Equals(ml.Map, bot.CurrentMap, StringComparison.OrdinalIgnoreCase)) == true;
+                    if (here) onMap = true;
+                    goals.Add(new
+                    {
+                        Index = oi,
+                        Kind = o.Type == 1 ? "kill" : o.Type == 2 ? "collect" : $"type{o.Type}",
+                        Target = mobName ?? (o.Item > 0 ? $"item{o.Item}" : "?"),
+                        ItemId = o.Item,
+                        Need = o.Count,
+                        // Per-objective credit, from the objIdx the server sends with each kill credit.
+                        Progress = zv.QuestObjProgress(qid, oi),
+                        OnCurrentMap = here,
+                    });
                 }
             var prog = zv.QuestProgress(qid);
+            // WHY a quest is not being worked. Only reasons the HOST can derive from data it actually has —
+            // the driver's own verdicts (PASSIVE/shelved, UNSOLVABLE) live in Lua and are not duplicated
+            // here, because a second half-copy of that logic would drift and lie. Absent reason = "nothing
+            // known against it", NOT "definitely fine".
+            string? reason = null;
+            var deprioAt = knowledge?.QuestDeprioritizedAtLevel(bot.Options.Host, qid) ?? -1;
+            if (deprioAt >= 0 && deprioAt >= (int)bot.Level)
+                reason = $"deprioritized at lvl{deprioAt} (it killed us) — frees at lvl{deprioAt + 1}";
+            else if (qd is null) reason = "no QuestData entry (decode gap)";
+            else if (need == 0 && qd.Objectives.Count == 0) reason = "no objectives resolved";
+            else
+            {
+                foreach (var o in qd.Objectives)
+                {
+                    if (o.Mob <= 0) continue;
+                    var md = cd?.Mob(o.Mob);
+                    if (md is null) continue;
+                    // GradeType >= 1 is a boss/elite per MobInfo — the same field the driver's TOO HARD
+                    // check uses, read straight from client data rather than mirrored from the Lua.
+                    if (md.GradeType >= 1) { reason = $"too dangerous — {md.Name} is a boss/elite (L{md.Level}, {md.MaxHp} hp)"; break; }
+                    if (md.Level > (int)bot.Level + 3) { reason = $"over-level — {md.Name} is L{md.Level} vs our {bot.Level}"; break; }
+                }
+            }
             outp.Add(new
             {
                 Id = qid,
                 Name = cd?.QuestName(qid) ?? $"q{qid}",
+                Reason = reason,
                 Status = (int)status,
                 Progress = prog,
                 Need = need,
                 Ready = need > 0 && prog >= need,
                 Targets = mobs,
+                Goals = goals,
+                OnCurrentMap = onMap,
                 ExpReward = qd?.ExpReward ?? 0,
                 Repeatable = qd?.Repeatable ?? false,
                 Known = qd is not null,
             });
         }
-        return outp.OrderByDescending(o => ((dynamic)o).Ready).ThenByDescending(o => ((dynamic)o).Progress).ToArray();
+        // Ordered to MIRROR the driver's documented sort — "LOCAL > closer-to-DONE > exp", with anything
+        // ready to hand in first and anything the driver has a reason against last.
+        // ⚠️ This MIRRORS that rule; it is not the driver's own ranking. The real decision (bands,
+        // deprioritization, solvability) lives in the Lua, and a second copy of it here would drift and
+        // start lying. Treat this as "roughly what it will pick next", not as the bot's actual queue.
+        return outp
+            .OrderByDescending(o => ((dynamic)o).Ready)
+            .ThenBy(o => ((dynamic)o).Reason is null ? 0 : 1)
+            .ThenByDescending(o => ((dynamic)o).OnCurrentMap)
+            .ThenByDescending(o => { var d = (dynamic)o; return d.Need > 0 ? (double)d.Progress / d.Need : 0.0; })
+            .ThenByDescending(o => ((dynamic)o).ExpReward)
+            .ToArray();
     }
 
     /// <summary>Everything currently in AoI that the combat map draws: mobs (with facing, cur/max hp and

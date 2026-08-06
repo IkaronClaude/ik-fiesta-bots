@@ -8,7 +8,9 @@
   body { margin:0; background:var(--bg); color:var(--fg); font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace }
   header { display:flex; gap:12px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--line) }
   header input,header select { background:var(--panel); color:var(--fg); border:1px solid var(--line); padding:4px 6px; border-radius:4px; font:inherit }
-  .wrap { display:grid; grid-template-columns: 340px 1fr; gap:10px; padding:10px; align-items:start }
+  /* Constrain the page: on a wide monitor the panels stretched to unreadable line lengths. */
+  .wrap { display:grid; grid-template-columns: 320px minmax(0,1fr); gap:10px; padding:10px;
+          align-items:start; max-width:1400px; margin:0 auto }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px }
   h2 { margin:0 0 8px; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim) }
   .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px }
@@ -32,11 +34,13 @@
        • READY      → lit border
        • COOLING    → dim border + seconds remaining + a radial sweep darkening the remaining fraction
        • UNKNOWN cd → dashed border. A skill whose DelayTime we cannot read must NOT look ready. */
-  .tiles { display:grid; grid-template-columns:repeat(8, 1fr); gap:6px }
-  .tile { position:relative; aspect-ratio:1; border-radius:5px; background:#0b0e13;
+  /* 75% of the old width, 50% of the old height (was a 1:1 square filling 1/8 of the row). */
+  .tiles { display:grid; grid-template-columns:repeat(8, minmax(0,0.75fr)); gap:5px; justify-content:start }
+  .tile { position:relative; aspect-ratio:1.5; border-radius:4px; background:#0b0e13;
           border:2px solid #2b3440; overflow:hidden; display:flex; align-items:center; justify-content:center;
-          padding:2px; text-align:center; cursor:default }
-  .tile .nm { font-size:9px; line-height:1.1; color:var(--fg); word-break:break-word; z-index:2 }
+          padding:1px; text-align:center; cursor:default }
+  .tile .nm { font-size:8px; line-height:1.05; color:var(--fg); word-break:break-word; z-index:2;
+              display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden }
   .tile.ready { border-color:var(--ok); box-shadow:0 0 4px rgba(63,185,80,.35) }
   .tile.cool  { border-color:#3d444d }
   .tile.cool .nm { color:var(--dim) }
@@ -45,7 +49,15 @@
   /* the radial sweep: conic-gradient darkens the portion of the cooldown still to run */
   .tile .sweep { position:absolute; inset:0; z-index:1; pointer-events:none }
 
-  .maps { display:grid; grid-template-columns:1fr 1fr; gap:10px }
+  .maps { display:grid; grid-template-columns:1fr 1fr; gap:10px; max-width:440px }  /* -33% */
+
+  /* Foldable cards. Default OPEN; the open/closed choice persists in localStorage. */
+  h2.fold { cursor:pointer; user-select:none; display:flex; align-items:center; gap:6px }
+  h2.fold .chev { display:inline-block; transition:transform .15s; font-size:10px }
+  .panel.closed h2.fold .chev { transform:rotate(-90deg) }
+  .panel.closed .body { display:none }
+  .skopts { display:flex; gap:12px; font-size:11px; color:var(--dim); margin:0 0 6px }
+  .skopts label { display:flex; align-items:center; gap:4px; cursor:pointer }
 
   /* fold-out death reports under the console */
   #deaths { max-height:300px; overflow:auto; margin-top:6px }
@@ -65,6 +77,8 @@
   @keyframes tin { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }
   .legend { margin-top:6px; display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; color:var(--dim) }
   .legend b { color:var(--fg); font-weight:normal }
+  tr.qh td { border-bottom:none; padding-top:6px }
+  tr.qg td { color:var(--dim); font-size:11px; border-bottom:1px solid var(--line) }
 </style>
 
 <header>
@@ -84,23 +98,30 @@
 <div class="wrap">
   <div>
     <div class="panel" style="margin-bottom:10px">
-      <h2>live</h2>
-      <div id="vitals"></div>
+      <h2 class="fold" data-card="live"><span class="chev">▼</span>live</h2>
+      <div class="body"><div id="vitals"></div></div>
     </div>
     <div class="panel">
-      <h2>character</h2>
-      <div id="charsheet"></div>
+      <h2 class="fold" data-card="character"><span class="chev">▼</span>character</h2>
+      <div class="body"><div id="charsheet"></div></div>
     </div>
   </div>
 
   <div>
     <div class="panel" style="margin-bottom:10px">
-      <h2>skills <span class="muted" id="skhint"></span></h2>
-      <div id="skills" class="tiles"></div>
+      <h2 class="fold" data-card="skills"><span class="chev">▼</span>skills <span class="muted" id="skhint"></span></h2>
+      <div class="body">
+        <div class="skopts">
+          <label><input type="checkbox" id="skmisc"> show misc</label>
+          <label><input type="checkbox" id="sklevels"> show all levels</label>
+        </div>
+        <div id="skills" class="tiles"></div>
+      </div>
     </div>
 
     <div class="panel" style="margin-bottom:10px">
-      <h2>maps</h2>
+      <h2 class="fold" data-card="maps"><span class="chev">▼</span>maps <span class="muted" id="mapname"></span></h2>
+      <div class="body">
       <div class="maps">
         <div>
           <div class="muted" style="margin-bottom:4px">big map — where it's been</div>
@@ -113,25 +134,28 @@
           <div id="legend" class="legend"></div>
         </div>
       </div>
+      </div>
     </div>
 
     <div class="panel" style="margin-bottom:10px">
-      <h2>quests <span class="muted" id="qhint"></span></h2>
-      <div style="max-height:220px; overflow:auto"><table id="quests"></table></div>
+      <h2 class="fold" data-card="quests"><span class="chev">▼</span>quests <span class="muted" id="qhint"></span></h2>
+      <div class="body"><div style="max-height:220px; overflow:auto"><table id="quests"></table></div></div>
     </div>
 
     <div class="panel" style="margin-bottom:10px">
-      <h2>console <span class="muted">(severity filter above)</span></h2>
+      <h2 class="fold" data-card="console"><span class="chev">▼</span>console <span class="muted">(severity filter above)</span></h2>
+      <div class="body">
       <div id="log"></div>
       <details id="deathsbox" style="margin-top:8px">
         <summary style="cursor:pointer; color:var(--dim)">recent deaths <span id="dcount"></span></summary>
         <div id="deaths"></div>
       </details>
+      </div>
     </div>
 
     <div class="panel">
-      <h2>metrics <span class="muted" id="mwin"></span></h2>
-      <div style="max-height:340px; overflow:auto"><table id="metrics"></table></div>
+      <h2 class="fold" data-card="metrics"><span class="chev">▼</span>metrics <span class="muted" id="mwin"></span></h2>
+      <div class="body"><div style="max-height:340px; overflow:auto"><table id="metrics"></table></div></div>
     </div>
   </div>
 </div>
@@ -230,9 +254,36 @@ function drawCombat(ent, maxHp) {
 
 // Skill TILES, like an MMO action bar. A skill with no cooldown length in client data gets a DASHED
 // border, never a lit one — unknown must stay unknown, or the panel lies about what the bot can do.
-function skillTiles(list) {
-  if (!list || !list.length) { $('#skills').innerHTML = '<span class="muted">no skills</span>'; return; }
-  $('#skhint').textContent = `· ${list.length} learned · lit = ready, dashed = cooldown unknown`;
+// MISC = not a combat skill: Korean-named entries (the client ships a pile of them), plus gathering and
+// mount skills. Hidden by default so the bar shows what the bot actually fights with. This is a DISPLAY
+// filter on names — it changes nothing the bot does.
+const HANGUL = /[ᄀ-ᇿ㄰-㆏ꥠ-꥿가-힯]/;
+const MISC_RX = /(mining|gather|ride|mover|fishing|cooking|craft)/i;
+const isMisc = s => { const n = s.name || ''; return !n || HANGUL.test(n) || MISC_RX.test(n); };
+// Skills come as "Name [01]", "Name [02]" — the same skill at successive ranks. Default to the HIGHEST
+// rank only, since the lower ones are superseded and just crowd the bar.
+const baseName = n => (n || '').replace(/\s*\[\d+\]\s*$/, '').trim();
+const rankOf  = n => { const m = /\[(\d+)\]\s*$/.exec(n || ''); return m ? Number(m[1]) : 0; };
+function filterSkills(list) {
+  let out = list;
+  if (!$('#skmisc').checked)   out = out.filter(x => !isMisc(x));
+  if (!$('#sklevels').checked) {
+    const best = new Map();
+    for (const x of out) {
+      const b = baseName(x.name) || String(x.id);
+      const cur = best.get(b);
+      if (!cur || rankOf(x.name) > rankOf(cur.name)) best.set(b, x);
+    }
+    out = [...best.values()];
+  }
+  return out;
+}
+
+function skillTiles(all) {
+  if (!all || !all.length) { $('#skills').innerHTML = '<span class="muted">no skills</span>'; return; }
+  const list = filterSkills(all);
+  const hidden = all.length - list.length;
+  $('#skhint').textContent = `· ${list.length} shown${hidden ? ` (${hidden} filtered)` : ''} · lit = ready, dashed = cd unknown`;
   $('#skills').innerHTML = list.map(s => {
     const cd = s.cooldownMs || 0, rem = s.remainingMs;
     if (!cd) return `<div class="tile unk" title="${s.name||s.id} — DelayTime unknown in client data">
@@ -293,7 +344,6 @@ async function tickMetrics() {
     $('#vitals').innerHTML = vitals(d.live);
     $('#charsheet').innerHTML = charSheet(d.live);
     skillTiles(d.live.skills);
-    drawCombat(d.live.entities, d.live.maxHp);
     lastLive = d.live;
     questList = d.live.quests || [];
     questsById = new Map(questList.map(q => [q.name, q]));
@@ -392,6 +442,45 @@ async function tickDeaths() {
 }
 setInterval(tickDeaths, 20000);  tickDeaths();
 
+// ── card folding (persisted) ──────────────────────────────────────────────────────────────────────
+// Default OPEN; only an explicit collapse is remembered, so a new card added later shows up rather
+// than being hidden by a stale preference.
+function applyFold(h) {
+  const card = h.dataset.card, panel = h.closest('.panel');
+  if (localStorage.getItem('fold:' + card) === 'closed') panel.classList.add('closed');
+  h.onclick = () => {
+    const closed = panel.classList.toggle('closed');
+    localStorage.setItem('fold:' + card, closed ? 'closed' : 'open');
+  };
+}
+document.querySelectorAll('h2.fold').forEach(applyFold);
+
+// ── token + bot id persistence ────────────────────────────────────────────────────────────────────
+// The bearer token is kept in localStorage so a reload doesn't mean re-pasting it. It is a
+// browser-local convenience on an already-authenticated view, not a new place secrets travel.
+for (const [el, key] of [[$('#tok'), 'watch:tok'], [$('#bot'), 'watch:bot']]) {
+  const saved = localStorage.getItem(key);
+  if (saved) el.value = saved;
+  el.addEventListener('change', () => localStorage.setItem(key, el.value));
+  el.addEventListener('blur',   () => localStorage.setItem(key, el.value));
+}
+$('#skmisc').addEventListener('change', () => lastLive && skillTiles(lastLive.skills));
+$('#sklevels').addEventListener('change', () => lastLive && skillTiles(lastLive.skills));
+
+// ── combat map at 5/sec ───────────────────────────────────────────────────────────────────────────
+// Its own cheap endpoint: mob positions change constantly, and /metrics (whole metric snapshot +
+// quest board + trace counts) is far too heavy to poll at this rate.
+async function tickCombat() {
+  try {
+    const r = await api('/entities');
+    if (!r.ok) return;
+    const d = await r.json();
+    $('#mapname').textContent = d.map ? `· ${d.map}` : '';
+    drawCombat(d.entities, d.maxHp);
+  } catch {}
+}
+setInterval(tickCombat, 200);   tickCombat();
+
 // ── quest board ───────────────────────────────────────────────────────────────────────────────────
 // Progress is the SERVER's credited count, not our kill tally — a mob dying credits nothing if the
 // quest isn't tracking it. A quest missing from client data is shown with `?` rather than hidden,
@@ -399,17 +488,27 @@ setInterval(tickDeaths, 20000);  tickDeaths();
 function questTable(qs) {
   if (!qs || !qs.length) { $('#quests').innerHTML = ''; $('#qhint').textContent = '· none accepted'; return; }
   const ready = qs.filter(q => q.ready).length;
-  $('#qhint').textContent = `· ${qs.length} accepted${ready ? ` · ${ready} READY to hand in` : ''}`;
-  let h = '<tr><th>quest</th><th>target</th><th>progress</th><th>exp</th></tr>';
+  // Order MIRRORS the driver's documented sort (ready > no-objection > LOCAL > closer-to-done > exp).
+  // It is not the driver's own queue — that lives in the Lua — so it reads as "roughly what's next".
+  $('#qhint').textContent = `· ${qs.length} accepted${ready ? ` · ${ready} READY` : ''} · order mirrors the driver's sort`;
+  let h = '';
   for (const q of qs) {
-    const pct = q.need > 0 ? Math.round(100*Math.min(1, q.progress/q.need)) : null;
-    const prog = q.need > 0 ? `${q.progress}/${q.need}` : `${q.progress}/<span class="muted">?</span>`;
-    h += `<tr>
-      <td>${q.ready ? '<span class="hit-ok">✓</span> ' : ''}${q.name}${q.repeatable ? ' <span class="muted">(rep)</span>' : ''}
-           ${q.known ? '' : ' <span class="hit-warn" title="no QuestData entry — decode gap">?</span>'}</td>
-      <td class="muted">${(q.targets||[]).join(', ') || '—'}</td>
-      <td>${prog}${pct!=null?` <span class="muted">${pct}%</span>`:''}</td>
-      <td>${q.expReward || '—'}</td></tr>`;
+    const status = q.ready ? '<span class="hit-ok">READY</span>'
+                 : q.reason ? `<span class="hit-warn">${q.reason}</span>`
+                 : '<span class="muted">working</span>';
+    h += `<tr class="qh">
+            <td><b>${q.name}</b>${q.repeatable ? ' <span class="muted">(rep)</span>' : ''}</td>
+            <td>${q.expReward || '—'}</td>
+            <td>${status}</td>
+            <td>${q.onCurrentMap ? '<span class="hit-ok">here</span>' : '<span class="muted">elsewhere</span>'}</td>
+          </tr>`;
+    for (const g of (q.goals || [])) {
+      const done = g.need > 0 && g.progress >= g.need;
+      h += `<tr class="qg"><td colspan="2">&nbsp;&nbsp;&nbsp;${g.kind} ${g.target}</td>
+              <td class="${done ? 'hit-ok' : ''}">${g.progress}/${g.need || '?'}</td>
+              <td>${g.onCurrentMap ? '<span class="hit-ok">here</span>' : ''}</td></tr>`;
+    }
+    if (!(q.goals || []).length) h += `<tr class="qg"><td colspan="4">&nbsp;&nbsp;&nbsp;<span class="muted">no objectives resolved</span></td></tr>`;
   }
   $('#quests').innerHTML = h;
 }
