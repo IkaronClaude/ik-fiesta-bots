@@ -29,6 +29,9 @@ public sealed class NpcKnowledge
     private readonly object _questDeathsIoLock = new();
     // key = "host|questId" -> how many times we have DIED pursuing it, across all sessions.
     private readonly ConcurrentDictionary<string, int> _questDeaths = new(StringComparer.Ordinal);
+    // key = "host|questId|L<level>" -> deaths on that quest AT THAT CHARACTER LEVEL. Persisted alongside
+    // the lifetime totals in the same file; levelling up therefore gives a quest a genuinely clean slate.
+    private readonly ConcurrentDictionary<string, int> _questDeathsAtLevel = new(StringComparer.Ordinal);
 
     public NpcKnowledge(string? dir = null)
     {
@@ -150,13 +153,26 @@ public sealed class NpcKnowledge
     /// shipping a death-ranked ordering, the bot went straight back to the mob that had killed it and
     /// spent 53% of a 6-minute budget walking to it. Knowledge that resets every session cannot
     /// influence a bot that restarts every few minutes — so it lives here, on the PVC.</para></summary>
-    public int RecordQuestDeath(string host, int questId)
+    public int RecordQuestDeath(string host, int questId, int level = -1)
     {
         if (string.IsNullOrEmpty(host)) return 0;
-        var n = _questDeaths.AddOrUpdate(QKey(host, questId), 1, (_, v) => v + 1);
+        // Lifetime total, kept for ranking (the risky-band sort wants "has this ever been deadly").
+        var lifetime = _questDeaths.AddOrUpdate(QKey(host, questId), 1, (_, v) => v + 1);
+        SaveQuestDeaths();
+        if (level < 0) return lifetime;
+        // ⭐ PER-LEVEL count — this is what the deprioritize THRESHOLD must use.
+        // The mark is level-scoped (RecordQuestDeprioritized carries the level), but the counter feeding
+        // it was LIFETIME, so once a quest had 2 deaths EVER it was re-deprioritized on every subsequent
+        // death, forever. q2564 had THIRTY recorded, most of them earned while combat was broken
+        // (LearnedMeleeRange collapsed to 2u, damage dealt:taken 1:76) — so quests were being blamed for a
+        // combat bug and the whole board went dark. Operator 2026-08-06: "they should not be
+        // deprioritised in the first place". A level-scoped mark needs a level-scoped trigger.
+        var n = _questDeathsAtLevel.AddOrUpdate(LKey(host, questId, level), 1, (_, v) => v + 1);
         SaveQuestDeaths();
         return n;
     }
+
+    private static string LKey(string host, int questId, int level) => $"{host}|{questId}|L{level}";
 
     private void LoadQuestDeaths()
     {
@@ -164,7 +180,8 @@ public sealed class NpcKnowledge
         {
             if (!File.Exists(_questDeathsPath)) return;
             var d = JsonSerializer.Deserialize<Dictionary<string, int>>(File.ReadAllText(_questDeathsPath));
-            if (d is not null) foreach (var (k, v) in d) _questDeaths[k] = v;
+            if (d is not null) foreach (var (k, v) in d)
+                (k.Contains("|L") ? _questDeathsAtLevel : _questDeaths)[k] = v;
         }
         catch { /* a corrupt/missing store just starts empty */ }
     }
@@ -176,8 +193,10 @@ public sealed class NpcKnowledge
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(_questDeathsPath)!);
+                var all = new SortedDictionary<string, int>(_questDeaths);
+                foreach (var (k, v) in _questDeathsAtLevel) all[k] = v;
                 File.WriteAllText(_questDeathsPath, JsonSerializer.Serialize(
-                    new SortedDictionary<string, int>(_questDeaths), new JsonSerializerOptions { WriteIndented = true }));
+                    all, new JsonSerializerOptions { WriteIndented = true }));
             }
             catch { /* persistence is best-effort; in-memory still works this session */ }
         }

@@ -234,7 +234,10 @@ public sealed class BotApi
     public int questDeaths(int questId) => _mgr.Knowledge.QuestDeaths(_handle.Options.Host, questId);
 
     /// <summary>Record + PERSIST a death while pursuing this quest. Returns the new lifetime total.</summary>
-    public int recordQuestDeath(int questId) => _mgr.Knowledge.RecordQuestDeath(_handle.Options.Host, questId);
+    /// <summary>Record a death on this quest. Returns the count AT THE CURRENT LEVEL (not lifetime) when a
+    /// level is supplied — that is what a deprioritize threshold must use, because the mark it produces is
+    /// itself level-scoped. Passing no level keeps the old lifetime semantics for ranking.</summary>
+    public int recordQuestDeath(int questId, int level = -1) => _mgr.Knowledge.RecordQuestDeath(_handle.Options.Host, questId, level);
 
     /// <summary>Contents of personal storage as of the last open: a table of
     /// <c>{slot=..., id=...}</c>. Empty until storage has been opened. Read with
