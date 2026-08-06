@@ -1475,6 +1475,105 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>Human label for an entity handle, for post-mortems: "SELF", "aggressor #N" (N = its place
+    /// in the current aggressor list), "mob&lt;id&gt;", or "h=&lt;handle&gt;" when we have never seen it.
+    /// ⚠️ The aggressor NUMBER is an index into the live list, not a durable id — it is there to make one
+    /// dump readable, not to correlate across dumps.</summary>
+    private string HandleLabel(ushort h, IReadOnlyList<ushort> aggro)
+    {
+        if (View?.SelfHandle == h) return "SELF";
+        for (var i = 0; i < aggro.Count; i++) if (aggro[i] == h) return $"aggressor #{i + 1}";
+        var npc = View?.NearbyNpcs.FirstOrDefault(n => n.Handle == h);
+        if (npc is not null && npc.Handle == h) return $"mob{npc.MobId}";
+        return $"h={h}";
+    }
+
+    /// <summary>
+    /// The always-on packet ring: the last frames in BOTH directions, oldest first, as rows
+    /// { ts, outbound, opcode, name, len, hex, ascii, note }.
+    ///
+    /// `note` carries a plain-language decode for the combat opcodes, with entity handles translated to
+    /// labels ("aggressor #4 -> SELF dmg=101 rest=672"). Offsets are the PDB struct layouts, not guesses:
+    /// SWING_DAMAGE { attacker u16 @0, defender u16 @2, flag @4, damage u16 @6, resthp u32 @8 } and
+    /// SOMEONESWING_DAMAGE { attacker @0, defender @2, flag u8 @4, resthp u32 @5 }. Anything else gets
+    /// hex/ASCII only — no invented interpretation.
+    /// </summary>
+    public DynValue recentPackets(int max = 100)
+    {
+        var t = NewTable();
+        var frames = _handle.PacketRing.Snapshot(max <= 0 ? 100 : max);
+        var aggro = View?.Aggressors?.ToList() ?? new List<ushort>();
+        var i = 1;
+        foreach (var f in frames)
+        {
+            var row = NewTable();
+            row["ts"] = f.AtUtc.ToString("HH:mm:ss.fff");
+            row["outbound"] = f.Outbound;
+            row["opcode"] = f.Opcode;
+            row["name"] = FiestaLibReloaded.Networking.PacketRegistry.GetType(f.Opcode)?.Name ?? "?";   // same resolver the file log uses
+            row["len"] = f.Payload.Length;
+            row["hex"] = Convert.ToHexString(f.Payload);
+            var sb = new System.Text.StringBuilder(f.Payload.Length);
+            foreach (var b in f.Payload) sb.Append(b >= 0x20 && b < 0x7F ? (char)b : '.');
+            row["ascii"] = sb.ToString();
+            row["note"] = CombatNote(f, aggro);
+            t[i++] = row;
+        }
+        return DynValue.NewTable(t);
+    }
+
+    private string CombatNote(Net.RingFrame f, IReadOnlyList<ushort> aggro)
+    {
+        var p = f.Payload;
+        ushort U16(int o) => (ushort)(p[o] | (p[o + 1] << 8));
+        uint U32(int o) => (uint)(p[o] | (p[o + 1] << 8) | (p[o + 2] << 16) | (p[o + 3] << 24));
+        try
+        {
+            switch (f.Opcode)
+            {
+                case 0x2448 when p.Length >= 12:   // NC_BAT_SWING_DAMAGE_CMD
+                    return $"SWING {HandleLabel(U16(0), aggro)} -> {HandleLabel(U16(2), aggro)} dmg={U16(6)} rest={U32(8)}";
+                case 0x2449 when p.Length >= 9:    // NC_BAT_SOMEONESWING_DAMAGE_CMD (no damage field)
+                    return $"SWING(other) {HandleLabel(U16(0), aggro)} -> {HandleLabel(U16(2), aggro)} rest={U32(5)}";
+                case 0x2452 when p.Length >= 5:    // NC_BAT_SKILLBASH_HIT_DAMAGE_CMD
+                    return $"SKILLHIT skill={U16(0)} caster={HandleLabel(U16(2), aggro)} targets={p[4]}";
+                default:
+                    return "";
+            }
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>Every learned skill whose cooldown has NOT yet elapsed, as rows { id, name, remainMs }.
+    /// Remaining = ActiveSkill.DelayTime (client data) minus time since the last cast we sent. A skill we
+    /// have never cast this session is READY and is simply absent — absent means "not on cooldown", which
+    /// here is a real answer rather than a missing one, because a never-cast skill genuinely has no timer.
+    /// Also reports the HP soul-stone timer, which shares the "is my heal available" question.</summary>
+    public DynValue skillCooldowns()
+    {
+        var t = NewTable(); var i = 1;
+        var v = View; if (v is null) return DynValue.NewTable(t);
+        foreach (var sid in v.LearnedSkills)
+        {
+            var last = v.SkillLastCastAtUtc(sid);
+            if (last is null) continue;                       // never cast → ready
+            var cd = _mgr.ClientData?.Skill(sid)?.DelayTimeMs ?? 0;
+            if (cd <= 0) continue;
+            var remain = cd - (DateTime.UtcNow - last.Value).TotalMilliseconds;
+            if (remain <= 0) continue;                        // elapsed → ready
+            var row = NewTable();
+            row["id"] = (int)sid;
+            row["name"] = _mgr.ClientData?.SkillName(sid) ?? "";
+            row["remainMs"] = Math.Round(remain);
+            t[i++] = row;
+        }
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Milliseconds until the HP soul stone can be used again (0 = ready, -1 = cooldown not yet
+    /// learned — it takes two heals in a session to measure it).</summary>
+    public double hpStoneReadyInMs() => View?.HpStoneReadyInMs ?? -1;
+
     public DynValue nearbyPlayers()
     {
         var t = NewTable();

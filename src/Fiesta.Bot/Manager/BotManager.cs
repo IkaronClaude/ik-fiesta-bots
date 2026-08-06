@@ -109,23 +109,26 @@ public sealed class BotManager : IAsyncDisposable
             if (handle.PacketLog is { } already)
             {
                 // Make sure the current sessions are tapped (e.g. enabled before zone entry).
-                if (handle.ZoneSession is { } zs) zs.PacketTap = already.Tap;
-                if (handle.WmSession is { } ws) ws.PacketTap = already.Tap;
+                if (handle.ZoneSession is { } zs) zs.PacketTap = handle.CombinedTap;
+                if (handle.WmSession is { } ws) ws.PacketTap = handle.CombinedTap;
                 return (true, true, already.Path);
             }
             var dir = Environment.GetEnvironmentVariable("PACKETLOG_DIR") ?? Directory.GetCurrentDirectory();
             var path = System.IO.Path.Combine(dir, $"packets-{id}.log");
             var log = new Net.PacketLog(path);
             handle.PacketLog = log;
-            if (handle.ZoneSession is { } zs2) zs2.PacketTap = log.Tap;
-            if (handle.WmSession is { } ws2) ws2.PacketTap = log.Tap;
+            if (handle.ZoneSession is { } zs2) zs2.PacketTap = handle.CombinedTap;
+            if (handle.WmSession is { } ws2) ws2.PacketTap = handle.CombinedTap;
             handle.Log($"packet log ENABLED -> {path}");
             return (true, true, path);
         }
         else
         {
-            if (handle.ZoneSession is { } zs) zs.PacketTap = null;
-            if (handle.WmSession is { } ws) ws.PacketTap = null;
+            // ⛔ Do NOT null the tap here — that would switch off the always-on PacketRing too. Disabling
+            // the FILE log is done by clearing handle.PacketLog below; CombinedTap reads that per frame,
+            // so the ring keeps capturing and the file simply stops being written.
+            if (handle.ZoneSession is { } zs) zs.PacketTap = handle.CombinedTap;
+            if (handle.WmSession is { } ws) ws.PacketTap = handle.CombinedTap;
             var path = handle.PacketLog?.Path;
             handle.PacketLog?.Dispose();
             handle.PacketLog = null;
@@ -2750,7 +2753,10 @@ public sealed class BotManager : IAsyncDisposable
                 handle.PacketLog = new Net.PacketLog(System.IO.Path.Combine(dir, $"packets-{handle.Id}.log"));
                 Log($"packet log ENABLED (from spawn) -> {handle.PacketLog.Path}");
             }
-            Action<bool, ushort, ReadOnlyMemory<byte>>? tap = handle.PacketLog is { } plog ? plog.Tap : null;
+            // ALWAYS tap: the always-on PacketRing needs every frame, and CombinedTap adds the file log
+            // only when one is enabled. Previously this was null unless PacketLog was on, so nothing was
+            // captured by default and a post-mortem had no wire to look at.
+            Action<bool, ushort, ReadOnlyMemory<byte>>? tap = handle.CombinedTap;
 
             handle.SetPhase(BotPhase.LoggingIn);
             var login = await chain.RunLoginAsync(

@@ -103,6 +103,21 @@ public sealed class BotHandle
     /// the zone session after a cross-server handoff swaps it out.</summary>
     internal Net.PacketLog? PacketLog { get; set; }
 
+    /// <summary>ALWAYS-ON bounded capture of the last 100 frames, both directions. Unlike
+    /// <see cref="PacketLog"/> (opt-in, writes everything to disk) this is running from the first
+    /// connect, so a post-mortem can show the wire without anyone having predicted the failure.</summary>
+    internal Net.PacketRing PacketRing { get; } = new(100);
+
+    /// <summary>The tap to install on every session: feeds the always-on ring, and the file log too when
+    /// one is enabled. Reads <see cref="PacketLog"/> per frame (not captured once) so enabling or
+    /// disabling the file log mid-session takes effect without re-installing the tap.</summary>
+    internal Action<bool, ushort, ReadOnlyMemory<byte>> CombinedTap =>
+        (outbound, opcode, payload) =>
+        {
+            PacketRing.Tap(outbound, opcode, payload);
+            PacketLog?.Tap(outbound, opcode, payload);
+        };
+
     /// <summary>Name of the player whose party invite (NC_PARTY_JOINPROPOSE_REQ, 0x3803)
     /// is currently pending and unanswered, or null if none. Tracked off the WM link so
     /// the bot can accept without being told the inviter's name (an unanswered invite
