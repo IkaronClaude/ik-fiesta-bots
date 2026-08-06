@@ -464,10 +464,18 @@ public sealed class BotManager : IAsyncDisposable
         if (!adjust) { needFace = false; needStop = false; }
         await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
         await EnsureBattleModeAsync(handle, s, ct);
+        // Record WHICH of the three pre-cast paths ran. They are behaviourally different and the old
+        // two-way `sent=` label lumped the last two together, so "plain cast" in the logs meant either
+        // "STOP only" or "nothing at all" — which is exactly the distinction needed to test whether a
+        // committed STOP is what 0x0FCA actually depends on. Measuring the wrong grouping is why that
+        // hypothesis could be supported but not proven.
+        string sentPath;
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
-            await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
+        { await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct); sentPath = "face+stop+cast"; }
         else if (!adjust)
-            await StopOnlyAsync(handle, s, ct);   // STOP without the swing-breaking MOVERUN
+        { await StopOnlyAsync(handle, s, ct); sentPath = "stop+cast"; }   // STOP without the swing-breaking MOVERUN
+        else
+        { sentPath = "cast-only(NO-STOP)"; }   // needFace/needStop false AND adjust true — nothing committed
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
         // Open the cast-animation window SPECULATIVELY, right on send. Waiting for the server's
         // CAST_SUC_ACK would leave a round-trip hole in which the driver fires more casts (that is
@@ -485,8 +493,8 @@ public sealed class BotManager : IAsyncDisposable
         handle.Log(BotLogLevel.Info,
             $"[castgeom] skill={skill} h={target} dist={g.Dist:F0} reach={g.Range:F0} " +
             $"offBy={(g.OffByDeg < 0 ? "n/a" : $"{g.OffByDeg:F0}°")} arc={g.ArcDeg}° " +
-            $"({g.Note}) sent={(needFace || needStop ? "face+stop+cast" : "cast")}");
-        handle.Log(BotLogLevel.Verbose, $"cast skill {skill} on h={target} ({(needFace || needStop ? "target+mode+face+stop+cast" : "target+mode+cast")})");
+            $"({g.Note}) sent={sentPath}");
+        handle.Log(BotLogLevel.Verbose, $"cast skill {skill} on h={target} (target+mode+{sentPath})");
         return ActionResult.Sent;
     }
 
