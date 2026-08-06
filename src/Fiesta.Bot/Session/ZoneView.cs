@@ -184,6 +184,17 @@ public sealed class ZoneView : IDisposable
     public static class CastFailReason
     {
         public const ushort NotEnoughSp = 0x0FC9;
+        /// <summary>⚠️ THE NAME IS A GUESS AND THE EVIDENCE CONTRADICTS IT. Kept only because call sites
+        /// use it; treat the MEANING as "cast precondition unmet — probably MOVING / no committed STOP".
+        /// <para>Measured 2026-08-06 by pairing every cast with its geometry: this code fires at
+        /// <b>dist=1u</b> (three times). You cannot be "out of range" at one unit. Distance is not it.</para>
+        /// <para>What DOES correlate is whether we committed a STOP first:
+        /// <c>face+stop+cast</c> failed 2 of 9 (22%), plain <c>cast</c> failed 11 of 29 (38%). That matches
+        /// the rest of this codebase's accumulated notes, which associate 0x0FCA with being MOVING or not
+        /// having sent the STOP — never with distance.</para>
+        /// <para>Same failure shape as 0x0FC0's old "dead / invalid state" label: an unverified name that
+        /// reads like an explanation and steers every later investigation toward the wrong variable. I
+        /// reasoned about distance for two passes because of this name.</para></summary>
         public const ushort OutOfRange = 0x0FCA;
 
         /// <summary>The skill is NOT READY — still on cooldown (or a cast is already running).
@@ -212,7 +223,8 @@ public sealed class ZoneView : IDisposable
         public static string Describe(ushort code) => code switch
         {
             NotEnoughSp => "not enough SP",
-            OutOfRange  => "target out of range",
+            OutOfRange  => "cast refused (0x0FCA) — precondition unmet; suspect MOVING / no committed STOP. "
+                         + "NOT distance: observed at dist=1u",
             NotReady    => "skill on cooldown / not ready — STOP re-pressing (each re-press cancels auto-attack)",
             // ⚠️ 0x0FC0 IS THE #1 COMBAT FAILURE and its old label ("dead / invalid state") was a GUESS that
             // read as an explanation. Characterised from 1281 live occurrences (2026-08-06, Bot7170):
