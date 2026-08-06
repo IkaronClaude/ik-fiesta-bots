@@ -1111,7 +1111,11 @@ public static class BotEndpoints
                     {
                         Index = oi,
                         Kind = o.Type == 1 ? "kill" : o.Type == 2 ? "collect" : $"type{o.Type}",
-                        Target = mobName ?? (o.Item > 0 ? $"item{o.Item}" : "?"),
+                        // Resolve the ITEM name too — a collect goal used to read "collect item3083", which
+                        // is an internal token, not a thing a person recognises. Same rule as mob names:
+                        // show the name, and keep the id visible so UI and logs cross-reference.
+                        Target = mobName ?? (o.Item > 0 ? (cd?.ItemName(o.Item) is { Length: > 0 } inm ? inm : $"item{o.Item}") : "?"),
+                        MobId = o.Mob,
                         ItemId = o.Item,
                         Need = o.Count,
                         // Per-objective credit, from the objIdx the server sends with each kill credit.
@@ -1267,6 +1271,7 @@ public static class BotEndpoints
                 Id = (int)id,
                 Name = cd.SkillName(id) ?? "",
                 CooldownMs = si.DelayTimeMs,
+                Misc = si.IsMisc,   // gathering/mount/event toy — the page filters these out by default
                 SpCost = si.Sp,
                 LastCastAtUtc = lastAt,
                 RemainingMs = remaining,

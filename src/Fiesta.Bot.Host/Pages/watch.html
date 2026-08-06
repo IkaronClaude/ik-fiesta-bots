@@ -39,7 +39,7 @@
   .tile { position:relative; aspect-ratio:1.5; border-radius:4px; background:#0b0e13;
           border:2px solid #2b3440; overflow:hidden; display:flex; align-items:center; justify-content:center;
           padding:1px; text-align:center; cursor:default }
-  .tile .nm { font-size:8px; line-height:1.05; color:var(--fg); word-break:break-word; z-index:2;
+  .tile .nm { font-size:12px; line-height:1.1; color:var(--fg); word-break:break-word; z-index:2;
               display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden }
   .tile.ready { border-color:var(--ok); box-shadow:0 0 4px rgba(63,185,80,.35) }
   .tile.cool  { border-color:#3d444d }
@@ -243,17 +243,36 @@ function drawCombat(ent, maxHp) {
   const types = []; const numOf = new Map();
   for (const m of ent.mobs||[]) if (!numOf.has(m.mobId)) { numOf.set(m.mobId, types.length+1); types.push(m); }
 
+  // CLUSTER overlapping mobs (operator P0): packs stand on top of each other and a circle per mob was an
+  // unreadable smear. Group anything within CLUSTER_PX and draw ONE circle listing "count x legendNumber"
+  // per type inside it. Radius grows with the population so a big pack reads as big.
+  const CLUSTER_PX = 26;
+  const clusters = [];
   for (const m of ent.mobs||[]) {
     const [px,py] = toPx(m.x, m.y);
     if (px < -20 || py < -20 || px > W+20 || py > H+20) continue;   // outside the zoom window
-    const dangerous = maxHp > 0 && m.maxHitSeen > 0 && m.maxHitSeen >= maxHp*0.15;
-    g.beginPath(); g.arc(px, py, 8, 0, Math.PI*2);
-    g.fillStyle = m.aggro ? 'rgba(248,81,73,.55)' : 'rgba(125,133,144,.22)';
+    let c = clusters.find(k => Math.hypot(k.x-px, k.y-py) <= CLUSTER_PX);
+    if (!c) { c = { x:px, y:py, n:0, types:new Map(), aggro:false, quest:false, danger:false }; clusters.push(c); }
+    // Keep the circle centred on the pack, not on whichever mob happened to be first.
+    c.x = (c.x*c.n + px)/(c.n+1); c.y = (c.y*c.n + py)/(c.n+1); c.n++;
+    const key = numOf.get(m.mobId);
+    c.types.set(key, (c.types.get(key)||0) + 1);
+    if (m.aggro) c.aggro = true;
+    if (m.questMob) c.quest = true;
+    if (maxHp > 0 && m.maxHitSeen > 0 && m.maxHitSeen >= maxHp*0.15) c.danger = true;
+  }
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  for (const c of clusters) {
+    const lines = [...c.types.entries()].sort((a,b) => a[0]-b[0]).map(([k,n]) => `${n}x ${k}`);
+    const r = Math.max(9, Math.min(30, 8 + 4*lines.length + 1.4*c.n));
+    g.beginPath(); g.arc(c.x, c.y, r, 0, Math.PI*2);
+    g.fillStyle = c.aggro ? 'rgba(248,81,73,.55)' : 'rgba(125,133,144,.22)';
     g.fill();
-    if (dangerous) { g.strokeStyle = 'var(--crit)'; g.strokeStyle = '#f85149'; g.lineWidth = 2; g.stroke(); }
-    if (m.questMob) { g.beginPath(); g.arc(px, py, 11, 0, Math.PI*2); g.strokeStyle = '#d4a017'; g.lineWidth = 2; g.stroke(); }
-    g.fillStyle = '#e6edf3'; g.font = '10px ui-monospace,monospace'; g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(String(numOf.get(m.mobId)), px, py);
+    if (c.danger) { g.strokeStyle = '#f85149'; g.lineWidth = 2; g.stroke(); }
+    if (c.quest)  { g.beginPath(); g.arc(c.x, c.y, r+3, 0, Math.PI*2); g.strokeStyle = '#d4a017'; g.lineWidth = 2; g.stroke(); }
+    g.fillStyle = '#e6edf3'; g.font = '10px ui-monospace,monospace';
+    const lh = 10, top = c.y - ((lines.length-1)*lh)/2;
+    lines.forEach((t,i) => g.fillText(t, c.x, top + i*lh));
   }
   for (const p of ent.party||[]) {
     if (!p.x && !p.y) continue;         // MEMBERLOCATION layout not pinned → 0,0 means UNKNOWN, don't draw
@@ -264,7 +283,7 @@ function drawCombat(ent, maxHp) {
   g.beginPath(); g.arc(cx, cy, 5, 0, Math.PI*2); g.fillStyle = '#3fb950'; g.fill();
 
   $('#legend').innerHTML = types.length
-    ? types.map(m => `<span><b>${numOf.get(m.mobId)}</b> ${m.name}${m.level?` <span class="muted">L${m.level}</span>`:''}</span>`).join('')
+    ? types.map(m => `<span><b>${numOf.get(m.mobId)}</b> ${m.name} <span class="muted">(m${m.mobId}${m.level?` L${m.level}`:''})</span></span>`).join('')
       + '<span class="muted">· gold ring = quest mob · red ring = has hit us hard · solid = aggro</span>'
     : '<span class="muted">nothing in view</span>';
 }
@@ -276,7 +295,10 @@ function drawCombat(ent, maxHp) {
 // filter on names — it changes nothing the bot does.
 const HANGUL = /[ᄀ-ᇿ㄰-㆏ꥠ-꥿가-힯]/;
 const MISC_RX = /(mining|gather|ride|mover|fishing|cooking|craft)/i;
-const isMisc = s => { const n = s.name || ''; return !n || HANGUL.test(n) || MISC_RX.test(n); };
+// Server-side DATA flag first (ActiveSkill.DemandType==2 = gathering/mount/event toy). The name tests
+// stay only as a fallback for builds without the flag — a blocklist of names kept leaking new toys
+// (Mining, Ride Mover, Water Cannon, Cake/Soda summons all slipped through).
+const isMisc = s => s.misc === true || (s.misc === undefined && (() => { const n = s.name || ''; return !n || HANGUL.test(n) || MISC_RX.test(n); })());
 // Skills come as "Name [01]", "Name [02]" — the same skill at successive ranks. Default to the HIGHEST
 // rank only, since the lower ones are superseded and just crowd the bar.
 const baseName = n => (n || '').replace(/\s*\[\d+\]\s*$/, '').trim();
@@ -531,7 +553,7 @@ function questTable(qs) {
     for (const g of (q.goals || [])) {
       const done = g.need > 0 && g.progress >= g.need;
       h += `<tr class="qg">
-              <td>&nbsp;&nbsp;&nbsp;${g.kind} ${g.target}</td>
+              <td>&nbsp;&nbsp;&nbsp;${g.kind} ${g.target} <span class="muted">${g.mobId ? `(m${g.mobId})` : (g.itemId ? `(i${g.itemId})` : '')}</span></td>
               <td class="${done ? 'hit-ok' : ''}">${g.progress}/${g.need || '?'}</td>
               <td></td>
               <td>${g.onCurrentMap ? '<span class="hit-ok">here</span>' : ''}</td>

@@ -84,6 +84,13 @@ public sealed class ClientData
             UsableDegree: GetInt(row, "UsableDegree"),
             IsMovingSkill: GetInt(row, "IsMovingSkill") != 0,
             DelayTimeMs: GetInt(row, "DlyTime"),
+            // ActiveSkill.DemandType separates real COMBAT skills from gathering/event toys. Verified over
+            // every one of this character's 27 learned skills: DemandType 2 covers Mining, Ride Mover,
+            // Water Cannon, Throw a Water Balloon, Cake/Soda summons and all the Korean event skills (18 of
+            // them), while every combat skill — Slice and Dice, Bone Slicer, Fatal Slash, Concussive Charge,
+            // Snearing Kick, Vitality — is 0, 3 or 6. A DATA test, replacing a name blocklist that kept
+            // leaking new toys (operator P1 2026-08-06).
+            DemandType: GetInt(row, "DemandType"),
             // CastTime = the CAST ANIMATION length (ActiveSkill.shn col 26), distinct from DlyTime (the
             // cooldown). While it runs the character is locked in the cast, so firing another skill during
             // it is wasted — that is how castRotation ended up sending FIVE casts in 18ms, each one's STOP
@@ -736,4 +743,9 @@ public sealed record PortalDest(int Index, int GroupNo, string Map, int MinLevel
 /// facing requirement. <see cref="IsMovingSkill"/> = castable while moving (no STOP needed).
 /// <see cref="DelayTimeMs"/> = cooldown (ms). <see cref="Range"/> = cast range (0 = melee).
 /// <see cref="Sp"/> = mana cost.</summary>
-public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0);
+public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0, int DemandType = 0)
+{
+    /// <summary>Gathering / mount / event-toy skill rather than a combat one — see the DemandType note
+    /// at the read site. The watch page hides these unless "show misc" is ticked.</summary>
+    public bool IsMisc => DemandType == 2;
+};
