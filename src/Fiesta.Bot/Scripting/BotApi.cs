@@ -154,6 +154,22 @@ public sealed class BotApi
         return _mgr.Knowledge.ShopKind(_handle.Options.Host, map!, npcId) ?? "";
     }
 
+    /// <summary>Every KNOWN shop of a kind across ALL maps, as <c>{map=..., npc=...}</c> — PERSISTED, so it
+    /// answers "where is there a storage keeper / smith?" even for a town the bot is not standing in.
+    /// <para><see cref="knownShopKind"/> can only answer for the CURRENT map, which meant the driver could
+    /// not travel to a service it already knew about: the storage trip only ran if the bot happened to be
+    /// in the right town already, so a bag-full deadlock one map away from the keeper never resolved.</para></summary>
+    public DynValue knownShopsOfKind(string kind)
+    {
+        var t = NewTable(); var i = 1;
+        foreach (var (map, npc) in _mgr.Knowledge.ShopsOfKind(_handle.Options.Host, kind))
+        {
+            var e = NewTable(); e["map"] = map; e["npc"] = npc;
+            t[i++] = DynValue.NewTable(e);
+        }
+        return DynValue.NewTable(t);
+    }
+
     /// <summary>Record + PERSIST what an NPC's shop turned out to be (current server+map). Call after a
     /// shop-open classifies it so the knowledge survives relog/restart.</summary>
     public void recordShop(int npcId, string kind)

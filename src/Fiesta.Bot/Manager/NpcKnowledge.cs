@@ -283,6 +283,29 @@ public sealed class NpcKnowledge
     public string? ShopKind(string host, string map, int npcId) =>
         _shopKind.TryGetValue(Key(host, map, npcId), out var k) ? k : null;
 
+    /// <summary>Every NPC known to offer <paramref name="kind"/> on this server, as (map, npcId).
+    /// <para>Exists because <c>ShopKind</c> can only answer "what is this NPC, HERE" — so the driver could
+    /// never ask the question it actually needed: <b>which map has a storage keeper?</b> Without that it
+    /// could not travel to one, and the storage trip only ran if the bot happened to already be standing
+    /// in the right town. Found 2026-08-06 while root-causing the bag-full hand-in deadlock.</para></summary>
+    public IReadOnlyList<(string Map, int NpcId)> ShopsOfKind(string host, string kind)
+    {
+        var outp = new List<(string, int)>();
+        if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(kind)) return outp;
+        var prefix = host + "|";
+        foreach (var (key, k) in _shopKind)
+        {
+            if (!string.Equals(k, kind, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!key.StartsWith(prefix, StringComparison.Ordinal)) continue;
+            // key = host|map|npcId — split from the RIGHT, so a map name containing '|' can't confuse it.
+            var lastBar = key.LastIndexOf('|');
+            if (lastBar <= prefix.Length - 1) continue;
+            if (!int.TryParse(key.AsSpan(lastBar + 1), out var npcId)) continue;
+            outp.Add((key[prefix.Length..lastBar], npcId));
+        }
+        return outp;
+    }
+
     /// <summary>Record (and persist) what an NPC's shop turned out to be. No-op if unchanged.</summary>
     public void RecordShop(string host, string map, int npcId, string kind)
     {
