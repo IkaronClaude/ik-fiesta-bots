@@ -1531,6 +1531,11 @@ public sealed class ZoneView : IDisposable
     /// driver spends these (fighter = full END) for tankiness; decremented on each INCPOINTSUC_ACK.</summary>
     public int FreeStatPoints { get; private set; } = -1;
 
+    /// <summary>Character combat/defence stats from the zone-entry CHAR_PARAMETER_DATA block, or null if
+    /// that block never arrived (a "burst" login). Null means NOT KNOWN — it does not mean zero.</summary>
+    public Zone.CharStats? Stats { get; private set; }
+    public void SeedStats(Zone.CharStats? stats) { if (stats is not null) Stats = stats; }
+
     /// <summary>Reset the shop/menu-open signals to "nothing opened" — called BEFORE each open attempt
     /// so the result reflects ONLY the current NPC click (a proper sync request→response), never a
     /// stale recency window. The old 10s window mis-tagged the Anvil as a weapon shop because it was

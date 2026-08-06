@@ -1031,10 +1031,75 @@ public static class BotEndpoints
             // `false` only means no pickup has failed, and a STACKABLE item picks up fine at full occupancy.
             BagFullServerSignal = bot.ZoneView?.BagFull,
             Skills = SkillPanel(bot, cd),
+            // Character sheet: the fixed stats a human reads next to HP. Decoded at zone-entry since
+            // 2026-07-29 but only ever logged — now stored and surfaced. Null when the CHAR_PARAMETER_DATA
+            // block never arrived (a "burst" login): NOT KNOWN, which is not the same as zero.
+            Stats = zv?.Stats is { } st ? new
+            {
+                st.Str, st.End, st.Dex, st.Int, st.Spr,
+                st.DmgMin, st.DmgMax, st.Def, st.Aim, st.Evasion, st.MagicDmg, st.MagicDef,
+            } : null,
+            FreeStatPoints = zv is { FreeStatPoints: >= 0 } ? zv.FreeStatPoints : (int?)null,
+            Passives = zv?.LearnedPassives?.Select(pid => new { Id = (int)pid, Name = cd?.PassiveSkillName(pid) ?? "" }).ToArray(),
+            Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
+            // Entities for the zoomed combat map. Positions are RAW game coords; the page centres on self.
+            Entities = EntityPanel(bot, cd),
             // The survivability inequality, surfaced where a human can see both sides at once.
             SustainableHealDps = zv is { SustainableHealDps: > 0 } ? zv.SustainableHealDps : (double?)null,
             IncomingDps5s = zv?.IncomingDamageSince(TimeSpan.FromSeconds(5)),
         };
+    }
+
+    /// <summary>Everything currently in AoI that the combat map draws: mobs (with facing, cur/max hp and
+    /// whether they are huntable) and party members. Handles are included so the page can correlate a row
+    /// with the death report and the packet ring.
+    /// ⚠️ <c>Hp</c> is null until an entity has actually been hit — absent means "never seen hurt", NOT
+    /// full and NOT zero. <c>Dir</c> is the raw SHINE_COORD_TYPE byte (0-255); its scale is not pinned, so
+    /// it must not be compared numerically with our own <c>Facing</c> in degrees.</summary>
+    private static object EntityPanel(BotHandle bot, GameData.ClientData? cd)
+    {
+        var zv = bot.ZoneView;
+        var self = bot.Position;
+        var mobs = new List<object>();
+        var party = new List<object>();
+        if (zv is not null)
+        {
+            var aggro = new HashSet<ushort>(zv.Aggressors);
+            // Mobs any ACTIVE quest wants — kill objectives and collect objectives alike (a collect drops
+            // from a mob, and checking only kills is the exact miss that let an Iyzel collect quest through).
+            var questMobs = new HashSet<int>();
+            if (cd is not null)
+                foreach (var qid in zv.ActiveQuests.Keys)
+                    if (cd.Quest(qid) is { } qd)
+                        foreach (var o in qd.Objectives)
+                            if (o.Mob > 0) questMobs.Add(o.Mob);
+            foreach (var n in zv.NearbyNpcs)
+            {
+                if (n.IsGate) continue;
+                var md = cd?.Mob(n.MobId);
+                mobs.Add(new
+                {
+                    Handle = (int)n.Handle,
+                    MobId = (int)n.MobId,
+                    Name = md?.Name ?? $"mob{n.MobId}",
+                    Level = md?.Level ?? 0,
+                    X = (double)n.X, Y = (double)n.Y,
+                    Dir = (int)n.Dir,
+                    Hp = zv.EntityHp(n.Handle) is { } h ? (double?)h : null,
+                    MaxHp = md?.MaxHp ?? 0,
+                    Huntable = zv.IsHuntableMob?.Invoke(n.MobId) ?? true,
+                    Aggro = aggro.Contains(n.Handle),
+                    QuestMob = questMobs.Contains(n.MobId),
+                    // Danger is LEARNED, not baked: the hardest hit this mob type has actually landed on us
+                    // (-1 = never hit us, i.e. unknown rather than safe). The page compares it to our MaxHp.
+                    MaxHitSeen = zv.MobHitMax(n.MobId),
+                    Dist = self is { } p ? Math.Sqrt(Math.Pow((double)n.X - p.X, 2) + Math.Pow((double)n.Y - p.Y, 2)) : (double?)null,
+                });
+            }
+            foreach (var m in bot.PartyMembers.Values)
+                party.Add(new { m.Name, Level = (int)m.Level, Hp = (double)m.Hp, MaxHp = (double)m.MaxHp, X = (double)m.X, Y = (double)m.Y });
+        }
+        return new { Self = self is { } sp ? new { X = (double)sp.X, Y = (double)sp.Y } : null, Mobs = mobs, Party = party };
     }
 
     /// <summary>Learned skills with their cooldown state: length from client data, last-use from ZoneView,

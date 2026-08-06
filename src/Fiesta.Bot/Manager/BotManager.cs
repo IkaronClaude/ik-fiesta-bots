@@ -2951,6 +2951,7 @@ public sealed class BotManager : IAsyncDisposable
                 if (entry.Level is { } lvl0 && lvl0 > 0) handle.SetLevel(lvl0);
                 zoneView.SeedSkills(entry.Skills);
                 zoneView.SeedPassives(entry.Passives);
+                zoneView.SeedStats(entry.Stats);   // STR/END/.../DEF/M.Def for the watch panel
                 zoneView.SeedItems(entry.Items);
                 zoneView.SeedQuests(entry.DoneQuests, entry.ActiveQuests, entry.ReadQuests);
                 handle.SetCurrentMap(currentMap);

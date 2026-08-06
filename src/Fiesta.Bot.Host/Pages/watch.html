@@ -26,6 +26,28 @@
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap }
   .muted { color:var(--dim) }
   .err { color:var(--crit) }
+
+  /* ── skill tiles: an MMO action bar. 8 per row, so 24 learned skills = 3 rows. ──────────────────
+     State is carried the way a game client carries it, not as a table column:
+       • READY      → lit border
+       • COOLING    → dim border + seconds remaining + a radial sweep darkening the remaining fraction
+       • UNKNOWN cd → dashed border. A skill whose DelayTime we cannot read must NOT look ready. */
+  .tiles { display:grid; grid-template-columns:repeat(8, 1fr); gap:6px }
+  .tile { position:relative; aspect-ratio:1; border-radius:5px; background:#0b0e13;
+          border:2px solid #2b3440; overflow:hidden; display:flex; align-items:center; justify-content:center;
+          padding:2px; text-align:center; cursor:default }
+  .tile .nm { font-size:9px; line-height:1.1; color:var(--fg); word-break:break-word; z-index:2 }
+  .tile.ready { border-color:var(--ok); box-shadow:0 0 4px rgba(63,185,80,.35) }
+  .tile.cool  { border-color:#3d444d }
+  .tile.cool .nm { color:var(--dim) }
+  .tile.unk   { border-style:dashed; border-color:var(--warn) }
+  .tile .cd { position:absolute; bottom:1px; right:2px; font-size:9px; color:var(--warn); z-index:3 }
+  /* the radial sweep: conic-gradient darkens the portion of the cooldown still to run */
+  .tile .sweep { position:absolute; inset:0; z-index:1; pointer-events:none }
+
+  .maps { display:grid; grid-template-columns:1fr 1fr; gap:10px }
+  .legend { margin-top:6px; display:flex; flex-wrap:wrap; gap:4px 10px; font-size:11px; color:var(--dim) }
+  .legend b { color:var(--fg); font-weight:normal }
 </style>
 
 <header>
@@ -47,20 +69,41 @@
       <div id="vitals"></div>
     </div>
     <div class="panel">
-      <h2>where it's been</h2>
-      <canvas id="heat" width="320" height="320"></canvas>
-      <div id="mapinfo" class="muted" style="margin-top:6px"></div>
+      <h2>character</h2>
+      <div id="charsheet"></div>
     </div>
   </div>
 
   <div>
     <div class="panel" style="margin-bottom:10px">
+      <h2>skills <span class="muted" id="skhint"></span></h2>
+      <div id="skills" class="tiles"></div>
+    </div>
+
+    <div class="panel" style="margin-bottom:10px">
+      <h2>maps</h2>
+      <div class="maps">
+        <div>
+          <div class="muted" style="margin-bottom:4px">big map — where it's been</div>
+          <canvas id="heat" width="320" height="320"></canvas>
+          <div id="mapinfo" class="muted" style="margin-top:6px"></div>
+        </div>
+        <div>
+          <div class="muted" style="margin-bottom:4px">combat map — self centred, <span id="cmscale"></span></div>
+          <canvas id="combat" width="320" height="320"></canvas>
+          <div id="legend" class="legend"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:10px">
+      <h2>console <span class="muted">(severity filter above)</span></h2>
+      <div id="log"></div>
+    </div>
+
+    <div class="panel">
       <h2>metrics <span class="muted" id="mwin"></span></h2>
       <div style="max-height:340px; overflow:auto"><table id="metrics"></table></div>
-    </div>
-    <div class="panel">
-      <h2>log <span class="muted">(severity filter above)</span></h2>
-      <div id="log"></div>
     </div>
   </div>
 </div>
@@ -100,25 +143,101 @@ function vitals(l) {
       <div>heal cap</div><div>${heal!=null?num(heal)+' hp/s':'<span class="muted">unknown</span>'}</div>
     </div>
     ${losing ? '<div class="hit-crit" style="margin-top:6px">incoming exceeds sustainable healing — this fight cannot be out-healed</div>' : ''}
-    <div class="muted" style="margin-top:6px">${l.script ?? ''}</div>
-    ${skills(l.skills)}`;
+    <div class="muted" style="margin-top:6px">${l.script ?? ''}</div>`;
 }
 
-// Skill cooldowns. A skill with no cooldown length in client data shows "?" rather than a fabricated
-// "ready" — unknown must stay unknown, or the panel lies about what the bot can do right now.
-function skills(list) {
-  if (!list || !list.length) return '';
-  const row = s => {
-    const rem = s.remainingMs;
-    const state = s.cooldownMs > 0
-      ? (rem == null ? '<span class="muted">unused</span>'
-        : rem <= 0 ? '<span class="hit-ok">ready</span>'
-        : `<span class="hit-warn">${(rem/1000).toFixed(1)}s</span>`)
-      : '<span class="muted">?</span>';
-    return `<tr><td>${s.name || s.id}</td><td>${s.cooldownMs? (s.cooldownMs/1000).toFixed(1)+'s' : '—'}</td><td>${state}</td></tr>`;
-  };
-  return `<h2 style="margin-top:10px">skills</h2><table>
-    <tr><th>skill</th><th>cd</th><th>state</th></tr>${list.map(row).join('')}</table>`;
+// ── combat map ────────────────────────────────────────────────────────────────────────────────────
+// Zoomed right in, self always dead centre. Each mob is a circle carrying a NUMBER; the legend below
+// maps number → name, so the map stays readable when a dozen of the same mob are on screen.
+// Rings, outermost first:
+//   • gold  = an objective of a currently ACTIVE quest (kill OR collect)
+//   • red   = DANGEROUS, learned from the wire: the biggest hit this mob type has actually landed on us
+//             is a large share of our max HP. A mob that has never hit us is UNKNOWN, not safe, and gets
+//             no ring rather than a reassuring one.
+//   • fill  = solid when it is currently aggro'd onto us, hollow otherwise.
+const CM_RANGE = 900;      // units from centre to edge — "very zoomed in", roughly one engagement
+function drawCombat(ent, maxHp) {
+  const c = $('#combat'), g = c.getContext('2d');
+  const W = c.width, H = c.height, cx = W/2, cy = H/2;
+  g.clearRect(0,0,W,H); g.fillStyle = '#0b0e13'; g.fillRect(0,0,W,H);
+  $('#cmscale').textContent = `±${CM_RANGE}u`;
+  if (!ent || !ent.self) { $('#legend').innerHTML = '<span class="muted">no position yet</span>'; return; }
+
+  // range rings so distances are readable at a glance
+  g.strokeStyle = '#1b2430';
+  for (const r of [0.33, 0.66, 1]) { g.beginPath(); g.arc(cx, cy, r*(W/2-6), 0, Math.PI*2); g.stroke(); }
+
+  const sx = ent.self.x, sy = ent.self.y;
+  const toPx = (x,y) => [cx + ((x-sx)/CM_RANGE)*(W/2-6), cy + ((y-sy)/CM_RANGE)*(H/2-6)];
+
+  // number the DISTINCT mob types present, so the legend is short
+  const types = []; const numOf = new Map();
+  for (const m of ent.mobs||[]) if (!numOf.has(m.mobId)) { numOf.set(m.mobId, types.length+1); types.push(m); }
+
+  for (const m of ent.mobs||[]) {
+    const [px,py] = toPx(m.x, m.y);
+    if (px < -20 || py < -20 || px > W+20 || py > H+20) continue;   // outside the zoom window
+    const dangerous = maxHp > 0 && m.maxHitSeen > 0 && m.maxHitSeen >= maxHp*0.15;
+    g.beginPath(); g.arc(px, py, 8, 0, Math.PI*2);
+    g.fillStyle = m.aggro ? 'rgba(248,81,73,.55)' : 'rgba(125,133,144,.22)';
+    g.fill();
+    if (dangerous) { g.strokeStyle = 'var(--crit)'; g.strokeStyle = '#f85149'; g.lineWidth = 2; g.stroke(); }
+    if (m.questMob) { g.beginPath(); g.arc(px, py, 11, 0, Math.PI*2); g.strokeStyle = '#d4a017'; g.lineWidth = 2; g.stroke(); }
+    g.fillStyle = '#e6edf3'; g.font = '10px ui-monospace,monospace'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(String(numOf.get(m.mobId)), px, py);
+  }
+  for (const p of ent.party||[]) {
+    if (!p.x && !p.y) continue;         // MEMBERLOCATION layout not pinned → 0,0 means UNKNOWN, don't draw
+    const [px,py] = toPx(p.x, p.y);
+    g.beginPath(); g.arc(px, py, 7, 0, Math.PI*2); g.fillStyle = 'rgba(88,166,255,.7)'; g.fill();
+  }
+  // self last, on top
+  g.beginPath(); g.arc(cx, cy, 5, 0, Math.PI*2); g.fillStyle = '#3fb950'; g.fill();
+
+  $('#legend').innerHTML = types.length
+    ? types.map(m => `<span><b>${numOf.get(m.mobId)}</b> ${m.name}${m.level?` <span class="muted">L${m.level}</span>`:''}</span>`).join('')
+      + '<span class="muted">· gold ring = quest mob · red ring = has hit us hard · solid = aggro</span>'
+    : '<span class="muted">nothing in view</span>';
+}
+
+// Skill TILES, like an MMO action bar. A skill with no cooldown length in client data gets a DASHED
+// border, never a lit one — unknown must stay unknown, or the panel lies about what the bot can do.
+function skillTiles(list) {
+  if (!list || !list.length) { $('#skills').innerHTML = '<span class="muted">no skills</span>'; return; }
+  $('#skhint').textContent = `· ${list.length} learned · lit = ready, dashed = cooldown unknown`;
+  $('#skills').innerHTML = list.map(s => {
+    const cd = s.cooldownMs || 0, rem = s.remainingMs;
+    if (!cd) return `<div class="tile unk" title="${s.name||s.id} — DelayTime unknown in client data">
+                       <span class="nm">${s.name || s.id}</span></div>`;
+    const cooling = rem != null && rem > 0;
+    // Sweep covers the fraction of the cooldown STILL TO RUN, so the tile visibly empties as it comes up.
+    const frac = cooling ? Math.max(0, Math.min(1, rem / cd)) : 0;
+    const sweep = cooling
+      ? `<div class="sweep" style="background:conic-gradient(rgba(0,0,0,.72) ${frac*360}deg, rgba(0,0,0,0) 0)"></div>` : '';
+    return `<div class="tile ${cooling?'cool':'ready'}" title="${s.name||s.id} · cd ${(cd/1000).toFixed(1)}s · sp ${s.spCost??'?'}">
+              ${sweep}<span class="nm">${s.name || s.id}</span>
+              ${cooling ? `<span class="cd">${(rem/1000).toFixed(1)}</span>` : ''}</div>`;
+  }).join('');
+}
+
+// Character sheet: fixed stats + passives, together, per the layout spec. Every value here is either
+// from the wire (CHAR_PARAMETER_DATA at zone-entry) or client data — nothing derived or guessed, and a
+// missing block renders as "not known" rather than zeros.
+function charSheet(l) {
+  const st = l.stats;
+  const stats = !st ? '<div class="muted">stats not known (no CHAR_PARAMETER_DATA this login)</div>' : `
+    <div class="kv">
+      <div>STR / END</div><div>${num(st.str)} / ${num(st.end)}${l.freeStatPoints ? ` <span class="hit-warn">+${l.freeStatPoints} unspent</span>` : ''}</div>
+      <div>DEX / INT / SPR</div><div>${num(st.dex)} / ${num(st.int)} / ${num(st.spr)}</div>
+      <div>attack</div><div>${num(st.dmgMin)}~${num(st.dmgMax)} <span class="muted">m.dmg ${num(st.magicDmg)}</span></div>
+      <div>defence</div><div>DEF ${num(st.def)} · M.DEF ${num(st.magicDef)}</div>
+      <div>aim / evasion</div><div>${num(st.aim)} / ${num(st.evasion)}</div>
+      <div>facing</div><div>${l.facing != null ? l.facing.toFixed(0)+'°' : '<span class="muted">none set</span>'}</div>
+    </div>`;
+  const ps = l.passives;
+  const passives = !ps || !ps.length ? '<div class="muted">none</div>'
+    : ps.map(p => `<div>${p.name || ('passive '+p.id)}</div>`).join('');
+  return `${stats}<h2 style="margin-top:10px">passives</h2>${passives}`;
 }
 
 function metricsTable(ms) {
@@ -143,6 +262,9 @@ async function tickMetrics() {
     if (!r.ok) { $('#status').textContent = `metrics ${r.status}`; return; }
     const d = await r.json();
     $('#vitals').innerHTML = vitals(d.live);
+    $('#charsheet').innerHTML = charSheet(d.live);
+    skillTiles(d.live.skills);
+    drawCombat(d.live.entities, d.live.maxHp);
     $('#metrics').innerHTML = metricsTable(d.metrics);
     const sel = $('#mapsel');
     const have = new Set([...sel.options].map(o=>o.value));

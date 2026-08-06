@@ -323,6 +323,7 @@ public sealed class ZoneEntry
                     // counts live in NC_CHAR_BASE (0x1038, parsed above), not here. Seed the max so
                     // the bot can restock at a fraction of capacity (<10%) and compute the buy deficit.
                     uint? maxHpStone = null, maxSpStone = null;
+                    CharStats? charStats = null;
                     if (span.Length >= 170)
                     {
                         maxHpStone = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(162, 4));
@@ -337,10 +338,14 @@ public sealed class ZoneEntry
                     if (span.Length >= 130)
                     {
                         static uint U(ReadOnlySpan<byte> s, int o) => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(s.Slice(o, 4));
-                        _log($"[stats] STR={U(span, 0x16)} END={U(span, 0x1E)} DEX={U(span, 0x26)} INT={U(span, 0x2E)} SPR={U(span, 0x3E)} | " +
-                             $"Dmg={U(span, 0x46)}~{U(span, 0x4E)} DEF={U(span, 0x56)} Aim={U(span, 0x5E)} Evasion={U(span, 0x66)} M.Dmg={U(span, 0x6E)} M.Def={U(span, 0x7E)}");
+                        charStats = new CharStats(
+                            U(span, 0x16), U(span, 0x1E), U(span, 0x26), U(span, 0x2E), U(span, 0x3E),
+                            U(span, 0x46), U(span, 0x4E), U(span, 0x56), U(span, 0x5E), U(span, 0x66),
+                            U(span, 0x6E), U(span, 0x7E));
+                        _log($"[stats] STR={charStats.Str} END={charStats.End} DEX={charStats.Dex} INT={charStats.Int} SPR={charStats.Spr} | " +
+                             $"Dmg={charStats.DmgMin}~{charStats.DmgMax} DEF={charStats.Def} Aim={charStats.Aim} Evasion={charStats.Evasion} M.Dmg={charStats.MagicDmg} M.Def={charStats.MagicDef}");
                     }
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel, charStats);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining.
             }
@@ -348,7 +353,7 @@ public sealed class ZoneEntry
             // Fallback: we saw the burst but no explicit [1802] before the deadline.
             // Still complete the login so we spawn rather than hang (position unknown).
             if (sawFrame)
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen, exp, charLevel);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen, exp, charLevel, null);
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
         catch
@@ -366,11 +371,12 @@ public sealed class ZoneEntry
         IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? items,
         IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress)>? activeQuests,
         IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null,
-        uint? maxHpStone = null, uint? maxSpStone = null, ulong? cen = null, ulong? exp = null, byte? charLevel = null)
+        uint? maxHpStone = null, uint? maxSpStone = null, ulong? cen = null, ulong? exp = null, byte? charLevel = null,
+        CharStats? stats = null)
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel, WasBurst: via.Contains("burst"));
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel, stats, WasBurst: via.Contains("burst"));
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body
@@ -427,6 +433,14 @@ public sealed class ZoneEntry
 /// spawn position, its in-zone <see cref="CharHandle"/> (self handle), and its
 /// <see cref="MaxHp"/>/<see cref="MaxSp"/> — all decoded from the [1802] login ack
 /// (null if it wasn't seen). Current HP/SP arrive later via HPCHANGE/SPCHANGE.</summary>
+/// <summary>Character combat/defence stats from the CHAR_PARAMETER_DATA block. These have been decoded
+/// and LOGGED at zone-entry since 2026-07-29 and never stored — the comment there said "ZoneView/BotApi
+/// exposure follows" and it hadn't. They are the defender side of the survivability model and what a
+/// human needs on the watch panel beside HP.</summary>
+public sealed record CharStats(
+    uint Str, uint End, uint Dex, uint Int, uint Spr,
+    uint DmgMin, uint DmgMax, uint Def, uint Aim, uint Evasion, uint MagicDmg, uint MagicDef);
+
 public sealed record ZoneEntryResult(
     FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY, ushort? CharHandle, uint? MaxHp = null, uint? MaxSp = null,
     IReadOnlyList<ushort>? Skills = null,
@@ -438,6 +452,7 @@ public sealed record ZoneEntryResult(
     int? CurHpStone = null, int? CurSpStone = null,
     uint? MaxHpStone = null, uint? MaxSpStone = null,
     ulong? Cen = null, ulong? Exp = null, byte? Level = null,
+    CharStats? Stats = null,
     // True when login completed WITHOUT the explicit [1802] MAP_LOGIN_ACK ("burst") → position/HP were NOT
     // seeded (null) and the bot's nav is broken (can't find gates). The caller retries the zone-entry to get a
     // clean login instead of running blind. (operator 2026-07-18 — root of the freeze/stone-starve death loop.)

@@ -280,7 +280,7 @@ public sealed class BotHandle
     /// ⚠️ This is OUR heading in game-coordinate space (atan2 of the facing vector). It is NOT in the same
     /// units as a mob's <c>dir</c> byte (0-255) from SHINE_COORD_TYPE — that scale has not been pinned yet,
     /// so the two are reported side by side but must not be compared numerically.</summary>
-    internal double FacingDeg
+    public double FacingDeg
     {
         get
         {
