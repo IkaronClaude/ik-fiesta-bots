@@ -261,6 +261,7 @@ function charSheet(l) {
       <div>defence</div><div>DEF ${num(st.def)} · M.DEF ${num(st.magicDef)}</div>
       <div>aim / evasion</div><div>${num(st.aim)} / ${num(st.evasion)}</div>
       <div>facing</div><div>${l.facing != null ? l.facing.toFixed(0)+'°' : '<span class="muted">none set</span>'}</div>
+      <div>level exp</div><div>${expBandText(l)}</div>
     </div>`;
   const ps = l.passives;
   const passives = !ps || !ps.length ? '<div class="muted">none</div>'
@@ -293,6 +294,7 @@ async function tickMetrics() {
     $('#charsheet').innerHTML = charSheet(d.live);
     skillTiles(d.live.skills);
     drawCombat(d.live.entities, d.live.maxHp);
+    lastLive = d.live;
     questList = d.live.quests || [];
     questsById = new Map(questList.map(q => [q.name, q]));
     questTable(questList);
@@ -442,6 +444,19 @@ function renderDeaths(txt) {
 // exp / (nextLevelExp - currLevelExp), and that denominator is NOT available: there is no
 // level→exp table in ressystem and no "exp to next level" field anywhere in the PDB protocol
 // structs (only EXPGAIN and CurrentExp). Showing a made-up % would be worse than showing none.
+// Exp within the current LEVEL band: (exp - PrevExp) / (NextExp - PrevExp), both from
+// CHAR_PARAMETER_DATA. This is the same pair the real client's exp bar is drawn from.
+function expPct(l) {
+  const st = l && l.stats; if (!st || !st.expBand) return null;
+  const into = Number(l.exp) - Number(st.prevExp);
+  if (!isFinite(into) || into < 0) return null;
+  return 100 * into / Number(st.expBand);
+}
+function expBandText(l) {
+  const st = l.stats, p = expPct(l);
+  if (!st || !st.expBand) return '<span class="muted">band not known</span>';
+  return `${Number(l.exp) - Number(st.prevExp)} / ${st.expBand} <span class="muted">(${p.toFixed(1)}%)</span>`;
+}
 const toastSeen = new Set();
 function toast(kind, parts) {
   const el = document.createElement('div');
@@ -470,12 +485,15 @@ function scanEvents(txt) {
       toastSeen.add(line);
       const nm = m[1].replace(/^.*CRUTCH\[OK\]\s*/, '');
       const q = questsByName(nm);
-      toast('hand', [nm, 'Handed In', q?.expReward ? `${q.expReward} EXP` : 'reward granted']);
+      // % of the CURRENT LEVEL this reward is worth — exp / (NextExp - PrevExp), as asked for.
+      const band = lastLive?.stats?.expBand || 0;
+      const pct = (q?.expReward && band) ? ` (${(100*q.expReward/Number(band)).toFixed(1)}%)` : '';
+      toast('hand', [nm, 'Handed In', q?.expReward ? `${q.expReward} EXP${pct}` : 'reward granted']);
     }
   }
   if (toastSeen.size > 4000) toastSeen.clear();
 }
-let lastKilledName = null;
+let lastKilledName = null, lastLive = null;
 let questsById = new Map(), questList = [];
 function questsByName(n) { return questList.find(q => q.name === n); }
 </script>

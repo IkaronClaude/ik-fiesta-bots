@@ -338,10 +338,21 @@ public sealed class ZoneEntry
                     if (span.Length >= 130)
                     {
                         static uint U(ReadOnlySpan<byte> s, int o) => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(s.Slice(o, 4));
+                        // Exp band: CHAR_PARAMETER_DATA.PrevExp @param0 and .NextExp @param8, i.e. body
+                        // offsets 2 and 10 (the block starts after the charhandle u16 — same +2 shift the
+                        // stone reads above rely on). u64 each.
+                        static ulong U64(ReadOnlySpan<byte> s, int o) => System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(s.Slice(o, 8));
+                        var prevExp = span.Length >= 18 ? U64(span, 2) : 0UL;
+                        var nextExp = span.Length >= 18 ? U64(span, 10) : 0UL;
                         charStats = new CharStats(
                             U(span, 0x16), U(span, 0x1E), U(span, 0x26), U(span, 0x2E), U(span, 0x3E),
                             U(span, 0x46), U(span, 0x4E), U(span, 0x56), U(span, 0x5E), U(span, 0x66),
-                            U(span, 0x6E), U(span, 0x7E));
+                            U(span, 0x6E), U(span, 0x7E), prevExp, nextExp);
+                        // Log the band with the live exp so a wrong offset is obvious immediately: the
+                        // invariant is prev <= exp <= next. If it doesn't hold, the decode is wrong.
+                        _log($"[exp] band prev={prevExp} next={nextExp} (level {charLevel?.ToString() ?? "?"}) " +
+                             $"— exp={exp?.ToString() ?? "?"}" +
+                             (exp is { } e && (e < prevExp || e > nextExp) ? "  ⚠️ OUT OF BAND — offsets wrong" : ""));
                         _log($"[stats] STR={charStats.Str} END={charStats.End} DEX={charStats.Dex} INT={charStats.Int} SPR={charStats.Spr} | " +
                              $"Dmg={charStats.DmgMin}~{charStats.DmgMax} DEF={charStats.Def} Aim={charStats.Aim} Evasion={charStats.Evasion} M.Dmg={charStats.MagicDmg} M.Def={charStats.MagicDef}");
                     }
@@ -437,9 +448,16 @@ public sealed class ZoneEntry
 /// and LOGGED at zone-entry since 2026-07-29 and never stored — the comment there said "ZoneView/BotApi
 /// exposure follows" and it hadn't. They are the defender side of the survivability model and what a
 /// human needs on the watch panel beside HP.</summary>
+/// <param name="PrevExp">Total exp at the START of the current level.</param>
+/// <param name="NextExp">Total exp required to reach the NEXT level. Together these give the exp bar the
+/// real client draws: <c>(Exp - PrevExp) / (NextExp - PrevExp)</c>. They are the FIRST two fields of
+/// CHAR_PARAMETER_DATA and were sitting in a block we already parse — I previously reported the level
+/// curve as underivable after searching the PDB field names and piping the result through `head -20`,
+/// which truncated the answer off the end of the list. A narrow sample is not a negative result.</param>
 public sealed record CharStats(
     uint Str, uint End, uint Dex, uint Int, uint Spr,
-    uint DmgMin, uint DmgMax, uint Def, uint Aim, uint Evasion, uint MagicDmg, uint MagicDef);
+    uint DmgMin, uint DmgMax, uint Def, uint Aim, uint Evasion, uint MagicDmg, uint MagicDef,
+    ulong PrevExp = 0, ulong NextExp = 0);
 
 public sealed record ZoneEntryResult(
     FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY, ushort? CharHandle, uint? MaxHp = null, uint? MaxSp = null,

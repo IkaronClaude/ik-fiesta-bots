@@ -1038,6 +1038,10 @@ public static class BotEndpoints
             {
                 st.Str, st.End, st.Dex, st.Int, st.Spr,
                 st.DmgMin, st.DmgMax, st.Def, st.Aim, st.Evasion, st.MagicDmg, st.MagicDef,
+                // The exp bar the real client draws. Band is per-LEVEL, so ExpIntoLevel/ExpBand is the
+                // denominator for "N EXP (x%)". Null-ish (0) only when the parameter block never arrived.
+                st.PrevExp, st.NextExp,
+                ExpBand = st.NextExp > st.PrevExp ? st.NextExp - st.PrevExp : 0,
             } : null,
             FreeStatPoints = zv is { FreeStatPoints: >= 0 } ? zv.FreeStatPoints : (int?)null,
             Passives = zv?.LearnedPassives?.Select(pid => new { Id = (int)pid, Name = cd?.PassiveSkillName(pid) ?? "" }).ToArray(),
