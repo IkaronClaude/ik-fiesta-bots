@@ -475,6 +475,17 @@ public sealed class BotManager : IAsyncDisposable
         // own packets — the local ActiveSkill.CastTime is only the un-wedge deadline.
         if (handle.ZoneView is { } zvc) zvc.NoteCastSent(ClientData?.Skill(skill)?.CastTimeMs ?? 0);
         if (handle.ZoneView is { } zvs) zvs.NoteSkillCast(skill);   // per-skill, for the cooldown panel
+        // 📐 LOG THE GEOMETRY WITH THE CAST. 0x0FC0 is the bot's #1 combat failure (1281 in one session,
+        // every skill, rejected in 50-100ms) and the leading hypothesis is the 45° facing arc — but that
+        // could not be CONFIRMED because the angle was computed here and thrown away, leaving only distance
+        // to correlate on (which cleared the range hypothesis but not this one). Now every cast states the
+        // distance, the reach, the off-by angle and the skill's arc, so the next cast-fail correlation is a
+        // grep. Info, not Verbose: this is the field needed to close a P0, not per-frame noise.
+        var g = _lastCastGeom;
+        handle.Log(BotLogLevel.Info,
+            $"[castgeom] skill={skill} h={target} dist={g.Dist:F0} reach={g.Range:F0} " +
+            $"offBy={(g.OffByDeg < 0 ? "n/a" : $"{g.OffByDeg:F0}°")} arc={g.ArcDeg}° " +
+            $"({g.Note}) sent={(needFace || needStop ? "face+stop+cast" : "cast")}");
         handle.Log(BotLogLevel.Verbose, $"cast skill {skill} on h={target} ({(needFace || needStop ? "target+mode+face+stop+cast" : "target+mode+cast")})");
         return ActionResult.Sent;
     }
@@ -657,6 +668,12 @@ public sealed class BotManager : IAsyncDisposable
     /// <para>No adjustment is needed when we are BOTH already inside the skill's range AND already
     /// facing the target within its <c>UsableDegree</c> arc. While auto-attacking the same target the
     /// server's swing-follow keeps us faced, so that case reliably needs nothing.</para></summary>
+    /// <summary>Why a cast was or wasn't adjusted — the inputs to <see cref="NeedsFacingAdjust"/>, so the
+    /// tail can correlate a cast-fail with the geometry that produced it. <c>OffByDeg</c> is -1 when the
+    /// angle wasn't computed (recent hit / no data / unknown heading).</summary>
+    private sealed record CastGeometry(double Dist, double Range, double OffByDeg, int ArcDeg, string Note);
+    private CastGeometry _lastCastGeom = new(-1, -1, -1, 0, "none");
+
     private bool NeedsFacingAdjust(BotHandle handle, ushort skill, ushort target)
     {
         // ⭐ A RECENT CONNECTING HIT IS PROOF we are in range AND faced — the server only lands our swing
@@ -674,30 +691,34 @@ public sealed class BotManager : IAsyncDisposable
         if (handle.ZoneView is { } zvh
             && zvh.LastRealDamageDealtAtUtc > DateTime.MinValue
             && (DateTime.UtcNow - zvh.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500)
-            return false;
+        { _lastCastGeom = new(-1, -1, -1, 0, "recent-hit (already in range+faced)"); return false; }
 
-        if (NpcPos(handle, target) is not { } tp || handle.Position is not { } pos) return true;
+        if (NpcPos(handle, target) is not { } tp || handle.Position is not { } pos)
+        { _lastCastGeom = new(-1, -1, -1, 0, "no target/self position"); return true; }
         var dx = (double)tp.X - pos.X; var dy = (double)tp.Y - pos.Y;
         var dist = Math.Sqrt(dx * dx + dy * dy);
-        if (dist < 1) return false;                       // on top of it: nothing to adjust
+        if (dist < 1) { _lastCastGeom = new(dist, -1, -1, 0, "on top of target"); return false; }
 
         var si = ClientData?.Skill(skill);
         // Range 0 = melee skill; use the melee reach we already close to for auto-attack.
         // Range 0 = melee: use the reach LEARNED from the wire (an archer's differs from a fighter's),
         // never a baked constant. If nothing has been learned yet, adjust rather than assume.
         double range = si is { Range: > 0 } ? si.Range : (handle.ZoneView?.LearnedMeleeRange ?? 0);
-        if (range <= 0) return true;
-        if (dist > range) return true;                    // out of range → must close
+        if (range <= 0) { _lastCastGeom = new(dist, 0, -1, 0, "melee reach NOT yet learned"); return true; }
+        if (dist > range) { _lastCastGeom = new(dist, range, -1, si?.UsableDegree ?? 0, "OUT OF RANGE"); return true; }
 
         // Facing: compare our tracked heading against the direction to the target. UsableDegree is the
         // skill's allowed arc (0 = no facing requirement at all).
         var deg = si?.UsableDegree ?? 0;
-        if (deg <= 0) return false;                       // skill doesn't care which way we point
-        if (handle.FacingDx == 0 && handle.FacingDy == 0) return true;   // heading unknown → adjust
+        if (deg <= 0) { _lastCastGeom = new(dist, range, -1, 0, "skill has no facing arc"); return false; }
+        if (handle.FacingDx == 0 && handle.FacingDy == 0)
+        { _lastCastGeom = new(dist, range, -1, deg, "HEADING UNKNOWN"); return true; }
         var dot = (handle.FacingDx * dx + handle.FacingDy * dy) / dist;
         dot = Math.Clamp(dot, -1.0, 1.0);
         var offBy = Math.Acos(dot) * 180.0 / Math.PI;
-        return offBy > deg / 2.0;                         // outside the arc → must turn
+        var outside = offBy > deg / 2.0;
+        _lastCastGeom = new(dist, range, offBy, deg, outside ? "OUTSIDE ARC" : "inside arc");
+        return outside;                                   // outside the arc → must turn
     }
 
     /// <summary>Face (<paramref name="x"/>,<paramref name="y"/>) and STOP — a public wrapper over
