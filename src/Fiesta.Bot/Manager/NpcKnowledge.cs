@@ -38,11 +38,13 @@ public sealed class NpcKnowledge
         _path = Path.Combine(baseDir, "npc-shops.json");
         _questDeprioPath = Path.Combine(baseDir, "quest-deprio.json");
         _questDeathsPath = Path.Combine(baseDir, "quest-deaths.json");
+        _unstorablePath = Path.Combine(baseDir, "unstorable-items.json");
         _mobThreatPath = Path.Combine(baseDir, "mob-threats.json");
         _scalarPath = Path.Combine(baseDir, "learned-scalars.json");
         Load();
         LoadQuestDeprio();
         LoadQuestDeaths();
+        LoadUnstorable();
         LoadMobThreat();
         LoadScalars();
     }
@@ -66,6 +68,56 @@ public sealed class NpcKnowledge
         if (_questDeprio.TryGetValue(key, out var ex) && ex == level) return; // already recorded, don't re-save
         _questDeprio[key] = level;
         SaveQuestDeprio();
+    }
+
+    private readonly string _unstorablePath;
+    private readonly object _unstorableIoLock = new();
+    // key = "host|itemId" -> true: the server REFUSED to put this item in storage (item-level, permanent).
+    private readonly ConcurrentDictionary<string, bool> _unstorable = new(StringComparer.Ordinal);
+
+    /// <summary>True if the server has already refused to STORE this item id.
+    /// <para>Some items simply cannot go in the warehouse — timed/bound ones like "Angel Wings (7 Days)"
+    /// and "Ex Elreu". The refusal is a property of the ITEM, not of the slot or the moment, so retrying it
+    /// can never succeed. Before this, every storage trip re-attempted the same two items and burned a 3s
+    /// no-CELLCHANGE wait plus a CRUTCH[CRIT] line on each — noise in the very log the runbook says to read
+    /// first.</para>
+    /// <para>⚠️ Only record this for the item-level refusal code. A "cell occupied" refusal is transient
+    /// and slot-level; treating it as permanent would blacklist a perfectly storable item forever.</para></summary>
+    public bool IsUnstorable(string host, int itemId) => _unstorable.ContainsKey(IKey(host, itemId));
+
+    /// <summary>Record (and persist) that the server refuses to store this item id.</summary>
+    public void RecordUnstorable(string host, int itemId)
+    {
+        if (string.IsNullOrEmpty(host)) return;
+        if (!_unstorable.TryAdd(IKey(host, itemId), true)) return;   // already known
+        SaveUnstorable();
+    }
+
+    private static string IKey(string host, int itemId) => $"{host}|{itemId}";
+
+    private void LoadUnstorable()
+    {
+        try
+        {
+            if (!File.Exists(_unstorablePath)) return;
+            var d = JsonSerializer.Deserialize<Dictionary<string, bool>>(File.ReadAllText(_unstorablePath));
+            if (d is not null) foreach (var (k, v) in d) if (v) _unstorable[k] = true;
+        }
+        catch { /* a corrupt/missing store just starts empty */ }
+    }
+
+    private void SaveUnstorable()
+    {
+        lock (_unstorableIoLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_unstorablePath)!);
+                File.WriteAllText(_unstorablePath, JsonSerializer.Serialize(
+                    new SortedDictionary<string, bool>(_unstorable), new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { /* best-effort */ }
+        }
     }
 
     /// <summary>Clear a quest's flee-deprioritization. Returns true if a mark was actually removed.

@@ -205,6 +205,21 @@ public sealed class BotApi
     /// current character level — deprioritizes it to "last resort" until a level-up.</summary>
     public void recordQuestDeprioritized(int questId, int atLevel) => _mgr.Knowledge.RecordQuestDeprioritized(_handle.Options.Host, questId, atLevel);
 
+    /// <summary>Has the server already refused to STORE this item? Persisted, so a timed/bound item like
+    /// "Angel Wings (7 Days)" is never re-attempted on a later trip. Check it before offering an item to
+    /// storage.</summary>
+    public bool isUnstorable(int itemId) => _mgr.Knowledge.IsUnstorable(_handle.Options.Host, itemId);
+
+    /// <summary>Record + PERSIST that the server refuses to store this item id. ⚠️ Call this ONLY for the
+    /// item-level refusal, never for a "cell occupied" refusal — that one is transient and slot-level, and
+    /// marking on it would blacklist a perfectly storable item forever.</summary>
+    public void noteUnstorable(int itemId) => _mgr.Knowledge.RecordUnstorable(_handle.Options.Host, itemId);
+
+    /// <summary>The reason code from the last NC_ITEM_RELOC_ACK (0x300C), or -1 if none seen. Lets the
+    /// driver tell an ITEM-level refusal (this item can never be stored) from a SLOT-level one (that cell
+    /// is occupied) — they need opposite handling and were previously indistinguishable to the script.</summary>
+    public int lastRelocAck() => View?.LastRelocAckCode ?? -1;
+
     /// <summary>Clear this quest's flee-deprioritization; true if a mark was removed. Call it on EVIDENCE
     /// that the fight is winnable now — a credited kill on its objective mob — because level-up alone is
     /// not enough of an expiry: marks are written at the level we fled at, so a handful at the CURRENT
