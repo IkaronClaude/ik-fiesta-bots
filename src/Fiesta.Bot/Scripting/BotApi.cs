@@ -205,6 +205,13 @@ public sealed class BotApi
     /// current character level — deprioritizes it to "last resort" until a level-up.</summary>
     public void recordQuestDeprioritized(int questId, int atLevel) => _mgr.Knowledge.RecordQuestDeprioritized(_handle.Options.Host, questId, atLevel);
 
+    /// <summary>Clear this quest's flee-deprioritization; true if a mark was removed. Call it on EVIDENCE
+    /// that the fight is winnable now — a credited kill on its objective mob — because level-up alone is
+    /// not enough of an expiry: marks are written at the level we fled at, so a handful at the CURRENT
+    /// level flattens the whole board into the last-resort grind, which is the slowest route to the
+    /// level-up that would clear them.</summary>
+    public bool clearQuestDeprioritized(int questId) => _mgr.Knowledge.ClearQuestDeprioritized(_handle.Options.Host, questId);
+
     /// <summary>How many times we have DIED pursuing this quest, across ALL sessions. PERSISTED —
     /// use this to rank a repeatedly-lethal quest last, NOT a script-local counter: script locals are
     /// wiped on every re-apply and this bot respawns constantly, so a local count never survives long

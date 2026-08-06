@@ -68,6 +68,24 @@ public sealed class NpcKnowledge
         SaveQuestDeprio();
     }
 
+    /// <summary>Clear a quest's flee-deprioritization. Returns true if a mark was actually removed.
+    /// <para>Exists because LEVEL-UP was the ONLY expiry, and that is not enough: every mark is written at
+    /// the level we fled at, so once a few quests get marked at the CURRENT level the whole board reads
+    /// deprioritized and the bot drops to the last-resort grind — which is the slowest possible way to
+    /// reach the level that would clear them. The operator hit exactly this on 2026-07-16 (stale level-21
+    /// marks from a broken-combat era) and disabled the gate over it; it recurred on 2026-08-06 with six
+    /// quests all marked at 26 while the bot sat at 26, because they were earned while combat was
+    /// genuinely broken (LearnedMeleeRange had collapsed to 2u, damage dealt:taken was 1:76).</para>
+    /// <para>So a mark must also expire on EVIDENCE: kill the quest's objective mob and you have proved the
+    /// fight is winnable now, whatever was true when you fled.</para></summary>
+    public bool ClearQuestDeprioritized(string host, int questId)
+    {
+        if (string.IsNullOrEmpty(host)) return false;
+        if (!_questDeprio.TryRemove(QKey(host, questId), out _)) return false;
+        SaveQuestDeprio();
+        return true;
+    }
+
     /// <summary>How many times the bot has DIED while pursuing this quest, ever (across every
     /// session). 0 if never.</summary>
     public int QuestDeaths(string host, int questId) =>
