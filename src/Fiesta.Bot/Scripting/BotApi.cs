@@ -1459,6 +1459,13 @@ public sealed class BotApi
             var row = NewTable();
             row["handle"] = n.Handle; row["mobId"] = n.MobId; row["mode"] = n.Mode;
             row["x"] = n.X; row["y"] = n.Y; row["isGate"] = n.IsGate; row["linkMap"] = n.LinkMap;
+            // Facing (SHINE_COORD_TYPE.dir) and the cur/max hp pair the client's health bar shows.
+            // hp is nil until this entity has been in a fight — absent means "never seen hurt", which
+            // is NOT the same as full and NOT the same as zero. Callers must treat nil as unknown.
+            row["dir"] = n.Dir;
+            if (View?.EntityHp(n.Handle) is { } eh) row["hp"] = (double)eh;
+            var mx = _mgr.ClientData?.Mob(n.MobId)?.MaxHp ?? -1;
+            if (mx > 0) row["maxhp"] = (double)mx;
             // Huntable = a real monster (not a guard / shop NPC / quest giver / resource node). Lets the
             // field-grind avoid mistargeting a town NPC (it would walk into it forever). Unknown → true.
             row["isHuntable"] = v.IsHuntableMob?.Invoke((ushort)n.MobId) ?? true;

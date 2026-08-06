@@ -33,7 +33,11 @@ public sealed record NearbyPlayer(ushort Handle, string Name, byte Class, byte L
 /// storage keeper BY ROLE (operator: Raina in RouN, Kyle in Eld) instead of baking an npc id or coords.</summary>
 public enum ShopKind { Unknown, Item, Weapon, Skill, SoulStone, Storage }
 
-public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, uint Y, byte Flag = 0, string? LinkMap = null, byte Team = 0)
+/// <param name="Dir">Facing, from the REGENMOB record's <c>dir</c> byte (record offset 13). This is the
+/// <c>dir</c> of <c>SHINE_COORD_TYPE { xy: SHINE_XY_TYPE, dir: u8 }</c> (PDB extract, 9 bytes) — the same
+/// field the real client uses to draw which way a mob is looking. We were parsing x and y out of that
+/// struct and stepping straight over the third field to reach <c>flagstate</c> at +14.</param>
+public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, uint Y, byte Flag = 0, string? LinkMap = null, byte Team = 0, byte Dir = 0)
 {
     public bool IsGate => Flag == 1;
     /// <summary><c>nKQTeamType</c> from the mob briefinfo (record offset 147): a King's-Quest
@@ -1327,8 +1331,18 @@ public sealed class ZoneView : IDisposable
     /// for a cleric" window. UtcMinValue if alive.</summary>
     public DateTime DeadAtUtc { get; private set; } = DateTime.MinValue;
 
+    /// <summary>Last known CURRENT hp of an entity, by handle, harvested from the RestHp every damage
+    /// packet already carries. The client draws a mob's health bar from exactly this; we were decoding
+    /// RestHp, logging it, and throwing it away. Pair with <c>mobMaxHp(mobId)</c> (MobInfo.shn) for a
+    /// cur/max pair. Only entities that have been in a fight appear here — an untouched mob has never
+    /// reported its hp, so absent means "never seen hurt", NOT "full" and NOT "zero".</summary>
+    private readonly ConcurrentDictionary<ushort, uint> _entityHp = new();
+    public uint? EntityHp(ushort handle) => _entityHp.TryGetValue(handle, out var v) ? v : null;
+
     private void NoteHit(HitInfo h)
     {
+        // Whoever took the hit just told us its remaining hp — attacker or defender, us or them.
+        _entityHp[h.Defender] = h.RestHp;
         if (SelfHandle is { } self && h.Defender == self)
         {
             // Combat-START marker for the tail: a hit arriving after a CombatWindow gap is a fresh
@@ -3687,6 +3701,7 @@ public sealed class ZoneView : IDisposable
         var mobid = (ushort)(p[off + 3] | (p[off + 4] << 8));
         var x = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(off + 5, 4));
         var y = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(off + 9, 4));
+        var dir = p[off + 13];   // SHINE_COORD_TYPE.dir — see NearbyNpc.Dir
         var flag = p[off + 14];
         string? linkMap = null;
         if (flag == 1) // gate: the flag blob begins with the null-terminated dest-map name
@@ -3695,7 +3710,7 @@ public sealed class ZoneView : IDisposable
         // enemies. Defensive read in case the last record is truncated.
         var team = (off + MobTeamOffset < p.Length) ? p[off + MobTeamOffset] : (byte)0;
 
-        var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap, team);
+        var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap, team, dir);
         var isNew = !_npcs.ContainsKey(handle);
         _npcs[handle] = npc;
         // First sighting of this handle = it's standing where it lives → seed its spawn anchor (see _mobAnchor).
