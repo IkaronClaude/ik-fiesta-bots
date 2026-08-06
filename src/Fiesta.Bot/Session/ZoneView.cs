@@ -208,7 +208,20 @@ public sealed class ZoneView : IDisposable
             NotEnoughSp => "not enough SP",
             OutOfRange  => "target out of range",
             NotReady    => "skill on cooldown / not ready — STOP re-pressing (each re-press cancels auto-attack)",
-            0x0FC0      => "cannot cast (dead / invalid state)",
+            // ⚠️ 0x0FC0 IS THE #1 COMBAT FAILURE and its old label ("dead / invalid state") was a GUESS that
+            // read as an explanation. Characterised from 1281 live occurrences (2026-08-06, Bot7170):
+            //   • hits ALL FIVE skills the bot uses (Slice and Dice 542, Fatal Slash 269, Bone Slicer 211,
+            //     Snearing Kick 208, Concussive Charge 50) — not one broken skill;
+            //   • rejected 50-100ms after the send — a deterministic precondition, not a cooldown;
+            //   • NOT mounted-related: 0 of 1281 fired while ZoneView had us mounted;
+            //   • NOT plain out-of-range (that is 0x0FCA, seen 6x): median distance at failure was 32u,
+            //     INSIDE the 45u melee reach, though failures skew far (p90 52u) vs landed casts (p90 32u,
+            //     median 2u);
+            //   • every affected skill shares Range=0 (melee contact) and UsableDegree=45 (45° arc).
+            // Leading hypothesis is therefore FACING (the 45° arc), NOT confirmed — so it is described as
+            // what is known, not asserted. See the P0 in tickets.md.
+            0x0FC0      => "cast refused (0x0FC0) — melee skill precondition unmet; suspect FACING (45° arc) "
+                         + "or contact range. NOT dead, NOT mounted, NOT cooldown",
             0x0FC4      => "cooldown/facing/weapon (0x0FC4)",
             0x0FC6      => "cooldown/facing/weapon (0x0FC6)",
             _           => $"cast failed (0x{code:X4})",
@@ -2241,13 +2254,16 @@ public sealed class ZoneView : IDisposable
             // The cast was REJECTED — there is no animation, so release the lock at once instead of
             // making the rotation sit out a predicted window for a cast that never started.
             EndCast($"CAST_FAIL 0x{reason:X4}");
-            if (reason == CastFailReason.NotEnoughSp)
-                _log?.Invoke($"[ZoneView] cast FAILED — not enough SP (0x{reason:X4})");
-            else if (reason == CastFailReason.OutOfRange)
-                _log?.Invoke($"[ZoneView] cast FAILED — out of range (0x{reason:X4})");
-            else
-                _log?.Invoke($"[ZoneView] cast FAILED — unknown reason 0x{reason:X4} ({pkt.Payload.Length}b payload)" +
-                             (pkt.Payload.Length > 2 ? $" raw={Convert.ToHexString(pkt.Payload.Span)}" : ""));
+            // ONE description source (CastFailReason.Describe) for the log, the script hook and the tail.
+            // These had drifted apart: the log said "unknown reason 0x0FC0" while the script printed a
+            // (wrong) "dead / invalid state" for the SAME code — so the tail and the driver disagreed about
+            // the single most common combat failure, and neither was right. Codes with no entry still say
+            // so explicitly and dump the raw payload, which is what "unknown" should have meant.
+            var known = reason is CastFailReason.NotEnoughSp or CastFailReason.OutOfRange
+                              or CastFailReason.NotReady or 0x0FC0 or 0x0FC4 or 0x0FC6;
+            _log?.Invoke($"[ZoneView] cast FAILED — {CastFailReason.Describe(reason)} (0x{reason:X4})" +
+                         (known ? "" : $" — UNMAPPED code, {pkt.Payload.Length}b payload") +
+                         (pkt.Payload.Length > 2 ? $" raw={Convert.ToHexString(pkt.Payload.Span)}" : ""));
             CastFailed?.Invoke(reason);
         }
         else if (op == OpHpChange)
