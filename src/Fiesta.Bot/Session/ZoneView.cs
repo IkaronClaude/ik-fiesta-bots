@@ -192,11 +192,17 @@ public sealed class ZoneView : IDisposable
         /// re-presses 530ms and 1060ms later both came back `0x2434` with this code, and Bone Slicer
         /// [02] (15s cooldown) cast at :44.4 failed again at :50.4 — exactly its remaining cooldown.
         /// So this is the server saying "not yet", i.e. the EXPECTED answer to a spam re-press.</para>
-        /// <para>⚠️ It is expected but NOT free: every re-press routes through FaceAndStop, whose
-        /// <c>NC_ACT_STOP_REQ</c> makes the server answer <c>CEASE_FIRE</c> and kill the melee swing
-        /// stream. In the death this was pinned from, that cost the bot its auto-attack for a whole
-        /// 16s fight — it dealt damage ONCE (the successful cast) while dying 55%→0%. So a caller
-        /// seeing this code must STOP re-pressing and bank the cooldown, not keep trying.</para></summary>
+        /// <para>⚠️ CORRECTED 2026-08-06 — the previous version of this note said a caller "must STOP
+        /// re-pressing" because each re-press killed the swing stream. That was superseded by
+        /// Z:/CombatPriest.pcapng (2026-08-04) and is no longer true: it is the <b>MOVERUN</b>, not the
+        /// STOP, that breaks the stream, and <c>NeedsFacingAdjust</c> now suppresses the MOVERUN once a
+        /// connecting hit proves we are already in range and faced — a re-press then sends only the STOP,
+        /// which the real client also sends before every cast.</para>
+        /// <para>So spamming this is DELIBERATE and operator-specified (2026-08-04: "start at
+        /// Now + Cooldown - 50ms and spam the button 5x every 50ms"), and a rejection here is expected
+        /// noise, not a fault. Measured 2026-08-06: 28 of 40 cast failures were this code, with no
+        /// swing-stream loss. <b>Do not "fix" it.</b> Left uncorrected, this note reads as a bug report
+        /// and invites exactly that — the stale-note trap the runbook warns about.</para></summary>
         public const ushort NotReady = 0x0FC8;
         // 0x0FC4, 0x0FC6 — unpinned (facing / weapon type)
 
