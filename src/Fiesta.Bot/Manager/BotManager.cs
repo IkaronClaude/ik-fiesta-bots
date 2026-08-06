@@ -699,10 +699,29 @@ public sealed class BotManager : IAsyncDisposable
         // lands a hit, and from then on the MOVERUN is suppressed so the stream persists. It is also the
         // exact signal the instance-scoped exception above already trusts — generalised to field maps now
         // that Z:/CombatPriest.pcapng shows the real client sending no MOVERUN before its casts.
-        if (handle.ZoneView is { } zvh
+        // ⛔ …BUT A HIT IS EVIDENCE ABOUT THE PAST, AND MOBS MOVE (operator 2026-08-06: "only call face and
+        // stop IF REQUIRED to match range/angle reqs — must also update in case mob has walked somewhere").
+        // Up to 2500ms is plenty of time for the target to walk out of our arc or out of reach, so treating
+        // a stale hit as proof of CURRENT geometry meant we skipped the adjustment exactly when it had
+        // become necessary. Same shape as the stale-heading bug: old evidence read as a present fact.
+        //
+        // The deadlock the short-circuit was written to prevent no longer exists. It hinged on
+        // LearnedMeleeRange starting at 0 every session and only growing from our own connecting swings.
+        // Attack range is now SEEDED from durable knowledge at zone-enter ("[combat] seeded attack-range
+        // 96u from durable knowledge"), so reach is known before the first swing and the measurement can
+        // bootstrap itself. Per the standing lesson: check whether a rule's cause still holds before
+        // quoting the rule.
+        //
+        // So the hit-proof is demoted to what it always honestly was — a FALLBACK for when we cannot
+        // measure. When reach and both positions are known we measure; otherwise the old bootstrap stands.
+        var recentHit = handle.ZoneView is { } zvh
             && zvh.LastRealDamageDealtAtUtc > DateTime.MinValue
-            && (DateTime.UtcNow - zvh.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500)
-        { _lastCastGeom = new(-1, -1, -1, 0, "recent-hit (already in range+faced)"); return false; }
+            && (DateTime.UtcNow - zvh.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500;
+        var reachKnown = (ClientData?.Skill(skill)?.Range ?? 0) > 0
+                         || (handle.ZoneView?.LearnedMeleeRange ?? 0) > 0;
+        var canMeasure = reachKnown && NpcPos(handle, target) is not null && handle.Position is not null;
+        if (recentHit && !canMeasure)
+        { _lastCastGeom = new(-1, -1, -1, 0, "recent-hit bootstrap (reach/position unknown — cannot measure)"); return false; }
 
         if (NpcPos(handle, target) is not { } tp || handle.Position is not { } pos)
         { _lastCastGeom = new(-1, -1, -1, 0, "no target/self position"); return true; }
