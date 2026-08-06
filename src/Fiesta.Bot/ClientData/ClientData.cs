@@ -38,12 +38,34 @@ public sealed class ClientData
     /// <summary>Load a client SHN table by name (e.g. "ActiveSkill", "ItemInfo",
     /// "ClassName"), cached after the first read. Returns null if the file isn't present
     /// in the data dir or fails to parse (callers fall back to their defaults).</summary>
-    public ShnTable? Table(string name) => _cache.GetOrAdd(name, n =>
+    public ShnTable? Table(string name)
     {
-        var path = Path.Combine(_dataDir, n + ".shn");
-        try { return File.Exists(path) ? ShnTable.Load(path) : null; }
-        catch { return null; }
-    });
+        if (_cache.TryGetValue(name, out var hit)) return hit;
+        var path = Path.Combine(_dataDir, name + ".shn");
+        try
+        {
+            if (!File.Exists(path)) { NoteTableFailure(name, "file not present"); return null; }
+            var t = ShnTable.Load(path);
+            // ⛔ ONLY a SUCCESSFUL load is cached. This used to be _cache.GetOrAdd(...), which stored the
+            // NULL from a failed/missing read forever — so one transient miss (data dir not mounted yet,
+            // a partial read) permanently answered "this table does not exist" for the whole process, with
+            // the exception swallowed silently. Live 2026-08-06: MapWayPoint/MapLinkPoint came back null
+            // once, BuildGateEdges returned 0 edges, the map graph latched as "seeded" with nothing in it,
+            // and the bot was stranded in a dungeon with one routable exit, dying on repeat.
+            // A cache must hold ANSWERS, never failures — leaving it uncached simply retries next call.
+            _cache[name] = t;
+            return t;
+        }
+        catch (Exception ex) { NoteTableFailure(name, ex.Message); return null; }
+    }
+
+    private readonly ConcurrentDictionary<string, string> _tableFailures = new(StringComparer.OrdinalIgnoreCase);
+    private void NoteTableFailure(string name, string why) => _tableFailures[name] = why;
+
+    /// <summary>Tables that failed to load, name → reason. Empty when everything read cleanly. Surfaced so a
+    /// downstream "I have no data" symptom (an empty nav graph, no item names) can name its actual cause
+    /// instead of being silently absorbed.</summary>
+    public IReadOnlyDictionary<string, string> TableFailures => _tableFailures;
 
     /// <summary>Look up an <c>ActiveSkill</c> row by its skill id and project the combat-
     /// relevant fields. Null if the table is unavailable or the id isn't found. This is

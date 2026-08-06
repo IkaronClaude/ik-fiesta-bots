@@ -44,10 +44,20 @@ public sealed class MapGraph
     /// to have physically explored each link. Edges are stored with handle 0 (no live handle yet —
     /// the travel loop walks to the stored coords, which brings the gate NPC into view, then clicks
     /// it). A later <see cref="ObserveGate"/> with a live handle just refreshes the same edge.</summary>
-    public void Seed(IEnumerable<(string From, string To, uint X, uint Y, uint ToX, uint ToY)> edges)
+    /// <returns>How many edges were seeded. <b>0 does NOT latch <see cref="Seeded"/></b> — see below.</returns>
+    public int Seed(IEnumerable<(string From, string To, uint X, uint Y, uint ToX, uint ToY)> edges)
     {
-        foreach (var (from, to, x, y, tx, ty) in edges) ObserveGate(from, to, x, y, 0, tx, ty);
-        Seeded = true;
+        var n = 0;
+        foreach (var (from, to, x, y, tx, ty) in edges) { ObserveGate(from, to, x, y, 0, tx, ty); n++; }
+        // ⛔ ONLY latch when the seed actually produced edges. This used to set Seeded=true
+        // unconditionally, so ONE empty seed (client data not ready yet) permanently recorded "we tried"
+        // as "we succeeded" — and because the graph lives on the MANAGER, that poisoned every bot for the
+        // whole pod's lifetime, leaving nothing but live-observed gates. Live 2026-08-06: the bot sat in
+        // the dungeon ValDn01 with exactly ONE routable destination (the single gate it could see), so
+        // "no known route ValDn01 -> RouN" made restock/storage thrash and it died repeatedly.
+        // A latch must record the OUTCOME, not the attempt — leaving it false simply retries next call.
+        if (n > 0) Seeded = true;
+        return n;
     }
 
     /// <summary>Record/refresh a gate seen in <paramref name="fromMap"/>. Ignores

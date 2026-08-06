@@ -1381,11 +1381,23 @@ public sealed class BotManager : IAsyncDisposable
     {
         if (Graph.Seeded || ClientData is not { } cd) return;
         var seedEdges = cd.BuildGateEdges();
-        Graph.Seed(seedEdges);
+        var n = Graph.Seed(seedEdges);
         var portalEdges = BuildPortalEdges(cd);
         Graph.SeedPortals(portalEdges);
         _bots.TryGetValue(id, out var hh);
-        hh?.Log($"[travel] seeded map graph: {seedEdges.Count} gate edges + {portalEdges.Count} town-portal edges " +
+        if (n == 0)
+        {
+            // An empty seed is a FAILURE to make it visible, not a quiet no-op: with no seeded web the bot
+            // can only route through gates it has physically seen, which strands it (see MapGraph.Seed).
+            // Seeded stays false, so the next RouteInfo/TravelTo retries rather than living with it.
+            var why = cd.TableFailures.Count > 0
+                ? " Failed client tables: " + string.Join(", ", cd.TableFailures.Select(kv => $"{kv.Key} ({kv.Value})"))
+                : $" MapWayPoint/MapLinkPoint read clean from {cd.DataDir} but yielded no cross-map links.";
+            hh?.Log(BotLogLevel.Note, "[travel] CRUTCH[CRIT] map graph seed produced ZERO gate edges — cross-map " +
+                    "routing is limited to gates physically in view. Will retry on the next route request." + why);
+            return;
+        }
+        hh?.Log($"[travel] seeded map graph: {n} gate edges + {portalEdges.Count} town-portal edges " +
                 $"({Graph.Maps().Count} map nodes)");
     }
 
