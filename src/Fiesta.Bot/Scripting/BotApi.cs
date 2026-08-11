@@ -43,6 +43,22 @@ public sealed class BotApi
     /// state to C# (surfaced in the script status). Not normally called by hand.</summary>
     public void __state(string name) => StateReporter?.Invoke(name);
 
+    /// <summary>Can THIS character use an item/scroll whose ItemInfo <c>UseClass</c> is
+    /// <paramref name="useClass"/>? (0 = usable by everyone.)
+    /// <para>⛔ EXISTS BECAUSE THE DRIVER HARDCODED THE FIGHTER LINE. `level_quest.lua` tested scroll
+    /// eligibility with a baked `FIGHTER = {0,2..7}` table, so on any other class it did BOTH wrong things
+    /// at once: it bought Fighter books the character can never use, and it skipped the books for its own
+    /// class sitting in the same shop. Live 2026-08-06, JcqMage bought "Slice and Dice" (Fighter) and
+    /// learned nothing of its own; the Cleric ended up with no skills and "can only auto attack".</para>
+    /// <para>The class→UseClass band ladder is GAME DATA and belongs here with the rest of it, not baked
+    /// into the driver — same reasoning as the quest-reward picker, which already uses this ladder.</para></summary>
+    public bool canUseClass(int useClass)
+    {
+        if (useClass == 0) return true;                 // 0 = every class
+        var line = GameData.ClientData.UseClassLineFor(_handle.Class);
+        return line.Count > 0 && line.Contains(useClass);
+    }
+
     /// <summary>Publish what the driver is working on RIGHT NOW: the focused quest (0 for none), its own
     /// phase name, where it is travelling to and why. Surfaced on the live panel so the watch page can mark
     /// the focused quest and say where the bot is going.
