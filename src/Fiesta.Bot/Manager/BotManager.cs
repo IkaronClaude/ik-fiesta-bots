@@ -536,15 +536,28 @@ public sealed class BotManager : IAsyncDisposable
         // months. So the remedy is the range check the real client does before it transmits, exactly
         // like the cooldown gate: a refused cast still costs the STOP that interrupts our swing stream,
         // so the cheapest cast is the one we never send. ActiveSkill.Range is the skill's own reach.
-        if (ClientData?.Skill(skill) is { Range: > 0 } sr && handle.Position is { } mp
+        //
+        // ⚠️ A MELEE SKILL DECLARES `Range = 0` — that is CONTACT reach, not "no limit". The first
+        // version of this gate was written `{ Range: > 0 }`, so it skipped precisely the skills that
+        // were failing: every melee skill in the file (Slice and Dice, Bone Slicer, Fatal Slash … all
+        // Range=0, UsableDegree=45). Measured after the battle-mode fix landed: 0x0FCA was then 100%
+        // of the Cleric's failures (30/30) and 81% of the Fighter's (39/48), while the ranged Archer —
+        // whose skills declare a real Range — sat at 1%. Zero is a value here, not an absence.
+        // For Range=0 the reach is the melee contact range LEARNED from the wire (an archer's differs
+        // from a fighter's); if nothing has connected yet it is 0 and we FAIL OPEN rather than
+        // deadlock — you cannot learn the reach without being allowed to swing (same reasoning as
+        // CastGeometry below, which has always resolved Range=0 this way).
+        if (ClientData?.Skill(skill) is { } sr && handle.Position is { } mp
             && NpcPos(handle, target) is { } tpos)
         {
+            var reach = sr.Range > 0 ? sr.Range : (handle.ZoneView?.LearnedMeleeRange ?? 0);
             var dx = (double)tpos.X - mp.X; var dy = (double)tpos.Y - mp.Y;
             var dist = Math.Sqrt(dx * dx + dy * dy);
-            if (dist > sr.Range)
+            if (reach > 0 && dist > reach)
             {
                 handle.Log(BotLogLevel.Verbose,
-                    $"cast {skill} NOT SENT — target {dist:F0}u away, skill reaches {sr.Range}u (0x0FCA is RANGE)");
+                    $"cast {skill} NOT SENT — target {dist:F0}u away, skill reaches {reach:F0}u " +
+                    $"({(sr.Range > 0 ? "ActiveSkill.Range" : "learned melee reach; skill declares Range=0")}) — 0x0FCA is RANGE");
                 return ActionResult.Sent;   // the caller closes the distance; we do not burn a STOP
             }
         }
