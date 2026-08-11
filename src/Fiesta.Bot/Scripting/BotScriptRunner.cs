@@ -154,7 +154,24 @@ public sealed class BotScriptRunner : IDisposable
 
     private void RunLoop()
     {
-        var ct = _cts.Token;
+        // ⛔ THIS WAS OUTSIDE THE try AND IT KILLED THE WHOLE HOST.
+        // `_cts.Token` THROWS ObjectDisposedException once the CTS is disposed, and Stop() disposes it.
+        // A relog stops the old runner while the new one's thread is still starting, so the two race: the
+        // thread wakes, reads a token that has just been disposed, and throws. This is a plain background
+        // THREAD, not a Task — an escaping exception is unhandled, so the .NET runtime tears the PROCESS
+        // down. That is the operator's "full pod restart, kicking all bots, every 5 minutes": one bot's
+        // relog race killed the other four, and no amount of per-bot recovery could have saved them.
+        // Reported live 2026-08-07 with the stack ending exactly here (RunLoop line 157), immediately
+        // after "[JcqMage] RELOG attempt 1/4 didn't reach zone".
+        // A disposed CTS means "already cancelled" — the correct response is to exit quietly, not to die.
+        CancellationToken ct;
+        try { ct = _cts.Token; }
+        catch (ObjectDisposedException)
+        {
+            _state = "stopped";
+            _handle.Events -= OnEvent;
+            return;
+        }
         try
         {
             Setup();

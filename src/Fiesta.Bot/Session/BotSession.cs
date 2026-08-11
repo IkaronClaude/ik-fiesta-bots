@@ -148,7 +148,13 @@ public sealed class BotSession : IAsyncDisposable
         // PROMINENT immediate disconnect log (operator P1): a server kick = "peer closed" / forcibly-
         // closed right after we sent an INVALID packet. lastSent is the prime suspect (e.g. a scroll
         // USE, a stray menu-ack on a quest NPC). Compare lastSent to the action the bot just did.
-        _log($"[Session:{State.CharName}] *** DISCONNECTED *** reason={reason} | lastSENT=0x{LastSentOpcode:X4} " +
+        // ⭐ NAME THE LINK. The WM session and the zone session log through this SAME method with the same
+        // char name, so "*** DISCONNECTED ***" alone could not tell you WHICH connection dropped — and
+        // that is the first question worth asking about any DC (operator 2026-08-11: "find out if dc is
+        // from WM or from zone"). The endpoint already distinguishes them by port (WM 9013, zone
+        // 9016-9028), it just was never printed. Now the line answers it on its own.
+        _log($"[Session:{State.CharName}/{_tag}] *** DISCONNECTED *** reason={reason} | " +
+             $"link={State.Zone} | lastSENT=0x{LastSentOpcode:X4} " +
              $"lastRECV=0x{State.LastOpcode:X4} — uptime {State.Uptime.TotalSeconds:F0}s, {State.InboundCount} frames");
     }
 
