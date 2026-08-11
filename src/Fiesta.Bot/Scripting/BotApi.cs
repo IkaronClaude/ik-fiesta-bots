@@ -949,6 +949,14 @@ public sealed class BotApi
     /// <summary>How many of this mob's hardest hits it would take to kill us from full, or -1 if unknown.
     /// The direct survivability question: &lt;=3 means a single mob can burst us down, and quest targets
     /// like that need a different plan (or to be skipped) rather than a straight melee trade.</summary>
+    /// <summary>HP restored by ONE soul-stone charge as the SERVER advertises it in the soul-stone
+    /// shop packet (0x3C05); 0 until a healer's shop has been opened. Use this for the sustain model in
+    /// preference to any measured figure — it is exact, needs no samples, and cannot be polluted by
+    /// regen / potions / an ally's heal. Live example: 270 per charge on a level-16 character.</summary>
+    public int hpStoneRestore() => (int)(View?.HpStoneRestore ?? 0);
+    /// <summary>SP restored by one soul-stone charge (same packet); 0 until known.</summary>
+    public int spStoneRestore() => (int)(View?.SpStoneRestore ?? 0);
+
     /// <summary>Mean HP restored by one soul stone, -1 if never measured.</summary>
     public double hpStoneHealAvg() => View?.HpStoneHealAvg ?? -1;
 

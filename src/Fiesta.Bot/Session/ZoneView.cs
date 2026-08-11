@@ -783,6 +783,14 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Max soul-stone reserve charges (HP/SP), from the [1802] param block
     /// (MaxHPStone/MaxSPStone). 0 until seeded.</summary>
+    /// <summary>HP restored by ONE soul-stone charge, as advertised by the soul-stone shop
+    /// (<c>0x3C05</c>). 0 until a soul-stone shop has been opened this session. This is the SERVER'S
+    /// own number — prefer it over any measured/inferred sustain figure, which cannot separate the
+    /// stone's healing from regen, potions or an ally's heal.</summary>
+    public uint HpStoneRestore { get; private set; }
+    /// <summary>SP restored by one soul-stone charge (same packet). 0 until known.</summary>
+    public uint SpStoneRestore { get; private set; }
+
     public uint MaxHpStones { get; private set; }
     public uint MaxSpStones { get; private set; }
 
@@ -3160,6 +3168,16 @@ public sealed class ZoneView : IDisposable
                 SpStonePrice   = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(20, 4));
                 if (hpMax > 0) MaxHpStones = hpMax;
                 if (spMax > 0) MaxSpStones = spMax;
+                // ⭐ THE PER-CHARGE HEAL, STRAIGHT FROM THE SERVER. These two were parsed, printed and
+                // then DROPPED on the floor — only the maxima and prices were kept. That is the whole of
+                // the "heal cap is wrong at low level" P0 (operator 2026-08-11: JcqArcher showing
+                // 11.41 hp/s against a real ~150-per-charge; JcqMage 0.52 hp/s): the driver was inferring
+                // a sustain figure while the server had already told us the exact number. Measured live on
+                // JcqFighter: "HP restore 270 max 35 @21cen" at level 16.
+                // Authoritative, needs no measurement, and sidesteps the attribution problem entirely —
+                // a measured HP delta can be polluted by regen, a potion or an ally's heal; this cannot.
+                if (hpRestore > 0) HpStoneRestore = hpRestore;
+                if (spRestore > 0) SpStoneRestore = spRestore;
                 _log?.Invoke($"[ZoneView] soul-stone shop opened (0x3C05) — HP restore {hpRestore} max {hpMax} @{HpStonePrice}cen, SP restore {spRestore} max {spMax} @{SpStonePrice}cen");
             }
             else _log?.Invoke("[ZoneView] soul-stone shop opened (0x3C05) — sells accepted (no menu payload)");
