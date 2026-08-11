@@ -268,7 +268,7 @@ public sealed class LoginChain
         // RaceNameInfo.shn, not a race — and sending it is why every Archer create was refused with
         // AVATAR_CREATEFAIL err=132 (see ClientData.RaceForClass for the three sources that pin this).
         // An explicit non-zero Race from the caller still wins; 0 means "you didn't say", so derive it.
-        var race = spec.Race != 0 ? spec.Race : (byte)GameData.ClientData.RaceForClass((int)spec.Class);
+        var race = spec.Race ?? (byte)GameData.ClientData.RaceForClass((int)spec.Class);
         req.char_shape.race = race;
         req.char_shape.chrclass = (uint)spec.Class;
         req.char_shape.gender = spec.Gender;
@@ -278,15 +278,15 @@ public sealed class LoginChain
         // (BotManager fills these from ClientData's HairInfo/FaceInfo before we get here — it is the layer
         // that holds a ClientData instance. Face id 0 is selectable by nobody, so 0 here means the tables
         // could not be read, which is worth seeing in the log rather than silently sending an invalid one.)
-        req.char_shape.hairtype = spec.HairType;
-        req.char_shape.haircolor = spec.HairColor;
-        req.char_shape.faceshape = spec.FaceShape;
+        req.char_shape.hairtype = spec.HairType ?? 0;
+        req.char_shape.haircolor = spec.HairColor ?? 0;
+        req.char_shape.faceshape = spec.FaceShape ?? 0;
         await conn.SendAsync(req, ct);
         // Log the RACE too — it is the field that silently sank every Archer create, and a create that
         // fails without showing what it sent is a guessing game (it cost three blind retries).
         _log($"[WM] >> AVATAR_CREATE_REQ slot={spec.Slot} name='{spec.Name}' " +
-             $"class={spec.Class}({(byte)spec.Class}) race={race}{(spec.Race == 0 ? " (derived)" : "")} " +
-             $"gender={spec.Gender} hair={spec.HairType} colour={spec.HairColor} face={spec.FaceShape}");
+             $"class={spec.Class}({(byte)spec.Class}) race={race}{(spec.Race is null ? " (derived)" : " (explicit)")} " +
+             $"gender={spec.Gender} hair={spec.HairType ?? 0} colour={spec.HairColor ?? 0} face={spec.FaceShape ?? 0}");
 
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while (DateTime.UtcNow < deadline)

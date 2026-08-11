@@ -26,12 +26,18 @@ public enum ClassId : byte
 /// avatar instead of relying on a pre-seeded one). Appearance fields are the
 /// 4-byte PROTO_AVATAR_SHAPE_INFO bitfields; defaults are a valid level-1 char.
 /// </summary>
+/// <remarks>⛔ THE APPEARANCE FIELDS ARE NULLABLE ON PURPOSE — <b>0 is a VALID value for every one of
+/// them</b>, so it can never double as "not specified" (see the golden rule in CLAUDE.md). faceshape 0 is
+/// a real Fighter face, race 0 is a real (if blank) race id, hair 0 is a real hairstyle. Modelling
+/// "unset" as 0 made it impossible to even TEST zero: a create sent with <c>Race: 0</c> was silently
+/// rewritten to the derived race, the log read <c>race=2 (derived)</c>, and the experiment proved
+/// nothing. null means "you did not say"; 0 means "send zero".</remarks>
 public sealed record CharacterSpec(
     string Name,
     ClassId Class = ClassId.Fighter,
     byte Gender = 0,
-    byte Race = 0,
-    byte HairType = 0,
-    byte HairColor = 0,
-    byte FaceShape = 0,
+    byte? Race = null,
+    byte? HairType = null,
+    byte? HairColor = null,
+    byte? FaceShape = null,
     byte Slot = 0);

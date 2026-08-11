@@ -1626,8 +1626,10 @@ public sealed record SpawnBotRequest
                 ? $"Bot{Random.Shared.Next(1000, 9999)}" : CharName!;
             if (!Enum.TryParse<ClassId>(Class ?? nameof(ClassId.Fighter), ignoreCase: true, out var cls))
                 throw new ArgumentException($"unknown class '{Class}'", nameof(Class));
+            // Pass the NULLABLES straight through — `Race: 0` from a caller must mean "send zero",
+            // not "unspecified". Collapsing them with `?? 0` here is the same sentinel bug one layer up.
             createSpec = new CharacterSpec(name, cls, Gender: Gender ?? 0, Slot: Slot ?? 0,
-                Race: Race ?? 0, HairType: HairType ?? 0, HairColor: HairColor ?? 0, FaceShape: FaceShape ?? 0);
+                Race: Race, HairType: HairType, HairColor: HairColor, FaceShape: FaceShape);
         }
 
         return new BotSpawnOptions
