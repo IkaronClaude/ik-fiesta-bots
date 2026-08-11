@@ -1127,7 +1127,9 @@ public sealed class ZoneView : IDisposable
     /// from the FIRST tick instead of after the second heal of each session.</summary>
     public void SeedScalars(double cooldownMsMin, double healAvg, int healCount, double healMax = -1)
     {
-        if (cooldownMsMin > 0) HpStoneCooldownMs = cooldownMsMin;
+        // The persisted scalar is a min SUCCESS gap — a ceiling, not the cooldown (see HpStoneCooldownMs).
+        // Seeding it into the ceiling slot keeps it useful without letting it masquerade as a measurement.
+        if (cooldownMsMin > 0) _cdMinSuccessGapMs = cooldownMsMin;
         if (healAvg > 0 && healCount > 0) { _healSum = (long)(healAvg * healCount); _healSamples = healCount; }
         // Seed the MAX as well — SustainableHealDps keys off it, so restoring only the mean would leave the
         // inequality unanswerable after a respawn despite having the data on disk.
@@ -1209,8 +1211,21 @@ public sealed class ZoneView : IDisposable
         return secs > 0 ? total / secs : 0;
     }
 
-    /// <summary>Largest single-stone heal observed, -1 if never measured.</summary>
+    /// <summary>Largest single-stone heal observed, -1 if never measured. ⚠️ CENSORED: a heal is clipped by
+    /// missing HP, so this is a LOWER BOUND on the charge. Prefer <see cref="HpStoneChargePerUse"/>.</summary>
     public int HpStoneHealMax { get; private set; } = -1;
+
+    /// <summary>Largest UNCENSORED heal — one that stopped short of full HP, so nothing clipped it and it is
+    /// the exact charge. -1 if never observed.</summary>
+    public int HpStoneChargeMeasured { get; private set; } = -1;
+
+    /// <summary>HP restored per stone charge, best available source first: the soul-stone shop's advertised
+    /// figure (authoritative, needs no measurement), then an uncensored measured heal (equally exact), then
+    /// the censored max (a lower bound, and the reason low-level bots under-reported sustain). -1 if none.</summary>
+    public double HpStoneChargePerUse =>
+        HpStoneRestore > 0 ? HpStoneRestore
+        : HpStoneChargeMeasured > 0 ? HpStoneChargeMeasured
+        : HpStoneHealMax;
 
     /// <summary>Mean heal per stone, -1 if never measured.</summary>
     public double HpStoneHealAvg => _healSamples > 0 ? (double)_healSum / _healSamples : -1;
@@ -1248,7 +1263,7 @@ public sealed class ZoneView : IDisposable
     {
         get
         {
-            double perCharge = HpStoneRestore > 0 ? HpStoneRestore : HpStoneHealMax;
+            var perCharge = HpStoneChargePerUse;
             return perCharge > 0 && HpStoneCooldownMs > 0 ? perCharge / (HpStoneCooldownMs / 1000.0) : -1;
         }
     }
@@ -1256,10 +1271,83 @@ public sealed class ZoneView : IDisposable
     /// <summary>When the HP soul stone last ACTUALLY healed (0x5008), UtcMinValue if never.</summary>
     public DateTime LastHpStoneSuccessUtc { get; private set; } = DateTime.MinValue;
 
-    /// <summary>HP soul-stone cooldown in ms, LEARNED from the minimum gap between successful uses
-    /// (-1 until two successes have been seen). Measured 2026-08-05: 6.75s / 6.94s / 7.05s → ~7s.
-    /// Learned, not hardcoded — it is a game fact and must come from the wire.</summary>
-    public double HpStoneCooldownMs { get; private set; } = -1;
+    /// <summary>Smallest gap between two SUCCESSFUL stone uses, -1 if fewer than two seen. This is a proven
+    /// CEILING on the cooldown (the stone was ready by then) — never an estimate of it.</summary>
+    private double _cdMinSuccessGapMs = -1;
+
+    /// <summary>Largest gap-since-success at which a USE still FAILED while charges remained and HP was below
+    /// max, -1 if never. A proven FLOOR on the cooldown (the stone was NOT ready yet at that gap).</summary>
+    private double _cdMaxFailGapMs = -1;
+
+    /// <summary>HP soul-stone cooldown in ms, LEARNED from the wire, -1 while genuinely unknown.
+    ///
+    /// <para>⛔ THE MINIMUM GAP BETWEEN SUCCESSES IS NOT A COOLDOWN MEASUREMENT. It only ever proves
+    /// <c>cooldown ≤ gap</c> — i.e. it measures HOW OFTEN WE CHOSE TO HEAL, and it equals the cooldown only if
+    /// the bot was actually spamming the stone. A bot that heals rarely learns a huge "cooldown" and reports a
+    /// sustain figure near zero, which is true as a lower bound and useless as a capability.</para>
+    /// <para>That is the operator's 2026-08-11 report exactly: FighterFresh learned <b>33098ms</b> (and earlier
+    /// 71775ms) purely because a level-8 character in easy content seldom heals, and with a clipped 34-HP
+    /// measured charge published <b>1.55 HP/s</b> — while ClericFresh, on the same build, sat at 57 HP/s. Nothing
+    /// about the character differs by 40×; only the sampling did.</para>
+    /// <para>So the cooldown is taken from the BRACKET both directions of the wire prove:
+    /// every USEFAIL-with-charges-and-missing-HP gives <c>cooldown &gt; gap</c> (a floor), every success gives
+    /// <c>cooldown ≤ gap</c> (a ceiling). With both, the midpoint is the best estimate. With only a floor, the
+    /// floor. With only a ceiling it is UNCORROBORATED and we report -1 — an honest unknown the driver already
+    /// handles ("sustainable heal UNKNOWN"), rather than a fabricated number it will make life-or-death
+    /// decisions from. Under-reporting sustain is the dangerous direction: it makes winnable fights look
+    /// unwinnable, which is the flee → deprioritize → grind spiral.</para>
+    /// <para>A floor at or above the ceiling DISPROVES the ceiling (it was a stale durable seed, not a gap
+    /// observed on this character) — the fail evidence wins. Live proof: MageFresh carried a seeded 3417ms
+    /// while failing to heal at 3520ms and 4430ms since its last success, with 13 charges in reserve.</para></summary>
+    /// <para>Now that the cooldown is a KNOWN GAME CONSTANT (hand-measured, 7s, identical for every character),
+    /// this simply returns it. The per-character bracket is kept as a CHECK, not an override: every estimator
+    /// available to us is noisier than the constant, so letting one outvote it can only make things worse —
+    /// which is exactly how a level-8 fighter came to publish 1.55 HP/s. <see cref="StoneCooldownDisagrees"/>
+    /// surfaces a bracket that genuinely contradicts the constant, which would mean the constant is wrong.</para>
+    public double HpStoneCooldownMs => HpStoneCooldownDefaultMs;
+
+    /// <summary>True when this character's own wire evidence contradicts the hardcoded cooldown: a USEFAIL
+    /// proved the stone was still not ready AFTER the constant had elapsed. Not a bound (the floor carries the
+    /// same ACK-arrival jitter as everything else) — a prompt to re-measure, and the only thing that should
+    /// ever cast doubt on the constant.</summary>
+    public bool StoneCooldownDisagrees => _cdMaxFailGapMs > HpStoneCooldownDefaultMs * 1.25;
+
+    /// <summary>Fallback HP soul-stone cooldown, used until this character's own wire evidence brackets it.
+    ///
+    /// <para>⚠️ HARDCODED GAME FACT — <b>operator-authorised 2026-08-11</b> ("I think the cooldown can be
+    /// hardcoded at 7 seconds"), which the NO-HARDCODING rule permits only with that explicit approval. It is
+    /// not in any client file: there is no HP soul-stone row in <c>ItemInfo.shn</c> at all, because the reserve
+    /// is a server-side charge pool bought from the healer, not an inventory item — so <c>ItemAction.CoolTime</c>
+    /// cannot be joined to it.</para>
+    /// <para><b>7000ms — hand-measured by the operator, exactly 7 seconds.</b> That measurement is the
+    /// authority here, and it corrects a bound I claimed from our own logs.</para>
+    /// <para>⚠️ THE LESSON, because it will recur: I argued for 6000 on the grounds that the min success gaps
+    /// (6.75s / 6.94s / 7.05s, measured 2026-08-05) put a "proven ceiling" at ≤6.75s, so 7000 was impossible.
+    /// It was not proven at all. Those gaps are measured between <b>ACK ARRIVALS</b>, not between the server's
+    /// cooldown starts, so a measured gap is <c>true_gap + (latency₂ − latency₁)</c> — a quarter second of
+    /// ordinary jitter to a remote VPS renders a true 7000 as an observed 6750. A bound derived from noisy
+    /// timestamps is an estimate wearing a bound's clothing. The FLOOR from USEFAILs (>4861ms) is unaffected
+    /// and consistent with 7000; the gap between 4.9s and 7s simply holds no samples, because the bot retries
+    /// in a burst right after a heal and then goes quiet — absence of evidence, which I read as evidence.</para>
+    /// <para>Not in any client file: there is no HP soul-stone row in <c>ItemInfo.shn</c> at all, because the
+    /// reserve is a server-side charge pool bought from the healer rather than an inventory item, so
+    /// <c>ItemAction.CoolTime</c> cannot be joined to it. Hence a constant, with approval.</para>
+    /// <para>A character's OWN bracket still overrides this once it has one — but note the bracket inherits the
+    /// same jitter, so treat a bracket that merely straddles 7000 as agreeing with it.</para></summary>
+    public const double HpStoneCooldownDefaultMs = 7000;
+
+    /// <summary>The best LOWER BOUND on sustain we can state without a corroborated cooldown: one charge over
+    /// the shortest gap we have actually healed across. -1 if unavailable. This is what
+    /// <see cref="SustainableHealDps"/> used to publish AS the capability; kept separate and clearly named so
+    /// it can be logged without being mistaken for a measurement.</summary>
+    public double HealDpsLowerBound
+    {
+        get
+        {
+            double perCharge = HpStoneRestore > 0 ? HpStoneRestore : HpStoneHealMax;
+            return perCharge > 0 && _cdMinSuccessGapMs > 0 ? perCharge / (_cdMinSuccessGapMs / 1000.0) : -1;
+        }
+    }
 
     /// <summary>Consecutive HP stone USEFAILs since the last success. Non-zero means the bot is asking to
     /// heal and NOT healing — the condition that killed it at 15:30:41 while the log said "recharge".</summary>
@@ -2527,6 +2615,19 @@ public sealed class ZoneView : IDisposable
                         _logLevel?.Invoke(BotLogLevel.Note,
                             $"[heal] ⚠️ measured heal {healed} EXCEEDS the shop-advertised charge {HpStoneRestore} — " +
                             "the advertised per-charge value may not be the whole story; sustain model assumption in doubt.");
+                    // ⭐ CENSORED vs UNCENSORED. A heal can never exceed MISSING HP, so every sample is really
+                    // min(charge, maxHp - hp). If the heal landed us at FULL HP the sample is CENSORED and is
+                    // only a lower bound on the charge — which is why HpStoneHealMax under-reads without ever
+                    // looking wrong (FighterFresh: 34, against a real charge of a couple hundred). But a heal
+                    // that stops SHORT of max was not clipped by anything: it IS the full charge, exactly, and
+                    // is as authoritative as the shop's advertised figure.
+                    if (MaxHp is { } mxh && mxh > 0 && hpNow < (int)mxh && healed > HpStoneChargeMeasured)
+                    {
+                        HpStoneChargeMeasured = healed;
+                        _logLevel?.Invoke(BotLogLevel.Note,
+                            $"[heal] UNCENSORED charge measured: {healed} HP (healed {_hpAtStoneUse}->{hpNow} of {mxh}, " +
+                            $"stopped short of full so nothing clipped it) ⇒ {SustainableHealDps:F0} HP/s");
+                    }
                     if (healed > HpStoneHealMax)
                     {
                         HpStoneHealMax = healed;
@@ -3064,12 +3165,17 @@ public sealed class ZoneView : IDisposable
                 if (LastHpStoneSuccessUtc > DateTime.MinValue)
                 {
                     var gapMs = (DateTime.UtcNow - LastHpStoneSuccessUtc).TotalMilliseconds;
-                    if (gapMs > 250 && (HpStoneCooldownMs < 0 || gapMs < HpStoneCooldownMs))
+                    // A success proves only cooldown <= gap (a CEILING). It is NOT the cooldown unless a
+                    // USEFAIL just below it corroborates — see HpStoneCooldownMs. Recording it as "LEARNED
+                    // cooldown" is what published 33098ms for a bot that simply heals rarely.
+                    if (gapMs > 250 && (_cdMinSuccessGapMs < 0 || gapMs < _cdMinSuccessGapMs))
                     {
-                        HpStoneCooldownMs = gapMs;
+                        _cdMinSuccessGapMs = gapMs;
                         ScalarLearned?.Invoke(ScalarStoneCooldownMs, gapMs);   // persist: min-gap converges from above
                         _logLevel?.Invoke(BotLogLevel.Note,
-                            $"[ZoneView] LEARNED HP soul-stone cooldown ≈ {gapMs:F0}ms (min gap between successful uses)");
+                            $"[heal] stone cooldown CEILING now {gapMs:F0}ms (healed twice that far apart) — " +
+                            $"floor {(_cdMaxFailGapMs > 0 ? $"{_cdMaxFailGapMs:F0}ms" : "none yet")}, " +
+                            $"using {HpStoneCooldownMs:F0}ms ⇒ {SustainableHealDps:F0} HP/s");
                     }
                 }
                 LastHpStoneSuccessUtc = DateTime.UtcNow;
@@ -3116,6 +3222,19 @@ public sealed class ZoneView : IDisposable
                         MetricSink?.Invoke("healsFailed", 1);
                         var sinceMs = LastHpStoneSuccessUtc > DateTime.MinValue
                             ? (DateTime.UtcNow - LastHpStoneSuccessUtc).TotalMilliseconds : -1;
+                        // ⭐ THE COOLDOWN'S PROVEN FLOOR. Charges remain and HP is below max, so the ONLY
+                        // reason left is the cooldown — the stone was demonstrably not ready this long after
+                        // the last success. This is the corroboration the success-gap ceiling needs; without
+                        // it a rarely-healing bot reports its healing HABIT as its healing CAPABILITY.
+                        if (sinceMs > 0 && Hp is { } hpv && MaxHp is { } mx && mx > 0 && hpv < mx
+                            && sinceMs > _cdMaxFailGapMs)
+                        {
+                            _cdMaxFailGapMs = sinceMs;
+                            _logLevel?.Invoke(BotLogLevel.Note,
+                                $"[heal] stone cooldown FLOOR now {sinceMs:F0}ms (use failed that long after a " +
+                                $"success with {HpStones?.ToString() ?? "?"} charge(s) and HP {hpv}/{mx}) — " +
+                                $"using {HpStoneCooldownMs:F0}ms ⇒ {SustainableHealDps:F0} HP/s");
+                        }
                         _logLevel?.Invoke(BotLogLevel.Info,
                             $"[ZoneView] HP soul-stone USE FAILED (0x5006) — reserve has {HpStones?.ToString() ?? "?"} " +
                             $"charge(s), so this is the COOLDOWN ({sinceMs:F0}ms since last success, learned cd " +
