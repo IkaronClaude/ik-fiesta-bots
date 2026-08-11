@@ -1214,8 +1214,30 @@ public sealed class ZoneView : IDisposable
     /// them — precisely the "arbitrary cap that abandoned winnable fights" the operator removed 2026-07-16.
     /// The max is the best available estimate of true capacity (still a LOWER bound, since even it may have
     /// been clamped — it can only rise as more samples arrive).</para></summary>
-    public double SustainableHealDps =>
-        HpStoneHealMax > 0 && HpStoneCooldownMs > 0 ? HpStoneHealMax / (HpStoneCooldownMs / 1000.0) : -1;
+    /// <summary>HP per second we can sustain from soul stones = one charge / the learned cooldown.
+    ///
+    /// <para>⛔ PREFERS THE SERVER'S ADVERTISED <see cref="HpStoneRestore"/> OVER THE MEASURED MAX, because
+    /// the measured one is STRUCTURALLY TOO LOW. <see cref="HpStoneHealMax"/> is the largest observed
+    /// <c>hpNow - hpAtStoneUse</c>, and a heal is CLIPPED BY MISSING HP — using a stone at 90% health can
+    /// only ever show a small delta. So the measurement converges on the true charge only if the bot
+    /// happens to heal from very low HP, and until then it under-reads, without ever looking wrong.</para>
+    /// <para>That is the operator's 2026-08-11 P0 exactly: JcqArcher reported <b>11.41 HP/s</b> (~80 per
+    /// charge / 7s) when its stones restore ~150+, and JcqMage <b>0.52 HP/s</b>. Both were "measurements",
+    /// which is why they looked authoritative. The soul-stone shop states the real figure outright — 270
+    /// per charge on a level-16 character — so with the ~7s learned cooldown that is ~39 HP/s, not 11.</para>
+    /// <para>Under-reporting sustain is the DANGEROUS direction for the survivability inequality: it makes
+    /// winnable fights look unwinnable, which is what drove the flee → deprioritize → grind spiral.</para>
+    /// <para>The measured max stays as the fallback for a bot that has not opened a healer's shop this
+    /// session, and remains useful as a CHECK: if a measured heal ever exceeds the advertised charge, one
+    /// of the two is wrong and worth investigating.</para></summary>
+    public double SustainableHealDps
+    {
+        get
+        {
+            double perCharge = HpStoneRestore > 0 ? HpStoneRestore : HpStoneHealMax;
+            return perCharge > 0 && HpStoneCooldownMs > 0 ? perCharge / (HpStoneCooldownMs / 1000.0) : -1;
+        }
+    }
 
     /// <summary>When the HP soul stone last ACTUALLY healed (0x5008), UtcMinValue if never.</summary>
     public DateTime LastHpStoneSuccessUtc { get; private set; } = DateTime.MinValue;
@@ -2446,6 +2468,13 @@ public sealed class ZoneView : IDisposable
                     _healSamples++; _healSum += healed;
                     ScalarLearned?.Invoke(ScalarStoneHeal, healed);
                     MetricSink?.Invoke("healsLanded", healed);
+                    // A measured heal ABOVE what the shop advertises means one of the two is wrong —
+                    // say so rather than silently taking the larger. (Expected never to fire; if it does,
+                    // the advertised value is not the whole story and the sustain model needs revisiting.)
+                    if (HpStoneRestore > 0 && healed > HpStoneRestore)
+                        _logLevel?.Invoke(BotLogLevel.Note,
+                            $"[heal] ⚠️ measured heal {healed} EXCEEDS the shop-advertised charge {HpStoneRestore} — " +
+                            "the advertised per-charge value may not be the whole story; sustain model assumption in doubt.");
                     if (healed > HpStoneHealMax)
                     {
                         HpStoneHealMax = healed;
