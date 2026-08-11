@@ -164,6 +164,38 @@ rate**, not on the absence of every cease-fire.
 
 ---
 
+## 5b. VERIFIED RESULT of the 2026-08-11 fix round
+
+Six self-inflicted faults removed (commits `6892d07`, `3da9e53`, scripts `94df74a`). Measured on live
+bots, windowed to post-fix traffic only — the packet logs are CUMULATIVE, and a hot-applied script fix
+leaves pre-fix traffic in the same file, which dilutes every number if you do not cut the window.
+
+| metric | baseline | after | target |
+|---|---|---|---|
+| **swings landed : taken** | **1 : 15** | **1 : 0.8 – 1 : 1.9** | ≤ 1:2 ✅ |
+| cast failures | 52 % | **5 – 13 %** | < 5 % (JcqFresh ✅) |
+| zero-damage bashes | 81 % | **37 – 47 %** | < 25 % ❌ |
+| swings per bash | 0.20 | **0.84 – 0.92** | ≥ 3 ❌ |
+
+Fixed: cooldown spam (`0xFC8` 57→0, gated locally, clock from `0x244E`) · casting into the swing windup
+(was +4 ms, now deferred) · redundant `TARGET` before every cast · re-bashing inside the windup (was a
+median 355 ms) · BASHSTART with no committed STOP (the missing `else` branch) · **the Cleric casting
+`Heal [02]` AT the mob** (`0xFD7` 10→0 — the last unexplained error code turned out to be our rotation).
+
+### ⏭️ THE NEXT CAUSE — MOVERUN DURING THE SWING
+The remaining dead bashes are killed by our own movement, not by the server:
+```
++0ms    C-> TARGET + MOVE + STOP + BASH
++62ms   S<- CEASE
++272ms  S<- SW_START US->mob      <- the swing DID start
++276ms  C-> MOVE                  <- we move 4ms later, mid-windup
++378ms  S<- CEASE                 <- cancelled
+```
+The driver re-issues `walkTo` while engaged and in range. With a ~418 ms windup, any move inside it
+destroys the swing — and this is the same root as the surviving `0xFCA` "precondition unmet, suspect
+MOVING" cast failures. ⚠️ Fixing it means touching movement while in combat, which also owns kiting and
+repositioning, so it needs care rather than a blanket "never move in combat".
+
 ## 6. Targets to hit
 
 | metric | now | target |
