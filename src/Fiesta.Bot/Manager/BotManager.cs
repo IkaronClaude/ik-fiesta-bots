@@ -173,6 +173,27 @@ public sealed class BotManager : IAsyncDisposable
         }
         else
         {
+            // ⛔ NO ZONE LINK IS NOT THE SAME AS NOTHING TO LOG OUT. A Failed bot has a dead zone session
+            // but its WM link is usually STILL OPEN — measured 2026-08-11 on three Failed bots at once:
+            // WM uptimes 495s / 613s / 435s. The WM link is what holds the character "online", so
+            // cancelling without logging it out leaves a STALE SESSION, and the next login on that account
+            // is duplicate-kicked: login and WM both succeed, CHAR_LOGIN_ACK arrives, and then the zone
+            // drops the connection ~76ms after MAP_LOGIN_REQ. That is precisely the failure this method's
+            // own comment above predicts ("leaves the char 'online' -> the next login is duplicate-kicked")
+            // — the clean-logout branch just never covered the case where only the ZONE had died.
+            // Operator: "You should be able to log 5 accounts in at the same time no problem — as long as
+            // they don't have stale sessions." Concurrency was never the issue; unclean stops were, and
+            // this is where they were manufactured.
+            if (handle.WmSession is { } wmAlive && wmAlive.State.Connected)
+            {
+                using var wmLogoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                try
+                {
+                    await wmAlive.LogoutAsync(logoutReady: false, wmLogoutCts.Token);
+                    handle.Log("stop: no zone link, but the WM link was still open — logged it out so no stale session is left behind");
+                }
+                catch (Exception ex) { handle.Log($"stop: WM logout failed ({ex.GetType().Name}) — a stale session may linger until the server times it out"); }
+            }
             handle.Cts.Cancel();
         }
 
