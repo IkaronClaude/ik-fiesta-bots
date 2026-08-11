@@ -60,6 +60,14 @@ public sealed class BotHandle
     /// (Qsc 0x06 ACCEPT / 0x0A DONE) for OUR quest — i.e. the accept/hand-in actually CONCLUDED on the wire.
     /// The leveler reads this after a hand-in drive to know the hand-in succeeded even when a REPEATABLE quest
     /// immediately re-accepted (so bot.questProgress reads a stale 10/10 and questReadyToHandin loops).</summary>
+    /// <summary>When we last sent BASHSTART. A cast issued before the swing windup elapses (median 418ms,
+    /// measured) trades the whole swing for the cast — see docs/COMBAT_BIBLE.md.</summary>
+    public DateTime LastBashSentUtc { get; internal set; } = DateTime.MinValue;
+
+    /// <summary>The handle we have already told the server we are targeting. Re-asserting the same target
+    /// before every cast is traffic the real client does not send, in the window the swing needs.</summary>
+    public ushort CurrentTarget { get; internal set; }
+
     public bool LastDialogConcluded { get; internal set; }
 
     /// <summary>The last-applied Lua script (name/source/tick) — kept so a self-relog (bot.relog / stuck

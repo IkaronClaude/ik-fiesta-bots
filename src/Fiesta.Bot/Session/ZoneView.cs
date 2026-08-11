@@ -481,6 +481,10 @@ public sealed class ZoneView : IDisposable
     // Previously undecoded → the tracked level stayed STALE until a relog re-read the WM avatar list (the whole
     // reason a GM'd-to-20 char still read level 1). Now decode level@0 + fire LevelChanged so it tracks live.
     private static readonly ushort OpBatLevelup = PacketRegistry.GetOpcode<PROTO_NC_BAT_LEVELUP_CMD>();
+    // 0x244E — the server CONFIRMING a cast started, and it NAMES the skill (skill u16 @0, targetobj u16 @2,
+    // index u16 @4; PDB PROTO_NC_BAT_SKILLBASH_HIT_OBJ_START_CMD). This is the only packet that ties a
+    // cooldown to a specific skill id, so it is what the cooldown clock runs from. See docs/COMBAT_BIBLE.md.
+    private static readonly ushort OpSkillStart = PacketRegistry.GetOpcode<PROTO_NC_BAT_SKILLBASH_HIT_OBJ_START_CMD>();
     // Ground loot: DROPEDITEM (Briefinfo 0x1C0A) broadcasts an item that hit the ground
     // (mob death or a player drop); MAP_LOGOUT (Map 0x1805) is the universal "this handle
     // left view" — for a ground item that means it was picked (by anyone) or despawned, so
@@ -1748,6 +1752,35 @@ public sealed class ZoneView : IDisposable
     /// <summary>Record that this skill was just cast (called at the send site).</summary>
     public void NoteSkillCast(ushort skillId) => _lastSkillCast[skillId] = DateTime.UtcNow;
 
+    private readonly ConcurrentDictionary<ushort, DateTime> _skillStartedAt = new();
+
+    /// <summary>The server CONFIRMED this skill started (0x244E NC_BAT_SKILLBASH_HIT_OBJ_START_CMD, which
+    /// names the skill). This — not the moment we sent the request — is what a cooldown runs from.
+    /// <para>⛔ THE DISTINCTION IS THE WHOLE BUG. A request that the server refuses (0x2434 err 0xFC8
+    /// "not ready") produces NO 0x244E, so timing from the SEND starts a phantom cooldown on a cast that
+    /// never happened, and the driver then believes it is further through the rotation than it is.
+    /// Measured 2026-08-11: 57 of the bot's 199 casts were refused for cooldown, against ZERO in an hour
+    /// of real play — the real client gates locally and never transmits a doomed cast.</para></summary>
+    public void NoteSkillStarted(ushort skillId) => _skillStartedAt[skillId] = DateTime.UtcNow;
+
+    /// <summary>When the server last confirmed this skill STARTED, or null if never.</summary>
+    public DateTime? SkillStartedAtUtc(ushort skillId) =>
+        _skillStartedAt.TryGetValue(skillId, out var t) ? t : null;
+
+    /// <summary>Milliseconds until this skill is usable again, 0 = ready now.
+    /// <para>Cooldown runs from the CONFIRMED start plus the skill's own cast time (the operator's rule:
+    /// "cd only starts once cast has fully finished; on skills with cast time that is once the cast time
+    /// is over"), so a 3s-cast skill is not considered ready 3 seconds early.</para>
+    /// <para>Returns 0 when we have never seen it start — never-cast must not read as "on cooldown", or
+    /// the bot would refuse to open with any skill.</para></summary>
+    public double SkillReadyInMs(ushort skillId, double cooldownMs, double castTimeMs)
+    {
+        if (cooldownMs <= 0) return 0;
+        if (SkillStartedAtUtc(skillId) is not { } started) return 0;
+        var elapsed = (DateTime.UtcNow - started).TotalMilliseconds;
+        return Math.Max(0, (cooldownMs + Math.Max(0, castTimeMs)) - elapsed);
+    }
+
     /// <summary>When this skill was last cast, or null if never this session.</summary>
     public DateTime? SkillLastCastAtUtc(ushort skillId) =>
         _lastSkillCast.TryGetValue(skillId, out var t) ? t : null;
@@ -2765,6 +2798,18 @@ public sealed class ZoneView : IDisposable
                     _log?.Invoke($"[ZoneView] LEVEL UP -> {newLevel}");
                     LevelChanged?.Invoke(newLevel);
                 }
+            }
+        }
+        else if (op == OpSkillStart)
+        {
+            // Cast ACCEPTED — start this skill's cooldown from here, not from when we asked.
+            var ps = pkt.Payload.Span;
+            if (ps.Length >= 2)
+            {
+                var startedSkill = (ushort)(ps[0] | (ps[1] << 8));
+                NoteSkillStarted(startedSkill);
+                _logLevel?.Invoke(BotLogLevel.Verbose,
+                    $"[combat] skill {startedSkill} STARTED (0x244E) — cooldown clock begins");
             }
         }
         else if (op == OpBatLevelup)

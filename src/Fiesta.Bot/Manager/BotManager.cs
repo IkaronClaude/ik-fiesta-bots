@@ -88,6 +88,11 @@ public sealed class BotManager : IAsyncDisposable
         handle.MobNameResolver = mobId => ClientData?.Mob(mobId)?.Name;
 
         handle.Log($"spawn requested: {options.Host}:{options.LoginPort} user='{options.Credentials.Username}'");
+        // Remember that this bot SHOULD BE RUNNING so a pod restart can restore it without a human.
+        // Deliberately recorded at spawn REQUEST time, not on success: a bot that fails to log in is
+        // still one we were asked to run, and the restore path retries it. Removed only by an explicit
+        // StopAsync (see ForgetRosterEntry) so "stopped on purpose" stays stopped.
+        Knowledge?.SaveRosterEntry(id, options);
         handle.RunTask = Task.Run(() => RunBotAsync(handle));
         return handle;
     }
@@ -139,7 +144,11 @@ public sealed class BotManager : IAsyncDisposable
 
     /// <summary>Signal a bot to stop and wait (briefly) for it to wind down.
     /// Returns false if no such bot. The handle is removed once stopped.</summary>
-    public async Task<bool> StopAsync(string id, CancellationToken ct = default)
+    /// <param name="forget">Whether to DE-PERSIST the bot from the restore roster. True for an operator
+    /// stop ("I want this stopped"); FALSE for process shutdown, where every bot is stopped cleanly but
+    /// must come back on the next start — otherwise the graceful-shutdown hook would erase the very roster
+    /// it exists to preserve, and each deploy would still come up empty.</param>
+    public async Task<bool> StopAsync(string id, CancellationToken ct = default, bool forget = true)
     {
         if (!_bots.TryGetValue(id, out var handle)) return false;
         handle.Log("stop requested");
@@ -204,6 +213,8 @@ public sealed class BotManager : IAsyncDisposable
             catch (OperationCanceledException) { }
         }
         _bots.TryRemove(id, out _);
+        // An EXPLICIT stop means do not bring this one back on the next restart. A SHUTDOWN stop keeps it.
+        if (forget) Knowledge?.ForgetRosterEntry(id);
         handle.Cts.Dispose();
         return true;
     }
@@ -490,7 +501,46 @@ public sealed class BotManager : IAsyncDisposable
         // it before every cast; dropping it in 171cf5a caused rejections and was reverted in 94ffe8e).
         var adjust = NeedsFacingAdjust(handle, skill, target);
         if (!adjust) { needFace = false; needStop = false; }
-        await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
+
+        // ── FIX 0: NEVER SEND A CAST THE CLIENT KNOWS IS NOT READY ────────────────────────────────
+        // The real client sent ZERO cooldown failures in an hour (200 casts); we sent 57 in 199. It gates
+        // locally from ActiveSkill.DelayTime and simply does not transmit — pressing the key does nothing.
+        // Cooldown runs from the server's CONFIRMED start (0x244E) plus the cast time, never from our send,
+        // because a refused cast never starts one. Skills we have never cast read as ready.
+        if (ClientData?.Skill(skill) is { } si0 && handle.ZoneView is { } zvcd)
+        {
+            var readyIn = zvcd.SkillReadyInMs(skill, si0.DelayTimeMs, si0.CastTimeMs);
+            if (readyIn > 0)
+            {
+                handle.Log(BotLogLevel.Verbose, $"cast {skill} NOT SENT — {readyIn:F0}ms of cooldown left");
+                return ActionResult.Sent;   // the real client would not have transmitted either
+            }
+        }
+
+        // ── FIX 1 of 3: DO NOT CAST INTO A BASH THAT HAS NOT SWUNG YET ────────────────────────────
+        // First damage lands a MEDIAN 418ms after BASHSTART (the swing windup). We were casting ~4ms
+        // after it, every time, so the swing never happened: 81% of our bashes produced ZERO damage
+        // against the real player's 4%. The player casts AFTER SWING_START is acknowledged.
+        // Defer the cast (the caller retries next tick) rather than trading a whole swing for it.
+        if (handle.ZoneView is { } zvw && zvw.BashActive
+            && handle.LastBashSentUtc > DateTime.MinValue
+            && (DateTime.UtcNow - handle.LastBashSentUtc).TotalMilliseconds < BashWindupMs
+            && zvw.LastRealDamageDealtAtUtc < handle.LastBashSentUtc)
+        {
+            handle.Log(BotLogLevel.Verbose,
+                $"cast {skill} deferred — bash {(DateTime.UtcNow - handle.LastBashSentUtc).TotalMilliseconds:F0}ms ago has not swung yet");
+            return ActionResult.Sent;   // not an error: we simply let the swing land first
+        }
+
+        // ── FIX 2 of 3: ONLY RE-TARGET WHEN THE TARGET ACTUALLY CHANGES ───────────────────────────
+        // We sent NC_BAT_TARGETTING_REQ before EVERY cast; the real client sends STOP -> CAST with no
+        // TARGET at all unless it is switching (223 targets/hour for the player vs our 361 in half that).
+        // Re-asserting the same target is pure extra traffic in the exact window the swing needs.
+        if (handle.CurrentTarget != target)
+        {
+            await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
+            handle.CurrentTarget = target;
+        }
         await EnsureBattleModeAsync(handle, s, ct);
         // Record WHICH of the three pre-cast paths ran. They are behaviourally different and the old
         // two-way `sent=` label lumped the last two together, so "plain cast" in the logs meant either
@@ -840,7 +890,27 @@ public sealed class BotManager : IAsyncDisposable
         if (target == 0 && NearestMob(handle) is { } m) target = m;
         if (target == 0) return ActionResult.NotFound;
 
-        await s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct);
+        // ── FIX 3 of 3: DO NOT RE-BASH INTO OUR OWN WINDUP ────────────────────────────────────────
+        // CEASE_FIRE is an INTERRUPT, not a failure: for the real player the swing stream resumes on its
+        // own after 46% of them, with no new BASHSTART. We re-bashed at a MEDIAN 355ms — inside the 418ms
+        // windup — in 80% of cases, restarting the windup from zero each time and guaranteeing the stream
+        // never produced anything. 150 bashes -> 30 landed swings (0.20/bash vs the player's 5.96).
+        // Re-issuing on the SAME target inside the windup can only ever destroy progress, so refuse it.
+        // (A target CHANGE is different and still goes through — that is a real new engagement.)
+        if (handle.BashTarget == target
+            && handle.LastBashSentUtc > DateTime.MinValue
+            && (DateTime.UtcNow - handle.LastBashSentUtc).TotalMilliseconds < BashWindupMs)
+        {
+            handle.Log(BotLogLevel.Verbose,
+                $"auto-attack h={target} SKIPPED — bashed {(DateTime.UtcNow - handle.LastBashSentUtc).TotalMilliseconds:F0}ms ago, still inside the windup");
+            return ActionResult.Sent;
+        }
+
+        if (handle.CurrentTarget != target)
+        {
+            await s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct);
+            handle.CurrentTarget = target;
+        }
         await EnsureBattleModeAsync(handle, s, ct);
 
         // FACE the mob then STOP, exactly like a skill cast (CastAsync) — the server validates
@@ -868,6 +938,7 @@ public sealed class BotManager : IAsyncDisposable
         else if (NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         await s.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
+        handle.LastBashSentUtc = DateTime.UtcNow;   // so a cast can tell "the swing has not started yet"
         // Remember WHAT we're bashing and that it's running, so the CEASE_FIRE handler can tell a
         // cancelled swing stream from an idle one and re-issue BASHSTART on the same target.
         handle.BashTarget = target;
@@ -2773,6 +2844,9 @@ public sealed class BotManager : IAsyncDisposable
     // How long to wait after a CEASE_FIRE before deciding the swing stream is genuinely dead. The real client
     // does not re-bash on a cease-fire at all (27 of 39 resumed by themselves — CombatPriest.pcapng), so this
     // is a stall detector, not a cadence. Long enough to let the server's own resumption land.
+    /// <summary>Swing windup: BASHSTART -> first landed damage, MEASURED median 418ms on our own logs.
+    /// A cast or a re-bash inside this window destroys the swing that was about to land.</summary>
+    private const int BashWindupMs = 450;
     private const int ReBashVerifyMs = 1_200;
     private const int WatchdogPollMs = 5_000;
     private const int WatchdogStillSecs = 45;

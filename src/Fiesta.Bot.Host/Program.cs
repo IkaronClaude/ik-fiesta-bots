@@ -174,6 +174,42 @@ gameData.MapGet("/skill/{skillId:int}", (int skillId) =>
 })
 .WithSummary("Read an ActiveSkill row's combat fields (facing/cooldown/range/mana) from BYO client data");
 
+// ROSTER RESTORE (tickets.md P0, 2026-08-11): bring back every bot that was running when the process
+// last died. BotManager.Spawn persists its options; an explicit StopAsync de-persists them; a crash, an
+// OOM or a deploy does not — so whatever is left here is exactly "what should be running".
+// WHY THIS EXISTS: the host restarted FOUR times on 2026-08-11 (three deploys + a node OOM) and every
+// time came back with an EMPTY roster — `GET /api/bots` returning `[]`, nobody logged in, and nothing
+// announcing it. The script watchdog already restored WHAT each bot runs; nothing restored THAT it runs.
+// Staggered, because five logins landing together is when the zone-connect drops were seen; and each
+// failure is logged with its id, since a silent restore failure is the same invisibility all over again.
+{
+    var restoreMgr = app.Services.GetService<BotManager>();
+    if (restoreMgr is not null)
+    {
+        var saved = restoreMgr.Knowledge.LoadRoster();
+        if (saved.Count > 0)
+        {
+            app.Logger.LogInformation("Startup: restoring {Count} bot(s) from the persisted roster…", saved.Count);
+            _ = Task.Run(async () =>
+            {
+                foreach (var (id, opts) in saved)
+                {
+                    try
+                    {
+                        restoreMgr.Spawn(opts with { Id = id });
+                        app.Logger.LogInformation("Startup: restored bot {Id}", id);
+                    }
+                    catch (Exception ex)
+                    {
+                        app.Logger.LogWarning("Startup: could NOT restore bot {Id}: {Err}", id, ex.Message);
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(3));
+                }
+            });
+        }
+    }
+}
+
 // GRACEFUL SHUTDOWN (tickets.md P3): on SIGTERM (a deploy/pod restart), cleanly LOG OUT every running
 // bot before the process exits. StopAsync sends the game quit frames (LOGOUTREADY+quit, WM quit, 3s cap
 // each) — which makes the server DROP the zone session immediately. Without this, a hard pod-kill leaves
@@ -187,7 +223,7 @@ gameData.MapGet("/skill/{skillId:int}", (int skillId) =>
         var bots = shutdownMgr?.List().ToList();
         if (bots is not { Count: > 0 }) return;
         app.Logger.LogInformation("Shutdown: cleanly logging out {Count} bot(s) to avoid ghost sessions…", bots.Count);
-        try { Task.WhenAll(bots.Select(b => shutdownMgr!.StopAsync(b.Id))).Wait(TimeSpan.FromSeconds(20)); }
+        try { Task.WhenAll(bots.Select(b => shutdownMgr!.StopAsync(b.Id, default, forget: false))).Wait(TimeSpan.FromSeconds(20)); }
         catch (Exception ex) { app.Logger.LogWarning(ex, "Shutdown: bot logout hit an error (continuing)."); }
         app.Logger.LogInformation("Shutdown: bot logout complete.");
     });

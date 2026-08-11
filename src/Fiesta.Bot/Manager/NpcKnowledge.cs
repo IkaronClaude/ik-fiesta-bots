@@ -45,6 +45,7 @@ public sealed class NpcKnowledge
         _mobThreatPath = Path.Combine(baseDir, "mob-threats.json");
         _scalarPath = Path.Combine(baseDir, "learned-scalars.json");
         _scriptDir = Path.Combine(baseDir, "scripts");
+        _rosterDir = Path.Combine(baseDir, "roster");   // spawn options per bot id — CREDENTIALS, never log/commit
         Load();
         LoadQuestDeprio();
         LoadQuestDeaths();
@@ -161,6 +162,7 @@ public sealed class NpcKnowledge
     }
 
     private readonly string _scriptDir;
+    private readonly string _rosterDir;
     private readonly object _scriptIoLock = new();
 
     /// <summary>Remember the driver script a bot is running, so it can be restored after the PROCESS dies.
@@ -183,6 +185,64 @@ public sealed class NpcKnowledge
             }
             catch { /* best-effort: never let persistence break an apply */ }
         }
+    }
+
+    /// <summary>Remember that a bot SHOULD BE RUNNING, so a pod restart can bring it back by itself.
+    /// <para>⛔ THE OTHER HALF OF THE SAME HOLE. <see cref="SaveScript"/> persists WHAT a bot runs, but not
+    /// THAT it exists — so after every restart the process came up with an empty roster and the whole test
+    /// simply stopped, silently. Measured 2026-08-11: the host restarted FOUR times (deploys plus a node
+    /// OOM) and each time `GET /api/bots` returned `[]` with nobody logged in and nothing saying so. An
+    /// external watchdog script was standing in for this, which is not a fix — it only runs while a human
+    /// is around to start it.</para>
+    /// <para>⚠️ The spawn options carry CREDENTIALS, so this file is written to the knowledge PVC beside the
+    /// other learned state and must never be logged or committed.</para></summary>
+    public void SaveRosterEntry(string id, BotSpawnOptions opts)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return;
+        lock (_scriptIoLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(_rosterDir);
+                File.WriteAllText(Path.Combine(_rosterDir, ScriptFile(id)),
+                    JsonSerializer.Serialize(opts, new JsonSerializerOptions { WriteIndented = false }));
+            }
+            catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>Forget a bot: an EXPLICIT stop means the operator wants it stopped, and it must not come
+    /// back on the next restart. Only StopAsync calls this — a crash or a pod kill leaves the entry, which
+    /// is exactly the case we want restored.</summary>
+    public void ForgetRosterEntry(string id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return;
+        lock (_scriptIoLock)
+        {
+            try { File.Delete(Path.Combine(_rosterDir, ScriptFile(id))); } catch { }
+        }
+    }
+
+    /// <summary>Every bot that was running when the process last died, as (id, options).</summary>
+    public IReadOnlyList<(string Id, BotSpawnOptions Options)> LoadRoster()
+    {
+        var outp = new List<(string, BotSpawnOptions)>();
+        try
+        {
+            if (!Directory.Exists(_rosterDir)) return outp;
+            foreach (var f in Directory.GetFiles(_rosterDir, "*.json"))
+            {
+                try
+                {
+                    var o = JsonSerializer.Deserialize<BotSpawnOptions>(File.ReadAllText(f));
+                    var id = Path.GetFileNameWithoutExtension(f);
+                    if (o is not null && !string.IsNullOrWhiteSpace(id)) outp.Add((id, o));
+                }
+                catch { /* skip an unreadable entry rather than lose the rest */ }
+            }
+        }
+        catch { }
+        return outp;
     }
 
     /// <summary>The last script this scope applied, or null if none was ever saved (a genuinely new bot).</summary>
