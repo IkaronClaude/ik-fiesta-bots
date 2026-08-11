@@ -20,7 +20,7 @@ Claims are labelled **MEASURED** (from data), **PDB** (from `Z:/ClientSource/Fie
 | `0x2401` | C→ | `NC_BAT_TARGETTING_REQ` | `handle u16` |
 | `0x242B` | C→ | `NC_BAT_BASHSTART_CMD` | empty — starts the auto-attack stream |
 | `0x2440` | C→ | `NC_BAT_SKILLBASH_OBJ_CAST_REQ` | **PDB** `skill u16 @0, target u16 @2` |
-| `0x2434` | S← | cast FAILED | `err u16` — `0xFC8` on cooldown · `0xFCA` precondition (moving / no STOP) · `0xFCD`, `0xFC6` |
+| `0x2434` | S← | cast FAILED | `err u16` — see the DECODED TABLE below |
 | `0x244E` | S← | `NC_BAT_SKILLBASH_HIT_OBJ_START_CMD` | **PDB** `skill u16 @0, targetobj u16 @2, index u16 @4` — the cast STARTED, and names which skill |
 | `0x2047` | S← | `NC_ACT_CREATECASTBAR` | `millisec u16` — only for skills that HAVE a cast time |
 | `0x2435` | S← | (unnamed, dept 9 cmd 53, len 0) | fires ~once per SUCCESSFUL cast — **THEORY: cast finished** |
@@ -50,6 +50,37 @@ IsCostumWeapon`; byte1: `isDead · isImmune · IsCostumShield`.
 ⚠️ **The two flag bitfields are DIFFERENT ORDERS.** Only `ismissed` (bit2) and `isshieldblock` (bit3)
 coincide — enough coincidence to make a wrong decoder look right, while a crit reads as "isdamage" and a
 killing blow as "isenchant".
+
+### ✅ CAST-FAILURE CODES — DECODED FROM THE CLIENT BINARY (not guessed)
+`Fiesta.bin` switches on `err - 0x0FC0` through a jump table at VA `0x4AA9D0`, each case pushing a
+`TextData*.shn` `eTextID`. Resolving those ids gives the exact player-facing string:
+
+| code | meaning |
+|---|---|
+| `0x0FC0` | Cannot use the skill while in nonbattle mode. |
+| `0x0FC1` | Cannot use the skill right after logging in. |
+| `0x0FC3` | Cannot use the skill in this field. |
+| `0x0FC4` | Casting another skill now. |
+| `0x0FC5` | The skill has been reserved. |
+| `0x0FC6` | Incorrect Skill. |
+| `0x0FC7` | Cannot use the skill due to Silence State. |
+| **`0x0FC8`** | **Cannot use the skill yet.** (cooldown) |
+| `0x0FC9` | Not enough SP. |
+| **`0x0FCA`** | **The target is out of casting range.** |
+| `0x0FCB` | Cannot find the target. |
+| `0x0FCD` | Skill has not been finished normally. |
+| `0x0FCE` | Skill usage is prohibited in this area. |
+| `0x0FD1` | Failed to Cast the Skill. |
+| **`0x0FD7`** | **Target user cannot be healed at this time.** |
+
+⛔ **`0x0FCA` IS RANGE, NOT MOVEMENT.** This codebase called it "precondition unmet; suspect MOVING / no
+committed STOP" for months and that claim was repeated into the 2026-08-11 analysis, including as the
+stated rationale for suppressing the mid-swing face-step. The face-step fix stands on its own evidence
+(SWING_START +272ms → our MOVE +276ms → CEASE_FIRE +378ms, no damage), but the `0xFCA` attribution was
+wrong. The real remedy for `0xFCA` is a RANGE CHECK before casting — compare `ActiveSkill.Range` against
+the distance to the target — which the driver does not currently do.
+Method, so it can be repeated for any other code: find the `push <textid>` cases at the switch, map the
+id through `TextData/2/3.shn`. The ids are hashed, so they cannot be looked up by arithmetic.
 
 ### Traps that cost a full session
 1. **`@` offsets in a pcap decode are PER-DIRECTION, not a clock.** `S<- @19389` and the `C-> @484` that
