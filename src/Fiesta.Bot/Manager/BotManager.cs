@@ -2794,19 +2794,17 @@ public sealed class BotManager : IAsyncDisposable
             // creation was refused with err=132 while other classes happened through. ClientData reads the
             // client's own HairInfo/FaceInfo/HairColorInfo creation tables; this is the layer that HAS a
             // ClientData instance, so the fill happens here rather than inside the login chain.
+            // ⛔ APPEARANCE OVERRIDE REVERTED — it was a REGRESSION, kept here as the record of why.
+            // ClientData.PickAppearance reads HairInfo/FaceInfo correctly, but the MEANING of their 1/2
+            // values is not what I assumed. Feeding face=1 (a value the table marks selectable for every
+            // class and gender) produced AVATAR_CREATEFAIL err=387 on BOTH Archer and Fighter — and
+            // Fighter had always created cleanly with face=0, the value the table marks selectable by
+            // NOBODY. So the server accepts 0 and rejects 1: whatever those columns encode, it is not a
+            // straight "may pick this" flag, and acting on that reading broke a working path.
+            // Sending 0/0/0 is empirically correct for every class that has ever been created here.
+            // PickAppearance is retained (documented, unused) for when the 1/2 semantics are settled —
+            // see the ticket. Do not re-enable it on the strength of the column names alone.
             var createSpec = opt.CreateSpec;
-            if (createSpec is not null && ClientData is { } cdShape)
-            {
-                var look = cdShape.PickAppearance((int)createSpec.Class, createSpec.Gender);
-                createSpec = createSpec with
-                {
-                    HairType = createSpec.HairType != 0 ? createSpec.HairType : look.HairType,
-                    HairColor = createSpec.HairColor != 0 ? createSpec.HairColor : look.HairColor,
-                    FaceShape = createSpec.FaceShape != 0 ? createSpec.FaceShape : look.FaceShape,
-                };
-                Log($"[{handle.Id}] create appearance from client tables: hair={createSpec.HairType} " +
-                    $"colour={createSpec.HairColor} face={createSpec.FaceShape} (class {createSpec.Class}, gender {createSpec.Gender})");
-            }
             var (wmResult, wmConn) = await chain.RunWmAsync(
                 wmEp, opt.Credentials, login.Otp, opt.Slot, createSpec, ct, tap, opt.Character);
             wm = new FiestaClientConnectionScope(wmConn);
