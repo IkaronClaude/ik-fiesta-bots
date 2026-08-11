@@ -1155,8 +1155,8 @@ public sealed class ZoneView : IDisposable
     public void SeedMeleeRange(double maxObserved)
     {
         if (maxObserved <= 0 || maxObserved > 150) return;
-        if (maxObserved <= LearnedMeleeRange) return;
-        LearnedMeleeRange = maxObserved;
+        if (maxObserved <= _learnedMeleeRange) return;
+        _learnedMeleeRange = maxObserved;
         _rangeMax1 = Math.Max(_rangeMax1, maxObserved);
         _rangeMax2 = Math.Max(_rangeMax2, maxObserved);   // the seed is already a trusted 2nd-highest
         _logLevel?.Invoke(BotLogLevel.Note,
@@ -1448,7 +1448,24 @@ public sealed class ZoneView : IDisposable
     /// golden-rule way. 0 until the first connecting hit. Feeds the combat standoff so the bot stops at real
     /// weapon range instead of overlapping the mob at ~1u (the 0x0FCA "out of range" wedge). For a melee char
     /// every swing is ~weapon range so the max ≈ the range; a clamp excludes any long-range skill damage.</summary>
-    public double LearnedMeleeRange { get; private set; }
+    public double LearnedMeleeRange => MeleeRangeExperimentU > 0 ? MeleeRangeExperimentU : _learnedMeleeRange;
+    private double _learnedMeleeRange;
+
+    /// <summary>🧪 EXPERIMENT (operator 2026-08-11: *"Try hardcoding it at 50 to see what happens (likely
+    /// ruins our archer's day but oh well)"*) — when &gt; 0 this OVERRIDES the learned range everywhere.
+    ///
+    /// <para>50u is the real client's measured melee reach: <c>tools/client_range.py</c> over
+    /// <c>Z:/LongCaptureNoDc.pcapng</c> put a real player's auto-attack at median 49u / p75 61u, and the
+    /// melee skills that declare <c>ActiveSkill.Range = 0</c> at median 51u. The learner meanwhile converged
+    /// on 116–124u — roughly 2.4× reality — which is why it is worth testing whether the learner is the bug.</para>
+    /// <para>⚠️ KNOWN CONSEQUENCE, accepted by the operator: this is a MELEE number applied to every class.
+    /// The Lua's <c>engageRange()</c> detects a ranged weapon by testing <c>learned &gt; MELEE*2</c>, so
+    /// forcing 50 makes that test fail and archers/mages will close to melee instead of standing off. Expect
+    /// JcqArcher (currently the best-performing bot: 1% cast failures, 1:0.3 landed:taken) to get worse. That
+    /// is the price of the experiment, not a regression to chase.</para>
+    /// <para>Set to 0 to restore the learner. This is a deliberate temporary hardcode of a game fact and is
+    /// tracked in tickets.md — it must not outlive the experiment.</para></summary>
+    public const double MeleeRangeExperimentU = 50;
 
     // Top TWO connect distances ever seen. The learned range is the SECOND highest — a one-line robust
     // max that simply discards the single largest sample, so one position desync cannot define the range.
@@ -1579,7 +1596,7 @@ public sealed class ZoneView : IDisposable
                             else if (dist > _rangeMax2) { _rangeMax2 = dist; }
                             if (_rangeMax2 > LearnedMeleeRange + 0.5)
                             {
-                                LearnedMeleeRange = _rangeMax2;
+                                _learnedMeleeRange = _rangeMax2;
                                 _log?.Invoke($"[combat] LEARNED attack-range ↑ {LearnedMeleeRange:F0}u (2nd-highest of " +
                                              $"connects; top={_rangeMax1:F0}u ignored as a possible outlier, h={h.Defender})");
                                 ScalarLearned?.Invoke(ScalarMeleeRange, LearnedMeleeRange);
