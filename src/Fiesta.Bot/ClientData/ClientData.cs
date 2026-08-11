@@ -626,7 +626,12 @@ public sealed class ClientData
     /// at once rather than special-casing the one that happened to fail.</para></summary>
     public (byte HairType, byte HairColor, byte FaceShape) PickAppearance(int classId, byte genderBit)
     {
-        var shnGender = (uint)(genderBit + 1);          // wire 0/1 -> SHN 1=male, 2=female
+        // ⚠️ THE WIRE GENDER BIT IS INVERTED RELATIVE TO THE SHN's 1=male/2=female.
+        // Wire 0 = FEMALE (SHN 2), wire 1 = MALE (SHN 1). Evidence: the only real-client create in
+        // LongCaptureNoDc.pcapng sends gender=0 with hairtype=1, and HairInfo row 1 ("Feather") is a
+        // value-2 hair — a female one. I had this backwards first and it produced AVATAR_CREATEFAIL
+        // err=387 on a FIGHTER, a class that had always created fine, by handing it a male-only cut.
+        var shnGender = (uint)(genderBit == 0 ? 2 : 1);
         var classCol = classId switch
         {
             >= 1 and <= 5   => "fighter",
@@ -643,9 +648,9 @@ public sealed class ClientData
         if (Table("HairColorInfo") is { } hc)
             foreach (var row in hc.Rows) { colour = (byte)ToU32(row, "ID"); break; }
         // Face columns are FM_<classletter>_<Male|Female>; non-zero means selectable.
-        var faceCol = $"FM_{classCol[0].ToString().ToUpperInvariant()}_{(genderBit == 0 ? "Male" : "Female")}";
-        if (classCol == "Joker") faceCol = $"FM_J_{(genderBit == 0 ? "Male" : "Female")}";
-        if (classCol == "Sentinel") faceCol = $"FM_S_{(genderBit == 0 ? "Male" : "Female")}";
+        var faceCol = $"FM_{classCol[0].ToString().ToUpperInvariant()}_{(genderBit == 0 ? "Female" : "Male")}";
+        if (classCol == "Joker") faceCol = $"FM_J_{(genderBit == 0 ? "Female" : "Male")}";
+        if (classCol == "Sentinel") faceCol = $"FM_S_{(genderBit == 0 ? "Female" : "Male")}";
         if (Table("FaceInfo") is { } fi)
             foreach (var row in fi.Rows)
                 if (ToU32(row, faceCol) != 0) { face = (byte)ToU32(row, "ID"); break; }
