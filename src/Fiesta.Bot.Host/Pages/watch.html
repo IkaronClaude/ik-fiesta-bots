@@ -154,7 +154,14 @@
           <div id="mapinfo" class="muted" style="margin-top:6px"></div>
         </div>
         <div>
-          <div class="muted" style="margin-bottom:4px">combat map — self centred, <span id="cmscale"></span></div>
+          <div class="muted" style="margin-bottom:4px">combat map — self centred, <span id="cmscale"></span>
+            <select id="cmzoom" style="margin-left:6px;background:#0b0e13;color:#e6edf3;border:1px solid #1b2430;font:inherit">
+              <option value="150">150u — contact</option>
+              <option value="300">300u — melee</option>
+              <option value="900" selected>900u — engagement</option>
+              <option value="2500">2500u — area</option>
+              <option value="8000">8000u — region</option>
+            </select></div>
           <canvas id="combat" width="320" height="320"></canvas>
           <div id="legend" class="legend"></div>
         </div>
@@ -247,12 +254,20 @@ function vitals(l) {
 //             is a large share of our max HP. A mob that has never hit us is UNKNOWN, not safe, and gets
 //             no ring rather than a reassuring one.
 //   • fill  = solid when it is currently aggro'd onto us, hollow otherwise.
-const CM_RANGE = 900;      // units from centre to edge — "very zoomed in", roughly one engagement
+// Zoom is SELECTABLE (operator 2026-08-11). CM_RANGE = units from centre to edge.
+// ⚠️ Clustering must scale WITH the zoom or the map lies in both directions: CLUSTER_PX is a
+// SCREEN-space radius, so at 8000u it would merge mobs that are hundreds of units apart into one
+// blob, and at 150u it would split a single pack standing on one spot. The merge distance is
+// therefore defined in WORLD units and converted to pixels per frame, so "what counts as one pack"
+// means the same thing at every zoom level.
+let CM_RANGE = 900;
+const CLUSTER_WORLD_U = 70;   // mobs within this many world units read as one pack, at any zoom
 function drawCombat(ent, maxHp) {
   const c = $('#combat'), g = c.getContext('2d');
   const W = c.width, H = c.height, cx = W/2, cy = H/2;
   g.clearRect(0,0,W,H); g.fillStyle = '#0b0e13'; g.fillRect(0,0,W,H);
   $('#cmscale').textContent = `±${CM_RANGE}u`;
+  const pxPerU = (W/2-6)/CM_RANGE;
   if (!ent || !ent.self) { $('#legend').innerHTML = '<span class="muted">no position yet</span>'; return; }
 
   // range rings so distances are readable at a glance
@@ -269,7 +284,7 @@ function drawCombat(ent, maxHp) {
   // CLUSTER overlapping mobs (operator P0): packs stand on top of each other and a circle per mob was an
   // unreadable smear. Group anything within CLUSTER_PX and draw ONE circle listing "count x legendNumber"
   // per type inside it. Radius grows with the population so a big pack reads as big.
-  const CLUSTER_PX = 26;
+  const CLUSTER_PX = Math.max(6, CLUSTER_WORLD_U * pxPerU);   // world-space merge, expressed in px
   const clusters = [];
   for (const m of ent.mobs||[]) {
     const [px,py] = toPx(m.x, m.y);
@@ -302,12 +317,43 @@ function drawCombat(ent, maxHp) {
     const [px,py] = toPx(p.x, p.y);
     g.beginPath(); g.arc(px, py, 7, 0, Math.PI*2); g.fillStyle = 'rgba(88,166,255,.7)'; g.fill();
   }
+  // ── FACING ARROW + TARGET RAY ────────────────────────────────────────────────────────────────
+  // Operator 2026-08-11: show which way the bot is POINTED. Drawn together with a dashed ray to the
+  // current target, because the pair is what actually diagnoses the open combat bug — if we overshoot
+  // a mob (or meet its stand-off circle on the wrong side) the target ends up BEHIND us, which fails
+  // casts and produces swing-less bashes at the same time. Two rays make that instant; numbers hide it.
+  // Facing null = never set. Draw NOTHING then — a default 0° would be a confident arrow pointing east.
+  if (ent.self.facing != null) {
+    // Screen y grows downward while world y grows upward, so the y term is negated for DISPLAY only.
+    // (If our facing convention itself has a sign error, this arrow is exactly what exposes it: the
+    // arrow will point somewhere the bot plainly is not attacking.)
+    const a = ent.self.facing * Math.PI/180, L = 26;
+    const ex = cx + Math.cos(a)*L, ey = cy - Math.sin(a)*L;
+    g.strokeStyle = '#3fb950'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(cx, cy); g.lineTo(ex, ey); g.stroke();
+    g.beginPath();                                  // arrow head
+    g.moveTo(ex, ey);
+    g.lineTo(ex - Math.cos(a-0.4)*7, ey + Math.sin(a-0.4)*7);
+    g.lineTo(ex - Math.cos(a+0.4)*7, ey + Math.sin(a+0.4)*7);
+    g.closePath(); g.fillStyle = '#3fb950'; g.fill();
+  }
+  // Target ray: only when the target handle matches something actually in view (see the endpoint note
+  // on why 0 is not overloaded as "no target").
+  const tgt = (ent.mobs||[]).find(m => m.handle === ent.self.target);
+  if (tgt) {
+    const [tx,ty] = toPx(tgt.x, tgt.y);
+    g.save(); g.setLineDash([3,3]);
+    g.strokeStyle = '#d4a017'; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(cx, cy); g.lineTo(tx, ty); g.stroke();
+    g.restore();
+  }
   // self last, on top
   g.beginPath(); g.arc(cx, cy, 5, 0, Math.PI*2); g.fillStyle = '#3fb950'; g.fill();
 
   $('#legend').innerHTML = types.length
     ? types.map(m => `<span><b>${numOf.get(m.mobId)}</b> ${m.name} <span class="muted">(m${m.mobId}${m.level?` L${m.level}`:''})</span></span>`).join('')
-      + '<span class="muted">· gold ring = quest mob · red ring = has hit us hard · solid = aggro</span>'
+      + '<span class="muted">· gold ring = quest mob · red ring = has hit us hard · solid = aggro'
+        + ' · green arrow = our facing · dashed gold = to current target</span>'
     : '<span class="muted">nothing in view</span>';
 }
 
@@ -602,6 +648,15 @@ if (localStorage.getItem('watch:noscroll') === '1') $('#noscroll').checked = tru
 $('#noscroll').addEventListener('change', e => localStorage.setItem('watch:noscroll', e.target.checked ? '1' : '0'));
 $('#skmisc').addEventListener('change', () => lastLive && skillTiles(lastLive.skills));
 $('#sklevels').addEventListener('change', () => lastLive && skillTiles(lastLive.skills));
+// Combat-map zoom: persisted like the other view settings, and applied to CM_RANGE. Redraw is left to
+// the 5/sec tick rather than forced here — one frame of latency is imperceptible and it keeps a single
+// draw path, so the selector cannot drift from what the tick renders.
+{
+  const z = $('#cmzoom'), saved = localStorage.getItem('watch:cmzoom');
+  if (saved) z.value = saved;
+  CM_RANGE = Number(z.value);
+  z.addEventListener('change', () => { CM_RANGE = Number(z.value); localStorage.setItem('watch:cmzoom', z.value); });
+}
 
 // ── combat map at 5/sec ───────────────────────────────────────────────────────────────────────────
 // Its own cheap endpoint: mob positions change constantly, and /metrics (whole metric snapshot +

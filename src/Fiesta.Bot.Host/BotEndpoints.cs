@@ -1307,7 +1307,30 @@ public static class BotEndpoints
             foreach (var m in bot.PartyMembers.Values)
                 party.Add(new { m.Name, Level = (int)m.Level, Hp = (double)m.Hp, MaxHp = (double)m.MaxHp, X = (double)m.X, Y = (double)m.Y });
         }
-        return new { Self = self is { } sp ? new { X = (double)sp.X, Y = (double)sp.Y } : null, Mobs = mobs, Party = party };
+        // Facing + the current target handle travel with self so the map can draw WHERE WE ARE POINTED and
+        // WHERE THE TARGET IS. Operator 2026-08-11 theory this exists to test: we may overshoot the mob (or
+        // meet its stand-off circle on the wrong side) and end up with the target BEHIND us — which would
+        // explain dead bashes and failing casts at the same time. That is invisible in numbers and obvious
+        // as two rays on a canvas. Facing stays null when unset: -1 means "never faced anything", and a
+        // default of 0° would draw a confident arrow pointing east.
+        return new
+        {
+            Self = self is { } sp
+                ? new
+                {
+                    X = (double)sp.X,
+                    Y = (double)sp.Y,
+                    Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
+                    // RAW handle, no 0-means-none translation: 0 is a legitimate entity handle and this
+                    // field simply defaults to 0 before we ever target anything. The page draws the target
+                    // ray only when the handle MATCHES a mob currently in view, so an untargeted bot draws
+                    // nothing without 0 having to be overloaded as a sentinel.
+                    Target = (int)bot.CurrentTarget,
+                }
+                : null,
+            Mobs = mobs,
+            Party = party,
+        };
     }
 
     /// <summary>Learned skills with their cooldown state: length from client data, last-use from ZoneView,
