@@ -24,6 +24,9 @@ public sealed class LoginChain
     private static readonly ushort OpWorldSelectAck      = PacketRegistry.GetOpcode<PROTO_NC_USER_WORLDSELECT_ACK>();
     private static readonly ushort OpLoginWorldAck       = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGINWORLD_ACK>();
     private static readonly ushort OpLoginWorldFail      = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGINWORLDFAIL_ACK>();
+    // NC_MISC_GAMETIME_REQ (0x080D) — zero payload; server answers NC_MISC_GAMETIME_ACK (0x080E)
+    // {hour u8, minute u8, second u8}. The real client sends it right after LOGINWORLD_ACK.
+    private const ushort OpGameTimeReq = 0x080D;
     private static readonly ushort OpCharLoginAck        = PacketRegistry.GetOpcode<PROTO_NC_CHAR_LOGIN_ACK>();
     private static readonly ushort OpCharLoginFail       = PacketRegistry.GetOpcode<PROTO_NC_CHAR_LOGINFAIL_ACK>();
     private static readonly ushort OpTutorialPopup       = PacketRegistry.GetOpcode<PROTO_NC_CHAR_TUTORIAL_POPUP_REQ>();
@@ -170,6 +173,20 @@ public sealed class LoginChain
                             AsciiZ(a.loginmap.n3_name), (byte)a.shape.chrclass));
                     _log($"[WM] << LOGINWORLD_ACK handle={wmHandle} numavatars={avatars.Count}: " +
                          string.Join(", ", avatars.Select(a => $"'{a.Name}'(slot {a.Slot}, {a.LoginMap})")));
+
+                    // MATCH THE REAL CLIENT: it asks for the game time here, immediately after
+                    // LOGINWORLD_ACK and before char select. Zero-payload request; the server answers
+                    // NC_MISC_GAMETIME_ACK (0x080E) {hour, minute, second}.
+                    // Found by diffing Z:/LongCaptureNoDc.pcapng — an hour of levelling 1→13 across 21
+                    // zone entries with ZERO disconnects — against everything our bot sends: of the 68
+                    // C→S opcodes the real client uses, this was one of only FIVE we never sent.
+                    // ⚠️ HONEST STATUS: this is NOT proven to be the DC cause. It is the cheapest of the
+                    // five gaps and part of the client's normal login sequence, so we close it and
+                    // re-measure. If DCs persist, the next step is the S→C side (a packet the client acks
+                    // and we silently drop) — see the P[-1] ticket. Do not record this as "the fix" until
+                    // a run actually survives.
+                    await conn.SendAsync(new FiestaPacket(OpGameTimeReq, ReadOnlyMemory<byte>.Empty), ct);
+                    _log("[WM] >> GAMETIME_REQ (matching the real client's post-LOGINWORLD sequence)");
 
                     // Select BY NAME first (stable across slot reordering when chars are
                     // added/retired), then by explicit slot, then fall back to the first
