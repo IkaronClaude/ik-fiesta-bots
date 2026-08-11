@@ -229,29 +229,36 @@ public sealed class ZoneView : IDisposable
         /// <summary>Human-readable description of a cast-fail code, for logs and the
         /// <c>on_cast_fail</c> script hook (so failures like "not enough SP" are obvious
         /// instead of a bare hex code).</summary>
+        // ⛔ THESE ARE THE CLIENT'S OWN STRINGS, DECODED — NOT GUESSES ANY MORE.
+        // Read out of Fiesta.bin's jump-table switch (VA 0x4AA9D0, base 0x0FC0) via the eTextIDs each case
+        // pushes; see docs/ERROR_CODE_RUNBOOK.md and tools/decode_error_table.py. Everything below used to
+        // be a hypothesis phrased as an explanation, and two of them were WRONG in ways that sent real work
+        // down the wrong path:
+        //   0x0FCA was "suspect MOVING / no committed STOP" for months. It means OUT OF CASTING RANGE.
+        //   0x0FC0 was "suspect FACING (45° arc)" off 1281 live occurrences — our single biggest combat
+        //          failure. It means WE ARE NOT IN BATTLE MODE. That is a completely different fix.
         public static string Describe(ushort code) => code switch
         {
-            NotEnoughSp => "not enough SP",
-            OutOfRange  => "cast refused (0x0FCA) — precondition unmet; suspect MOVING / no committed STOP. "
-                         + "NOT distance: observed at dist=1u",
-            NotReady    => "skill on cooldown / not ready — STOP re-pressing (each re-press cancels auto-attack)",
-            // ⚠️ 0x0FC0 IS THE #1 COMBAT FAILURE and its old label ("dead / invalid state") was a GUESS that
-            // read as an explanation. Characterised from 1281 live occurrences (2026-08-06, Bot7170):
-            //   • hits ALL FIVE skills the bot uses (Slice and Dice 542, Fatal Slash 269, Bone Slicer 211,
-            //     Snearing Kick 208, Concussive Charge 50) — not one broken skill;
-            //   • rejected 50-100ms after the send — a deterministic precondition, not a cooldown;
-            //   • NOT mounted-related: 0 of 1281 fired while ZoneView had us mounted;
-            //   • NOT plain out-of-range (that is 0x0FCA, seen 6x): median distance at failure was 32u,
-            //     INSIDE the 45u melee reach, though failures skew far (p90 52u) vs landed casts (p90 32u,
-            //     median 2u);
-            //   • every affected skill shares Range=0 (melee contact) and UsableDegree=45 (45° arc).
-            // Leading hypothesis is therefore FACING (the 45° arc), NOT confirmed — so it is described as
-            // what is known, not asserted. See the P0 in tickets.md.
-            0x0FC0      => "cast refused (0x0FC0) — melee skill precondition unmet; suspect FACING (45° arc) "
-                         + "or contact range. NOT dead, NOT mounted, NOT cooldown",
-            0x0FC4      => "cooldown/facing/weapon (0x0FC4)",
-            0x0FC6      => "cooldown/facing/weapon (0x0FC6)",
-            _           => $"cast failed (0x{code:X4})",
+            0x0FC0      => "cannot use the skill while in NONBATTLE MODE (0x0FC0)",
+            0x0FC1      => "cannot use the skill right after logging in (0x0FC1)",
+            0x0FC2      => "target logged in just now (0x0FC2)",
+            0x0FC3      => "cannot use the skill in this field (0x0FC3)",
+            0x0FC4      => "already casting another skill (0x0FC4)",
+            0x0FC5      => "the skill has been reserved (0x0FC5)",
+            0x0FC6      => "incorrect skill (0x0FC6)",
+            0x0FC7      => "silenced (0x0FC7)",
+            NotReady    => "skill on cooldown — 'cannot use the skill yet' (0x0FC8)",
+            NotEnoughSp => "not enough SP (0x0FC9)",
+            OutOfRange  => "the target is OUT OF CASTING RANGE (0x0FCA)",
+            0x0FCB      => "cannot find the target (0x0FCB)",
+            0x0FCC      => "target is in Fear state (0x0FCC)",
+            0x0FCD      => "skill did not finish normally (0x0FCD)",
+            0x0FCE      => "skill use is prohibited in this area (0x0FCE)",
+            0x0FD1 or 0x0FD2 or 0x0FD3 or 0x0FD5 or 0x0FD6 => $"failed to cast the skill (0x{code:X4})",
+            0x0FD4      => "a higher-level effect is already active (0x0FD4)",
+            0x0FD7      => "target cannot be healed at this time (0x0FD7) — are we aiming a heal at a MOB?",
+            0x0FD8      => "target is under Blessing of Teva (0x0FD8)",
+            _           => $"cast failed (0x{code:X4}) — not in the decoded table; see docs/ERROR_CODE_RUNBOOK.md",
         };
     }
 
