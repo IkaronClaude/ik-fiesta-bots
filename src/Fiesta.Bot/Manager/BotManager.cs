@@ -530,6 +530,25 @@ public sealed class BotManager : IAsyncDisposable
             }
         }
 
+        // ── CAST RANGE: NEVER ASK FOR A CAST THE TARGET IS TOO FAR AWAY FOR ──────────────────────
+        // 0x0FCA decodes (from the client's own switch — docs/ERROR_CODE_RUNBOOK.md) to
+        // "The target is out of casting range." NOT "moving", which is what this codebase assumed for
+        // months. So the remedy is the range check the real client does before it transmits, exactly
+        // like the cooldown gate: a refused cast still costs the STOP that interrupts our swing stream,
+        // so the cheapest cast is the one we never send. ActiveSkill.Range is the skill's own reach.
+        if (ClientData?.Skill(skill) is { Range: > 0 } sr && handle.Position is { } mp
+            && NpcPos(handle, target) is { } tpos)
+        {
+            var dx = (double)tpos.X - mp.X; var dy = (double)tpos.Y - mp.Y;
+            var dist = Math.Sqrt(dx * dx + dy * dy);
+            if (dist > sr.Range)
+            {
+                handle.Log(BotLogLevel.Verbose,
+                    $"cast {skill} NOT SENT — target {dist:F0}u away, skill reaches {sr.Range}u (0x0FCA is RANGE)");
+                return ActionResult.Sent;   // the caller closes the distance; we do not burn a STOP
+            }
+        }
+
         // ── FIX 1 of 3: DO NOT CAST INTO A BASH THAT HAS NOT SWUNG YET ────────────────────────────
         // First damage lands a MEDIAN 418ms after BASHSTART (the swing windup). We were casting ~4ms
         // after it, every time, so the swing never happened: 81% of our bashes produced ZERO damage
