@@ -342,6 +342,14 @@ public static class BotEndpoints
         })
         .WithSummary("Stop a bot and remove it from the manager");
 
+        group.MapPost("/{id}/relog", (string id) =>
+        {
+            manager.Get(id)?.LogOperatorAction("RELOG requested from the web UI");
+            return manager.Relog(id) ? Results.Ok(new { id, relogging = true }) : Results.NotFound();
+        })
+        .WithSummary("Clean logout → re-login in place, re-applying the same script (operator recovery for a wedged bot). "
+                   + "⚠️ The bot 404s for a few seconds mid-relog while the handle is replaced, and its ring buffer restarts empty.");
+
         group.MapPost("/{id}/packetlog", (string id, PacketLogRequest? req) =>
         {
             var enabled = req?.Enabled ?? true;

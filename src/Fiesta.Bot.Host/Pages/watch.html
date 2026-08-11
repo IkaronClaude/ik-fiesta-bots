@@ -106,6 +106,9 @@
        once, typing an id to switch is both slow and silently wrong when you fat-finger it — a bad name
        just makes every panel 404 with no hint that the NAME is what is wrong. -->
   <label>bot <select id="bot"></select></label>
+  <button class="mini" id="relogbtn" onclick="relogBot()"
+    title="Clean logout → re-login in place, re-applying the same script. The recovery for a wedged bot.
+⚠️ The bot 404s for a few seconds while the handle is replaced, and its ring buffer RESTARTS EMPTY — copy anything you need from the log first.">relog</button>
   <label>token <input id="tok" type="password" size="16" placeholder="bearer"></label>
   <label>log level
     <select id="lvl"><option>note</option><option selected>info</option><option>verbose</option></select>
@@ -623,6 +626,22 @@ function focusLine(f) {
 // level-up, and every mark is written at the level we fled at — so a handful of marks at the current
 // level takes the whole board dark and the bot grinds instead of levelling, which is the slowest route
 // to the level that would clear them. A human can see a mark is stale; this is how they say so.
+// Operator recovery: clean logout → re-login in place, re-applying the same script. Same thing the
+// driver's HARD-WEDGE watchdog does automatically after 150s of frozen position AND exp; this is the
+// manual handle for when a human can see it is stuck before the watchdog does.
+// Confirm first — a relog costs the ring buffer (new handle, new buffer) and ~30s of play.
+async function relogBot() {
+  const id = $('#bot').value;
+  if (!id) return;
+  if (!confirm(`Relog ${id}?\n\nClean logout → re-login → re-apply the script.\n`
+             + `Its log buffer will restart EMPTY and it 404s for a few seconds mid-relog.`)) return;
+  try {
+    const r = await api('/relog', null, 'POST');
+    if (!r.ok) { toast('goal', [id, 'relog FAILED', `HTTP ${r.status}`]); return; }
+    toast('hand', [id, 'RELOG requested', 'logout → login → re-apply script']);
+  } catch (e) { toast('goal', [id, 'relog FAILED', e.message]); }
+}
+
 async function undeprio(qid, name) {
   try {
     const r = await api(`/quest/${qid}/undeprioritize`, null, 'POST');
