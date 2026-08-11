@@ -135,6 +135,9 @@ public sealed class BotApi
         // maxLot 1 = non-stacking (enchant runes fill the bag; operator 2026-07-02). Used by the
         // sell/keep classifier (classifyItem in level_quest.lua). See QuestsNew.pcapng sell demo.
         t["itemClass"] = it.ItemClass; t["maxLot"] = it.MaxLot; t["sellPrice"] = it.SellPrice;
+        // What the vendor charges. The driver MUST check this against money() before a buy — the server
+        // rejects an unaffordable buy with 0x020B and the driver used to just retry it forever.
+        t["buyPrice"] = it.BuyPrice;
         // gradeType 0 = ordinary/replaceable gear (every plain smith-bought item — Leather/Chain Boots,
         // Chain Helmet/Pants, Buckler — verified ItemGradeType=0); >=1 = a named/special drop (e.g. "Solar
         // Eclipse Leather Boots") worth keeping. The vendor-trash signal for grey-gear selling.

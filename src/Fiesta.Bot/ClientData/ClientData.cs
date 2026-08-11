@@ -275,7 +275,13 @@ public sealed class ClientData
             // TwoHand=1 → a 2-handed weapon (occupies the weapon AND off-hand slot); ShieldAC>0 → a shield
             // (off-hand). A shield can't be worn with a 2H weapon — the driver uses these to avoid the
             // infinite "equip shield → server rejects → re-equip" loop on a 2H wielder (operator 2026-07-07).
-            GetInt(row, "TwoHand") != 0, GetInt(row, "ShieldAC"));
+            GetInt(row, "TwoHand") != 0, GetInt(row, "ShieldAC"),
+            // What the vendor CHARGES. Without it the driver could not tell "I want this" from "I can
+            // afford this", so it fired buy after buy the server rejected with 0x020B for lack of money —
+            // measured 2026-08-11: JcqFighter had 131 cen and kept buying a 290-cen mastery book,
+            // JcqCleric had 95 and kept buying a 380-cen necklace, both looping in town instead of
+            // grinding for the money that would have made the purchase possible.
+            GetInt(row, "BuyPrice"));
     }
 
     /// <summary>The display name of a skill id from client <c>ActiveSkill</c> (col "Name").
@@ -892,7 +898,7 @@ public sealed record MobData(int Id, string Name, string InxName, int Level, int
 /// DIFFERENT (higher) rarity — never sell those").</summary>
 public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
     int EquipSlot, bool IsScroll, int Type = 0, int GradeType = 0, int ItemClass = 0,
-    int MaxLot = 0, int SellPrice = 0, bool TwoHand = false, int ShieldAc = 0);
+    int MaxLot = 0, int SellPrice = 0, bool TwoHand = false, int ShieldAc = 0, int BuyPrice = 0);
 
 /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c>: the
 /// <see cref="Map"/> short-name and the <see cref="CenterX"/>/<see cref="CenterY"/> of its
