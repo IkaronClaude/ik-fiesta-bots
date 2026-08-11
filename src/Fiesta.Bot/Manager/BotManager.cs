@@ -937,6 +937,13 @@ public sealed class BotManager : IAsyncDisposable
             await StopOnlyAsync(handle, s, ct);              // STOP without the swing-breaking MOVERUN
         else if (NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
+        else
+            // ⛔ NEITHER BRANCH RAN = WE BASH WHILE STILL MOVING. If the target is not in NpcPos (not in
+            // the mob or player maps — AoI flicker, a handle we learned elsewhere), the old code fell
+            // through and sent BASHSTART with no STOP at all. The server then cease-fires within ~47ms,
+            // before we send anything else: measured post-fix, that is what remains of the dead bashes.
+            // A committed STOP is the one thing every successful bash in the player capture has.
+            await StopOnlyAsync(handle, s, ct);
         await s.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
         handle.LastBashSentUtc = DateTime.UtcNow;   // so a cast can tell "the swing has not started yet"
         // Remember WHAT we're bashing and that it's running, so the CEASE_FIRE handler can tell a
