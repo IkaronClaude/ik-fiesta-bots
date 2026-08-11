@@ -502,6 +502,19 @@ public sealed class BotManager : IAsyncDisposable
         var adjust = NeedsFacingAdjust(handle, skill, target);
         if (!adjust) { needFace = false; needStop = false; }
 
+        // ⛔ NEVER FACE-STEP WHILE A BASH IS RUNNING. Every MOVERUN in this codebase comes from
+        // FaceAndStopAsync, and a MOVERUN mid-swing cancels the swing that was about to land — measured
+        // post-fix: SWING_START at +272ms, our face-step at +276ms, CEASE_FIRE at +378ms, no damage.
+        // The BASH ITSELF already faced the target (AutoAttackAsync face+stops before BASHSTART), so the
+        // step tells the server nothing it does not know and costs the whole swing. Downgrade to a bare
+        // STOP, which is the part that is actually load-bearing for a cast.
+        // This is also the remaining source of 0x0FCA "precondition unmet, suspect MOVING".
+        if (needFace && handle.ZoneView is { BashActive: true } && handle.BashTarget == target)
+        {
+            needFace = false; needStop = true;
+            handle.Log(BotLogLevel.Verbose, $"cast {skill}: face-step suppressed — bash is running on this target");
+        }
+
         // ── FIX 0: NEVER SEND A CAST THE CLIENT KNOWS IS NOT READY ────────────────────────────────
         // The real client sent ZERO cooldown failures in an hour (200 casts); we sent 57 in 199. It gates
         // locally from ActiveSkill.DelayTime and simply does not transmit — pressing the key does nothing.
