@@ -539,6 +539,11 @@ public sealed class BotHandle
             Heartbeats: state?.HeartbeatCount ?? 0,
             LastOpcode: state is { } s ? $"0x{s.LastOpcode:X4}" : null,
             UptimeSeconds: state is { } u ? Math.Round(u.Uptime.TotalSeconds, 1) : 0,
+            WmLink: WmSession?.State is { } w
+                ? new WmLinkInfo(w.Connected, w.InboundCount, w.HeartbeatCount,
+                                 $"0x{w.LastOpcode:X4}", $"0x{WmSession.LastSentOpcode:X4}",
+                                 Math.Round(w.Uptime.TotalSeconds, 1), w.DisconnectReason)
+                : null,
             DisconnectReason: state?.DisconnectReason,
             Error: Error,
             NearbyPlayers: view?.NearbyCount ?? 0,
@@ -602,6 +607,13 @@ public sealed record BotSnapshot(
     long Heartbeats,
     string? LastOpcode,
     double UptimeSeconds,
+    /// <summary>The WORLD-MANAGER link, reported separately from the zone link above. Every field on this
+    /// snapshot used to come from <c>ZoneSession.State</c> alone, so the WM link — which stays open for the
+    /// whole session and which the server DOES heartbeat (0x0804→0x0805; the zone link does not) — was
+    /// completely unobservable from the API. That gap is why a run of WM `peer closed` disconnects could
+    /// not be diagnosed: `heartbeats: 0` was the ZONE's counter and said nothing about the link that was
+    /// actually dying. Null when there is no WM session.</summary>
+    WmLinkInfo? WmLink,
     string? DisconnectReason,
     string? Error,
     int NearbyPlayers,
@@ -645,3 +657,13 @@ public sealed record BotSnapshot(
 /// <param name="AtUnixMs">When the driver published this, so the page can show staleness rather than
 /// presenting a frozen intent as current.</param>
 public sealed record BotFocus(int QuestId, string Phase, string Destination, string Reason, long AtUnixMs);
+
+/// <summary>The world-manager link's own liveness, exposed so the WM connection can be OBSERVED rather
+/// than inferred. The WM is the link the server heartbeats (<c>0x0804 NC_MISC_HEARTBEAT_REQ</c> →
+/// <c>0x0805 NC_MISC_HEARTBEAT_ACK</c>, verified in Z:/LongCaptureNoDc.pcapng on port 9013); the zone
+/// link is not heartbeated at all, so a zone-sourced heartbeat counter reading 0 is normal and proves
+/// nothing about the WM.</summary>
+/// <param name="LastSent">Last opcode WE sent on this link. Includes the raw heartbeat ACK — before that
+/// was recorded this always read 0x0000 and looked like we were answering nothing.</param>
+public sealed record WmLinkInfo(bool Connected, long InboundFrames, long Heartbeats,
+                                string LastOpcode, string LastSent, double UptimeSeconds, string? DisconnectReason);

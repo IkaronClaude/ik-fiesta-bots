@@ -123,8 +123,15 @@ public sealed class BotSession : IAsyncDisposable
 
                 if (pkt.Opcode == OpHeartbeatReq)
                 {
-                    // Bare-opcode reply, empty payload — matches the real client.
+                    // Bare-opcode reply, empty payload — matches the real client:
+                    //   S← [0x0804] NC_MISC_HEARTBEAT_REQ payload=0b
+                    //   C→ [0x0805] NC_MISC_HEARTBEAT_ACK payload=0b     (Z:/LongCaptureNoDc.pcapng, port 9013)
                     await _conn.SendAsync(new FiestaPacket(OpHeartbeatAck, ReadOnlyMemory<byte>.Empty), ct);
+                    // ⛔ RECORD THE RAW SEND TOO. LastSentOpcode used to be set ONLY by the typed Send<T>,
+                    // so every WM disconnect line read `lastSENT=0x0000` — which looks exactly like "we
+                    // never answered anything" and sent me chasing a missed-heartbeat theory. A diagnostic
+                    // that cannot distinguish "sent nothing" from "sent something untyped" is worse than none.
+                    LastSentOpcode = OpHeartbeatAck;
                     State.RecordHeartbeat();
                     continue;
                 }
