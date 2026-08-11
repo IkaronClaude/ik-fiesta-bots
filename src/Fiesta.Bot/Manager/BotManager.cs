@@ -3512,7 +3512,19 @@ public sealed class BotManager : IAsyncDisposable
                                 $"⛔ WATCHDOG: MOTIONLESS for {stillFor:F0}s at ({pos?.X},{pos?.Y}) on {handle.CurrentMap} — " +
                                 $"script={(handle.ScriptRunner is null ? "NONE" : handle.ScriptRunner.Status().State)} " +
                                 $"ticks={ticks} ({(ticking ? "ticking — it is RUNNING but not acting" : "NOT TICKING — thread dead/stuck/suspended")}) " +
-                                $"hp={handle.ZoneView?.Hp} inCombat={handle.ZoneView?.InCombat}. A bot standing still is ALWAYS a bug.");
+                                $"hp={handle.ZoneView?.Hp} inCombat={handle.ZoneView?.InCombat} " +
+                                // ⛔ PRINT THE GATES, NOT JUST THE SYMPTOM. The driver's fight-through branch is
+                                // `not fleeing and not inInstance and not stonesLow() and aggressors() > 0`, and
+                                // the flee/kite paths key off the same aggressor set. So when a bot stands still
+                                // IN COMBAT (JcqFresh, RouTemDn01, 2026-08-11: motionless 45s, hp 829, soul-stone
+                                // USE every ~2s, no fighting and no fleeing) the whole question is WHICH of those
+                                // was false — and this line reported inCombat, which is "am I being hit", not the
+                                // value any of those gates actually read. aggressors is derived separately (from
+                                // SWING_DAMAGE where the defender is us), so damage that cannot be attributed to
+                                // an attacker leaves inCombat true while aggressors is 0, and every gate fails at
+                                // once. Without these numbers the next occurrence is just as undiagnosable.
+                                $"aggressors={handle.ZoneView?.Aggressors.Count} maybeAggressors={handle.ZoneView?.MaybeAggressors.Count} " +
+                                $"hpStones={handle.ZoneView?.HpStones}. A bot standing still is ALWAYS a bug.");
                             stillSince = DateTime.UtcNow;   // re-arm so it reports periodically, not once
                         }
                         lastTicks = ticks;
