@@ -2850,6 +2850,30 @@ public sealed class BotManager : IAsyncDisposable
             int burstRetries = 0; const int MaxBurstRetries = 3;
             while (true)
             {
+                // ⛔ THE WM LINK IS CREATED ONCE, ABOVE THIS LOOP — SO A DEAD WM POISONS EVERY ITERATION.
+                // `wmRun` is a single Task started before `while (true)`, and a COMPLETED Task always wins
+                // Task.WhenAny. So from the instant the WM link dies, the `WhenAny(zoneRun, wmRun) == wmRun`
+                // check further down returns wmRun IMMEDIATELY on every subsequent pass and cancels the
+                // freshly-built zone session before it can enter — and the cross-server `continue` then
+                // rebuilds it, to be killed again the same way. An invisible infinite loop: the zone never
+                // stays up, the WM is never re-established (nothing in this loop reconnects it), and the only
+                // thing that ever notices is the Lua suspend watchdog, minutes later:
+                //   CRUTCH[CRIT] SUSPENDED for 120s (236 ticks) waiting on:
+                //   cross-server handoff -> fiesta-proxy:9016 — that never resumed.
+                // This is the operator's cascade (2026-08-11) with the mechanism filled in: switch map →
+                // old zone drops → WM dies with it → zone can no longer validate against a live WM → every
+                // reconnect is cancelled on arrival.
+                // A zone link without a live WM is not recoverable HERE, because re-establishing the WM
+                // means redoing the login chain. So stop pretending we can reconnect and fall through to the
+                // teardown + auto-relog path below, which does a full clean re-login (WM included).
+                if (wmRun.IsCompleted && !ct.IsCancellationRequested)
+                {
+                    Log($"WM link is already dead ({wmSession.State.DisconnectReason ?? "completed"}) — a zone " +
+                        $"session cannot be validated without it, so NOT reconnecting the zone in place. " +
+                        $"Falling through to a full re-login.");
+                    break;
+                }
+
                 handle.SetPhase(BotPhase.EnteringZone);
                 handle.ZoneSession = null; // no live zone link during (re)connect
                 var entry = await zoneEntry.EnterAsync(zoneEp, zoneWmHandle, sel.Name, ct, tap);
