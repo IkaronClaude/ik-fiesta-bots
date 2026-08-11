@@ -1625,6 +1625,23 @@ public sealed class ZoneView : IDisposable
     /// <summary>Item id from the last NC_ITEM_USE_ACK (which item the use result is for).</summary>
     public int LastUseAckItem { get; private set; } = -1;
 
+    private readonly ConcurrentDictionary<int, int> _useFails = new();
+
+    /// <summary>How many times IN A ROW the server has REFUSED to use this item id (any non-0x700
+    /// NC_ITEM_USE_ACK). Reset to 0 by a successful use.
+    /// <para>⛔ EXISTS BECAUSE A REFUSAL WAS INVISIBLE TO THE DRIVER. <c>LastUseAckError</c> was recorded
+    /// but never exposed and never accumulated, so `learn-from-bag` could not tell "not tried yet" from
+    /// "tried and refused ten times" — it re-issued the same doomed USE every ~6s forever. Live
+    /// 2026-08-11: JcqCleric burned an ENTIRE 45-minute window on
+    /// <c>USE book id24074 Recipe_R_LowToadStool → err 0x717</c> and gained 0 exp; JcqFighter had the
+    /// identical loop on id23073. Both are CRAFTING RECIPES, which per the operator need a matching JOB
+    /// (max 2 per char) plus job points — neither of which these characters have, so the server is right
+    /// to refuse and no amount of retrying will change it.</para>
+    /// <para>This is the "wire the RESULT packet too" rule: a REQ whose ACK says FAILED must feed back,
+    /// or the driver loops on it. It is deliberately a COUNT, not a boolean, so a genuinely transient
+    /// refusal still gets a couple of attempts before the item is set aside.</para></summary>
+    public int ItemUseFailCount(int itemId) => _useFails.TryGetValue(itemId, out var n) ? n : 0;
+
     /// <summary>Current bag contents: slot → itemId (built from the login item list
     /// and live cell/equip changes).</summary>
     public IReadOnlyDictionary<byte, ushort> Inventory => _inventory;
@@ -3661,9 +3678,18 @@ public sealed class ZoneView : IDisposable
                     0x700 => "ok",
                     0x708 => "FAIL: skill level too low",
                     0x70B => "FAIL: already know the skill",
+                    // Seen live only on CRAFTING RECIPE books, whose requirement is in Produce.shn
+                    // (NeededMasteryType = the job, NeededMasteryGain = the min job points). Our chars have
+                    // no job, so the server is right to refuse. The driver now skips recipes from that data
+                    // before sending the USE; this label remains for anything that slips through.
+                    0x717 => "FAIL: refused (crafting recipe — job / job-points not met)",
                     _ => $"err 0x{err:X}",
                 };
-                if (err != 0x700) _log?.Invoke($"[ZoneView] item USE item={item} -> {meaning} (0x{err:X})");
+                if (err == 0x700) _useFails.TryRemove(item, out _);
+                else _useFails.AddOrUpdate(item, 1, (_, n) => n + 1);
+                if (err != 0x700)
+                    _log?.Invoke($"[ZoneView] item USE item={item} -> {meaning} (0x{err:X}) " +
+                                 $"— consecutive refusals: {ItemUseFailCount(item)}");
             }
         }
         else if (op == OpQuestScriptReq)

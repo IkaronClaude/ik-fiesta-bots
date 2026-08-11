@@ -719,6 +719,43 @@ public sealed class ClientData
     /// <para>Verified against a known item: "Slice and Dice [01]" (id 4700), the Fighter scroll a Mage
     /// bought live, is <c>UseClass 2</c> → Fig/Cfig/War/Gla/Kni, which correctly excludes Mage (16).</para>
     /// </summary>
+    /// <summary>If <paramref name="productId"/> is a CRAFTING RECIPE, the job it needs and how many job
+    /// points in that job — else null (an ordinary skill book / item).
+    ///
+    /// <para><c>Produce.shn</c> is keyed by <c>ProductID</c>, which is the same id as the recipe skill and
+    /// its book, so a plain lookup answers "is this a recipe, and can we ever learn it?". Verified against
+    /// the two books that were live-looping on 2026-08-11:
+    /// <c>24074 Recipe_R_LowToadStool → NeededMasteryType 5, NeededMasteryGain 100</c> and
+    /// <c>23073 Recipe_C_NorToadStool → type 4, 100</c> — matching the operator's "shows min skill
+    /// points: 100". <c>ProduceView.shn</c> names the five mastery types (1 = Potion Production, …).</para>
+    ///
+    /// <para>⛔ I PREVIOUSLY CONCLUDED THIS WAS NOT IN CLIENT DATA and nearly shipped a comment saying so.
+    /// It was — I had searched column names for "job" and file names for "craft/recipe", and this table
+    /// calls the concept MASTERY and the file is called Produce. The operator was right; the absence of a
+    /// match for MY chosen keyword was not evidence of absence. Recorded because "I searched and it isn't
+    /// there" is exactly the claim that needs the most scepticism.</para></summary>
+    public (int MasteryType, int NeededPoints)? RecipeRequirement(int productId)
+    {
+        var t = Table("Produce");
+        if (t is null) return null;
+        var row = t.FindByLong("ProductID", productId);
+        if (row is null) return null;
+        return ((int)ToU32(row, "NeededMasteryType"), (int)ToU32(row, "NeededMasteryGain"));
+    }
+
+    /// <summary>Display name of a Produce mastery type (job) from <c>ProduceView.shn</c>, e.g. 1 →
+    /// "Potion Production". Null if unknown — used for logging so a skipped recipe says WHICH job it wants
+    /// rather than a bare number.</summary>
+    public string? MasteryTypeName(int masteryType)
+    {
+        var t = Table("ProduceView");
+        if (t is null) return null;
+        foreach (var row in t.Rows)
+            if ((int)ToU32(row, "MasteryType") == masteryType)
+                return row.TryGetValue("Name", out var v) ? v?.ToString() : null;
+        return null;
+    }
+
     public bool UseClassAllows(int classId, int useClass)
     {
         if (classId is < 1 or > 27) return false;             // unknown/unselected class → no claim

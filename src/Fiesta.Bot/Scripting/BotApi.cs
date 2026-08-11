@@ -319,6 +319,28 @@ public sealed class BotApi
     /// existing combat callers, which only ever deal in active ids.</para></summary>
     public bool hasSkill(int id, bool passive = false) => View?.HasSkill((ushort)id, passive) ?? false;
 
+    /// <summary>How many times IN A ROW the server has refused to USE this item id (non-0x700
+    /// NC_ITEM_USE_ACK); 0 if never refused or if the last use succeeded. The driver must consult this
+    /// before re-issuing a USE, or a permanently-refused item is retried forever — see
+    /// <see cref="Session.ZoneView.ItemUseFailCount"/> for the live case that made this necessary
+    /// (a crafting recipe book retried every ~6s for a 45-minute window, 0 exp gained).</summary>
+    public int itemUseFails(int itemId) => View?.ItemUseFailCount(itemId) ?? 0;
+
+    /// <summary>If this id is a CRAFTING RECIPE, a table {masteryType, neededPoints, masteryName} — the job
+    /// it requires and the job points needed in it (client <c>Produce.shn</c>). nil for an ordinary skill
+    /// book. A character with no matching job can NEVER learn it, so the driver must skip it rather than
+    /// re-issue a USE the server will always refuse.</summary>
+    public DynValue recipeRequirement(int id)
+    {
+        var cd = _mgr.ClientData;
+        if (cd?.RecipeRequirement(id) is not { } req) return DynValue.Nil;
+        var t = NewTable();
+        t["masteryType"] = req.MasteryType;
+        t["neededPoints"] = req.NeededPoints;
+        t["masteryName"] = cd.MasteryTypeName(req.MasteryType) ?? $"mastery{req.MasteryType}";
+        return DynValue.NewTable(t);
+    }
+
     /// <summary>The PASSIVE skill ids the character has learned (login 0x103E list). Separate id space
     /// from <see cref="learnedSkills"/> — see <see cref="hasSkill"/>.</summary>
     public DynValue learnedPassives()
