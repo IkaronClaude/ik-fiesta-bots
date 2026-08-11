@@ -1582,6 +1582,15 @@ public sealed record SpawnBotRequest
     public string? CharName { get; init; }
     public string? Class { get; init; }
     public byte? Gender { get; init; }
+    // Full APPEARANCE, so a create can be tested without a redeploy per guess. All optional; 0/absent
+    // keeps the current behaviour (race derived from class, appearance sent as 0).
+    // ⚠️ FaceShape is NOT the FaceInfo row id — it is that row's FT_<class>_<gender> INDEX, which differs
+    // per class on the same row (row 0 is F=0, C=1, A=2, M=3). That is why faceshape=0 creates a Fighter
+    // fine and is not a valid Archer face at all: 0 is simply the Fighter column's first index.
+    public byte? Race { get; init; }
+    public byte? HairType { get; init; }
+    public byte? HairColor { get; init; }
+    public byte? FaceShape { get; init; }
 
     // Optional buff-in-town behavior. Enable with `buff:true`; skill IDs are the
     // (learnt) buff skills to cast on request — empty until the priest learns them.
@@ -1617,7 +1626,8 @@ public sealed record SpawnBotRequest
                 ? $"Bot{Random.Shared.Next(1000, 9999)}" : CharName!;
             if (!Enum.TryParse<ClassId>(Class ?? nameof(ClassId.Fighter), ignoreCase: true, out var cls))
                 throw new ArgumentException($"unknown class '{Class}'", nameof(Class));
-            createSpec = new CharacterSpec(name, cls, Gender: Gender ?? 0, Slot: Slot ?? 0);
+            createSpec = new CharacterSpec(name, cls, Gender: Gender ?? 0, Slot: Slot ?? 0,
+                Race: Race ?? 0, HairType: HairType ?? 0, HairColor: HairColor ?? 0, FaceShape: FaceShape ?? 0);
         }
 
         return new BotSpawnOptions
