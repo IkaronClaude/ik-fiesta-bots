@@ -175,9 +175,9 @@ public sealed class BotManager : IAsyncDisposable
         {
             // ⛔ NO ZONE LINK IS NOT THE SAME AS NOTHING TO LOG OUT. A Failed bot has a dead zone session
             // but its WM link is usually STILL OPEN — measured 2026-08-11 on three Failed bots at once:
-            // WM uptimes 495s / 613s / 435s. The WM link is what holds the character "online", so
+            // WM uptimes 495s / 613s / 435s. The WM link is what holds the ACCOUNT online (there is no character-level ghost — operator 2026-08-11), so
             // cancelling without logging it out leaves a STALE SESSION, and the next login on that account
-            // is duplicate-kicked: login and WM both succeed, CHAR_LOGIN_ACK arrives, and then the zone
+            // on that ACCOUNT is duplicate-kicked: login and WM both succeed, CHAR_LOGIN_ACK arrives, and then the zone
             // drops the connection ~76ms after MAP_LOGIN_REQ. That is precisely the failure this method's
             // own comment above predicts ("leaves the char 'online' -> the next login is duplicate-kicked")
             // — the clean-logout branch just never covered the case where only the ZONE had died.
@@ -3581,7 +3581,9 @@ public sealed class BotManager : IAsyncDisposable
             // GHOST-FIX (P0, operator 2026-07-28): on an unexpected drop a bare `await wmRun` HUNG here forever
             // (WM socket still open, ct not cancelled) → SetPhase(Stopped) never ran → phase stuck InZone (the
             // status page lied "healthy") → the leveler kept ticking against the DISPOSED zone conn (`SemaphoreSlim`
-            // ObjectDisposed spam) → and the never-logged-out WM link left a GHOST char session on the server.
+            // ObjectDisposed spam) → and the never-logged-out WM link left a stale ACCOUNT session on the
+            // server. (Operator 2026-08-11: "character level ghosts are not a thing" — the stale session
+            // belongs to the ACCOUNT, which is why a brand-new character on that account is kicked too.)
             // Fix: stop the leveler, cleanly LOG OUT the still-open WM link (server drops the char → NO ghost),
             // cancel its read loop so we don't hang, then auto-relog to resume leveling.
             var unexpected = !ct.IsCancellationRequested && handle.Phase == BotPhase.InZone;
