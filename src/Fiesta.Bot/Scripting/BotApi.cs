@@ -138,6 +138,9 @@ public sealed class BotApi
         // What the vendor charges. The driver MUST check this against money() before a buy — the server
         // rejects an unaffordable buy with 0x020B and the driver used to just retry it forever.
         t["buyPrice"] = it.BuyPrice;
+        // 2 bow / 10 crossbow / 3 staff / 11 wand = RANGED auto-attack; the melee types are
+        // 1/4/5/13/17/18/19/21. Lets the driver decide whether to close or stand off.
+        t["weaponType"] = it.WeaponType;
         // gradeType 0 = ordinary/replaceable gear (every plain smith-bought item — Leather/Chain Boots,
         // Chain Helmet/Pants, Buckler — verified ItemGradeType=0); >=1 = a named/special drop (e.g. "Solar
         // Eclipse Leather Boots") worth keeping. The vendor-trash signal for grey-gear selling.

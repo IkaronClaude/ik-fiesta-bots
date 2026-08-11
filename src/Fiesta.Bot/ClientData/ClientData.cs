@@ -281,7 +281,11 @@ public sealed class ClientData
             // measured 2026-08-11: JcqFighter had 131 cen and kept buying a 290-cen mastery book,
             // JcqCleric had 95 and kept buying a 380-cen necklace, both looping in town instead of
             // grinding for the money that would have made the purchase possible.
-            GetInt(row, "BuyPrice"));
+            GetInt(row, "BuyPrice"),
+            // WeaponType tells us whether our AUTO-ATTACK reaches: 2 bow, 10 crossbow, 3 staff,
+            // 11 wand are RANGED; 1/4/5/13/17/18/19/21 (sword/axe/mace/hammer/dual/claw/blade) are
+            // melee. The driver needs this to stop walking ranged classes into melee.
+            GetInt(row, "WeaponType"));
     }
 
     /// <summary>The display name of a skill id from client <c>ActiveSkill</c> (col "Name").
@@ -898,7 +902,8 @@ public sealed record MobData(int Id, string Name, string InxName, int Level, int
 /// DIFFERENT (higher) rarity — never sell those").</summary>
 public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
     int EquipSlot, bool IsScroll, int Type = 0, int GradeType = 0, int ItemClass = 0,
-    int MaxLot = 0, int SellPrice = 0, bool TwoHand = false, int ShieldAc = 0, int BuyPrice = 0);
+    int MaxLot = 0, int SellPrice = 0, bool TwoHand = false, int ShieldAc = 0, int BuyPrice = 0,
+    int WeaponType = 0);
 
 /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c>: the
 /// <see cref="Map"/> short-name and the <see cref="CenterX"/>/<see cref="CenterY"/> of its
