@@ -609,6 +609,52 @@ public sealed class ClientData
     /// whole line). The UseClass enum runs: Fighter 2–7, Cleric 8–13, Archer 14–19, Mage 20–25,
     /// Joker 27–32, Sentinel/Savior 33–34 (26 is a non-class consumable slot). Lets the reward
     /// picker accept gear for the char's class at any promotion tier (lower/higher/promotion).</summary>
+    /// <summary>Pick a VALID (hairType, hairColor, faceShape) for a class+gender, straight from the
+    /// client's own character-creation tables. Returns (0,0,0) only if the tables cannot be read.
+    /// <para>⛔ WE SENT 0/0/0 ON EVERY CREATE, WHICH IS NOT A VALID APPEARANCE. The client ships the
+    /// creation rules and we were ignoring them:</para>
+    /// <para>• <c>HairInfo.shn</c> has a column per class (fighter/archer/cleric/mage/Joker/Sentinel).
+    /// The value is the GENDER that hairstyle belongs to — 1 for the male cuts ("Wolf Cut", "Hero Cut"),
+    /// 2 for the female ones ("Pig Tails", "Long Hair") — so a hair is only legal when its column matches
+    /// the character's gender.</para>
+    /// <para>• <c>FaceInfo.shn</c> has a column per class AND gender (FM_A_Male, FM_A_Female, …).
+    /// <b>Face id 0 is 0 for every single class/gender combination</b> — nobody can pick it — yet 0 is
+    /// exactly what we were sending.</para>
+    /// <para>• <c>HairColorInfo.shn</c> lists the legal colours; the real client used 12.</para>
+    /// <para>Gender encoding here is the SHN's own (1=male, 2=female) while the wire's gender bit is 0/1,
+    /// hence the +1. Reading the tables is what keeps this honest: no baked ids, and it fixes every class
+    /// at once rather than special-casing the one that happened to fail.</para></summary>
+    public (byte HairType, byte HairColor, byte FaceShape) PickAppearance(int classId, byte genderBit)
+    {
+        var shnGender = (uint)(genderBit + 1);          // wire 0/1 -> SHN 1=male, 2=female
+        var classCol = classId switch
+        {
+            >= 1 and <= 5   => "fighter",
+            >= 6 and <= 10  => "cleric",
+            >= 11 and <= 15 => "archer",
+            >= 16 and <= 20 => "mage",
+            >= 21 and <= 25 => "Joker",
+            _ => "Sentinel",
+        };
+        byte hair = 0, colour = 0, face = 0;
+        if (Table("HairInfo") is { } hi)
+            foreach (var row in hi.Rows)
+                if (ToU32(row, classCol) == shnGender) { hair = (byte)ToU32(row, "ID"); break; }
+        if (Table("HairColorInfo") is { } hc)
+            foreach (var row in hc.Rows) { colour = (byte)ToU32(row, "ID"); break; }
+        // Face columns are FM_<classletter>_<Male|Female>; non-zero means selectable.
+        var faceCol = $"FM_{classCol[0].ToString().ToUpperInvariant()}_{(genderBit == 0 ? "Male" : "Female")}";
+        if (classCol == "Joker") faceCol = $"FM_J_{(genderBit == 0 ? "Male" : "Female")}";
+        if (classCol == "Sentinel") faceCol = $"FM_S_{(genderBit == 0 ? "Male" : "Female")}";
+        if (Table("FaceInfo") is { } fi)
+            foreach (var row in fi.Rows)
+                if (ToU32(row, faceCol) != 0) { face = (byte)ToU32(row, "ID"); break; }
+        return (hair, colour, face);
+    }
+
+    private static uint ToU32(IReadOnlyDictionary<string, object?> row, string col)
+        => row.TryGetValue(col, out var v) && v is not null && uint.TryParse(v.ToString(), out var n) ? n : 0;
+
     /// <summary>The RACE a class must be created as — <c>RaceNameInfo.shn</c> ids: 1=Human, 2=Elf,
     /// 3=DarkElf (0 is the blank row and is NOT a valid race).
     /// <para>⛔ WE WERE SENDING RACE 0 ON EVERY CREATE, and it is why Archer creation always failed with

@@ -2789,8 +2789,26 @@ public sealed class BotManager : IAsyncDisposable
             var wmEp = new FiestaEndpoint(opt.Host, wmPort);
 
             handle.SetPhase(BotPhase.SelectingChar);
+            // Fill in a VALID appearance before creating a character. The spec's defaults are 0/0/0, and
+            // face id 0 is selectable by no class or gender at all (FaceInfo.shn) — which is why Archer
+            // creation was refused with err=132 while other classes happened through. ClientData reads the
+            // client's own HairInfo/FaceInfo/HairColorInfo creation tables; this is the layer that HAS a
+            // ClientData instance, so the fill happens here rather than inside the login chain.
+            var createSpec = opt.CreateSpec;
+            if (createSpec is not null && ClientData is { } cdShape)
+            {
+                var look = cdShape.PickAppearance((int)createSpec.Class, createSpec.Gender);
+                createSpec = createSpec with
+                {
+                    HairType = createSpec.HairType != 0 ? createSpec.HairType : look.HairType,
+                    HairColor = createSpec.HairColor != 0 ? createSpec.HairColor : look.HairColor,
+                    FaceShape = createSpec.FaceShape != 0 ? createSpec.FaceShape : look.FaceShape,
+                };
+                Log($"[{handle.Id}] create appearance from client tables: hair={createSpec.HairType} " +
+                    $"colour={createSpec.HairColor} face={createSpec.FaceShape} (class {createSpec.Class}, gender {createSpec.Gender})");
+            }
             var (wmResult, wmConn) = await chain.RunWmAsync(
-                wmEp, opt.Credentials, login.Otp, opt.Slot, opt.CreateSpec, ct, tap, opt.Character);
+                wmEp, opt.Credentials, login.Otp, opt.Slot, createSpec, ct, tap, opt.Character);
             wm = new FiestaClientConnectionScope(wmConn);
 
             if (wmResult.ZoneAdvertised is not { } zoneAdv || wmResult.Selected is not { } sel)

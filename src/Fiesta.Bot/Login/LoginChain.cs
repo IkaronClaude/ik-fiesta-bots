@@ -272,6 +272,12 @@ public sealed class LoginChain
         req.char_shape.race = race;
         req.char_shape.chrclass = (uint)spec.Class;
         req.char_shape.gender = spec.Gender;
+        // APPEARANCE FROM THE CLIENT'S OWN CREATION TABLES, not zeros. HairInfo/FaceInfo declare which
+        // hair and face each class+gender may pick, and face id 0 is selectable by NOBODY — yet 0/0/0 is
+        // what we sent on every create. See ClientData.PickAppearance. Explicit spec values still win.
+        // (BotManager fills these from ClientData's HairInfo/FaceInfo before we get here — it is the layer
+        // that holds a ClientData instance. Face id 0 is selectable by nobody, so 0 here means the tables
+        // could not be read, which is worth seeing in the log rather than silently sending an invalid one.)
         req.char_shape.hairtype = spec.HairType;
         req.char_shape.haircolor = spec.HairColor;
         req.char_shape.faceshape = spec.FaceShape;
@@ -279,8 +285,8 @@ public sealed class LoginChain
         // Log the RACE too — it is the field that silently sank every Archer create, and a create that
         // fails without showing what it sent is a guessing game (it cost three blind retries).
         _log($"[WM] >> AVATAR_CREATE_REQ slot={spec.Slot} name='{spec.Name}' " +
-             $"class={spec.Class}({(byte)spec.Class}) race={race}{(spec.Race == 0 ? " (derived from class)" : "")} " +
-             $"gender={spec.Gender}");
+             $"class={spec.Class}({(byte)spec.Class}) race={race}{(spec.Race == 0 ? " (derived)" : "")} " +
+             $"gender={spec.Gender} hair={spec.HairType} colour={spec.HairColor} face={spec.FaceShape}");
 
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while (DateTime.UtcNow < deadline)
