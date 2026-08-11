@@ -524,17 +524,31 @@ async function tickBots() {
     const bots = await r.json();
     // Label with the state that decides whether the panels will have anything in them, so a bot that
     // died or never entered a zone is obvious IN THE PICKER instead of looking like empty panels.
-    const key = bots.map(b => `${b.id}:${b.phase}:${b.level ?? ''}`).join('|');
+    // The selected bot is part of the key: while it is away the list itself may not change, but the
+    // "— reconnecting…" entry has to be rebuilt (and removed again on its return), so the early-out
+    // must notice that too.
+    const key = bots.map(b => `${b.id}:${b.phase}:${b.level ?? ''}`).join('|') + '#' + ($('#bot').value || '');
     if (key === botListKey) return;
     botListKey = key;
     const sel = $('#bot');
     const want = sel.value || localStorage.getItem('botwatch.bot') || (bots[0] && bots[0].id) || '';
-    sel.innerHTML = bots.map(b => {
+    let html = bots.map(b => {
       const lvl = b.level ? ` L${b.level}` : '';
       const bad = b.phase !== 'InZone' ? ` — ${b.phase}` : '';
       return `<option value="${b.id}"${b.id === want ? ' selected' : ''}>${b.id}${lvl}${bad}</option>`;
     }).join('');
-    if (!bots.some(b => b.id === want) && bots.length) sel.value = bots[0].id;
+    // ⛔ DO NOT SWITCH BOTS BEHIND THE OPERATOR'S BACK. This used to fall back to bots[0] whenever the
+    // selected bot was missing from the list — and a bot goes missing for a few seconds on every RELOG
+    // and every cross-server zone change, because StopAsync removes the handle before Spawn re-adds it
+    // (the 404 window tracked as a P0). So watching a bot through a map change silently moved you to a
+    // different bot, and it never moved back: next refresh `want` read the NEW selection as the wanted
+    // one. Operator 2026-08-11: "the UI sometimes randomly swaps which bot is being watched (maybe on
+    // zone change?)" — exactly that.
+    // Keep the chosen bot selected and say it is reconnecting. Only a real click changes bots.
+    if (want && !bots.some(b => b.id === want))
+      html += `<option value="${want}" selected>${want} — reconnecting…</option>`;
+    sel.innerHTML = html;
+    sel.value = want;
   } catch {}
 }
 $('#bot').onchange = () => {
