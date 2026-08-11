@@ -656,11 +656,31 @@ public sealed class BotManager : IAsyncDisposable
     /// while this bot was sending it once per cast — 396 times in a single session. The flag is
     /// cleared whenever the server drops us out of combat, on death, and on a map change, so we
     /// re-assert the mode exactly when it can actually have lapsed.</summary>
+    /// <summary>Make sure the server has us in BATTLE mode before we try to act.
+    /// <para>⛔ THE OLD VERSION WAS THE BOT'S BIGGEST COMBAT BUG. It set a local flag the moment it SENT the
+    /// request and never reconciled: `if (handle.InBattleMode) return; send(); handle.InBattleMode = true;`.
+    /// The server puts you back into non-battle when combat goes idle, but nothing ever cleared the flag, so
+    /// this method early-returned forever and every later cast was refused with 0x0FC0 — 1281 times in ONE
+    /// session, the single most common failure the bot produced. It was investigated for months as a FACING
+    /// problem, because the local state said we were fine; the client's own string table renders 0x0FC0 as
+    /// "Cannot use the skill while in nonbattle mode" (docs/ERROR_CODE_RUNBOOK.md).</para>
+    /// <para>Now the SERVER is the authority: ZoneView tracks 0x2009 for our own handle. We re-send whenever
+    /// it says we are not in battle mode, and the local flag is only a send-rate guard so we do not spam the
+    /// request while the answer is in flight. Unknown (never told) is treated as "send it" — a redundant
+    /// change-mode is free, a missing one costs every cast.</para></summary>
     private static async Task EnsureBattleModeAsync(BotHandle handle, BotSession s, CancellationToken ct)
     {
-        if (handle.InBattleMode) return;
+        var serverSays = handle.ZoneView?.SelfInBattleMode;
+        if (serverSays == true) { handle.InBattleMode = true; return; }
+
+        // Not in battle mode (or not yet told). Re-assert, but at most every 500ms so a burst of casts
+        // does not produce a burst of change-mode requests while the broadcast is still on the wire.
+        if ((DateTime.UtcNow - handle.LastBattleModeSentUtc).TotalMilliseconds < 500) return;
+        handle.LastBattleModeSentUtc = DateTime.UtcNow;
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
-        handle.InBattleMode = true;
+        handle.InBattleMode = true;   // optimistic ONLY as a send guard; 0x2009 is what actually decides
+        handle.Log(BotLogLevel.Verbose,
+            $"battle mode re-asserted (server said {(serverSays is null ? "nothing yet" : "NON-BATTLE")})");
     }
 
     /// <summary>Mount item class in <c>ItemInfo</c> (mirrors <c>MOUNT_CLASS</c> in level_quest.lua).</summary>

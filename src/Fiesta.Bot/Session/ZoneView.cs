@@ -488,6 +488,9 @@ public sealed class ZoneView : IDisposable
     // Previously undecoded → the tracked level stayed STALE until a relog re-read the WM avatar list (the whole
     // reason a GM'd-to-20 char still read level 1). Now decode level@0 + fire LevelChanged so it tracks live.
     private static readonly ushort OpBatLevelup = PacketRegistry.GetOpcode<PROTO_NC_BAT_LEVELUP_CMD>();
+    // 0x2009 NC_ACT_SOMEONECHANGEMODE_CMD {handle u16 @0, mode u8 @2} — the server telling us who is in
+    // BATTLE mode. Read for OUR handle it is the authoritative answer to "can I cast right now?".
+    private static readonly ushort OpSomeoneChangeMode = PacketRegistry.GetOpcode<PROTO_NC_ACT_SOMEONECHANGEMODE_CMD>();
     // 0x244E — the server CONFIRMING a cast started, and it NAMES the skill (skill u16 @0, targetobj u16 @2,
     // index u16 @4; PDB PROTO_NC_BAT_SKILLBASH_HIT_OBJ_START_CMD). This is the only packet that ties a
     // cooldown to a specific skill id, so it is what the cooldown clock runs from. See docs/COMBAT_BIBLE.md.
@@ -2130,6 +2133,15 @@ public sealed class ZoneView : IDisposable
     /// zone entry completes; used to filter MOVESPEED broadcasts to self only.</summary>
     public ushort? SelfHandle { get; set; }
 
+    /// <summary>Are WE in battle mode, as the SERVER last said (0x2009)? null until it has told us.
+    /// <para>⛔ THIS REPLACES AN ASSUMPTION THAT COST 1281 CAST FAILURES IN ONE SESSION. The manager used to
+    /// set a local `InBattleMode = true` the instant it SENT a change-mode request and never reconcile it.
+    /// The server drops you back to non-battle when combat goes idle, so the flag stayed true forever, the
+    /// "ensure battle mode" guard early-returned, and every subsequent cast was refused with 0x0FC0 —
+    /// which the client's own string table renders as "Cannot use the skill while in nonbattle mode".
+    /// The failure was diagnosed for months as a facing problem because the local flag looked right.</para></summary>
+    public bool? SelfInBattleMode { get; private set; }
+
     /// <summary>Supplies the bot's current world position (set by the manager to the live
     /// tracked position). Lets aggro detection tell whether a mob is running toward us.</summary>
     public Func<(uint X, uint Y)?>? SelfPositionProvider { get; set; }
@@ -2805,6 +2817,19 @@ public sealed class ZoneView : IDisposable
                     _log?.Invoke($"[ZoneView] LEVEL UP -> {newLevel}");
                     LevelChanged?.Invoke(newLevel);
                 }
+            }
+        }
+        else if (op == OpSomeoneChangeMode)
+        {
+            var pm = pkt.Payload.Span;
+            if (pm.Length >= 3 && SelfHandle is { } selfH && (ushort)(pm[0] | (pm[1] << 8)) == selfH)
+            {
+                var battle = pm[2] == 2;          // mode 2 = battle, 1 = normal
+                if (SelfInBattleMode != battle)
+                    _logLevel?.Invoke(BotLogLevel.Note,
+                        $"[combat] battle mode -> {(battle ? "BATTLE" : "NON-BATTLE")} (server 0x2009). " +
+                        (battle ? "" : "Casts would now fail 0x0FC0 until we re-enter."));
+                SelfInBattleMode = battle;
             }
         }
         else if (op == OpSkillStart)

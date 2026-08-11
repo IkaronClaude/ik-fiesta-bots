@@ -239,6 +239,9 @@ public sealed class BotHandle
     /// A persistent toggle — see <c>EnsureBattleModeAsync</c>. Cleared on death / map change so it
     /// is re-asserted only when it can genuinely have lapsed.</summary>
     internal volatile bool InBattleMode;
+    /// <summary>When we last sent a change-mode request — a send-rate guard only. The AUTHORITY on battle
+    /// mode is ZoneView.SelfInBattleMode, fed by the server's 0x2009 broadcast.</summary>
+    internal DateTime LastBattleModeSentUtc = DateTime.MinValue;
 
     /// <summary>Set by the travel driver while a GATE HOP is being taken, and honoured by the Lua's
     /// <c>mountUp()</c> via <c>bot.noMount()</c>. A gate is silently ignored while mounted, and the Lua
