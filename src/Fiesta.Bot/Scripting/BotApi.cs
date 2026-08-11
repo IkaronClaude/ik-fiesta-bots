@@ -728,8 +728,27 @@ public sealed class BotApi
         var npcs = NewTable(); int ni = 1;
         foreach (var n in q.Npcs) { npcs[ni++] = n.Id; }
         t["npcs"] = DynValue.NewTable(npcs);
+        // Each objective is an INDIVIDUAL GOAL carrying its OWN progress (operator 2026-08-11: "expose to
+        // lua as individual goals"). `idx` is the 0-based wire objIdx the server uses in MobOfQuest, `prog`
+        // the kills it has credited to THAT goal, and `done` whether it is finished.
+        //
+        // ⛔ Until this existed the driver had only the AGGREGATE questProgress, so a multi-goal quest was
+        // unreadable: "Mother's Symbol" needs mob 11 x3, mob 12 x3, mob 13 x3, and at 3/9 every goal looked
+        // equally unfinished — so MageFresh re-killed the finished mob 11 forever for ZERO credit. The
+        // per-goal counts were decoded in C# the whole time (seeded from End_NPCMobCount[5], incremented
+        // from 0x440D's objIdx); they were simply never bound into Lua.
+        //
+        // 0 is valid throughout: goal index 0 is the first goal and prog 0 is a real state, so `done` is
+        // computed as `count > 0 && prog >= count` rather than any truthiness test.
         var objs = NewTable(); int oi = 1;
-        foreach (var o in q.Objectives) { var e = NewTable(); e["type"] = o.Type; e["mob"] = o.Mob; e["count"] = o.Count; e["item"] = o.Item; objs[oi++] = DynValue.NewTable(e); }
+        foreach (var o in q.Objectives)
+        {
+            var e = NewTable(); e["type"] = o.Type; e["mob"] = o.Mob; e["count"] = o.Count; e["item"] = o.Item;
+            var idx = oi - 1;                       // wire objIdx is 0-based; oi is Lua's 1-based cursor
+            var prog = View?.QuestObjProgress(id, idx) ?? 0;
+            e["idx"] = idx; e["prog"] = prog; e["done"] = o.Count > 0 && prog >= o.Count;
+            objs[oi++] = DynValue.NewTable(e);
+        }
         t["objectives"] = DynValue.NewTable(objs);
         var rewards = NewTable(); int ri = 1;
         foreach (var r in q.Rewards) { var e = NewTable(); e["method"] = r.Method; e["type"] = r.Type; e["itemId"] = r.ItemId; e["itemCount"] = r.ItemCount; e["amount"] = r.Amount; rewards[ri++] = DynValue.NewTable(e); }
@@ -770,6 +789,21 @@ public sealed class BotApi
     /// authoritative objective-progress count — when it reaches the objective count, turn in.
     /// If the bot lands kills (killsByMe rises) but this stays 0, the quest is stuck → abandon it.</summary>
     public int questProgress(int id) => View?.QuestProgress(id) ?? 0;
+
+    /// <summary>Kills credited to ONE objective of a quest — <paramref name="objIdx"/> is the 0-based
+    /// position in the quest's objective list, exactly as the server sends it in <c>MobOfQuest</c>.
+    ///
+    /// <para>⛔ WITHOUT THIS THE DRIVER CANNOT TELL WHICH OBJECTIVE IS DONE, and grinds a finished mob
+    /// forever. Operator 2026-08-11: MageFresh kept killing Mara Pirates (mob 11) for "Mother's Symbol",
+    /// already 3/3. That quest has THREE kill objectives — mob 11 ×3, mob 12 ×3, mob 13 ×3 — and the driver
+    /// only had the AGGREGATE <see cref="questProgress"/> (3 of 9), so every objective mob looked equally
+    /// unfinished and it kept picking the same one for zero credit.</para>
+    /// <para>The per-objective counters were already decoded, seeded at login from <c>End_NPCMobCount[5]</c>
+    /// and incremented live from 0x440D's <c>objIdx</c> — they were simply never bound into Lua, so the one
+    /// consumer that needed them could not see them. Classic missing read path (the SILVER RULE).</para>
+    /// <para>0 is a legitimate value for both the index and the count: objective 0 is the first objective,
+    /// and 0 kills is a real state. Do not treat either as "unset".</para></summary>
+    public int questObjProgress(int id, int objIdx) => View?.QuestObjProgress(id, objIdx) ?? 0;
 
     /// <summary>Abandon a quest (NC_QUEST_GIVE_UP_REQ). Used to clear a persistence-glitched
     /// quest (active but stuck at 0 progress) so it can be re-accepted fresh.</summary>

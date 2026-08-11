@@ -1463,9 +1463,18 @@ public sealed class ZoneView : IDisposable
     /// forcing 50 makes that test fail and archers/mages will close to melee instead of standing off. Expect
     /// JcqArcher (currently the best-performing bot: 1% cast failures, 1:0.3 landed:taken) to get worse. That
     /// is the price of the experiment, not a regression to chase.</para>
-    /// <para>Set to 0 to restore the learner. This is a deliberate temporary hardcode of a game fact and is
-    /// tracked in tickets.md — it must not outlive the experiment.</para></summary>
-    public const double MeleeRangeExperimentU = 50;
+    /// <para>❌ RESULT (2026-08-11, 25min live on 5 bots): <b>REVERTED — 50u made combat WORSE.</b>
+    /// ClericFresh 0.36→0.13 swings/bash, 80%→95% dead bashes, 35%→56% cast failures (48 of them 0x0FCA);
+    /// JcqArcher, as predicted, collapsed from 1:0.3 to <b>1:5.0</b> landed:taken with dead bashes 18%→85%.
+    /// FighterFresh's failures did drop (70%→31%) but its swings/bash stayed flat, so nothing killed faster.</para>
+    /// <para>The archer's predicted collapse is the CONTROL: it proves the override reached the standoff maths
+    /// end-to-end, so the melee result is trustworthy too. <b>0x0FCA did not go away at 50u</b> — it got worse
+    /// on the Cleric — so the inflated learned range is NOT the cause of the close-range cast refusals.</para>
+    /// <para>Corroborating clue from the same window: MageFresh cast <b>161 times with ZERO failures</b>.
+    /// Skills with a real ActiveSkill.Range never fail; 0x0FCA concentrates entirely on Range=0 MELEE skills.
+    /// Next suspect stays the relative-position data feeding the distance, not the reach constant.</para>
+    /// <para>Set back to 50 (or any value) to re-run; 0 = use the learner.</para></summary>
+    public const double MeleeRangeExperimentU = 0;
 
     // Top TWO connect distances ever seen. The learned range is the SECOND highest — a one-line robust
     // max that simply discards the single largest sample, so one position desync cannot define the range.
