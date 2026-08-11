@@ -44,7 +44,8 @@ public sealed class BotApi
     public void __state(string name) => StateReporter?.Invoke(name);
 
     /// <summary>Can THIS character use an item/scroll whose ItemInfo <c>UseClass</c> is
-    /// <paramref name="useClass"/>? (0 = usable by everyone.)
+    /// <paramref name="useClass"/>? Answered from the client's own UseClassTypeInfo matrix
+    /// (<see cref="GameData.ClientData.UseClassAllows"/>) — note the all-class value is <b>1</b>, not 0.
     /// <para>⛔ EXISTS BECAUSE THE DRIVER HARDCODED THE FIGHTER LINE. `level_quest.lua` tested scroll
     /// eligibility with a baked `FIGHTER = {0,2..7}` table, so on any other class it did BOTH wrong things
     /// at once: it bought Fighter books the character can never use, and it skipped the books for its own
@@ -54,9 +55,9 @@ public sealed class BotApi
     /// into the driver — same reasoning as the quest-reward picker, which already uses this ladder.</para></summary>
     public bool canUseClass(int useClass)
     {
-        if (useClass == 0) return true;                 // 0 = every class
-        var line = GameData.ClientData.UseClassLineFor(_handle.Class);
-        return line.Count > 0 && line.Contains(useClass);
+        var cd = _mgr.ClientData;
+        if (cd is null) return false;                  // no client data → make no claim (driver fails closed)
+        return cd.UseClassAllows(_handle.Class, useClass);
     }
 
     /// <summary>Publish what the driver is working on RIGHT NOW: the focused quest (0 for none), its own
@@ -654,14 +655,15 @@ public sealed class BotApi
         if (q is null || cd is null) return -1;
         var choices = q.Rewards.Where(r => r.Method == 2 && r.Type == 2).ToList();
         if (choices.Count == 0) return -1;
-        var line = GameData.ClientData.UseClassLineFor(_handle.Class);
         // Return the RAW reward-block slot (RawIndex) — that's what the server's reward-select
         // packet expects, not the compacted position.
         int placeholder = -1;
         for (int i = 0; i < choices.Count; i++)
         {
             var uc = cd.ItemUseClass(choices[i].ItemId);
-            if (uc == 1 || line.Contains(uc)) return choices[i].RawIndex;        // gear for our class line
+            // The client's own UseClass matrix (was: `uc == 1 || approximate-ladder.Contains(uc)`; the
+            // hand-rolled `uc == 1` was right about the all-class value and the ladder around it was not).
+            if (cd.UseClassAllows(_handle.Class, uc)) return choices[i].RawIndex;
             if (choices[i].ItemId == 0 && placeholder < 0) placeholder = choices[i].RawIndex; // our-class placeholder
         }
         return placeholder >= 0 ? placeholder : choices[0].RawIndex;

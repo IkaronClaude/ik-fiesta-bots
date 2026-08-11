@@ -688,6 +688,59 @@ public sealed class ClientData
         _ => 0,
     };
 
+    /// <summary>Does the client's OWN matrix allow class <paramref name="classId"/> (a ClassName
+    /// <c>ClassID</c>, 1-27) to use an item/scroll whose ItemInfo <c>UseClass</c> is
+    /// <paramref name="useClass"/>? THIS is the real answer; <see cref="UseClassLineFor"/> is a
+    /// hand-written approximation of it and is wrong in four ways (kept only as a fallback).
+    ///
+    /// <para><b>The table:</b> <c>UseClassTypeInfo.shn</c> — 39 rows, one per UseClass value, each with a
+    /// 0/1 flag column per class. The 27 flag columns are the 27 ClassName ClassIDs IN ORDER (col 1 =
+    /// Fig = ClassID 1 … col 27 = Sav = ClassID 27), so the lookup is by ORDINAL, never by name: the
+    /// abbreviations do not match ClassName's acPrefix (Cfig/Cfi, Hcle/Hcl, Harc/Har, Wmag/Wma) and
+    /// acPrefix "War" is AMBIGUOUS — it is both Warrior (3) and Warlock (19).</para>
+    ///
+    /// <para><b>What the ladder got wrong</b> (measured against the table + ItemInfo, 2026-08-11):</para>
+    /// <para>• <b>UseClass 1 = EVERY class</b> (row 1 has all 27 flags set) and it is 7465 of the 14999
+    /// items — half the item file. The ladder does not contain 1 for anyone, so it rejected all-class gear
+    /// and consumables outright. <c>bestRewardIndex</c> had already worked this out independently
+    /// (<c>uc == 1 || line.Contains(uc)</c>) — the two disagreed.</para>
+    /// <para>• <b>UseClass 0 is used by NOTHING</b> — zero items carry it, and its row has every flag
+    /// CLEAR. The old <c>canUseClass</c> special-cased 0 as "everyone", which is exactly backwards; the
+    /// all-class value is 1. (0 being meaningful-but-empty here is not a licence to treat 0 as "unset"
+    /// elsewhere — see the golden rule in CLAUDE.md.)</para>
+    /// <para>• <b>The ladder was too PERMISSIVE for a base class.</b> It gave a Fighter (ClassID 1) the
+    /// whole band 2-7, but the table says Fig is only in UseClass 2 — 3-7 are the ADVANCED classes
+    /// (Cfig/War/Gla/Kni). So a fresh Fighter believed it could use gear and scrolls that require a job
+    /// change, i.e. it bought unusable items even on the one class we thought worked.</para>
+    /// <para>• <b>Cross-line and near-universal values were missing entirely:</b> 26 = everyone except
+    /// Sen/Sav; 35-38 are cross-line combos (35 = War/Gla/Kni + Sco/Sha/Ran). The ladder rejects all of
+    /// them for every class.</para>
+    ///
+    /// <para>Verified against a known item: "Slice and Dice [01]" (id 4700), the Fighter scroll a Mage
+    /// bought live, is <c>UseClass 2</c> → Fig/Cfig/War/Gla/Kni, which correctly excludes Mage (16).</para>
+    /// </summary>
+    public bool UseClassAllows(int classId, int useClass)
+    {
+        if (classId is < 1 or > 27) return false;             // unknown/unselected class → no claim
+        var t = Table("UseClassTypeInfo");
+        if (t is null)
+        {
+            // Fallback ONLY when the table is missing: the old ladder, plus the all-class value it
+            // never knew about. Documented as approximate — it is not the authority.
+            return useClass == 1 || UseClassLineFor(classId).Contains(useClass);
+        }
+        var row = t.FindByLong("UseClass", useClass);
+        if (row is null) return false;                        // value not in the matrix → not usable
+        // Flag columns are everything after the leading UseClass column, in ClassID order.
+        var flags = t.Columns.Where(c => !string.Equals(c.Name, "UseClass", StringComparison.OrdinalIgnoreCase))
+                             .ToList();
+        if (classId > flags.Count) return false;
+        return ToU32(row, flags[classId - 1].Name) != 0;
+    }
+
+    /// <summary>⚠️ APPROXIMATE — prefer <see cref="UseClassAllows"/>, which reads the client's own
+    /// UseClassTypeInfo matrix. Retained because it is the fallback when that table cannot be read, and
+    /// because <c>bestRewardIndex</c> still uses it as a coarse "our line" filter.</summary>
     public static IReadOnlySet<int> UseClassLineFor(int classId)
     {
         // classId is a ClassName ClassID; resolve its archetype, return that line's UseClass band.
