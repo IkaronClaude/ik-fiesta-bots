@@ -609,6 +609,34 @@ public sealed class ClientData
     /// whole line). The UseClass enum runs: Fighter 2–7, Cleric 8–13, Archer 14–19, Mage 20–25,
     /// Joker 27–32, Sentinel/Savior 33–34 (26 is a non-class consumable slot). Lets the reward
     /// picker accept gear for the char's class at any promotion tier (lower/higher/promotion).</summary>
+    /// <summary>The RACE a class must be created as — <c>RaceNameInfo.shn</c> ids: 1=Human, 2=Elf,
+    /// 3=DarkElf (0 is the blank row and is NOT a valid race).
+    /// <para>⛔ WE WERE SENDING RACE 0 ON EVERY CREATE, and it is why Archer creation always failed with
+    /// <c>AVATAR_CREATEFAIL err=132</c> while Fighter/Cleric/Mage happened to survive it. Ground truth,
+    /// three independent sources agreeing:</para>
+    /// <para>• A REAL client create in Z:/LongCaptureNoDc.pcapng: <c>char_shape = 05 01 0c 00</c>, which
+    /// against the PDB bitfields (race:2, chrclass:5, gender:1) decodes to race=<b>1</b>, chrclass=1
+    /// (Fighter) — never 0.</para>
+    /// <para>• <c>World00_Character.tCharacterShape</c> on this server: nRace=<b>1</b> for every
+    /// Fighter/Cleric-line character, nRace=<b>3</b> for every Mage-line one. No row has race 0, and no
+    /// class-11 row exists at all — nothing had ever been created as an Archer.</para>
+    /// <para>• Operator, 2026-08-11: <i>"archers are always elves, not human"</i> — and RaceNameInfo says
+    /// Elf is exactly the id (2) left unclaimed between Human (Fighter/Cleric) and DarkElf (Mage).</para>
+    /// <para>The class→race pairing itself is not in any client table I could find (ClassName.shn has only
+    /// ClassID/prefix/names; RaceNameInfo.shn names the races but does not join them to classes), so it is
+    /// stated here once, against the SAME class-line ladder <see cref="UseClassLineFor"/> already uses,
+    /// rather than being scattered. Race is a 2-BIT field — 0-3 is the whole space.</para>
+    /// Returns 0 for an unknown class, which the caller must treat as "don't override".</summary>
+    public static int RaceForClass(int classId) => classId switch
+    {
+        >= 1 and <= 5   => 1,   // Fighter line   — Human
+        >= 6 and <= 10  => 1,   // Cleric line    — Human
+        >= 11 and <= 15 => 2,   // Archer line    — Elf
+        >= 16 and <= 20 => 3,   // Mage line      — DarkElf
+        >= 21 and <= 25 => 3,   // Joker line     — DarkElf (unverified: no Joker exists on this server yet)
+        _ => 0,
+    };
+
     public static IReadOnlySet<int> UseClassLineFor(int classId)
     {
         // classId is a ClassName ClassID; resolve its archetype, return that line's UseClass band.

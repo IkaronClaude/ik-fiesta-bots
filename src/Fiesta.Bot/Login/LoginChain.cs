@@ -264,15 +264,23 @@ public sealed class LoginChain
     {
         var req = new PROTO_NC_AVATAR_CREATE_REQ { slotnum = spec.Slot };
         FillBytes(req.name.n5_name, spec.Name);
-        req.char_shape.race = spec.Race;
+        // RACE MUST MATCH THE CLASS. `spec.Race` defaults to 0, which is the BLANK row of
+        // RaceNameInfo.shn, not a race — and sending it is why every Archer create was refused with
+        // AVATAR_CREATEFAIL err=132 (see ClientData.RaceForClass for the three sources that pin this).
+        // An explicit non-zero Race from the caller still wins; 0 means "you didn't say", so derive it.
+        var race = spec.Race != 0 ? spec.Race : (byte)GameData.ClientData.RaceForClass((int)spec.Class);
+        req.char_shape.race = race;
         req.char_shape.chrclass = (uint)spec.Class;
         req.char_shape.gender = spec.Gender;
         req.char_shape.hairtype = spec.HairType;
         req.char_shape.haircolor = spec.HairColor;
         req.char_shape.faceshape = spec.FaceShape;
         await conn.SendAsync(req, ct);
+        // Log the RACE too — it is the field that silently sank every Archer create, and a create that
+        // fails without showing what it sent is a guessing game (it cost three blind retries).
         _log($"[WM] >> AVATAR_CREATE_REQ slot={spec.Slot} name='{spec.Name}' " +
-             $"class={spec.Class}({(byte)spec.Class}) gender={spec.Gender}");
+             $"class={spec.Class}({(byte)spec.Class}) race={race}{(spec.Race == 0 ? " (derived from class)" : "")} " +
+             $"gender={spec.Gender}");
 
         var deadline = DateTime.UtcNow.AddSeconds(10);
         while (DateTime.UtcNow < deadline)
