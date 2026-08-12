@@ -1808,6 +1808,21 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>Bag stack counts: slot → how many of that slot's item we hold. Pair with
+    /// <c>inventory()</c> (slot → itemId) and <c>itemInfo(id).maxLot</c> to answer "is there room for
+    /// this drop", which is NOT the same question as "is the bag full".
+    /// <para>The game does PARTIAL PICKS (operator 2026-08-12): with 48 held, MaxLot 50 and 3 on the
+    /// ground, a pick takes 2 and leaves 1. So a full bag can still accept items into any stack below
+    /// MaxLot, and skipping loot on bagFull alone throws those away. ZoneView has tracked these counts
+    /// from the wire lot field all along; nothing had ever exposed them.</para></summary>
+    public DynValue inventoryCounts()
+    {
+        var t = NewTable();
+        var v = View; var inv = v?.Inventory; if (v is null || inv is null) return DynValue.NewTable(t);
+        foreach (var (slot, _) in inv) t[(int)slot] = v.ItemCount(slot);
+        return DynValue.NewTable(t);
+    }
+
     public DynValue equipment()
     {
         var t = NewTable();
