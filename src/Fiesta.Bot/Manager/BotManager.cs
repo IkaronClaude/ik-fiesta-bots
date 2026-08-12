@@ -599,6 +599,7 @@ public sealed class BotManager : IAsyncDisposable
         { await StopOnlyAsync(handle, s, ct); sentPath = "stop+cast"; }   // STOP without the swing-breaking MOVERUN
         else
         { sentPath = "cast-only(NO-STOP)"; }   // needFace/needStop false AND adjust true — nothing committed
+        handle.ZoneView?.NoteCastAttempt(skill, target);   // capture geometry BEFORE the wire, for [castfail]
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
         // Open the cast-animation window SPECULATIVELY, right on send. Waiting for the server's
         // CAST_SUC_ACK would leave a round-trip hole in which the driver fires more casts (that is

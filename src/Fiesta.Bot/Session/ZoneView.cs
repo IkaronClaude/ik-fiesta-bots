@@ -2260,6 +2260,28 @@ public sealed class ZoneView : IDisposable
     /// tracked position). Lets aggro detection tell whether a mob is running toward us.</summary>
     public Func<(uint X, uint Y)?>? SelfPositionProvider { get; set; }
 
+    // Geometry captured at the instant we transmitted a cast, so a CAST_FAIL can be reported against
+    // what was true WHEN WE ASKED rather than what is true now. The gap between the two is the
+    // stale-position hypothesis: if the mob moved between our request and the server's refusal, that
+    // shows up here as a changed distance.
+    private ushort _castAtSkill, _castAtTarget;
+    private DateTime _castAtUtc = DateTime.MinValue;
+    private (uint X, uint Y)? _castAtSelf, _castAtTargetPos;
+
+    /// <summary>Called by the sender the moment a cast goes out — records the skill, target and both
+    /// positions so <c>CAST_FAIL</c> can be logged with the geometry that produced it.</summary>
+    public void NoteCastAttempt(ushort skill, ushort target)
+    {
+        _castAtSkill = skill; _castAtTarget = target; _castAtUtc = DateTime.UtcNow;
+        _castAtSelf = SelfPositionProvider?.Invoke();
+        _castAtTargetPos = null;
+        foreach (var n in NearbyNpcs)
+            if (n.Handle == target) { _castAtTargetPos = (n.X, n.Y); break; }
+    }
+
+    private static double Dist((uint X, uint Y)? a, (uint X, uint Y)? b) =>
+        a is { } p && b is { } q ? Math.Sqrt(Math.Pow((double)p.X - q.X, 2) + Math.Pow((double)p.Y - q.Y, 2)) : -1;
+
     /// <summary>Returns true if a mob id is a huntable enemy (set by the manager from client
     /// MobInfo — see <see cref="GameData.ClientData.IsHuntableEnemy"/>). Used to suppress the
     /// angle-aggro heuristic for town guards (player-side) and other non-enemies that wander
@@ -2613,6 +2635,27 @@ public sealed class ZoneView : IDisposable
             // so explicitly and dump the raw payload, which is what "unknown" should have meant.
             var known = reason is CastFailReason.NotEnoughSp or CastFailReason.OutOfRange
                               or CastFailReason.NotReady or 0x0FC0 or 0x0FC4 or 0x0FC6;
+            // ⭐ LOG LOUD (operator 2026-08-12). This goes out at NOTE level so every failure lands in the
+            // same tail as the flee / kite / heal / restock headlines — if 0x0FCA turns out to be triggered
+            // by a flee or a re-path, the two lines will sit next to each other and the correlation is
+            // readable straight off `/log?level=note` instead of needing a join across verbosities.
+            // Carries the geometry AT CAST TIME vs NOW, because "did the mob move between our request and
+            // the refusal?" is the open question and no aggregate can answer it.
+            {
+                var nowSelf = SelfPositionProvider?.Invoke();
+                (uint X, uint Y)? nowTgt = null;
+                foreach (var n in NearbyNpcs) if (n.Handle == _castAtTarget) { nowTgt = (n.X, n.Y); break; }
+                var dAtCast = Dist(_castAtSelf, _castAtTargetPos);
+                var dNow    = Dist(nowSelf, nowTgt);
+                var mobMoved = Dist(_castAtTargetPos, nowTgt);
+                var meMoved  = Dist(_castAtSelf, nowSelf);
+                var ageMs = _castAtUtc == DateTime.MinValue ? -1 : (DateTime.UtcNow - _castAtUtc).TotalMilliseconds;
+                _logLevel?.Invoke(BotLogLevel.Note,
+                    $"[castfail] 0x{reason:X4} {CastFailReason.Describe(reason)} — skill={_castAtSkill} h={_castAtTarget} " +
+                    $"dist@cast={(dAtCast < 0 ? "?" : dAtCast.ToString("F0"))}u dist@fail={(dNow < 0 ? "?" : dNow.ToString("F0"))}u " +
+                    $"mobMoved={(mobMoved < 0 ? "?" : mobMoved.ToString("F0"))}u weMoved={(meMoved < 0 ? "?" : meMoved.ToString("F0"))}u " +
+                    $"after={ageMs:F0}ms inCombat={InCombat} aggro={Aggressors.Count}");
+            }
             _log?.Invoke($"[ZoneView] cast FAILED — {CastFailReason.Describe(reason)} (0x{reason:X4})" +
                          (known ? "" : $" — UNMAPPED code, {pkt.Payload.Length}b payload") +
                          (pkt.Payload.Length > 2 ? $" raw={Convert.ToHexString(pkt.Payload.Span)}" : ""));
