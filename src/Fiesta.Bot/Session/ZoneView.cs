@@ -3150,6 +3150,43 @@ public sealed class ZoneView : IDisposable
                 if (_nearby.TryRemove(b.handle, out var gone)) PlayerLeft?.Invoke(b.handle);
                 _npcs.TryRemove(b.handle, out _);
             }
+            else
+            {
+                // ⛔ change2mob HAD NO BRANCH AT ALL — the server told us "this entity is now a FIGHTABLE
+                // MOB" and we threw it away. Operator 2026-08-12: "The mage works fine, EXCEPT in the
+                // instance. The UI is also NOT RENDERING AN ENEMY." That is one gap with three faces:
+                // the handle never entered _npcs, so it was invisible to the combat map, there was no
+                // target for the driver to attack (MageFresh: 13 attack skills learned, ZERO casts, 3
+                // targeting requests in a whole session), and damage from it could not be attributed
+                // (every JCQ death logged "Killed by: NO aggressors tracked at death").
+                // Promote it: reuse the position we already hold for this handle — a scenario clone is
+                // already on-screen as a scripted entity before it turns hostile.
+                if (!_npcs.ContainsKey(b.handle))
+                {
+                    uint px = 0, py = 0; ushort mobId = 0; bool known = false;
+                    if (_recentNpcs.TryGetValue(b.handle, out var rn))
+                    { px = rn.Npc.X; py = rn.Npc.Y; mobId = rn.Npc.MobId; known = true; }
+                    else if (_nearby.TryGetValue(b.handle, out var nb))
+                    { px = nb.X; py = nb.Y; known = true; }
+                    if (known)
+                    {
+                        _npcs[b.handle] = new NearbyNpc(b.handle, mobId, 0, px, py);
+                        _recentNpcs.TryRemove(b.handle, out _);
+                        _logLevel?.Invoke(BotLogLevel.Note,
+                            $"[ZoneView] scenario clone h={b.handle} is now FIGHTABLE — registered as a mob at " +
+                            $"({px},{py}) so it is targetable, drawable and can be blamed for damage");
+                    }
+                    else
+                    {
+                        // Position unknown: say so LOUDLY rather than inventing (0,0), which would put a
+                        // phantom at the map origin and drag the bot across the map to attack nothing.
+                        _logLevel?.Invoke(BotLogLevel.Note,
+                            $"[ZoneView] ⛔ CRITICAL: scenario clone h={b.handle} turned FIGHTABLE but we hold no " +
+                            "position for it — it stays invisible to targeting and the combat map. This is the " +
+                            "instance-death gap; find where its spawn/briefinfo is being missed.");
+                    }
+                }
+            }
         }
         else if (op == OpBriefInfoBuildDoor)
         {
