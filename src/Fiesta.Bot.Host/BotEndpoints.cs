@@ -671,7 +671,13 @@ public static class BotEndpoints
             if (bot is null) return Results.NotFound();
             var eq = bot.ZoneView?.Equipment;
             if (eq is null) return Results.Conflict(new { error = "bot is not in zone yet" });
-            return Results.Ok(new { id, worn = eq.OrderBy(kv => kv.Key).Select(kv => new { equipSlot = kv.Key, itemId = kv.Value }) });
+            // Name the worn item too — an equip panel showing bare ids is a puzzle, not a view.
+            return Results.Ok(new { id, worn = eq.OrderBy(kv => kv.Key).Select(kv => new
+            {
+                equipSlot = kv.Key,
+                itemId = kv.Value,
+                name = manager.ClientData?.ItemName(kv.Value) ?? "",
+            }) });
         })
         .WithSummary("List the bot's worn gear (equip slot → itemId)");
 

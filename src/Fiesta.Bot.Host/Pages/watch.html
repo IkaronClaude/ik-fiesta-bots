@@ -98,6 +98,20 @@
   button.mini { background:#0b0e13; color:var(--dim); border:1px solid var(--line); border-radius:3px;
                 font:inherit; font-size:10px; padding:0 5px; cursor:pointer; margin-left:6px }
   button.mini:hover { color:var(--fg); border-color:var(--accent) }
+
+/* ITEMS — a bag that looks like the bag (operator 2026-08-12). The art is the client's own icon
+   atlas, served by /icon/<itemId>.png; when it is absent the tile falls back to the item's NAME so
+   the panel stays useful on a host with no icon dir rather than showing a grid of broken images. */
+.isec { color:#8b949e; font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin:8px 0 4px }
+.igrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(40px,1fr)); gap:3px }
+.islot { position:relative; aspect-ratio:1; background:#0d1117; border:1px solid #21262d; border-radius:3px;
+         display:flex; align-items:center; justify-content:center; overflow:hidden }
+.islot.empty { background:#0b0e13; border-style:dashed; border-color:#161b22 }
+.islot img { width:32px; height:32px; image-rendering:pixelated }
+.islot .nm { font-size:8px; line-height:1.05; color:#7d8590; text-align:center; padding:2px; word-break:break-word }
+.islot .ct { position:absolute; right:1px; bottom:0; font-size:9px; font-weight:700; color:#fff;
+             text-shadow:0 0 3px #000,0 0 2px #000; pointer-events:none }
+.islot .eq { position:absolute; left:1px; top:0; font-size:8px; color:#58a6ff; text-shadow:0 0 3px #000 }
 </style>
 
 <header>
@@ -141,6 +155,16 @@
           <label><input type="checkbox" id="sklevels"> show all levels</label>
         </div>
         <div id="skills" class="tiles"></div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:10px">
+      <h2 class="fold" data-card="items"><span class="chev">▼</span>items <span class="muted" id="ihint"></span></h2>
+      <div class="body">
+        <div class="isec">worn</div>
+        <div id="worn" class="igrid"></div>
+        <div class="isec">bag <span class="muted" id="bagcap"></span></div>
+        <div id="bag" class="igrid"></div>
       </div>
     </div>
 
@@ -652,6 +676,51 @@ $('#bot').onchange = () => {
   pts = []; sinceT = 0; lastMap = null; lastLive = null; questList = []; questsById = new Map();
   tickMetrics(); tickTrace(); tickLog(); tickCombat();
 };
+// ── ITEMS ────────────────────────────────────────────────────────────────────────────────────────
+// Icons come from /icon/<itemId>.png — the client's own atlas, cut server-side. That route is
+// deliberately outside /api because an <img> cannot send the bearer token, and item art is not
+// sensitive. onerror swaps the tile to the item NAME, which is the same thing a host with no icon
+// dir shows, so the panel degrades to something readable instead of broken images.
+function islot(it, extra) {
+  if (!it) return '<div class="islot empty"></div>';
+  const nm = (it.name || ('item' + it.itemId)).replace(/"/g, '&quot;');
+  const cnt = (it.count != null && it.count > 1) ? `<span class="ct">${it.count}</span>` : '';
+  return `<div class="islot" title="${nm} (id ${it.itemId}${it.count!=null?', x'+it.count:''})">`
+       + `<img src="/icon/${it.itemId}.png" alt=""`
+       + ` onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'nm',textContent:${JSON.stringify(nm)}}))">`
+       + `${cnt}${extra||''}</div>`;
+}
+async function tickItems() {
+  try {
+    const [ri, re] = await Promise.all([api('/inventory'), api('/equipment')]);
+    if (ri.ok) {
+      const d = await ri.json();
+      const items = d.items || [];
+      // Draw the bag at its real capacity so "how full is it" is visible at a glance — an empty
+      // slot is a slot, not a gap. Slots are sparse in the payload, so index them by slot number.
+      const bySlot = {}; for (const it of items) bySlot[it.slot] = it;
+      const cap = d.capacity || items.length;
+      const lo = Math.min(...Object.keys(bySlot).map(Number), 0);
+      let html = '';
+      const keys = Object.keys(bySlot).map(Number).sort((a,b)=>a-b);
+      const base = keys.length ? Math.min(...keys) : 0;
+      for (let i = 0; i < cap; i++) html += islot(bySlot[base + i]);
+      $('#bag').innerHTML = html;
+      $('#bagcap').textContent = `${d.used||items.length}/${cap}`;
+      $('#ihint').textContent = `${d.used||items.length} carried`;
+    }
+    if (re.ok) {
+      const d = await re.json();
+      const worn = d.worn || [];
+      $('#worn').innerHTML = worn.length
+        ? worn.map(w => islot({ itemId: w.itemId, name: w.name, count: null },
+                              `<span class="eq">${w.equipSlot}</span>`)).join('')
+        : '<span class="muted">nothing worn</span>';
+    }
+  } catch (e) { /* transient: the bot may be between sessions */ }
+}
+setInterval(tickItems, 4000); tickItems();
+
 setInterval(tickBots, 5000); tickBots();
 
 setInterval(tickMetrics, 2000); tickMetrics();

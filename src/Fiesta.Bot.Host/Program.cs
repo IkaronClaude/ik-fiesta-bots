@@ -136,6 +136,20 @@ app.MapGet("/status.json", () =>
 
 app.MapGet("/", () => Results.Content(StatusPage.Html, "text/html; charset=utf-8")).ExcludeFromDescription();
 app.MapGet("/watch", () => Results.Content(WatchPage.Html, "text/html; charset=utf-8")).ExcludeFromDescription();
+// ITEM ICONS, cut out of the client's own atlas and served as PNGs so the watch page can draw a bag
+// that looks like the bag. BYO like every other client path: the art comes from
+// <client root>/resmenu/Icon at runtime and is never bundled.
+// ⚠️ Deliberately NOT under /api — an <img> tag cannot send an Authorization header, and an item icon
+// is not sensitive (it is the operator's own client art, same category as /watch itself). 404 when we
+// have no art for an id, which is also what a host with no icon dir returns; the page draws a name
+// tile either way.
+app.MapGet("/icon/{itemId:int}.png", (int itemId) =>
+{
+    var cd = app.Services.GetService<BotManager>()?.ClientData;
+    var png = cd?.ItemIconPng(itemId);
+    return png is null ? Results.NotFound() : Results.File(png, "image/png");
+}).ExcludeFromDescription();
+
 
 app.MapBotEndpoints(app.Services.GetService<BotManager>(), xorError);
 app.MapAccountEndpoints(app.Services.GetService<ApiAccountProvisioner>(), provisionerError);

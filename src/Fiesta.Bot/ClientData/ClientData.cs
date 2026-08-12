@@ -35,6 +35,39 @@ public sealed class ClientData
     /// <summary>The BYO client data directory tables are loaded from.</summary>
     public string DataDir => _dataDir;
 
+    /// <summary>The CLIENT ROOT — the directory holding <c>ressystem</c>, <c>resmenu</c> and friends as
+    /// siblings (operator 2026-08-12: "do it BYO style but *full client dir* so ressystem, resmenu, etc.
+    /// all as siblings"). Derived from the data dir's parent, so an existing deployment pointing
+    /// CLIENT_DATA_DIR at <c>&lt;root&gt;/ressystem</c> already resolves the rest for free.</summary>
+    public string? ClientRoot => Path.GetDirectoryName(_dataDir.TrimEnd(Path.DirectorySeparatorChar, '/'));
+
+    /// <summary>Where the item icon ATLASES live: <c>&lt;client root&gt;/resmenu/Icon</c>. BYO like every
+    /// other client path — absent simply means the watch page draws name tiles instead of art.</summary>
+    public string? IconDir => ClientRoot is { } r ? Path.Combine(r, "resmenu", "Icon") : null;
+
+    /// <summary>Which atlas cell draws this item, from <c>ItemViewInfo.shn</c> (<c>IconFile</c> +
+    /// <c>IconIndex</c>). Null when the table or the row is missing.
+    /// <para>⚠️ IconIndex 0 is a REAL cell (the first one) and IconFile "-" is the table's own empty
+    /// marker — so absence is signalled by returning null, never by a zero.</para></summary>
+    public (string File, int Index)? ItemIcon(int itemId)
+    {
+        var t = Table("ItemViewInfo");
+        var row = t is null ? null : (t.FindByLong("ID", itemId) ?? t.FindByLong("id", itemId));
+        if (row is null) return null;
+        var file = GetStr(row, "IconFile");
+        if (string.IsNullOrEmpty(file) || file == "-") return null;
+        return (file, GetInt(row, "IconIndex"));
+    }
+
+    /// <summary>The item icon as a PNG, or null when we have no art for it. Cached: the atlases are
+    /// small but decoding one per request for a 48-slot bag redrawn twice a second would not be.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte[]?> _iconPng = new();
+    public byte[]? ItemIconPng(int itemId) => _iconPng.GetOrAdd(itemId, id =>
+    {
+        if (IconDir is not { } dir || ItemIcon(id) is not { } icon) return null;
+        return IconAtlas.IconPng(Path.Combine(dir, icon.File + ".dds"), icon.Index);
+    });
+
     /// <summary>Load a client SHN table by name (e.g. "ActiveSkill", "ItemInfo",
     /// "ClassName"), cached after the first read. Returns null if the file isn't present
     /// in the data dir or fails to parse (callers fall back to their defaults).</summary>
