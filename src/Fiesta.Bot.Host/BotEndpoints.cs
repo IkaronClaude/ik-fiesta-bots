@@ -148,6 +148,33 @@ public static class BotEndpoints
         })
         .WithSummary("Just the nearby mobs/party for the combat map — cheap enough to poll several times a second");
 
+        // ── THE TARGET VIEW, on its own URL ──────────────────────────────────────────────────────────────
+        // Operator 2026-08-12: the same numbers must be QUERYABLE, not merely drawn, so a script can measure
+        // a whole clone fight rather than a human watching one. Tiny payload, safe to poll at combat rate.
+        // See TargetView for what each field means and for the three things it refuses to fake.
+        group.MapGet("/{id}/target", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            return Results.Json(new
+            {
+                id = bot.Id,
+                atUtc = DateTime.UtcNow,
+                map = bot.CurrentMap,
+                self = bot.Position is { } p
+                    ? new { x = (double)p.X, y = (double)p.Y, hp = bot.ZoneView?.Hp, maxHp = bot.ZoneView?.MaxHp }
+                    : null,
+                target = TargetView(bot, manager.ClientData),
+            });
+        })
+        .WithSummary("The CURRENT TARGET: handle, name, level, cur/max HP, distance, and the angle off our facing")
+        .WithDescription("`asserted` says whether a selection exists — handle 0 is a real handle and is never " +
+            "used to mean 'none'. `hp` is null until something has hit the entity (absent = unknown, NOT full). " +
+            "`angleOffDeg` is 0-180 between our facing and the bearing to the target: a cast is refused outside " +
+            "the skill's UsableDegree arc. `inView=false` with a handle set means we are targeting something we " +
+            "cannot see, which is itself a diagnosis. `posDisagreeU` is non-null only for an entity present in " +
+            "both the player and mob lists (the JCQ shadow clone) and reports how far the two copies disagree.");
+
         group.MapGet("/{id}/metrics", (string id) =>
         {
             var bot = manager.Get(id);
@@ -1386,6 +1413,100 @@ public static class BotEndpoints
                 : null,
             Mobs = mobs,
             Party = party,
+            // The full target view travels with the entity poll so the page needs one request, not two.
+            Target = TargetView(bot, cd),
+        };
+    }
+
+    /// <summary>THE TARGET VIEW (operator 2026-08-12, first task of the JCQ clone investigation): everything
+    /// about the entity the SERVER currently has selected — handle, name, level, cur/max HP, distance, and
+    /// the ANGLE between our facing and the bearing to it.
+    ///
+    /// <para>Why each field earns its place: you may only bash or cast at the server's current selection, a
+    /// cast is refused outside the skill's <c>UsableDegree</c> arc (45° for most melee skills) — so the angle
+    /// is the one geometric fact that decides a cast and it was surfaced nowhere — and level + HP are the two
+    /// numbers that decide the damage race.</para>
+    ///
+    /// <para>⛔ Three things this deliberately does NOT do. (1) It never treats handle 0 as "no target":
+    /// 0 is a legitimate entity handle, so <c>Asserted</c> (a separate flag) is what says whether a selection
+    /// exists. (2) It never renders an unknown HP as full — a mob only reports RestHp once something has hit
+    /// it, so absent stays null and the page prints "?". (3) It resolves the handle even when the entity is
+    /// NOT in view and says so, because "targeting a handle we cannot see" is itself the diagnosis.</para>
+    ///
+    /// <para>The handle is looked up in BOTH entity lists. The JCQ shadow clone lives in both at once — it is
+    /// a scripted copy of our own character (a PLAYER entity) that <c>change2mob</c> also registers as a
+    /// fightable mob — and the two copies can disagree about where it is, so <c>PosDisagreeU</c> reports the
+    /// gap rather than silently picking one.</para></summary>
+    private static object TargetView(BotHandle bot, GameData.ClientData? cd)
+    {
+        var zv = bot.ZoneView;
+        var self = bot.Position;
+        var h = bot.CurrentTarget;
+
+        // Resolve from both lists. A player entity carries its own name/level/class; a mob resolves those
+        // from MobInfo. Neither is preferred blindly — see PosDisagreeU below.
+        Session.NearbyPlayer? pl = null; Session.NearbyNpc? npc = null;
+        if (zv is not null)
+        {
+            foreach (var p in zv.NearbyPlayers) if (p.Handle == h) { pl = p; break; }
+            foreach (var n in zv.NearbyNpcs) if (n.Handle == h) { npc = n; break; }
+        }
+
+        // POSITION comes from the player record when there is one: player movement (SOMEONE_MOVE) updates
+        // the player entry, and for an entity present in both lists the mob copy is never updated at all —
+        // so for the clone the mob copy is frozen at its spawn point.
+        double? x = pl is { } pp ? pp.X : npc is { } nn ? nn.X : null;
+        double? y = pl is { } pq ? pq.Y : npc is { } nm ? nm.Y : null;
+        double? posDisagree = pl is { } a && npc is { } b
+            ? Math.Sqrt(Math.Pow((double)a.X - b.X, 2) + Math.Pow((double)a.Y - b.Y, 2))
+            : null;
+
+        var md = npc is { } n2 ? cd?.Mob(n2.MobId) : null;
+        double? dist = self is { } s && x is { } tx && y is { } ty
+            ? Math.Sqrt(Math.Pow(tx - s.X, 2) + Math.Pow(ty - s.Y, 2)) : null;
+        // Bearing us→target in the SAME convention as BotHandle.FacingDeg (atan2 of the vector, 0-360),
+        // so the two can be subtracted. Undefined when we are standing exactly on it.
+        double? bearing = null;
+        if (self is { } sp2 && x is { } bx && y is { } by && dist is > 0.0001)
+        {
+            var d = Math.Atan2(by - sp2.Y, bx - sp2.X) * 180.0 / Math.PI;
+            bearing = d < 0 ? d + 360.0 : d;
+        }
+        var facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null;
+        // Signed-free arc distance, 0-180: how far off our nose the target sits. This is what a
+        // UsableDegree check compares against; > half the arc means the cast is refused.
+        double? angleOff = facing is { } f && bearing is { } br ? Math.Abs(((br - f + 540.0) % 360.0) - 180.0) : null;
+
+        var hp = zv?.EntityHp(h);
+        int? maxHp = md?.MaxHp;                       // player entities do not broadcast a max — stays null
+        return new
+        {
+            Handle = (int)h,
+            // Whether a selection exists at all. NOT derived from the handle being non-zero.
+            Asserted = bot.TargetAsserted,
+            HeldSeconds = bot.TargetSetAtUtc == DateTime.MinValue
+                ? (double?)null : (DateTime.UtcNow - bot.TargetSetAtUtc).TotalSeconds,
+            InView = pl is not null || npc is not null,
+            Kind = pl is not null && npc is not null ? "clone" : pl is not null ? "player" : npc is not null ? "mob" : "unseen",
+            Name = pl?.Name ?? md?.Name ?? (npc is { } n3 ? $"mob{n3.MobId}" : null),
+            Level = pl is { } p4 ? p4.Level : md is { } m4 ? m4.Level : (int?)null,
+            MobId = npc is { } n5 ? (int)n5.MobId : (int?)null,
+            ClassId = pl is { } p5 ? (int)p5.Class : (int?)null,
+            ClassName = pl is { } p6 ? cd?.ClassName(p6.Class) : null,
+            // Absent = never seen hurt. NOT full, NOT zero.
+            Hp = hp is { } hv ? (double?)hv : null,
+            MaxHp = maxHp,
+            HpPct = hp is { } hv2 && maxHp is > 0 ? Math.Round(100.0 * hv2 / maxHp.Value, 1) : (double?)null,
+            X = x, Y = y,
+            Dist = dist,
+            BearingDeg = bearing,
+            FacingDeg = facing,
+            AngleOffDeg = angleOff,
+            PosDisagreeU = posDisagree,
+            ScenarioFightable = zv?.IsScenarioFightable(h) ?? false,
+            Aggro = zv is not null && zv.Aggressors.Contains(h),
+            SeenAgoMs = pl is { } p7 ? (DateTime.UtcNow - p7.SeenAtUtc).TotalMilliseconds
+                      : npc is { } n7 ? (DateTime.UtcNow - n7.SeenAtUtc).TotalMilliseconds : (double?)null,
         };
     }
 

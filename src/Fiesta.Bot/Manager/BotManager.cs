@@ -603,7 +603,7 @@ public sealed class BotManager : IAsyncDisposable
         if (handle.CurrentTarget != target || !handle.TargetAsserted)
         {
             await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
-            handle.CurrentTarget = target; handle.TargetAsserted = true;
+            handle.CurrentTarget = target; handle.TargetAsserted = true; handle.TargetSetAtUtc = DateTime.UtcNow;
         }
         await EnsureBattleModeAsync(handle, s, ct);
         // Record WHICH of the three pre-cast paths ran. They are behaviourally different and the old
@@ -996,7 +996,7 @@ public sealed class BotManager : IAsyncDisposable
         if (handle.CurrentTarget != target || !handle.TargetAsserted)
         {
             await s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct);
-            handle.CurrentTarget = target; handle.TargetAsserted = true;
+            handle.CurrentTarget = target; handle.TargetAsserted = true; handle.TargetSetAtUtc = DateTime.UtcNow;
         }
         await EnsureBattleModeAsync(handle, s, ct);
 

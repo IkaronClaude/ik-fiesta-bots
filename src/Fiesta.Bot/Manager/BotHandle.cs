@@ -84,6 +84,11 @@ public sealed class BotHandle
     /// entity handle and must never be overloaded as "none".</para></summary>
     public bool TargetAsserted { get; internal set; }
 
+    /// <summary>When <see cref="CurrentTarget"/> was last (re-)asserted to the server. "How long have we
+    /// been holding this selection" separates a fight from target-thrash, and separates "we just picked it"
+    /// from "we have been pointed at a handle we cannot see for two minutes". MinValue = never targeted.</summary>
+    public DateTime TargetSetAtUtc { get; internal set; } = DateTime.MinValue;
+
     // ── STRUCTURED EVENT STREAM ──────────────────────────────────────────────────────────────────
     // Operator 2026-08-12: "build your events endpoint. You really need [it]." Correct, and today is the
     // argument for it. Every wrong call I made came from reasoning over PROSE: grepping log text for a

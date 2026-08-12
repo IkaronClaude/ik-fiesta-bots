@@ -339,35 +339,58 @@ function drawCombat(ent, maxHp) {
     g.lineTo(ex - Math.cos(a+0.4)*7, ey - Math.sin(a+0.4)*7);
     g.closePath(); g.fillStyle = '#3fb950'; g.fill();
   }
-  // Target ray: only when the target handle matches something actually in view (see the endpoint note
-  // on why 0 is not overloaded as "no target").
-  const tgt = (ent.mobs||[]).find(m => m.handle === ent.self.target);
-  if (tgt) {
-    const [tx,ty] = toPx(tgt.x, tgt.y);
+  // Target ray. Driven by the server-side TARGET VIEW (ent.target), not by a lookup in the mob list:
+  // the JCQ shadow clone is a PLAYER entity, so a mobs-only search drew no ray for the one fight this
+  // page exists to diagnose. `asserted` — not a non-zero handle — is what says a selection exists.
+  const tv = ent.target;
+  if (tv && tv.asserted && tv.x != null) {
+    const [tx,ty] = toPx(tv.x, tv.y);
     g.save(); g.setLineDash([3,3]);
     g.strokeStyle = '#d4a017'; g.lineWidth = 1.5;
     g.beginPath(); g.moveTo(cx, cy); g.lineTo(tx, ty); g.stroke();
     g.restore();
+    // Ring the target so it is distinguishable from the pack it is standing in.
+    g.beginPath(); g.arc(tx, ty, 11, 0, Math.PI*2);
+    g.strokeStyle = '#d4a017'; g.lineWidth = 2; g.stroke();
   }
   // ── CURRENT TARGET, in words (operator 2026-08-12) ──────────────────────────────────────────
   // You can only auto-attack or cast at the entity the SERVER currently has selected, so "what are we
   // targeting" is a first-class combat fact — and it was only ever visible by reading packet logs.
   // Shows the raw handle even when the entity is NOT in view: "targeting a handle we cannot see" is
   // itself the diagnosis (the JCQ clone is a scripted player-copy that never enters the mob list).
+  // LEVEL and HP decide the damage race; the ANGLE decides whether a cast is even accepted (a skill is
+  // refused outside its UsableDegree arc, 45° for most melee skills). An unknown HP prints "?" — a mob
+  // only reports its RestHp once something has hit it, and drawing that as full would invent the one
+  // number the fight turns on.
   {
     const tc = $('#tgtcell');
     if (tc) {
-      const h = ent.self.target;
-      if (h == null) tc.innerHTML = '<span class="muted">none</span>';
-      else if (tgt) {
-        const d = Math.hypot(tgt.x - sx, tgt.y - sy);
-        tc.innerHTML = `<b>h${h}</b> ${tgt.name || ('mob' + tgt.mobId)} `
-          + `<span class="muted">(m${tgt.mobId}${tgt.level ? ' L' + tgt.level : ''}) ${d.toFixed(0)}u`
-          + `${tgt.hp != null ? ' hp' + tgt.hp : ''}${tgt.aggro ? ' AGGRO' : ''}</span>`;
-      } else {
-        tc.innerHTML = `<b>h${h}</b> <span style="color:#f85149">NOT IN VIEW</span> `
-          + `<span class="muted">— selected but absent from the entity list; cannot be drawn, `
-          + `and a cast/bash aimed elsewhere will not hit it</span>`;
+      if (!tv || !tv.asserted) tc.innerHTML = '<span class="muted">none</span>';
+      else {
+        const n = (v, d, s='') => v == null ? '?' : (typeof v === 'number' ? v.toFixed(d) : v) + s;
+        const hp = tv.hp == null ? '<span style="color:#d4a017">hp ?</span>'
+                 : `hp ${tv.hp}${tv.maxHp ? '/' + tv.maxHp : '/?'}${tv.hpPct != null ? ` (${tv.hpPct}%)` : ''}`;
+        // Off-arc is the actionable state, so colour it rather than leaving it in the grey run of numbers.
+        const ang = tv.angleOffDeg == null ? '<span class="muted">ang ?</span>'
+                  : `<span style="color:${tv.angleOffDeg > 22.5 ? '#f85149' : '#3fb950'}">ang ${tv.angleOffDeg.toFixed(0)}°</span>`;
+        const head = tv.inView
+          ? `<b>h${tv.handle}</b> ${tv.name || '?'} <span class="muted">[${tv.kind}]</span>`
+          : `<b>h${tv.handle}</b> <span style="color:#f85149">NOT IN VIEW</span>`;
+        const bits = [
+          `L${n(tv.level, 0)}`,
+          `${n(tv.dist, 0, 'u')}`,
+          hp, ang,
+          tv.heldSeconds != null ? `held ${tv.heldSeconds.toFixed(0)}s` : null,
+          tv.scenarioFightable ? '<span style="color:#d4a017">SCENARIO</span>' : null,
+          tv.aggro ? '<span style="color:#f85149">AGGRO</span>' : null,
+          // Same handle in the player list and the mob list at different places = one of the two copies
+          // is stale, and every distance/kite decision made from the wrong one is wrong.
+          tv.posDisagreeU != null && tv.posDisagreeU > 1
+            ? `<span style="color:#f85149">POS DISAGREE ${tv.posDisagreeU.toFixed(0)}u</span>` : null,
+        ].filter(Boolean).join(' · ');
+        tc.innerHTML = `${head} <span class="muted">${bits}</span>`
+          + (tv.inView ? '' : ' <span class="muted">— selected but absent from both entity lists;'
+             + ' a cast/bash cannot be aimed at what we cannot locate</span>');
       }
     }
   }
