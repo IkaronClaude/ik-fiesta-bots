@@ -960,6 +960,11 @@ public sealed class BotManager : IAsyncDisposable
     private const ushort OpBatBashStart = (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.BashstartCmd);
     private const ushort OpBatBashStop = (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.BashstopCmd);
 
+    /// <summary>How long to wait for NC_BAT_TARGETINFO_CMD to confirm a fresh selection before sending
+    /// BASHSTART anyway. One round trip on this server is single-digit ms; 60 leaves generous headroom and
+    /// bounds the cost of a lost ack at 60ms once per engagement.</summary>
+    private const int TargetConfirmWaitMs = 60;
+
     /// <summary>Begin auto-attacking (melee swings) a target, or the nearest mob if 0.
     /// Mirrors the real client (CombatExtensive.pcapng, "click once, many swings"):
     /// target → battle mode → a short MOVERUN toward the mob + STOP (close to melee
@@ -993,12 +998,45 @@ public sealed class BotManager : IAsyncDisposable
 
         // BASHSTART carries NO target (payload 0b) — it swings at whatever the SERVER has selected. If our
         // assertion is stale the bash is a silent no-op, which is exactly what a "dead bash" is.
+        var justTargeted = false;
         if (handle.CurrentTarget != target || !handle.TargetAsserted)
         {
             await s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct);
             handle.CurrentTarget = target; handle.TargetAsserted = true; handle.TargetSetAtUtc = DateTime.UtcNow;
+            justTargeted = true;
         }
         await EnsureBattleModeAsync(handle, s, ct);
+
+        // ⛔ WAIT FOR THE SERVER TO CONFIRM THE SELECTION BEFORE BASHING (operator 2026-08-12:
+        // "from a player's perspective it would make sense if bashing before TARGETINFO should always
+        // fail ... seems like a free thing to try, costs at most 20ms").
+        //
+        // BASHSTART carries NO target — it swings at whatever the server currently has selected — so a
+        // bash processed before our TARGETTING commits attacks the PREVIOUS selection, or nothing, and
+        // dies silently. We were sending TARGET, CHANGEMODE, STOP and BASHSTART inside ONE MILLISECOND
+        // and the TARGETINFO answering that selection arrived 23ms LATER (measured on the wire,
+        // 19:01:05.107-.131, on a bash that produced no swing at all).
+        //
+        // ⚠️ I briefly called this hypothesis refuted, wrongly. An ALIVE bash also had a 1ms send gap,
+        // so the gap "did not correlate". But the send gap and the TARGETINFO round-trip are both noisy
+        // PROXIES for the thing that matters — whether the server committed the selection before it
+        // processed the bash — and a 23ms ack can be a 1ms commit plus a spiky return path. Absence of
+        // correlation in a proxy is not refutation of the mechanism.
+        //
+        // Bounded, so a lost or unparsed TARGETINFO can never wedge the bash: we wait at most
+        // TargetConfirmWaitMs and bash anyway, which is exactly the old behaviour. Cost when it works is
+        // one round trip; cost when it does not is nothing.
+        if (justTargeted && handle.ZoneView is { } zvt)
+        {
+            var deadline = DateTime.UtcNow.AddMilliseconds(TargetConfirmWaitMs);
+            while (DateTime.UtcNow < deadline
+                   && !(zvt.TargetConfirmedAtUtc > handle.TargetSetAtUtc && zvt.TargetConfirmedHandle == target))
+                await Task.Delay(2, ct);
+            var confirmed = zvt.TargetConfirmedAtUtc > handle.TargetSetAtUtc && zvt.TargetConfirmedHandle == target;
+            handle.Log(BotLogLevel.Verbose,
+                $"auto-attack h={target}: target {(confirmed ? "CONFIRMED" : "NOT confirmed")} after " +
+                $"{(DateTime.UtcNow - handle.TargetSetAtUtc).TotalMilliseconds:F0}ms — {(confirmed ? "bashing" : "bashing anyway (timeout)")}");
+        }
 
         // FACE the mob then STOP, exactly like a skill cast (CastAsync) — the server validates
         // a swing against facing, and a zero-distance moverun (when already adjacent) does NOT

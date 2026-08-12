@@ -435,6 +435,10 @@ public sealed class ZoneView : IDisposable
     // the bot dealt damage ONCE while taking it 77 times (mob then regenerated, since regen needs only
     // ~20s without incoming damage). 654 CEASE_FIRE arrived in one session, all previously undecoded.
     private const ushort OpBatCeaseFire = (ushort)(((int)ProtocolCommand.Bat << 10) | 61);
+    // NC_BAT_TARGETINFO_CMD — the server CONFIRMING our selection, and the only proof it has committed
+    // it. BASHSTART carries no target, so a bash processed before the selection lands attacks whatever
+    // was selected before (or nothing) and is silently dead.
+    private const ushort OpBatTargetInfo = (ushort)(((int)ProtocolCommand.Bat << 10) | 2);
     // NC_CHAR_EXP_CHANGED_CMD (Char cmd 115 = 0x1073): an AUTHORITATIVE absolute exp value —
     // {wmhandle u16@0, CharNo u32@2, CurrentExp u64@6}. The server sends this on some exp-change
     // events (not at zone-enter — hence the seed). Whenever it arrives it is ground truth, so set
@@ -1542,6 +1546,17 @@ public sealed class ZoneView : IDisposable
     /// cur/max pair. Only entities that have been in a fight appear here — an untouched mob has never
     /// reported its hp, so absent means "never seen hurt", NOT "full" and NOT "zero".</summary>
     private readonly ConcurrentDictionary<ushort, uint> _entityHp = new();
+    private readonly ConcurrentDictionary<ushort, uint> _entityMaxHp = new();
+    /// <summary>Max HP the SERVER stated for a target in TARGETINFO — an exact figure, not MobInfo's
+    /// table value, and the only one available for an entity with no mob id (a scenario clone).</summary>
+    public uint? EntityMaxHp(ushort handle) => _entityMaxHp.TryGetValue(handle, out var v) ? v : null;
+
+    /// <summary>The handle the server last CONFIRMED as our target (NC_BAT_TARGETINFO_CMD), and when.
+    /// BASHSTART carries no target — it swings at whatever the server currently has selected — so this
+    /// is the only evidence that a selection has actually committed. 0 is a real handle, so read
+    /// <see cref="TargetConfirmedAtUtc"/> to know whether a confirmation has ever arrived.</summary>
+    public ushort TargetConfirmedHandle { get; private set; }
+    public DateTime TargetConfirmedAtUtc { get; private set; } = DateTime.MinValue;
     public uint? EntityHp(ushort handle) => _entityHp.TryGetValue(handle, out var v) ? v : null;
 
     private void NoteHit(HitInfo h)
@@ -3016,6 +3031,24 @@ public sealed class ZoneView : IDisposable
             // Cast interrupted (moved / stunned / target lost). Free the rotation immediately rather
             // than waiting out a predicted window that will never resolve.
             EndCast(op == OpBatCastAbort ? "CASTABORT" : "CASTCUT");
+        }
+        else if (op == OpBatTargetInfo)
+        {
+            // PROTO_NC_BAT_TARGETINFO_CMD {order u8 @0, targethandle u16 @1, targethp u32 @3,
+            // targetmaxhp u32 @7, sp/lp after}. The handle is at @1, NOT @0 — the order byte comes first.
+            var tp = pkt.Payload.Span;
+            if (tp.Length >= 11)
+            {
+                var th = (ushort)(tp[1] | (tp[2] << 8));
+                var thp = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tp.Slice(3, 4));
+                var tmax = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tp.Slice(7, 4));
+                TargetConfirmedHandle = th; TargetConfirmedAtUtc = DateTime.UtcNow;
+                // Free and worth having: this is the ONLY packet that states a target's max HP outright,
+                // so the target view stops having to pair a hit-derived RestHp with MobInfo to guess one.
+                _entityHp[th] = thp; _entityMaxHp[th] = tmax;
+                _logLevel?.Invoke(BotLogLevel.Verbose,
+                    $"[combat] TARGETINFO — server CONFIRMED target h={th} ({thp}/{tmax} hp)");
+            }
         }
         else if (op == OpBatCeaseFire)
         {
