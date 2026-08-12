@@ -617,6 +617,13 @@ public sealed class BotManager : IAsyncDisposable
             await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
             handle.CurrentTarget = target; handle.TargetAsserted = true; handle.TargetSetAtUtc = DateTime.UtcNow;
             if (handle.ZoneView is { } zvT) zvT.CurrentTargetHandle = target;   // so a death can invalidate it
+            // A cast carries no target either — it hits the server's CURRENT selection. Wait for the
+            // selection we just asked for, or we cast at whatever was selected before (a corpse, after a
+            // kill) and eat 0x0FCA. See AwaitTargetConfirmAsync for the measurement.
+            var ok = await AwaitTargetConfirmAsync(handle, target, ct);
+            handle.Log(BotLogLevel.Verbose,
+                $"cast {skill}: target h={target} {(ok ? "CONFIRMED" : "NOT confirmed (timeout)")} after " +
+                $"{(DateTime.UtcNow - handle.TargetSetAtUtc).TotalMilliseconds:F0}ms");
         }
         await EnsureBattleModeAsync(handle, s, ct);
         // Record WHICH of the three pre-cast paths ran. They are behaviourally different and the old
@@ -978,6 +985,26 @@ public sealed class BotManager : IAsyncDisposable
     /// bounds the cost of a lost ack at 60ms once per engagement.</summary>
     private const int TargetConfirmWaitMs = 60;
 
+    /// <summary>Wait (briefly, bounded) for the server to CONFIRM a freshly-sent target selection before
+    /// acting on it. Returns whether confirmation arrived.
+    /// <para>⛔ Neither BASHSTART nor a skill cast carries a target — both act on whatever the server
+    /// currently has selected. So firing in the same millisecond as the TARGETTING that is meant to
+    /// change that selection acts on the PREVIOUS one, which after a kill is a CORPSE, and the server
+    /// refuses it. Measured on FighterFresh: a live Marlone Archer 17u away, 1 degree off our nose,
+    /// reach 51 — and 0x0FCA "out of casting range" every 450ms for as long as it kept trying, while it
+    /// lost 787 → 332 HP to two mobs it never damaged. The geometry we print is measured against the mob
+    /// we INTEND; the server was still holding the dead one.</para>
+    /// <para>Bounded, so a lost or unparsed TARGETINFO can never wedge an attack: on timeout we proceed
+    /// exactly as before.</para></summary>
+    private static async Task<bool> AwaitTargetConfirmAsync(BotHandle handle, ushort target, CancellationToken ct)
+    {
+        if (handle.ZoneView is not { } zv) return false;
+        var deadline = DateTime.UtcNow.AddMilliseconds(TargetConfirmWaitMs);
+        bool Confirmed() => zv.TargetConfirmedAtUtc > handle.TargetSetAtUtc && zv.TargetConfirmedHandle == target;
+        while (DateTime.UtcNow < deadline && !Confirmed()) await Task.Delay(2, ct);
+        return Confirmed();
+    }
+
     /// <summary>Begin auto-attacking (melee swings) a target, or the nearest mob if 0.
     /// Mirrors the real client (CombatExtensive.pcapng, "click once, many swings"):
     /// target → battle mode → a short MOVERUN toward the mob + STOP (close to melee
@@ -1040,16 +1067,13 @@ public sealed class BotManager : IAsyncDisposable
         // Bounded, so a lost or unparsed TARGETINFO can never wedge the bash: we wait at most
         // TargetConfirmWaitMs and bash anyway, which is exactly the old behaviour. Cost when it works is
         // one round trip; cost when it does not is nothing.
-        if (justTargeted && handle.ZoneView is { } zvt)
+        if (justTargeted)
         {
-            var deadline = DateTime.UtcNow.AddMilliseconds(TargetConfirmWaitMs);
-            while (DateTime.UtcNow < deadline
-                   && !(zvt.TargetConfirmedAtUtc > handle.TargetSetAtUtc && zvt.TargetConfirmedHandle == target))
-                await Task.Delay(2, ct);
-            var confirmed = zvt.TargetConfirmedAtUtc > handle.TargetSetAtUtc && zvt.TargetConfirmedHandle == target;
+            var confirmed = await AwaitTargetConfirmAsync(handle, target, ct);
             handle.Log(BotLogLevel.Verbose,
                 $"auto-attack h={target}: target {(confirmed ? "CONFIRMED" : "NOT confirmed")} after " +
-                $"{(DateTime.UtcNow - handle.TargetSetAtUtc).TotalMilliseconds:F0}ms — {(confirmed ? "bashing" : "bashing anyway (timeout)")}");
+                $"{(DateTime.UtcNow - handle.TargetSetAtUtc).TotalMilliseconds:F0}ms — " +
+                $"{(confirmed ? "bashing" : "bashing anyway (timeout)")}");
         }
 
         // FACE the mob then STOP, exactly like a skill cast (CastAsync) — the server validates
