@@ -108,6 +108,33 @@ public sealed class BotHandle
     /// <summary>Called by the driver whenever it sets its phase. Closes the previous phase's clock and
     /// opens the new one. Re-reporting the SAME phase is not a no-op — it keeps the running total
     /// current, so a phase the bot never leaves still accrues instead of showing zero.</summary>
+    /// <summary>One phase visit: when it started (wall clock), how long it lasted, and what the driver
+    /// said it was doing. The RAW RECORD, not a rollup — the operator's call (2026-08-12): "phases should
+    /// instead show a json array of ALL PHASE CHANGES with reason and wall time and time in phase. You can
+    /// use a script to derive metrics from that."
+    /// <para>Cumulative-seconds-per-phase actively misled: `restock = 46 min` read as ONE stall when it was
+    /// ~15 interrupted trips. A rollup cannot distinguish slow from repeated; the transition list can, and
+    /// any other metric (count, p50, p90) is derivable from it. So store events, derive rollups.</para></summary>
+    public sealed record PhaseVisit(string Phase, DateTime StartedUtc, double Seconds);
+
+    private readonly List<PhaseVisit> _phaseLog = new();
+    private const int MaxPhaseVisits = 5000;   // ~days of transitions; bounded so it cannot grow forever
+
+    /// <summary>Every phase visit, oldest first, including the one currently open (its Seconds is live).</summary>
+    public IReadOnlyList<PhaseVisit> PhaseLog
+    {
+        get
+        {
+            lock (_phaseGate)
+            {
+                var outp = new List<PhaseVisit>(_phaseLog);
+                if (_currentPhase is { } cur)
+                    outp.Add(new PhaseVisit(cur, _phaseSinceUtc, (DateTime.UtcNow - _phaseSinceUtc).TotalSeconds));
+                return outp;
+            }
+        }
+    }
+
     public void NotePhase(string phase)
     {
         if (string.IsNullOrWhiteSpace(phase)) return;
@@ -119,8 +146,16 @@ public sealed class BotHandle
             {
                 var d = (now - _phaseSinceUtc).TotalSeconds;
                 if (d > 0 && d < 3600) _phaseSeconds.AddOrUpdate(prev, d, (_, v) => v + d);
+                // Record the VISIT only when the phase actually changes — NotePhase is called every tick
+                // to keep the open phase's clock current, and logging each tick would bury the signal.
+                if (!string.Equals(prev, phase, StringComparison.Ordinal))
+                {
+                    _phaseLog.Add(new PhaseVisit(prev, _phaseSinceUtc, d));
+                    if (_phaseLog.Count > MaxPhaseVisits) _phaseLog.RemoveRange(0, _phaseLog.Count - MaxPhaseVisits);
+                }
             }
-            _currentPhase = phase; _phaseSinceUtc = now;
+            if (!string.Equals(_currentPhase, phase, StringComparison.Ordinal)) _phaseSinceUtc = now;
+            _currentPhase = phase;
             // Flush at most every 30s: frequent enough that a pod kill loses seconds, not hours, and
             // rare enough that a per-tick call does not hammer NFS.
             if ((now - _phaseFlushUtc).TotalSeconds >= 30) { _phaseFlushUtc = now; flush = true; }

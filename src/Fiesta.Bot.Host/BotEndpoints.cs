@@ -264,30 +264,25 @@ public static class BotEndpoints
         // a boss, reachable only through a collect objective, which the type-1-only boss screen missed.
         // Where the hours actually go. Answers "why are all three bots in town?" over ANY span, unlike
         // the note ring buffer which covers ~21 minutes at current density.
+        // RAW TRANSITION LIST, not a rollup (operator 2026-08-12). Cumulative seconds actively misled:
+        // `restock = 46 min` was read as ONE stall when it was ~15 interrupted trips. Counts, p50, p90 and
+        // any other metric are derivable from this array by a script; the reverse is not true.
         group.MapGet("/{id}/phases", (string id) =>
         {
             var bot = manager.Get(id);
             if (bot is null) return Results.NotFound();
-            string? cur = bot.CurrentPhase.Phase;
-            double curSecs = bot.CurrentPhase.Seconds;
-            // Include the OPEN phase's elapsed time in its total, or a phase the bot is sitting in right
-            // now reads as zero — which is exactly the "stuck in town" case we are trying to see.
-            var totals = bot.PhaseSeconds.ToDictionary(k => k.Key, v => v.Value);
-            if (cur is not null) totals[cur] = totals.TryGetValue(cur, out var t) ? t + curSecs : curSecs;
-            var sum = totals.Values.Sum();
+            var visits = bot.PhaseLog;
             return Results.Ok(new
             {
-                Current = cur,
-                CurrentSeconds = Math.Round(curSecs, 1),
-                TotalSeconds = Math.Round(sum, 1),
-                Phases = totals.OrderByDescending(kv => kv.Value).Select(kv => new
+                Count = visits.Count,
+                Visits = visits.Select(v => new
                 {
-                    Phase = kv.Key,
-                    Seconds = Math.Round(kv.Value, 1),
-                    Pct = sum > 0 ? Math.Round(100 * kv.Value / sum, 1) : 0,
+                    Phase = v.Phase,
+                    StartedUtc = v.StartedUtc.ToString("HH:mm:ss.fff"),
+                    Seconds = Math.Round(v.Seconds, 1),
                 }),
             });
-        }).WithSummary("Seconds accounted to each driver phase (where the time goes)");
+        }).WithSummary("Every phase change: wall time, phase, seconds in it (derive metrics from this)");
 
         group.MapGet("/{id}/quests", (string id) =>
         {
