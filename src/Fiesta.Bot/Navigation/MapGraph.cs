@@ -12,11 +12,24 @@ namespace Fiesta.Bot.Navigation;
 /// <param name="MinLevel">Character level required to take this edge (town-portal tiers); 0 = none.</param>
 /// <param name="ToX">Arrival coord on <see cref="ToMap"/> (portal: the destination's arrival point;
 /// field gate: the paired gate's coord). Used as the entry point for costing the next hop; 0 = unknown.</param>
+/// <param name="ToX">Where this edge LANDS us on <paramref name="ToMap"/>, or null when the edge has
+/// never recorded one (a field gate learned by sight, before anyone has walked it).
+/// ⛔ NULLABLE, NOT 0. This was `uint ToX = 0` with the reader doing
+/// <c>(ToX != 0 || ToY != 0) ? (ToX, ToY) : (GateX, GateY)</c> — zero-as-sentinel on the ARRIVAL
+/// COORDINATE, which the route search then uses as the origin for every onward hop's walk cost. A
+/// legitimate arrival at x=0 or y=0 would silently relocate the planner to the DEPARTURE map's gate and
+/// make every downstream distance meaningless. 0 is a real coordinate; "not recorded" needs its own
+/// value. (Golden rule; the same sentinel shape produced `MobId = 0` reading back as the mob "Slime"
+/// and a buff whose never-seen abstate meant "not up" forever.)</param>
 public sealed record GateEdge(string FromMap, string ToMap, uint GateX, uint GateY, ushort GateHandle,
-    int? PortalDestIndex = null, int MinLevel = 0, uint ToX = 0, uint ToY = 0)
+    int? PortalDestIndex = null, int MinLevel = 0, uint? ToX = null, uint? ToY = null)
 {
     /// <summary>True if this edge is taken via the town-portal packet (not a field gate click).</summary>
     public bool IsPortal => PortalDestIndex is not null;
+
+    /// <summary>Where we land on <see cref="ToMap"/>: the recorded arrival when there is one, otherwise
+    /// the transition coord. Explicit about which it is, rather than inferring it from a zero.</summary>
+    public (uint X, uint Y) Arrival => ToX is { } x && ToY is { } y ? (x, y) : (GateX, GateY);
 }
 
 /// <summary>
@@ -64,14 +77,15 @@ public sealed class MapGraph
     /// gates with no known destination. The latest coordinates/handle win (the handle
     /// is only valid while in view, the link itself is stable). <paramref name="toX"/>/
     /// <paramref name="toY"/> = the arrival coord on the destination (0 if unknown, e.g. a
-    /// live-observed gate); it's kept when re-observing so a seeded arrival isn't lost.</summary>
+    /// live-observed gate); it's kept when re-observing so a seeded arrival isn't lost.
+    /// ⛔ NULL means "unknown", never 0 — see the GateEdge.ToX note.</summary>
     public void ObserveGate(string fromMap, string toMap, uint gateX, uint gateY, ushort gateHandle,
-        uint toX = 0, uint toY = 0)
+        uint? toX = null, uint? toY = null)
     {
         if (string.IsNullOrWhiteSpace(fromMap) || string.IsNullOrWhiteSpace(toMap)) return;
         var dests = _edges.GetOrAdd(fromMap, _ => new(StringComparer.OrdinalIgnoreCase));
         // Preserve a previously-seeded arrival coord when a live re-observe doesn't carry one.
-        if ((toX == 0 && toY == 0) && dests.TryGetValue(toMap, out var old) && (old.ToX != 0 || old.ToY != 0))
+        if (toX is null && toY is null && dests.TryGetValue(toMap, out var old) && old.ToX is not null)
             (toX, toY) = (old.ToX, old.ToY);
         dests[toMap] = new GateEdge(fromMap, toMap, gateX, gateY, gateHandle, ToX: toX, ToY: toY);
     }
@@ -200,7 +214,7 @@ public sealed class MapGraph
                 prev[e.ToMap] = e;
                 // Entry point on the next map = the edge's arrival coord (portal dest / paired
                 // gate); fall back to the transition coord if a live edge didn't record one.
-                arrival[e.ToMap] = (e.ToX != 0 || e.ToY != 0) ? (e.ToX, e.ToY) : (e.GateX, e.GateY);
+                arrival[e.ToMap] = e.Arrival;
                 pq.Enqueue(e.ToMap, nd);
             }
         }
