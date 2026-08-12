@@ -3616,6 +3616,7 @@ public sealed class BotManager : IAsyncDisposable
                     : null;
 
                 handle.SetPhase(BotPhase.InZone);
+                handle.ZoneEnteredUtc = DateTime.UtcNow;   // relog pacing measures session life from here
                 Log(firstEntry
                     ? $"*** {sel.Name} IN ZONE ({zoneEp}) — running until stopped ***"
                     : $"*** {sel.Name} RE-ENTERED ZONE ({zoneEp}, {currentMap}) after cross-server handoff ***");
@@ -3784,7 +3785,30 @@ public sealed class BotManager : IAsyncDisposable
             Log($"sessions ended — wm: {wmSession.State.DisconnectReason}");
             if (unexpected)
             {
+                // How long did the session we just lost actually live? A session that died in seconds was
+                // almost certainly refused because the PREVIOUS one had not been released yet — relogging
+                // instantly just repeats the race. Back off progressively while that keeps happening, and
+                // reset the moment a session survives, so a genuine one-off drop still recovers fast.
+                var lived = handle.ZoneEnteredUtc == DateTime.MinValue
+                    ? TimeSpan.MaxValue
+                    : DateTime.UtcNow - handle.ZoneEnteredUtc;
+                if (lived < TimeSpan.FromSeconds(15)) handle.ShortSessionStreak++;
+                else handle.ShortSessionStreak = 0;
+
+                var waitS = handle.ShortSessionStreak switch
+                {
+                    0 => 0,          // healthy session dropped — resume immediately
+                    1 => 10,
+                    2 => 20,
+                    3 => 40,
+                    _ => 60,         // capped: keep trying, but stop hammering
+                };
+                if (waitS > 0)
+                    Log($"⛔ CRITICAL: session lived only {lived.TotalSeconds:F0}s — that is the server still " +
+                        $"holding the previous one, not a new fault. Waiting {waitS}s before relog " +
+                        $"(short-session streak {handle.ShortSessionStreak}) instead of racing it again.");
                 Log("*** unexpected disconnect (zone link dropped; WM cleanly logged out — no ghost) — AUTO-RELOG to resume ***");
+                if (waitS > 0) await Task.Delay(TimeSpan.FromSeconds(waitS));
                 Relog(handle.Id);
             }
         }

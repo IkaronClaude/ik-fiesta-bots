@@ -68,6 +68,23 @@ public sealed class BotHandle
     /// before every cast is traffic the real client does not send, in the window the swing needs.</summary>
     public ushort CurrentTarget { get; internal set; }
 
+    // ── AUTO-RELOG PACING ────────────────────────────────────────────────────────────────────────
+    // A zone drop used to trigger an INSTANT relog, which races the server's own session cleanup: the
+    // new login completes, the server still holds the old zone session, and it closes the new one
+    // immediately (`uptime 0s, lastSENT=0x0000`). That relogs again, and so on.
+    // Measured 2026-08-12 on JcqFresh: 23 of 26 relog gaps were under 10s (2.0-7.3s), turning ONE real
+    // disconnect into a ~2-minute storm of ~20 logins — each re-seeding 33 quests, 27 skills, 36 items
+    // and restarting the driver's town pass. JcqArcher: 243 peer-closes, 100 relogs, 155 sessions dead
+    // inside 3 seconds. The bots always recovered; the cost was the thrash.
+    // This is not a retry-cap crutch: waiting for the server to release the previous session is the
+    // correct SEQUENCING for a protocol that binds one session per character.
+    /// <summary>When this bot last completed zone entry. A session that dies seconds after this is the
+    /// server refusing a login whose predecessor is still registered — see the relog pacing note.</summary>
+    public DateTime ZoneEnteredUtc { get; internal set; } = DateTime.MinValue;
+
+    public DateTime LastRelogUtc { get; internal set; } = DateTime.MinValue;
+    public int ShortSessionStreak { get; internal set; }
+
     // ── WHERE THE HOURS ACTUALLY GO ──────────────────────────────────────────────────────────────
     // Operator 2026-08-12: "ALL 3 lvl 19 bots were in town when I just checked on them. That's
     // abnormal." There was no way to answer it: the driver tallies phase time in a SCRIPT-LOCAL table,
