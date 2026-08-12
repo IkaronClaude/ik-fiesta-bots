@@ -210,6 +210,61 @@ gameData.MapGet("/skill/{skillId:int}", (int skillId) =>
     }
 }
 
+// ── ROSTER SUPERVISOR — keeps the roster whole WHILE RUNNING, not just at startup ────────────────
+// Startup restore (above) fixed "came back with an empty roster". It does NOT cover a bot that dies
+// mid-flight, and that is the failure the operator keeps hitting: on repeated checks bots were found
+// `Failed` with the driver stopped, and once a bot had vanished from the roster ENTIRELY. Until now the
+// only thing recovering them was an external python watch loop re-launched by hand, which dies with the
+// session and leaves the roster unguarded exactly when nobody is looking (operator 2026-08-12: "please
+// so this can't happen, even on pod restart or internet outage or whatever").
+//
+// A bot in `Failed` earns nothing, and a bot `InZone` with NO script is worse than idle: it stands in
+// the field and dies. Both are repaired here.
+//
+// Staggered like the startup restore — five logins landing together is when zone-connect drops appeared.
+{
+    var supMgr = app.Services.GetService<BotManager>();
+    if (supMgr is not null)
+    {
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromMinutes(2));   // let startup restore finish first
+            while (true)
+            {
+                try
+                {
+                    var desired = supMgr.Knowledge.LoadRoster();
+                    var live = supMgr.List().ToDictionary(b => b.Id, b => b);
+                    foreach (var (id, opts) in desired)
+                    {
+                        live.TryGetValue(id, out var h);
+                        var phase = h?.Phase.ToString();   // BotPhase enum -> "Failed"/"Stopped"/"InZone"
+                        var missing = h is null;
+                        var broken  = phase is "Failed" or "Stopped";
+                        if (missing || broken)
+                        {
+                            app.Logger.LogWarning("Supervisor: bot {Id} is {State} — re-establishing", id,
+                                                  missing ? "MISSING from the roster" : phase);
+                            if (!missing)
+                            {
+                                // A Failed bot keeps its id, so a bare Spawn would 409. Stop WITHOUT
+                                // forgetting: this bot is still one we were asked to run.
+                                try { await supMgr.StopAsync(id, default, forget: false); } catch { }
+                                await Task.Delay(TimeSpan.FromSeconds(3));
+                            }
+                            try { supMgr.Spawn(opts with { Id = id }); }
+                            catch (Exception ex) { app.Logger.LogWarning("Supervisor: respawn {Id} failed: {E}", id, ex.Message); }
+                            await Task.Delay(TimeSpan.FromSeconds(5));
+                        }
+                    }
+                }
+                catch (Exception ex) { app.Logger.LogWarning("Supervisor pass failed: {E}", ex.Message); }
+                await Task.Delay(TimeSpan.FromSeconds(60));
+            }
+        });
+    }
+}
+
 // GRACEFUL SHUTDOWN (tickets.md P3): on SIGTERM (a deploy/pod restart), cleanly LOG OUT every running
 // bot before the process exits. StopAsync sends the game quit frames (LOGOUTREADY+quit, WM quit, 3s cap
 // each) — which makes the server DROP the zone session immediately. Without this, a hard pod-kill leaves

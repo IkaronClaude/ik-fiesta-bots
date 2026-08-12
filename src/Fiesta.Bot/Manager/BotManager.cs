@@ -93,6 +93,13 @@ public sealed class BotManager : IAsyncDisposable
         // still one we were asked to run, and the restore path retries it. Removed only by an explicit
         // StopAsync (see ForgetRosterEntry) so "stopped on purpose" stays stopped.
         Knowledge?.SaveRosterEntry(id, options);
+        // Phase accounting must SURVIVE this respawn — a fresh BotHandle would otherwise start at zero
+        // and silently discard however many hours the previous incarnation accumulated.
+        if (Knowledge is { } kn)
+        {
+            handle.SeedPhaseSeconds(kn.LoadPhaseSeconds(id));
+            handle.PhasePersist = kn.SavePhaseSeconds;
+        }
         handle.RunTask = Task.Run(() => RunBotAsync(handle));
         return handle;
     }

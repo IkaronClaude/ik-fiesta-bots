@@ -223,6 +223,41 @@ public sealed class NpcKnowledge
         }
     }
 
+    // ── PHASE TIME ACCOUNTING, DURABLY ───────────────────────────────────────────────────────────
+    // Time-per-phase lives on BotHandle, which is created fresh on every spawn — so RESPAWNING A BOT
+    // ERASES IT. That is not hypothetical: five hours of accounting were destroyed on 2026-08-12 by
+    // recovering two failed bots, minutes before the totals were due to be read. The whole point of the
+    // metric is to see where a NIGHT goes, so it has to outlive respawns, deploys and pod restarts.
+    // Keyed by bot id on the same persistent claim as the roster.
+    public void SavePhaseSeconds(string id, IReadOnlyDictionary<string, double> phases)
+    {
+        if (string.IsNullOrWhiteSpace(id) || phases.Count == 0) return;
+        lock (_scriptIoLock)
+        {
+            try
+            {
+                var dir = Path.Combine(_rosterDir, "phases");
+                Directory.CreateDirectory(dir);
+                File.WriteAllText(Path.Combine(dir, ScriptFile(id)), JsonSerializer.Serialize(phases));
+            }
+            catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>Phase totals carried over from previous runs of this bot, empty if none.</summary>
+    public IReadOnlyDictionary<string, double> LoadPhaseSeconds(string id)
+    {
+        try
+        {
+            var f = Path.Combine(_rosterDir, "phases", ScriptFile(id));
+            if (File.Exists(f))
+                return JsonSerializer.Deserialize<Dictionary<string, double>>(File.ReadAllText(f))
+                       ?? new Dictionary<string, double>();
+        }
+        catch { }
+        return new Dictionary<string, double>();
+    }
+
     /// <summary>Every bot that was running when the process last died, as (id, options).</summary>
     public IReadOnlyList<(string Id, BotSpawnOptions Options)> LoadRoster()
     {

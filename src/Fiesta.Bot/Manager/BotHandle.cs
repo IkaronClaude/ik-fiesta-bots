@@ -94,6 +94,7 @@ public sealed class BotHandle
     public void NotePhase(string phase)
     {
         if (string.IsNullOrWhiteSpace(phase)) return;
+        bool flush = false;
         lock (_phaseGate)
         {
             var now = DateTime.UtcNow;
@@ -103,7 +104,23 @@ public sealed class BotHandle
                 if (d > 0 && d < 3600) _phaseSeconds.AddOrUpdate(prev, d, (_, v) => v + d);
             }
             _currentPhase = phase; _phaseSinceUtc = now;
+            // Flush at most every 30s: frequent enough that a pod kill loses seconds, not hours, and
+            // rare enough that a per-tick call does not hammer NFS.
+            if ((now - _phaseFlushUtc).TotalSeconds >= 30) { _phaseFlushUtc = now; flush = true; }
         }
+        if (flush) PhasePersist?.Invoke(Id, PhaseSeconds);
+    }
+
+    private DateTime _phaseFlushUtc = DateTime.MinValue;
+
+    /// <summary>Set by the manager so phase totals reach durable storage — see the note on
+    /// NpcKnowledge.SavePhaseSeconds for why losing them on respawn is unacceptable.</summary>
+    public Action<string, IReadOnlyDictionary<string, double>>? PhasePersist { get; set; }
+
+    /// <summary>Carry forward totals from earlier runs of this same bot.</summary>
+    public void SeedPhaseSeconds(IReadOnlyDictionary<string, double> prior)
+    {
+        foreach (var (k, v) in prior) if (v > 0) _phaseSeconds.AddOrUpdate(k, v, (_, old) => old + v);
     }
 
     public bool LastDialogConcluded { get; internal set; }
