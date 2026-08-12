@@ -1574,7 +1574,10 @@ public sealed class BotApi
             if (mx > 0) row["maxhp"] = (double)mx;
             // Huntable = a real monster (not a guard / shop NPC / quest giver / resource node). Lets the
             // field-grind avoid mistargeting a town NPC (it would walk into it forever). Unknown → true.
-            row["isHuntable"] = v.IsHuntableMob?.Invoke((ushort)n.MobId) ?? true;
+            // A scenario clone the script declared fightable is huntable NO MATTER what MobInfo says —
+            // the JCQ clone is a PLAYER copy of ourselves, which MobInfo cannot classify at all.
+            row["isHuntable"] = v.IsScenarioFightable((ushort)n.Handle)
+                                || (v.IsHuntableMob?.Invoke((ushort)n.MobId) ?? true);
             if (pos is { } p) row["dist"] = Math.Sqrt(Sq((double)n.X - p.X) + Sq((double)n.Y - p.Y));
             t[i++] = row;
         }

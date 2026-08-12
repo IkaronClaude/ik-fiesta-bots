@@ -2286,6 +2286,14 @@ public sealed class ZoneView : IDisposable
     /// MobInfo — see <see cref="GameData.ClientData.IsHuntableEnemy"/>). Used to suppress the
     /// angle-aggro heuristic for town guards (player-side) and other non-enemies that wander
     /// near us. Null = treat everything as huntable (no client data).</summary>
+    /// <summary>Handles the SCENARIO script has declared fightable via change2mob, regardless of what
+    /// client MobInfo says they are. The JCQ shadow clone is a PLAYER entity — a copy of our own character
+    /// (same name, class and level, type=4) — so it lives in the player list and MobInfo cannot classify it
+    /// at all. Without this override the only enemy in the room is invisible to every combat path:
+    /// `nearbyMobs=0` on every tick while it beats the bot to death.</summary>
+    private readonly HashSet<ushort> _scenarioFightable = new();
+    public bool IsScenarioFightable(ushort handle) { lock (_scenarioFightable) return _scenarioFightable.Contains(handle); }
+
     public Func<ushort, bool>? IsHuntableMob { get; set; }
 
     /// <summary>Returns true if an abstate index IMMOBILIZES the target (set by the manager from
@@ -3147,6 +3155,7 @@ public sealed class ZoneView : IDisposable
                  b.type == ScenObjTypeMob ? " (change2mob → fightable)" : " (unknown type)"));
             if (b.type != ScenObjTypeMob)
             {
+                lock (_scenarioFightable) _scenarioFightable.Remove(b.handle);
                 if (_nearby.TryRemove(b.handle, out var gone)) PlayerLeft?.Invoke(b.handle);
                 _npcs.TryRemove(b.handle, out _);
             }
@@ -3161,6 +3170,7 @@ public sealed class ZoneView : IDisposable
                 // (every JCQ death logged "Killed by: NO aggressors tracked at death").
                 // Promote it: reuse the position we already hold for this handle — a scenario clone is
                 // already on-screen as a scripted entity before it turns hostile.
+                lock (_scenarioFightable) _scenarioFightable.Add(b.handle);
                 if (!_npcs.ContainsKey(b.handle))
                 {
                     uint px = 0, py = 0; ushort mobId = 0; bool known = false;
