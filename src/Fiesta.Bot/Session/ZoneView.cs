@@ -37,9 +37,24 @@ public enum ShopKind { Unknown, Item, Weapon, Skill, SoulStone, Storage }
 /// <c>dir</c> of <c>SHINE_COORD_TYPE { xy: SHINE_XY_TYPE, dir: u8 }</c> (PDB extract, 9 bytes) — the same
 /// field the real client uses to draw which way a mob is looking. We were parsing x and y out of that
 /// struct and stepping straight over the third field to reach <c>flagstate</c> at +14.</param>
-public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, uint Y, byte Flag = 0, string? LinkMap = null, byte Team = 0, byte Dir = 0)
+/// <param name="IsScenarioClone">This entity is a SCENARIO CLONE: a player entity (a scripted copy of our
+/// own character) that the scenario script declared fightable with <c>change2mob</c>. It is surfaced in the
+/// mob list so combat can see it, but it <b>HAS NO MOB ID</b> — nothing about it may be looked up in MobInfo.
+/// <para>⛔ This flag exists because the first version fabricated <c>MobId = 0</c> for it, and 0 is a REAL
+/// mob id ("Slime"). Every mob-keyed lookup then answered with a level-1 Slime's data: the bot reported
+/// <c>Killed by: Slime (Id 0)</c> in the JCQ instance, read Slime's MaxHp and Level for a level-20 clone,
+/// and filed the clone's 80-damage hits into the danger model under Slime. Read <see cref="CharName"/> /
+/// <see cref="CharLevel"/> instead — the clone is a CHARACTER and broadcasts its own name and level.</para></param>
+/// <param name="CharName">The clone's character name, from the player briefinfo. Null for a real mob.</param>
+/// <param name="CharLevel">The clone's character level, from the player briefinfo. Null for a real mob —
+/// and nullable rather than 0, because a level of 0 would be a claim, not an absence.</param>
+public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, uint Y, byte Flag = 0, string? LinkMap = null, byte Team = 0, byte Dir = 0,
+    bool IsScenarioClone = false, string? CharName = null, byte? CharLevel = null)
 {
     public bool IsGate => Flag == 1;
+    /// <summary>May <see cref="MobId"/> be used to look this entity up in MobInfo? False for a scenario
+    /// clone, which is a character and has no mob id at all.</summary>
+    public bool HasMobId => !IsScenarioClone;
     /// <summary><c>nKQTeamType</c> from the mob briefinfo (record offset 147): a King's-Quest
     /// battlefield team. Verified live that it is <b>uniformly 2</b> in a normal field for
     /// guards, mobs, herbs and NPCs alike — so it does NOT tell allies from enemies. The real
@@ -685,7 +700,8 @@ public sealed class ZoneView : IDisposable
         {
             // Live in-view mobs PLUS recently-seen ones still within their sticky TTL (bridges the instance
             // AoI-flicker so combat can hold a target through the blink). Expired entries are pruned here.
-            if (_recentNpcs.IsEmpty) return _npcs.Values.ToArray();
+            var clones = ScenarioClonesInView();
+            if (_recentNpcs.IsEmpty && clones is null) return _npcs.Values.ToArray();
             long now = Environment.TickCount64;
             var result = new Dictionary<ushort, NearbyNpc>();
             foreach (var kv in _recentNpcs)
@@ -694,8 +710,39 @@ public sealed class ZoneView : IDisposable
                 result[kv.Key] = kv.Value.Npc;
             }
             foreach (var kv in _npcs) result[kv.Key] = kv.Value; // live entries win over stale sticky ones
+            // Scenario clones are PROJECTED from the player list on every read, never stored as a mob.
+            // A stored copy is what broke the JCQ fight: the clone is a player entity, so SOMEONE_MOVE
+            // updates the PLAYER record and (the handler being an if/else-if on the two lists) never
+            // touched the mob copy at all — leaving combat to measure distance, kite and engage against
+            // the point where the clone SPAWNED, for the whole fight. Projecting reads the live position
+            // by construction, and there is no second copy that can go stale.
+            if (clones is not null)
+                foreach (var c in clones) result[c.Handle] = c;
             return result.Values.ToArray();
         }
+    }
+
+    /// <summary>The scenario clones currently in view, built fresh from the PLAYER list so their position,
+    /// name and level are whatever the last broadcast said. Null (not an empty list) when there are none, so
+    /// the common no-scenario case allocates nothing.</summary>
+    private List<NearbyNpc>? ScenarioClonesInView()
+    {
+        ushort[] handles;
+        lock (_scenarioFightable)
+        {
+            if (_scenarioFightable.Count == 0) return null;
+            handles = _scenarioFightable.ToArray();
+        }
+        List<NearbyNpc>? outp = null;
+        foreach (var h in handles)
+        {
+            // Only project what we can actually locate. A clone we hold no position for stays absent rather
+            // than appearing at (0,0) — a phantom at the map origin would drag the bot across the map.
+            if (!_nearby.TryGetValue(h, out var pl)) continue;
+            (outp ??= new()).Add(new NearbyNpc(h, MobId: 0, Mode: pl.Mode, X: pl.X, Y: pl.Y,
+                IsScenarioClone: true, CharName: pl.Name, CharLevel: pl.Level));
+        }
+        return outp;
     }
 
     /// <summary>A mob leaving our AoI (BRIEFINFODELETE / MAP_LOGOUT — NOT death) → move it to the sticky
@@ -2848,6 +2895,9 @@ public sealed class ZoneView : IDisposable
                 _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
                 _mobAnchor.Clear();   // handles are PER-MAP and get reused — a stale anchor from the previous
                                       // map makes a fresh mob look like it chased thousands of units from home
+                // Same reason, same danger: a retained "this handle is a scenario clone" mark would brand
+                // whichever unrelated player inherits that handle on the new map as a hostile clone.
+                lock (_scenarioFightable) _scenarioFightable.Clear();
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
                 LastScenarioArea = null; InScenarioInstance = false; _scenarioAckedAreas.Clear();
                 MapChanged?.Invoke(h);
@@ -3178,34 +3228,23 @@ public sealed class ZoneView : IDisposable
                 // target for the driver to attack (MageFresh: 13 attack skills learned, ZERO casts, 3
                 // targeting requests in a whole session), and damage from it could not be attributed
                 // (every JCQ death logged "Killed by: NO aggressors tracked at death").
-                // Promote it: reuse the position we already hold for this handle — a scenario clone is
-                // already on-screen as a scripted entity before it turns hostile.
+                // Promote it by MARKING it, not by copying it. NearbyNpcs projects a live view of every
+                // marked handle out of the player list on each read (see ScenarioClonesInView) — the first
+                // version stored a snapshot into _npcs instead, and that snapshot was never updated again
+                // because SOMEONE_MOVE updates the player record and stops.
                 lock (_scenarioFightable) _scenarioFightable.Add(b.handle);
-                if (!_npcs.ContainsKey(b.handle))
-                {
-                    uint px = 0, py = 0; ushort mobId = 0; bool known = false;
-                    if (_recentNpcs.TryGetValue(b.handle, out var rn))
-                    { px = rn.Npc.X; py = rn.Npc.Y; mobId = rn.Npc.MobId; known = true; }
-                    else if (_nearby.TryGetValue(b.handle, out var nb))
-                    { px = nb.X; py = nb.Y; known = true; }
-                    if (known)
-                    {
-                        _npcs[b.handle] = new NearbyNpc(b.handle, mobId, 0, px, py);
-                        _recentNpcs.TryRemove(b.handle, out _);
-                        _logLevel?.Invoke(BotLogLevel.Note,
-                            $"[ZoneView] scenario clone h={b.handle} is now FIGHTABLE — registered as a mob at " +
-                            $"({px},{py}) so it is targetable, drawable and can be blamed for damage");
-                    }
-                    else
-                    {
-                        // Position unknown: say so LOUDLY rather than inventing (0,0), which would put a
-                        // phantom at the map origin and drag the bot across the map to attack nothing.
-                        _logLevel?.Invoke(BotLogLevel.Note,
-                            $"[ZoneView] ⛔ CRITICAL: scenario clone h={b.handle} turned FIGHTABLE but we hold no " +
-                            "position for it — it stays invisible to targeting and the combat map. This is the " +
-                            "instance-death gap; find where its spawn/briefinfo is being missed.");
-                    }
-                }
+                if (_nearby.TryGetValue(b.handle, out var nb))
+                    _logLevel?.Invoke(BotLogLevel.Note,
+                        $"[ZoneView] scenario clone h={b.handle} '{nb.Name}' L{nb.Level} is now FIGHTABLE — " +
+                        $"projected into the mob list at its LIVE position ({nb.X},{nb.Y}) so it is targetable, " +
+                        "drawable and can be blamed for damage");
+                else
+                    // No player record: say so LOUDLY rather than inventing a position, which would put a
+                    // phantom at the map origin and drag the bot across the map to attack nothing.
+                    _logLevel?.Invoke(BotLogLevel.Note,
+                        $"[ZoneView] ⛔ CRITICAL: scenario clone h={b.handle} turned FIGHTABLE but we hold no " +
+                        "player record for it — it stays invisible to targeting and the combat map. This is the " +
+                        "instance-death gap; find where its spawn/briefinfo is being missed.");
             }
         }
         else if (op == OpBriefInfoBuildDoor)
@@ -3710,6 +3749,7 @@ public sealed class ZoneView : IDisposable
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _mobAnchor.Clear();  // entities are per-map; the new map re-broadcasts
                 _nearby.Clear();
+                lock (_scenarioFightable) _scenarioFightable.Clear();   // handles are per-map — see the revive path
                 _drops.Clear();  // ground items are per-map too
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
                 ShopOpenUtc = default;  // any open shop closes when we leave the map

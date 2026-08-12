@@ -843,7 +843,9 @@ public sealed class BotApi
         var v = View; var cd = _mgr.ClientData;
         if (v is null) return DynValue.NewTable(t);
         var npcsInView = new HashSet<int>();
-        foreach (var n in v.NearbyNpcs) npcsInView.Add(n.MobId);
+        // Skip scenario clones: they have no mob id, so counting their placeholder would put NPC id 0
+        // "in view" and make a quest whose giver is npc 0 look reachable from inside an instance.
+        foreach (var n in v.NearbyNpcs) if (!n.IsScenarioClone) npcsInView.Add(n.MobId);
         int i = 1;
         foreach (var id in v.AvailableQuests)
         {
@@ -1408,7 +1410,10 @@ public sealed class BotApi
             row["handle"] = n.Handle; row["mobId"] = n.MobId; row["x"] = n.X; row["y"] = n.Y;
             if (v.MobAnchor(n.Handle) is { } a) { row["anchorX"] = a.X; row["anchorY"] = a.Y; }
             var from = v.AnchorDistance(n.Handle) ?? 0;
-            var limit = v.MobChaseLimit(n.MobId);
+            // A clone has no mob id, so it has no learned chase limit — reading one would return mob 0's
+            // (a Slime's) leash and let the driver conclude the clone will disengage when it will not.
+            var limit = n.IsScenarioClone ? 0 : v.MobChaseLimit(n.MobId);
+            if (n.IsScenarioClone) row["isClone"] = true;
             row["fromSpawn"] = from; row["chaseLimit"] = limit;
             row["willDropIn"] = limit > 0 ? limit - from : 0;
             t[i++] = row;
@@ -1545,7 +1550,7 @@ public sealed class BotApi
         var pos = _handle.Position;
         foreach (var n in v.NearbyNpcs)
         {
-            if (n.MobId != mobId) continue;
+            if (n.IsScenarioClone || n.MobId != mobId) continue;   // a clone answers to no mob id, not even 0
             var row = NewTable();
             row["handle"] = n.Handle; row["mobId"] = n.MobId; row["x"] = n.X; row["y"] = n.Y;
             if (pos is { } p) row["dist"] = Math.Sqrt(Sq((double)n.X - p.X) + Sq((double)n.Y - p.Y));
@@ -1570,13 +1575,26 @@ public sealed class BotApi
             // is NOT the same as full and NOT the same as zero. Callers must treat nil as unknown.
             row["dir"] = n.Dir;
             if (View?.EntityHp(n.Handle) is { } eh) row["hp"] = (double)eh;
-            var mx = _mgr.ClientData?.Mob(n.MobId)?.MaxHp ?? -1;
-            if (mx > 0) row["maxhp"] = (double)mx;
+            // ⛔ A SCENARIO CLONE HAS NO MOB ID — do not look one up. Its MobId field reads 0, and 0 is a
+            // real mob ("Slime"), so this line used to hand a level-20 clone a level-1 Slime's MaxHp.
+            // Its name and level come from the character broadcast instead; maxhp stays absent, because a
+            // player entity never sends one and inventing it is what caused the wrong answer in the first place.
+            if (n.IsScenarioClone)
+            {
+                row["isClone"] = true;
+                row["name"] = n.CharName;
+                if (n.CharLevel is { } cl) row["level"] = (double)cl;
+            }
+            else
+            {
+                var mx = _mgr.ClientData?.Mob(n.MobId)?.MaxHp ?? -1;
+                if (mx > 0) row["maxhp"] = (double)mx;
+            }
             // Huntable = a real monster (not a guard / shop NPC / quest giver / resource node). Lets the
             // field-grind avoid mistargeting a town NPC (it would walk into it forever). Unknown → true.
             // A scenario clone the script declared fightable is huntable NO MATTER what MobInfo says —
             // the JCQ clone is a PLAYER copy of ourselves, which MobInfo cannot classify at all.
-            row["isHuntable"] = v.IsScenarioFightable((ushort)n.Handle)
+            row["isHuntable"] = n.IsScenarioClone
                                 || (v.IsHuntableMob?.Invoke((ushort)n.MobId) ?? true);
             if (pos is { } p) row["dist"] = Math.Sqrt(Sq((double)n.X - p.X) + Sq((double)n.Y - p.Y));
             t[i++] = row;
@@ -1593,6 +1611,8 @@ public sealed class BotApi
         if (View?.SelfHandle == h) return "SELF";
         for (var i = 0; i < aggro.Count; i++) if (aggro[i] == h) return $"aggressor #{i + 1}";
         var npc = View?.NearbyNpcs.FirstOrDefault(n => n.Handle == h);
+        // A clone is named by its CHARACTER name — "mob0" would read as the Slime that mob id 0 really is.
+        if (npc is { IsScenarioClone: true }) return $"clone {npc.CharName ?? "?"} L{npc.CharLevel?.ToString() ?? "?"}";
         if (npc is not null && npc.Handle == h) return $"mob{npc.MobId}";
         return $"h={h}";
     }

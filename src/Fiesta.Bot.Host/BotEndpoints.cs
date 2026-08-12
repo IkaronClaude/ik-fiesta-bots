@@ -1367,23 +1367,27 @@ public static class BotEndpoints
             foreach (var n in zv.NearbyNpcs)
             {
                 if (n.IsGate) continue;
-                var md = cd?.Mob(n.MobId);
+                // ⛔ A scenario clone has NO mob id — its MobId field reads 0, which is the real mob
+                // "Slime". Resolving it would draw a level-20 player copy as a level-1 Slime with a
+                // Slime's MaxHp, and ring it in the danger colours of the wrong creature entirely.
+                var md = n.IsScenarioClone ? null : cd?.Mob(n.MobId);
                 mobs.Add(new
                 {
                     Handle = (int)n.Handle,
-                    MobId = (int)n.MobId,
-                    Name = md?.Name ?? $"mob{n.MobId}",
-                    Level = md?.Level ?? 0,
+                    MobId = n.IsScenarioClone ? (int?)null : (int)n.MobId,
+                    IsClone = n.IsScenarioClone,
+                    Name = n.IsScenarioClone ? (n.CharName ?? "clone") : md?.Name ?? $"mob{n.MobId}",
+                    Level = n.IsScenarioClone ? (n.CharLevel is { } cl ? (int)cl : 0) : md?.Level ?? 0,
                     X = (double)n.X, Y = (double)n.Y,
                     Dir = (int)n.Dir,
                     Hp = zv.EntityHp(n.Handle) is { } h ? (double?)h : null,
                     MaxHp = md?.MaxHp ?? 0,
-                    Huntable = zv.IsHuntableMob?.Invoke(n.MobId) ?? true,
+                    Huntable = n.IsScenarioClone || (zv.IsHuntableMob?.Invoke(n.MobId) ?? true),
                     Aggro = aggro.Contains(n.Handle),
-                    QuestMob = questMobs.Contains(n.MobId),
+                    QuestMob = !n.IsScenarioClone && questMobs.Contains(n.MobId),
                     // Danger is LEARNED, not baked: the hardest hit this mob type has actually landed on us
                     // (-1 = never hit us, i.e. unknown rather than safe). The page compares it to our MaxHp.
-                    MaxHitSeen = zv.MobHitMax(n.MobId),
+                    MaxHitSeen = n.IsScenarioClone ? -1 : zv.MobHitMax(n.MobId),
                     Dist = self is { } p ? Math.Sqrt(Math.Pow((double)n.X - p.X, 2) + Math.Pow((double)n.Y - p.Y, 2)) : (double?)null,
                 });
             }
@@ -1461,7 +1465,8 @@ public static class BotEndpoints
             ? Math.Sqrt(Math.Pow((double)a.X - b.X, 2) + Math.Pow((double)a.Y - b.Y, 2))
             : null;
 
-        var md = npc is { } n2 ? cd?.Mob(n2.MobId) : null;
+        // A scenario clone has no mob id (its field reads 0, which is the real mob "Slime") — never resolve one.
+        var md = npc is { IsScenarioClone: false } n2 ? cd?.Mob(n2.MobId) : null;
         double? dist = self is { } s && x is { } tx && y is { } ty
             ? Math.Sqrt(Math.Pow(tx - s.X, 2) + Math.Pow(ty - s.Y, 2)) : null;
         // Bearing us→target in the SAME convention as BotHandle.FacingDeg (atan2 of the vector, 0-360),
@@ -1487,10 +1492,10 @@ public static class BotEndpoints
             HeldSeconds = bot.TargetSetAtUtc == DateTime.MinValue
                 ? (double?)null : (DateTime.UtcNow - bot.TargetSetAtUtc).TotalSeconds,
             InView = pl is not null || npc is not null,
-            Kind = pl is not null && npc is not null ? "clone" : pl is not null ? "player" : npc is not null ? "mob" : "unseen",
-            Name = pl?.Name ?? md?.Name ?? (npc is { } n3 ? $"mob{n3.MobId}" : null),
-            Level = pl is { } p4 ? p4.Level : md is { } m4 ? m4.Level : (int?)null,
-            MobId = npc is { } n5 ? (int)n5.MobId : (int?)null,
+            Kind = npc is { IsScenarioClone: true } ? "clone" : npc is not null ? "mob" : pl is not null ? "player" : "unseen",
+            Name = pl?.Name ?? npc?.CharName ?? md?.Name ?? (npc is { IsScenarioClone: false } n3 ? $"mob{n3.MobId}" : null),
+            Level = pl is { } p4 ? p4.Level : npc?.CharLevel is { } cl2 ? cl2 : md is { } m4 ? m4.Level : (int?)null,
+            MobId = npc is { IsScenarioClone: false } n5 ? (int)n5.MobId : (int?)null,
             ClassId = pl is { } p5 ? (int)p5.Class : (int?)null,
             ClassName = pl is { } p6 ? cd?.ClassName(p6.Class) : null,
             // Absent = never seen hurt. NOT full, NOT zero.
