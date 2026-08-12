@@ -616,6 +616,7 @@ public sealed class BotManager : IAsyncDisposable
         {
             await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
             handle.CurrentTarget = target; handle.TargetAsserted = true; handle.TargetSetAtUtc = DateTime.UtcNow;
+            if (handle.ZoneView is { } zvT) zvT.CurrentTargetHandle = target;   // so a death can invalidate it
         }
         await EnsureBattleModeAsync(handle, s, ct);
         // Record WHICH of the three pre-cast paths ran. They are behaviourally different and the old
@@ -1015,6 +1016,7 @@ public sealed class BotManager : IAsyncDisposable
         {
             await s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct);
             handle.CurrentTarget = target; handle.TargetAsserted = true; handle.TargetSetAtUtc = DateTime.UtcNow;
+            if (handle.ZoneView is { } zvT) zvT.CurrentTargetHandle = target;   // so a death can invalidate it
             justTargeted = true;
         }
         await EnsureBattleModeAsync(handle, s, ct);
@@ -3546,6 +3548,15 @@ public sealed class BotManager : IAsyncDisposable
                 // not in a restart that cancels the next swing too. CEASE_FIRE is still decoded and logged;
                 // that is observability, and it is how this was measured.
 
+                // The selection died / went away — drop the assertion so the next attack re-sends
+                // TARGETTING. Without this the bot bashes at a handle the server no longer holds, which
+                // is a silent no-op, and (handles being per-map) can even name a different entity.
+                zoneView.TargetInvalidated += why =>
+                {
+                    if (!handle.TargetAsserted) return;
+                    handle.InvalidateTarget(why);
+                    handle.BashTarget = 0;
+                };
                 zoneView.CastFailed += reason =>
                 {
                     handle.Emit(new BotEvent(BotEventKind.CastFail, reason));

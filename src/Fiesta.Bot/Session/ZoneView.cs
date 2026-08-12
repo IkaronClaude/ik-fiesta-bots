@@ -2362,7 +2362,15 @@ public sealed class ZoneView : IDisposable
     /// manager; null in tests. Emitted from the SAME place as the human log line so they cannot drift.</summary>
     public Action<string, string>? BotEventSink { get; set; }
 
+    /// <summary>Raised when the SERVER's target selection is (or may be) gone — the target died, we
+    /// died, or the map changed. The manager clears TargetAsserted so the next attack re-sends
+    /// TARGETTING instead of bashing at a handle the server no longer holds.</summary>
     public Action<string>? TargetInvalidated { get; set; }
+
+    /// <summary>What the manager currently believes it has targeted, so death handling can tell whether
+    /// the entity that just died is OURS. Set by the manager alongside its own CurrentTarget; 0 is a
+    /// real handle, so this is only meaningful together with the manager's TargetAsserted flag.</summary>
+    public ushort CurrentTargetHandle { get; set; }
 
     public Func<ushort, bool>? IsHuntableMob { get; set; }
 
@@ -2488,6 +2496,14 @@ public sealed class ZoneView : IDisposable
                 bool wasMob = _npcs.TryRemove(dead, out _);
                 bool wasRecent = _recentNpcs.TryRemove(dead, out _); // died while flickered-out of view → evict sticky copy
                 bool wasChar = _nearby.TryRemove(dead, out _);
+                // ⛔ TELL THE MANAGER THE SELECTION IS GONE. TargetInvalidated was declared for exactly
+                // this and then never raised by anything — the invalidation signal the TargetAsserted
+                // doc says the "only re-target when it changes" optimisation requires. Without it the
+                // bot keeps believing it is targeted at a CORPSE: measured live on FighterFresh,
+                // `h7049 ... hp 0/? ... held 63s`, still held after travelling to another map. Handles
+                // are per-map and reused, so a retained one is not merely stale — it can name a
+                // different entity entirely, and the next bash would skip the targeting packet.
+                if (dead == CurrentTargetHandle) TargetInvalidated?.Invoke($"target h={dead} died");
                 if ((wasMob || wasRecent || wasChar) && mine)
                 {
                     LastKill = dead; KillsByMe++;
