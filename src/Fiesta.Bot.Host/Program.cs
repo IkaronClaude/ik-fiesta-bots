@@ -182,6 +182,8 @@ gameData.MapGet("/skill/{skillId:int}", (int skillId) =>
 // announcing it. The script watchdog already restored WHAT each bot runs; nothing restored THAT it runs.
 // Staggered, because five logins landing together is when the zone-connect drops were seen; and each
 // failure is logged with its id, since a silent restore failure is the same invisibility all over again.
+// The supervisor waits on THIS task rather than on a guessed duration — see its own note.
+Task startupRestore = Task.CompletedTask;
 {
     var restoreMgr = app.Services.GetService<BotManager>();
     if (restoreMgr is not null)
@@ -190,7 +192,7 @@ gameData.MapGet("/skill/{skillId:int}", (int skillId) =>
         if (saved.Count > 0)
         {
             app.Logger.LogInformation("Startup: restoring {Count} bot(s) from the persisted roster…", saved.Count);
-            _ = Task.Run(async () =>
+            startupRestore = Task.Run(async () =>
             {
                 foreach (var (id, opts) in saved)
                 {
@@ -228,7 +230,16 @@ gameData.MapGet("/skill/{skillId:int}", (int skillId) =>
     {
         _ = Task.Run(async () =>
         {
-            await Task.Delay(TimeSpan.FromMinutes(2));   // let startup restore finish first
+            // WAIT FOR THE REAL SIGNAL, NOT A GUESS. This was `await Task.Delay(2 minutes)` — a fixed
+            // timer standing in for "has the startup restore finished", and it cost exactly what a
+            // fixed timer always costs. Measured 2026-08-12 after a deploy: the pod came up at 17:19,
+            // three bots lost their zone link ~6s into the fresh login (the server had not yet released
+            // the pre-restart session), and then sat `Failed` — earning nothing, logged in nowhere —
+            // until 17:21:20, when the timer finally expired and the first pass repaired all three
+            // within seconds. Two minutes of guaranteed downtime after EVERY deploy, for a restore that
+            // takes 3 seconds per bot. Awaiting the restore's own task makes the wait exactly as long
+            // as the work it is waiting for.
+            try { await startupRestore; } catch { }   // a failed restore must not silence the supervisor
             while (true)
             {
                 try
