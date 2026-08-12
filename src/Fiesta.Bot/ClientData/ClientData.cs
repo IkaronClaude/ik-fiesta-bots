@@ -65,8 +65,32 @@ public sealed class ClientData
     public byte[]? ItemIconPng(int itemId) => _iconPng.GetOrAdd(itemId, id =>
     {
         if (IconDir is not { } dir || ItemIcon(id) is not { } icon) return null;
-        return IconAtlas.IconPng(Path.Combine(dir, icon.File + ".dds"), icon.Index);
+        var path = ResolveIconFile(dir, icon.File);
+        return path is null ? null : IconAtlas.IconPng(path, icon.Index);
     });
+
+    // ⛔ THE ATLAS FILENAMES DISAGREE WITH THE TABLE ON CASE, AND THE HOST RUNS ON LINUX.
+    // ItemViewInfo says "NckItem000" while the file is `Nckitem000.dds`, and "VarItem000" while the file
+    // is `VarItem000.DDS` — a different letter AND a different extension case, in the same directory.
+    // Windows does not care; the container does, so those items served no icon at all while their
+    // neighbours did. Same class of bug as the .shbd map grid earlier today, and it gets the same
+    // treatment: index the directory once, case-insensitively, and look every atlas up through it.
+    private Dictionary<string, string>? _iconFiles;
+    private string? ResolveIconFile(string dir, string name)
+    {
+        if (_iconFiles is null)
+        {
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                foreach (var f in Directory.EnumerateFiles(dir))
+                    map[Path.GetFileNameWithoutExtension(f)] = f;   // extension case is irrelevant too
+            }
+            catch { /* no icon dir — the caller renders name tiles */ }
+            _iconFiles = map;
+        }
+        return _iconFiles.TryGetValue(name, out var path) ? path : null;
+    }
 
     /// <summary>Load a client SHN table by name (e.g. "ActiveSkill", "ItemInfo",
     /// "ClassName"), cached after the first read. Returns null if the file isn't present
