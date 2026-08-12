@@ -1020,7 +1020,40 @@ public sealed class BotManager : IAsyncDisposable
         var facedByRecentHit = handle.ZoneView is { } zvf
             && zvf.LastRealDamageDealtAtUtc > DateTime.MinValue
             && (DateTime.UtcNow - zvf.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500;
-        if (facedByRecentHit)
+
+        // ⛔ …AND THE BOOTSTRAP ARGUMENT ABOVE DOES NOT HOLD. It assumes the opening bash lands a hit,
+        // after which the MOVERUN is suppressed and the stream persists. Measured on ClericFresh over
+        // 18.5 minutes in Job1_Dn01 (tools/swings_per_bash.py): 374 BASHSTART, 92 swings — 0.25 swings
+        // per bash against a real player's 5.96 — 537 CEASE_FIRE, and a dead bash cease-fires at a
+        // MEDIAN OF 70ms. `facedByRecentHit` could fire on only 20% of those bashes, because it asks for
+        // a connecting hit in the last 2.5s and a connecting hit is precisely what the bot cannot get.
+        // An escape hatch whose precondition only the blocked action can produce never opens.
+        //
+        // So ASK THE GEOMETRY INSTEAD, which needs nothing to have gone right first: if our heading is
+        // already pointed at the target, the face-step is a no-op that can only cancel the bash it
+        // precedes, and a bare STOP is enough. This is the same angle the target view surfaces
+        // (GET /api/bots/{id}/target → angleOffDeg).
+        //
+        // ⚠️ HONEST LIMIT ON THE EVIDENCE: bashes that skip the MOVERUN succeed far more often (85% vs
+        // 10%), but that split is exactly the facedByRecentHit split, so it cannot separate "the MOVERUN
+        // breaks the bash" from "a fight that is already landing hits keeps landing them". What IS
+        // established without that confound: the guard almost never fires, and the codebase's own note
+        // says the MOVERUN it fails to suppress is what breaks a swing stream. Both readings point at
+        // the same fix, so it is worth making; the metric to watch afterwards is swings-per-bash.
+        // FaceOkDeg is bot-behaviour tuning (like melee range or tick cadence), not a game fact — the
+        // server's real facing tolerance is unknown, so this stays inside the 22.5 degree half-arc that
+        // every melee skill declares as its UsableDegree, and the angle is logged so it can be tuned.
+        const double FaceOkDeg = 20.0;
+        var facedByGeometry = false;
+        double? bashAngleOff = null;
+        if (handle.FacingDeg >= 0 && handle.Position is { } mypos && NpcPos(handle, target) is { } tgtpos)
+        {
+            var bear = Math.Atan2((double)tgtpos.Y - mypos.Y, (double)tgtpos.X - mypos.X) * 180.0 / Math.PI;
+            if (bear < 0) bear += 360.0;
+            bashAngleOff = Math.Abs(((bear - handle.FacingDeg + 540.0) % 360.0) - 180.0);
+            facedByGeometry = bashAngleOff <= FaceOkDeg;
+        }
+        if (facedByRecentHit || facedByGeometry)
             await StopOnlyAsync(handle, s, ct);              // STOP without the swing-breaking MOVERUN
         else if (NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
@@ -1037,7 +1070,11 @@ public sealed class BotManager : IAsyncDisposable
         // cancelled swing stream from an idle one and re-issue BASHSTART on the same target.
         handle.BashTarget = target;
         if (handle.ZoneView is { } zvb) zvb.BashActive = true;
-        handle.Log(BotLogLevel.Verbose, $"auto-attack h={target} (faced+bashstart)");
+        // Decode -> log it in the same change: WHICH pre-bash path ran and the geometry that chose it,
+        // so "why did this bash die" is answerable from the tail instead of from a packet capture.
+        handle.Log(BotLogLevel.Verbose,
+            $"auto-attack h={target} ({(facedByRecentHit ? "stop-only: recent hit" : facedByGeometry ? "stop-only: already faced" : "face-step+stop")}" +
+            $", angleOff={(bashAngleOff is { } ao ? $"{ao:F0}deg" : "unknown")})");
         return ActionResult.Sent;
     }
 
