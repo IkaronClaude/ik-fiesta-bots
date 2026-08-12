@@ -1556,10 +1556,18 @@ public static class BotEndpoints
         {
             var si = cd.Skill(id);
             if (si is null) continue;                     // not in client data — cannot judge, so omit
+            // ⛔ COOLDOWN RUNS FROM THE SERVER'S CONFIRMED START, NOT FROM OUR SEND (operator 2026-08-12:
+            // "the UI STILL shows a cooldown on a skill EVEN ON CAST FAILURE (wrong)").
+            // There are two clocks here and this panel was reading the wrong one. _lastSkillCast is
+            // stamped when we TRANSMIT, so a REFUSED cast greyed the tile out for the full cooldown and
+            // hid the failure behind something that looked like normal cooldown. SkillReadyInMs is the
+            // clock the cast gate itself uses — driven by the server's confirmed start (0x244E /
+            // CAST_SUC_ACK) — so a cast that never started leaves the skill READY, which is the truth.
+            // Same rule the Lua already applies to castAt[]: bank the cooldown on confirmation only.
             var lastAt = zv.SkillLastCastAtUtc(id);
-            double? remaining = null;
-            if (si.DelayTimeMs > 0 && lastAt is { } la)
-                remaining = Math.Max(0, si.DelayTimeMs - (now - la).TotalMilliseconds);
+            double? remaining = si.DelayTimeMs > 0
+                ? zv.SkillReadyInMs(id, si.DelayTimeMs, si.CastTimeMs)
+                : null;
             outp.Add(new
             {
                 Id = (int)id,
