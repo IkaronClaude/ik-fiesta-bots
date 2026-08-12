@@ -252,7 +252,19 @@ public sealed class BotManager : IAsyncDisposable
         {
             try
             {
-                await StopAsync(id);
+                // ⛔ forget:false — A RELOG IS NOT AN OPERATOR STOP.
+                // StopAsync DE-PERSISTS the bot from the restore roster by default, and Relog used that
+                // default: it removed the bot, then re-Spawn re-added it. Anything landing in the gap
+                // loses the bot PERMANENTLY — neither the startup restore nor the supervisor can bring
+                // back an id that is no longer in the roster, because both iterate over exactly that
+                // roster. The gap is not small: 3s settle, then up to 90s waiting for zone entry, times
+                // up to four attempts, and every deploy rolls the pod straight through it.
+                // Worse, the give-up path below leaves the bot Failed AND forgotten, with a comment
+                // promising "next cron will respawn" — there is no cron, and the supervisor only knows
+                // persisted bots. That is the "a bot vanished from the roster ENTIRELY" P0: measured
+                // 2026-08-12, the host came back up reporting "restoring 2 bot(s)" when five were meant
+                // to be running.
+                await StopAsync(id, forget: false);
                 // BOUNDED RETRY (tickets.md P1, 2026-07-29): a TRANSIENT re-login failure — observed live as
                 // `SocketException: Resource temporarily unavailable` on the zone-connect under cluster load,
                 // right after CHAR_LOGIN_ACK — leaves the bot phase=Failed. The re-login is off a CLEAN WM logout
@@ -264,7 +276,7 @@ public sealed class BotManager : IAsyncDisposable
                 for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
                     if (attempt == 1) await Task.Delay(3000);                 // let the logout settle (avoid dup-login kick)
-                    else { try { await StopAsync(id); } catch { } await Task.Delay(5000); }  // clean up the Failed handle, back off
+                    else { try { await StopAsync(id, forget: false); } catch { } await Task.Delay(5000); }  // clean up the Failed handle, back off (NEVER forget: see above)
                     Spawn(opts);
                     var reachedZone = false;
                     for (int i = 0; i < 90; i++)           // wait up to 90s for zone re-entry
