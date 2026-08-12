@@ -3035,7 +3035,7 @@ public sealed class ZoneView : IDisposable
                     // Only NOTE the ones that actually killed a running auto-attack; the rest are
                     // routine (already idle) and would drown the log at ~650/session.
                     _logLevel?.Invoke(wasActive ? BotLogLevel.Note : BotLogLevel.Verbose,
-                        $"[combat] CEASE_FIRE on SELF — melee auto-attack STOPPED{(wasActive ? " (was ACTIVE — re-bash needed)" : " (was already idle)")} (session {BashCeasedCount})");
+                        $"[combat] CEASE_FIRE on SELF — melee auto-attack STOPPED{(wasActive ? " (was ACTIVE)" : " (was already idle)")} (session {BashCeasedCount})");
                     try { BashCeased?.Invoke(who); } catch { }
                 }
                 else

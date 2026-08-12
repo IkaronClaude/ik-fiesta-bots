@@ -2978,7 +2978,6 @@ public sealed class BotManager : IAsyncDisposable
     /// <summary>Swing windup: BASHSTART -> first landed damage, MEASURED median 418ms on our own logs.
     /// A cast or a re-bash inside this window destroys the swing that was about to land.</summary>
     private const int BashWindupMs = 450;
-    private const int ReBashVerifyMs = 1_200;
     private const int WatchdogPollMs = 5_000;
     private const int WatchdogStillSecs = 45;
 
@@ -3460,92 +3459,27 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SpChanged += sp => handle.Emit(new BotEvent(BotEventKind.Sp, sp));
                 zoneView.Damaged += hit => handle.Emit(new BotEvent(BotEventKind.Hit, hit));
                 var botId = handle.Id; // capture for the lambda
-                // RE-BASH when the server cease-fires us mid-fight (root fix, wire-proven 2026-08-04).
-                // Every skill cast routes through FaceAndStopAsync, whose NC_ACT_STOP_REQ cancels the
-                // BASHSTART swing stream; the server then sends CEASE_FIRE(self). Because that packet was
-                // undecoded the bot never re-issued BASHSTART, so its melee damage silently stopped after
-                // ~50ms while it believed it was attacking (measured: 1 damage dealt vs 77 taken in the 36s
-                // before a death; the mob regenerated because regen needs only ~20s without damage).
-                // We're still targeted and still faced at this point (the cast faced the same mob), so the
-                // swing stream only needs restarting — send BASHSTART alone rather than the full
-                // target+mode+face+stop sequence, which would re-introduce the very STOP that killed it.
-                zoneView.BashCeased += ceased =>
-                {
-                    var tgt = handle.BashTarget;
-                    if (tgt == 0 || handle.ZoneSession is not { } bs) return;
-                    // Target gone (dead/out of view) → the fight is over, don't resurrect the bash.
-                    if (NpcPos(handle, tgt) is not { } rbPos) { handle.BashTarget = 0; return; }
-                    // ⛔ ONLY re-bash when we are actually WITHIN MELEE REACH. AutoAttackAsync explicitly
-                    // does NOT close a gap ("the CALLER must already be within melee weapon range") — its
-                    // face-step moves at most 16u. Re-bashing from range makes the server reject the bash
-                    // outright, and the rejection arrives as another CEASE_FIRE, which re-triggers this
-                    // handler: a self-feeding BASHSTART→CEASE_FIRE loop that never lands a swing.
-                    // PROVEN on the wire 2026-08-04: of the cease-fires on self, **30 immediately followed
-                    // our own BASHSTART** (vs only 7 following a MOVERUN) — the bash was not being
-                    // interrupted, it was FAILING TO START. That is the failure the operator flagged:
-                    // "without stop and face / client-side range move before bash start there's a chance
-                    // our bash will just fail, watch for that."
-                    // Reach comes from the wire (LearnedMeleeRange); until something has connected we
-                    // cannot know it, so don't spam a bash that will just be rejected — the grind loop
-                    // walks into range and opens a fresh bash there.
-                    if (handle.Position is not { } rbSelf) return;
-                    var reach = handle.ZoneView?.LearnedMeleeRange ?? 0;
-                    if (reach <= 0) return;
-                    var rdx = (double)rbPos.X - rbSelf.X; var rdy = (double)rbPos.Y - rbSelf.Y;
-                    if (Math.Sqrt(rdx * rdx + rdy * rdy) > reach)
-                    {
-                        handle.Log(BotLogLevel.Verbose,
-                            $"[combat] re-bash SKIPPED h={tgt} — out of melee reach ({Math.Sqrt(rdx * rdx + rdy * rdy):F0}u > {reach:F0}u); walk in first");
-                        return;
-                    }
-                    // Cadence guard: CEASE_FIRE can arrive several times for one cancellation
-                    // (observed 3 within 50ms). This paces the restart; it is NOT an attempt cap —
-                    // the bash is re-issued for as long as the target lives.
-                    var now = DateTime.UtcNow;
-                    if ((now - handle.LastReBashAtUtc).TotalMilliseconds < 250) return;
-                    handle.LastReBashAtUtc = now;
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            // ⛔ DO NOT RE-BASH ON THE CEASE_FIRE ITSELF — WAIT AND SEE IF THE STREAM RESUMES.
-                            // Measured against the operator's own priest combat capture (CombatPriest.pcapng,
-                            // zone 9025) 2026-08-05, which OVERTURNS the 2026-08-04 reading above:
-                            //     CEASE_FIRE events (S<-):                            39
-                            //       -> swings resumed with NO client BASHSTART first: 27
-                            //       -> client sent BASHSTART before any swing:         5
-                            //     total client BASHSTART: 5      total server SWING_START: 82
-                            // The real client bashes FIVE times and collects EIGHTY-TWO swings. CEASE_FIRE is a
-                            // transient combat-state notification, NOT "your attack stopped" — the server keeps
-                            // swinging on its own (e.g. CEASE_FIRE @9465 -> SWING_START @9553/@9565 + damage,
-                            // with nothing sent in between). Re-bashing on every one is what produced our
-                            // thrash: bash sessions 355->368 in ~3s, each RE-BASH cancelled 30-55ms later,
-                            // net damage ~0 and zero quest kills.
-                            // So: wait, then re-bash ONLY if the stream really is dead (no damage landed).
-                            var seenAt = handle.ZoneView?.LastRealDamageDealtAtUtc ?? DateTime.MinValue;
-                            await Task.Delay(ReBashVerifyMs, ct);
-                            if (handle.BashTarget != tgt) return;                 // target changed → not ours to fix
-                            if (handle.ZoneView?.LastRealDamageDealtAtUtc > seenAt)
-                            {
-                                handle.Log(BotLogLevel.Verbose,
-                                    $"[combat] cease-fire h={tgt} — swings RESUMED on their own, no re-bash needed (matches real client)");
-                                return;
-                            }
-                            if (NpcPos(handle, tgt) is null) { handle.BashTarget = 0; return; }
-                            // Re-bash with the FULL sequence (target → mode → face+stop → BASHSTART),
-                            // exactly as the real client does when it re-bashes after a mid-fight cast
-                            // (CombatExtensive.pcapng: TARGETTING → MOVERUN → STOP → BASHSTART).
-                            // A BARE BASHSTART risks being rejected outright — the server validates a
-                            // swing against facing/range, and without the face-step there is nothing to
-                            // establish either (operator 2026-08-04). A STOP *before* BASHSTART is
-                            // harmless: there is no swing stream yet to cancel. It is only a STOP
-                            // before a CAST *while already bashing* that kills our damage.
-                            await AutoAttackAsync(botId, tgt, ct);
-                            Log($"[combat] RE-BASH h={tgt} — swing stream stayed DEAD for {ReBashVerifyMs}ms after CEASE_FIRE (genuine stall, not the normal transient)");
-                        }
-                        catch (Exception ex) { Log($"[combat] re-bash error: {ex.Message}"); }
-                    }, ct);
-                };
+                // ⛔ NO AUTOMATIC RE-BASH. ONE BASH PER ENGAGEMENT (operator 2026-08-12: "I just want a
+                // singular initial bash on combat start").
+                //
+                // What used to live here: a CEASE_FIRE handler that waited 1200ms and re-issued the full
+                // target/mode/face+stop/BASHSTART sequence if no damage had landed. It was written to fix a
+                // real symptom and it made things worse every time it was tuned, because the premise was
+                // wrong: CEASE_FIRE is a transient combat-state notification, not "your attack stopped".
+                // In the operator's own priest capture the server resumed swinging on its own after 27 of
+                // 39 cease-fires with no client BASHSTART at all — the real client bashes FIVE times and
+                // collects EIGHTY-TWO swings.
+                //
+                // Measured cost of re-bashing anyway, on ClericFresh: 374 BASHSTART in 18.5 min for 92
+                // landed swings (0.25/bash), and when a second re-bash owner was briefly added, 1854 in
+                // 27.8 min for 71 swings (0.04/bash). Every re-issue restarts the 418ms windup from zero,
+                // so bashing harder produced strictly LESS damage. The real-player baseline is 5.96.
+                //
+                // The bash is now issued exactly once, by the driver, when it engages a target — and if the
+                // stream really does die, the fix belongs in whatever killed it (a cast's STOP, a walk),
+                // not in a restart that cancels the next swing too. CEASE_FIRE is still decoded and logged;
+                // that is observability, and it is how this was measured.
+
                 zoneView.CastFailed += reason =>
                 {
                     handle.Emit(new BotEvent(BotEventKind.CastFail, reason));

@@ -429,7 +429,6 @@ public sealed class BotHandle
 
     /// <summary>When we last re-issued BASHSTART in response to a CEASE_FIRE. Paces the restart —
     /// the server can send several CEASE_FIRE for one cancellation.</summary>
-    internal DateTime LastReBashAtUtc = DateTime.MinValue;
 
     /// <summary>Whether we believe the character is in BATTLE mode (NC_ACT_CHANGEMODE_REQ 0x02).
     /// A persistent toggle — see <c>EnsureBattleModeAsync</c>. Cleared on death / map change so it
