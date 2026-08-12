@@ -84,6 +84,39 @@ public sealed class BotHandle
     /// entity handle and must never be overloaded as "none".</para></summary>
     public bool TargetAsserted { get; internal set; }
 
+    // ── STRUCTURED EVENT STREAM ──────────────────────────────────────────────────────────────────
+    // Operator 2026-08-12: "build your events endpoint. You really need [it]." Correct, and today is the
+    // argument for it. Every wrong call I made came from reasoning over PROSE: grepping log text for a
+    // pattern, counting matches, and generalising from a window. That produced, in one session: a dead-bash
+    // rate computed against the wrong self-handle, "storage is full" then "storage is not full" then full
+    // again, a proxy round-robin theory killed by one question, and "the mage never casts" drawn from a
+    // stale packet-log FILE while the live one showed it targeting, bashing and casting correctly.
+    // Typed events make "how often / how long / what preceded it" a query instead of a regex I rewrite
+    // (and get subtly wrong) each time.
+    public sealed record BotEventRec(DateTime AtUtc, string Kind, string Detail);
+
+    private readonly List<BotEventRec> _events = new();
+    private const int MaxEvents = 20_000;
+
+    /// <summary>Record a typed event. Cheap and lock-scoped — call it from the same place that logs the
+    /// human-readable line, so the two can never drift apart.</summary>
+    public void NoteEvent(string kind, string detail = "")
+    {
+        lock (_events)
+        {
+            _events.Add(new BotEventRec(DateTime.UtcNow, kind, detail));
+            if (_events.Count > MaxEvents) _events.RemoveRange(0, _events.Count - MaxEvents);
+        }
+    }
+
+    /// <summary>Events, oldest first, optionally filtered by kind.</summary>
+    public IReadOnlyList<BotEventRec> EventLog(string? kind = null)
+    {
+        lock (_events)
+            return kind is null ? _events.ToArray()
+                 : _events.Where(e => string.Equals(e.Kind, kind, StringComparison.OrdinalIgnoreCase)).ToArray();
+    }
+
     /// <summary>The server has (or may have) dropped our target — re-assert before the next attack.</summary>
     public void InvalidateTarget(string why)
     {
@@ -175,6 +208,7 @@ public sealed class BotHandle
                 if (!string.Equals(prev, phase, StringComparison.Ordinal))
                 {
                     _phaseLog.Add(new PhaseVisit(prev, _phaseSinceUtc, d));
+                    NoteEvent("phase", $"{prev} -> {phase} after {d:F1}s");
                     if (_phaseLog.Count > MaxPhaseVisits) _phaseLog.RemoveRange(0, _phaseLog.Count - MaxPhaseVisits);
                 }
             }

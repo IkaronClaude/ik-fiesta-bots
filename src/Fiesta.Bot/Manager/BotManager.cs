@@ -245,6 +245,7 @@ public sealed class BotManager : IAsyncDisposable
         // resets the driver — on 2026-08-12 bots were relogging every ~4 min (JcqArcher 97 times in an
         // hour) and it went unnoticed for a whole session because the line read like routine bookkeeping
         // among thousands of Note lines. Grep `CRITICAL` to find every one.
+        handle.NoteEvent("relog", $"prevSessionSeconds={(handle.ZoneEnteredUtc == DateTime.MinValue ? -1 : (DateTime.UtcNow - handle.ZoneEnteredUtc).TotalSeconds):F0}");
         handle.Log($"⛔ CRITICAL: RELOG — clean logout → re-login → re-apply script. " +
                    $"A relog costs a full town pass; if these repeat, THAT is the levelling blocker.");
         _ = Task.Run(async () =>
@@ -426,6 +427,7 @@ public sealed class BotManager : IAsyncDisposable
 
         // ── wire to the wire ────────────────────────────────────────────────────────────────────────
         zv.MetricSink = (name, val) => m.LogMetric(name, val);
+        zv.BotEventSink = (kind, detail) => handle.NoteEvent(kind, detail);
         zv.HpChanged += hp =>
         {
             m.LogMetric("hp", hp);
@@ -3634,6 +3636,7 @@ public sealed class BotManager : IAsyncDisposable
 
                 handle.SetPhase(BotPhase.InZone);
                 handle.ZoneEnteredUtc = DateTime.UtcNow;   // relog pacing measures session life from here
+                handle.NoteEvent("zone-enter", $"map={currentMap}");
                 // Entering a zone clears the server's selection AND renumbers handles — the retained one
                 // can name a different entity here. Re-assert before the next attack.
                 handle.InvalidateTarget("zone entry / map handoff");
@@ -3827,6 +3830,7 @@ public sealed class BotManager : IAsyncDisposable
                     Log($"⛔ CRITICAL: session lived only {lived.TotalSeconds:F0}s — that is the server still " +
                         $"holding the previous one, not a new fault. Waiting {waitS}s before relog " +
                         $"(short-session streak {handle.ShortSessionStreak}) instead of racing it again.");
+                handle.NoteEvent("disconnect", $"livedSeconds={lived.TotalSeconds:F0} streak={handle.ShortSessionStreak}");
                 Log("*** unexpected disconnect (zone link dropped; WM cleanly logged out — no ghost) — AUTO-RELOG to resume ***");
                 if (waitS > 0) await Task.Delay(TimeSpan.FromSeconds(waitS));
                 Relog(handle.Id);

@@ -267,6 +267,40 @@ public static class BotEndpoints
         // RAW TRANSITION LIST, not a rollup (operator 2026-08-12). Cumulative seconds actively misled:
         // `restock = 46 min` was read as ONE stall when it was ~15 interrupted trips. Counts, p50, p90 and
         // any other metric are derivable from this array by a script; the reverse is not true.
+        // Typed events, with rollups computed for you. The point of this endpoint is that questions like
+        // "how many relogs, how far apart, what preceded each" become a QUERY rather than a regex over log
+        // prose -- which is how several confident-but-wrong conclusions got made on 2026-08-12.
+        group.MapGet("/{id}/events", (string id, string? kind, int? max) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var all = bot.EventLog(kind);
+            var take = Math.Clamp(max ?? 2000, 1, 20000);
+            var slice = all.Count > take ? all.Skip(all.Count - take).ToArray() : all;
+            // gaps between consecutive events of the SAME kind -- the shape that distinguishes "one long
+            // stall" from "hundreds of retries", which a cumulative total cannot.
+            var byKind = all.GroupBy(e => e.Kind).Select(g =>
+            {
+                var times = g.Select(e => e.AtUtc).OrderBy(t => t).ToArray();
+                var gaps = times.Zip(times.Skip(1), (a2, b2) => (b2 - a2).TotalSeconds).OrderBy(x => x).ToArray();
+                return new
+                {
+                    Kind = g.Key,
+                    Count = g.Count(),
+                    FirstUtc = times.Length > 0 ? times[0].ToString("HH:mm:ss") : null,
+                    LastUtc = times.Length > 0 ? times[^1].ToString("HH:mm:ss") : null,
+                    GapP50 = gaps.Length > 0 ? Math.Round(gaps[gaps.Length / 2], 1) : (double?)null,
+                    GapP90 = gaps.Length > 0 ? Math.Round(gaps[(int)(gaps.Length * 0.9)], 1) : (double?)null,
+                };
+            }).OrderByDescending(x => x.Count);
+            return Results.Ok(new
+            {
+                Total = all.Count,
+                Summary = byKind,
+                Events = slice.Select(e => new { At = e.AtUtc.ToString("HH:mm:ss.fff"), e.Kind, e.Detail }),
+            });
+        }).WithSummary("Typed event stream + per-kind counts and inter-event gaps");
+
         group.MapGet("/{id}/phases", (string id) =>
         {
             var bot = manager.Get(id);

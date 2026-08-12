@@ -2296,6 +2296,10 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Raised when the SERVER's target selection is (or may be) gone: our death, or the target's.
     /// The manager re-asserts TARGETTING before the next attack — a bash with a stale assertion is a no-op.</summary>
+    /// <summary>Typed events out to the handle's event stream (see BotHandle.NoteEvent). Set by the
+    /// manager; null in tests. Emitted from the SAME place as the human log line so they cannot drift.</summary>
+    public Action<string, string>? BotEventSink { get; set; }
+
     public Action<string>? TargetInvalidated { get; set; }
 
     public Func<ushort, bool>? IsHuntableMob { get; set; }
@@ -2662,6 +2666,7 @@ public sealed class ZoneView : IDisposable
                 var mobMoved = Dist(_castAtTargetPos, nowTgt);
                 var meMoved  = Dist(_castAtSelf, nowSelf);
                 var ageMs = _castAtUtc == DateTime.MinValue ? -1 : (DateTime.UtcNow - _castAtUtc).TotalMilliseconds;
+                BotEventSink?.Invoke("castfail", $"0x{reason:X4} skill={_castAtSkill} h={_castAtTarget}");
                 _logLevel?.Invoke(BotLogLevel.Note,
                     $"[castfail] 0x{reason:X4} {CastFailReason.Describe(reason)} — skill={_castAtSkill} h={_castAtTarget} " +
                     $"dist@cast={(dAtCast < 0 ? "?" : dAtCast.ToString("F0"))}u dist@fail={(dNow < 0 ? "?" : dNow.ToString("F0"))}u " +
@@ -2731,6 +2736,7 @@ public sealed class ZoneView : IDisposable
                     _recentIncoming.Enqueue((DateTime.UtcNow, lost));
                     while (_recentIncoming.Count > 512) _recentIncoming.TryDequeue(out _);
                     if (Aggressors.Count == 0)
+                        BotEventSink?.Invoke("damage-unattributed", $"lost={lost} hp={hpNow}");
                         _logLevel?.Invoke(BotLogLevel.Note,
                             $"[damage] ⛔ CRITICAL: took {lost} with NO tracked attacker (hp {prevHp}->{hpNow}" +
                             (MaxHp is { } mx && mx > 0 ? $"/{mx}" : "") + "). Source is a DOT or a scripted " +

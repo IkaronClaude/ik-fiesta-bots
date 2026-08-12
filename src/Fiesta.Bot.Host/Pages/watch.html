@@ -349,6 +349,28 @@ function drawCombat(ent, maxHp) {
     g.beginPath(); g.moveTo(cx, cy); g.lineTo(tx, ty); g.stroke();
     g.restore();
   }
+  // ── CURRENT TARGET, in words (operator 2026-08-12) ──────────────────────────────────────────
+  // You can only auto-attack or cast at the entity the SERVER currently has selected, so "what are we
+  // targeting" is a first-class combat fact — and it was only ever visible by reading packet logs.
+  // Shows the raw handle even when the entity is NOT in view: "targeting a handle we cannot see" is
+  // itself the diagnosis (the JCQ clone is a scripted player-copy that never enters the mob list).
+  {
+    const tc = $('#tgtcell');
+    if (tc) {
+      const h = ent.self.target;
+      if (h == null) tc.innerHTML = '<span class="muted">none</span>';
+      else if (tgt) {
+        const d = Math.hypot(tgt.x - sx, tgt.y - sy);
+        tc.innerHTML = `<b>h${h}</b> ${tgt.name || ('mob' + tgt.mobId)} `
+          + `<span class="muted">(m${tgt.mobId}${tgt.level ? ' L' + tgt.level : ''}) ${d.toFixed(0)}u`
+          + `${tgt.hp != null ? ' hp' + tgt.hp : ''}${tgt.aggro ? ' AGGRO' : ''}</span>`;
+      } else {
+        tc.innerHTML = `<b>h${h}</b> <span style="color:#f85149">NOT IN VIEW</span> `
+          + `<span class="muted">— selected but absent from the entity list; cannot be drawn, `
+          + `and a cast/bash aimed elsewhere will not hit it</span>`;
+      }
+    }
+  }
   // self last, on top
   g.beginPath(); g.arc(cx, cy, 5, 0, Math.PI*2); g.fillStyle = '#3fb950'; g.fill();
 
@@ -422,6 +444,7 @@ function charSheet(l) {
       <div>defence</div><div>DEF ${num(st.def)} · M.DEF ${num(st.magicDef)}</div>
       <div>aim / evasion</div><div>${num(st.aim)} / ${num(st.evasion)}</div>
       <div>facing</div><div>${l.facing != null ? l.facing.toFixed(0)+'°' : '<span class="muted">none set</span>'}</div>
+      <div>target</div><div id="tgtcell"><span class="muted">—</span></div>
       <div>level exp</div><div>${expBandText(l)}</div>
     </div>`;
   const ps = l.passives;
