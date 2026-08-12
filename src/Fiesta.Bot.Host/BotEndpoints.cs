@@ -1085,7 +1085,28 @@ public static class BotEndpoints
         var path = Path.Combine(dir, m + ".shbd");
         try
         {
-            if (!File.Exists(path)) return null;
+            // ⛔ THE FILENAMES ARE NOT CONSISTENTLY CASED AND THE POD IS LINUX.
+            // BlockInfo ships `Linkfield02.bdt` next to `linkfield02.shbd` — capital B, lowercase s.
+            // Windows does not care; the container does, so LoadGrid("Linkfield02") found nothing and
+            // returned null SILENTLY. A null grid means no pathfinding on that map at all: the bot cannot
+            // walk anywhere, cannot reach a gate, and no relog can fix it because the filename does not
+            // change. JcqArcher sat at (2588,8288) on Linkfield02 for 14 minutes through two relogs while
+            // the operator walked the same ground in the real client without trouble, and the .shbd itself
+            // says that tile and its whole eastern half are WALKABLE — the grid was simply never loaded.
+            if (!File.Exists(path))
+            {
+                var hit = Directory.EnumerateFiles(dir, "*.shbd")
+                    .FirstOrDefault(f => string.Equals(Path.GetFileName(f), m + ".shbd",
+                                                       StringComparison.OrdinalIgnoreCase));
+                if (hit is null)
+                {
+                    // ⛔ NEVER SILENT. No grid = the bot is immobile on this map; that must be loud.
+                    Console.Error.WriteLine($"[nav] ⛔ CRITICAL: no .shbd for map '{m}' in {dir} — " +
+                        "pathfinding is DISABLED on this map, the bot will not be able to walk at all.");
+                    return null;
+                }
+                path = hit;
+            }
             var grid = BlockGrid.Load(path);
             // EROSION for scenario-instance maps (2026-07-15). The bot-vs-client compare + MOVEFAIL-desync logging
             // proved the finale failure is a nav collision mismatch: the instance .shbd walkable border is ~1 tile

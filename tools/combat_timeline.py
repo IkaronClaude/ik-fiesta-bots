@@ -48,6 +48,40 @@ SHOW = {"NC_BAT_SWING_START_CMD","NC_BAT_SWING_DAMAGE_CMD","NC_BAT_CEASE_FIRE_CM
         "NC_BRIEFINFO_BRIEFINFODELETE_CMD","NC_ITEM_PICK_REQ"}
 
 
+# ⛔ SWING_DAMAGE's flag is a DIFFERENT BITFIELD from SkillDamage's — same information, different order.
+# Only ismissed (bit2) and isshieldblock (bit3) coincide, which is exactly enough coincidence to make a
+# wrong decoder look right: a CRIT would read as "isdamage" and a KILLING BLOW as "isenchant".
+# Both taken from Fiesta.pdb (PROTO_NC_BAT_SWING_DAMAGE_CMD::<unnamed-type-flag>).
+SWING_B0 = ["iscritical","isresist","ismissed","isshieldblock","isCostumCharged","isDead",
+            "isDamege2Heal","isImmune"]
+SWING_B1 = ["isCostumShieldCharged"]
+
+def swingflags(fl):
+    out  = [SWING_B0[i] for i in range(8) if fl & (1 << i)]
+    out += [SWING_B1[i] for i in range(1) if (fl >> 8) & (1 << i)]
+    rest = ((fl >> 8) & ~0x01) & 0xFF
+    if rest: out.append("hi:0x%02X" % rest)
+    return ",".join(out) or "-"
+
+
+# Skill id -> name, exported from client ActiveSkill.shn/PassiveSkill.shn (tools/skill-names.json).
+# NC_BAT_SKILLBASH_OBJ_CAST_REQ is `skill u16 @0, target u16 @2` (Fiesta.pdb), so a cast names BOTH the
+# skill and who it is aimed at — no inference needed. We still track the last TARGETTING_REQ, because a
+# BASHSTART/auto-attack stream carries no target of its own.
+_SKILL_NAMES = {}
+try:
+    import json as _json, os as _os
+    _p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "skill-names.json")
+    if _os.path.exists(_p):
+        _SKILL_NAMES = _json.load(open(_p, encoding="utf-8"))
+except Exception:
+    pass
+
+def skillname(sid):
+    if sid is None: return "?"
+    return _SKILL_NAMES.get(str(sid)) or ("skill%d" % sid)
+
+
 def flagnames(fl):
     out  = [FLAG_B0[i] for i in range(8) if fl & (1 << i)]
     out += [FLAG_B1[i] for i in range(3) if (fl >> 8) & (1 << i)]
@@ -108,6 +142,65 @@ def skillhits(f):
         out.append((b[o] | (b[o+1] << 8), b[o+2] | (b[o+3] << 8),
                     struct.unpack('<I', b[o+4:o+8])[0], struct.unpack('<I', b[o+8:o+12])[0]))
     return out
+
+
+# ── BOT-SIDE PACKET LOGS ──────────────────────────────────────────────────────────────────────────
+# The bot's own PacketLog (POST /api/bots/{id}/packetlog -> /app/packets-<id>.log) is a BETTER source
+# than a pcap here: it already carries real WALL-CLOCK timestamps plus the struct name, so there is no
+# per-direction "@" ambiguity at all. What it does NOT carry is decoded struct fields - only hex - so we
+# decode the handful of combat opcodes ourselves, using the same layouts documented above.
+#   [17:00:07.746] S->C 0x0807 d=2 c=7 len=2 PROTO_NC_MISC_SEED_ACK
+#     0000  E2 01                                             |..|
+BOT_LINE = re.compile(r'^\[(\d\d):(\d\d):(\d\d)\.(\d+)\]\s+([CS])->[CS]\s+(0x[0-9A-Fa-f]{4})\s+.*?\s(\S+)\s*$')
+
+def _u16(b, o): return (b[o] | (b[o+1] << 8)) if o + 2 <= len(b) else None
+def _u32(b, o): return struct.unpack('<I', b[o:o+4])[0] if o + 4 <= len(b) else None
+
+def decode_fields(name, b):
+    """Field decode from the raw payload (the bot log gives hex only)."""
+    f = {}
+    if name == "NC_BRIEFINFO_REGENMOB_CMD" and len(b) >= 5:
+        f["handle"], f["mobid"] = _u16(b, 0), _u16(b, 3)
+    elif name == "NC_BAT_SWING_DAMAGE_CMD" and len(b) >= 16:
+        f["attacker"], f["defender"] = _u16(b, 0), _u16(b, 2)
+        f["flag"] = _u16(b, 4)                      # crit / miss / resist / dead — see SWING_B0
+        f["damage"], f["resthp"] = _u16(b, 6), _u32(b, 8)
+    elif name == "NC_BAT_SWING_START_CMD" and len(b) >= 4:
+        f["attacker"], f["defender"] = _u16(b, 0), _u16(b, 2)
+    elif name == "NC_BRIEFINFO_BRIEFINFODELETE_CMD" and len(b) >= 2:
+        f["hnd"] = _u16(b, 0)          # `hnd`, NOT `handle` - and it means despawn, not death
+    elif name == "NC_BAT_SKILLBASH_OBJ_CAST_REQ" and len(b) >= 4:
+        f["skill"], f["target"] = _u16(b, 0), _u16(b, 2)   # PDB: skill u16 @0, target u16 @2
+    elif name in ("NC_BAT_TARGETTING_REQ", "NC_BAT_TARGETCHANGE_CMD") and len(b) >= 2:
+        f["target"] = _u16(b, 0)
+    elif name == "NC_BAT_HPCHANGE_CMD" and len(b) >= 6:
+        f["handle"], f["hp"] = _u16(b, 0), _u32(b, 2)
+    return f
+
+def parse_botlog(text):
+    frames, cur, hexb = [], None, []
+    def flush(cur, hexb):
+        if cur is None: return
+        b = bytes.fromhex("".join(hexb)) if hexb else b""
+        cur["hex"] = b.hex()
+        cur["f"] = decode_fields(cur["name"], b)
+        frames.append(cur)
+    for line in text.splitlines():
+        m = BOT_LINE.match(line.rstrip())
+        if m:
+            flush(cur, hexb)
+            hh, mm, ss, ms, d, op, nm = m.groups()
+            ms = int(ms.ljust(3, "0")[:3])
+            cur = {"seq": len(frames), "conv": 0, "dir": d, "op": op,
+                   "at": ((int(hh) * 3600 + int(mm) * 60 + int(ss)) * 1000 + ms),
+                   "name": nm.replace("PROTO_", ""), "f": {}}
+            hexb = []
+            continue
+        hm = re.match(r'\s+[0-9A-Fa-f]{4}\s+((?:[0-9A-Fa-f]{2}[ ]+)+)', line)
+        if hm and cur is not None:
+            hexb.append(hm.group(1).replace(" ", ""))
+    flush(cur, hexb)
+    return frames
 
 
 def build(frames):
@@ -192,6 +285,17 @@ def render(frames, mob, me, conv, group, out, mobnames=None):
             W(f"{idx:6}  C-> {'TARGET':22} {(mn(target_now) if target_now is not None else '?'):34} held until next change\n")
             continue
         if f["name"] == "NC_BAT_SKILLBASH_OBJ_CAST_REQ":
+            sid = fl.get("skill"); tgt = fl.get("target")
+            if sid is None:
+                try:
+                    hb = bytes.fromhex(f.get("hex",""))
+                    if len(hb) >= 4: sid, tgt = hb[0] | (hb[1] << 8), hb[2] | (hb[3] << 8)
+                except ValueError: pass
+            if sid is not None:
+                whom = mn(tgt) if tgt else (mn(target_now) if target_now is not None else "no target")
+                W("%6d  C-> %-22s %-34s %s (Stream %d: @%d)\n" %
+                  (idx, "SKILL_CAST", "US -> " + whom, skillname(sid), f["conv"], f["at"]))
+                continue
             W(f"{idx:6}  C-> {'SKILL_CAST':22} {('US -> ' + (mn(target_now) if target_now is not None else 'no target')):34} via tracked target\n")
             continue
         if f["name"] == "NC_BAT_SKILLBASH_HIT_DAMAGE_CMD":
@@ -214,6 +318,8 @@ def render(frames, mob, me, conv, group, out, mobnames=None):
         det = ""
         if "damage" in fl: det += f"dmg={fl['damage']} "
         if "resthp" in fl: det += (f"ourHP={fl['resthp']} " if fl.get("defender") == my else f"tgtHP={fl['resthp']} ")
+        if f["name"] == "NC_BAT_SWING_DAMAGE_CMD" and fl.get("flag") is not None:
+            det += "[%s] " % swingflags(fl["flag"])
         W("%6d  %s %-22s %-34s %s(Stream %d: @%d)\n" % (idx, "C->" if f["dir"]=="C" else "S<-", tag, who, det, f["conv"], f["at"]))
     W(f"\n    dealt: " + ", ".join(f"{mn(h)}={dealt.get(h,0)}" for h in sorted(g)) + "\n")
     W(f"    taken: " + ", ".join(f"{mn(h)}={taken.get(h,0)}" for h in sorted(g)) +
@@ -226,6 +332,7 @@ def main():
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--pcap", help="a .pcapng (real player OR a capture armed on the bot)")
     src.add_argument("--decoded", help="an already-decoded pcap_decode.py dump")
+    src.add_argument("--botlog", help="a bot-side PacketLog (/app/packets-<id>.log); has real timestamps")
     ap.add_argument("--conv", type=int, help="conversation index")
     ap.add_argument("--group", help="comma-separated mob handles, e.g. 0x0014,0x0015")
     ap.add_argument("--fight", type=int, help="pick the biggest fight against this mobid")
@@ -235,8 +342,10 @@ def main():
     ap.add_argument("-o", "--out", help="write here instead of stdout")
     a = ap.parse_args()
 
-    text = open(a.decoded, encoding="utf-8", errors="replace").read() if a.decoded else decode_pcap(a.pcap)
-    frames = parse(text)
+    if a.botlog:
+        frames = parse_botlog(open(a.botlog, encoding="utf-8", errors="replace").read())
+    else:
+        frames = parse(open(a.decoded, encoding="utf-8", errors="replace").read() if a.decoded else decode_pcap(a.pcap))
     mob, me = build(frames)
     out = open(a.out, "w", encoding="utf-8") if a.out else sys.stdout
 
