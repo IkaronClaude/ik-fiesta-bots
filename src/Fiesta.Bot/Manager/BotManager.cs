@@ -3111,7 +3111,14 @@ public sealed class BotManager : IAsyncDisposable
                     if (handle.CurrentMap is { } dmap && GridProvider?.Invoke(dmap) is { HasDoors: true } dgrid)
                         dgrid.SetDoorStates(states);
                 };
-                if (entry.CharHandle is { } selfH2) zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
+                if (entry.CharHandle is { } selfH2)
+                {
+                    zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
+                    // Stamp it into the packet log too — see PacketLog.NoteSelfHandle for why analysis
+                    // must never infer this. Written per zone-enter because handles are PER MAP: a log
+                    // spanning a map change carries several, and the tool needs the one in force.
+                    handle.PacketLog?.NoteSelfHandle(selfH2, handle.CharName ?? handle.Options.Character);
+                }
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
                 RegisterMetrics(handle, zoneView);
                 // ⚔️ DURABLE THREAT TABLE: seed what we already know about how hard each mob hits, and push

@@ -33,6 +33,28 @@ public sealed class PacketLog : IDisposable
         _writer.WriteLine($"==== packet log opened {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} ====");
     }
 
+    /// <summary>Record OUR OWN entity handle in the log, so analysis never has to infer it.
+    ///
+    /// <para>⛔ WHY THIS EXISTS: SWING_START/SWING_DAMAGE are BROADCASTS about every nearby entity, and
+    /// this server runs five bots plus real players on the same maps, so several handles legitimately
+    /// attack the same mobs. Tools were guessing which one was us ("attacker of the first swing after our
+    /// bash", "whoever damages what we targeted") and getting it WRONG — a log where we are plainly h8300
+    /// resolved to h8303. With the wrong handle our own swings are invisible and every bash scores as
+    /// DEAD, which is exactly how a "90% dead bash" statistic was produced for a bot that was swinging
+    /// normally. The bot has known its own handle since login; nothing should be inferring it.</para></summary>
+    public void NoteSelfHandle(ushort handle, string? character = null)
+    {
+        try
+        {
+            lock (_gate)
+            {
+                if (_disposed) return;
+                _writer.WriteLine($"==== self handle {handle}{(character is null ? "" : $" ({character})")} ====");
+            }
+        }
+        catch { /* swallow — observability must not break traffic */ }
+    }
+
     /// <summary>The delegate to assign to a connection/session PacketTap.</summary>
     public void Tap(bool outbound, ushort opcode, ReadOnlyMemory<byte> payload)
     {
