@@ -2706,6 +2706,24 @@ public sealed class ZoneView : IDisposable
                             "Incoming damage above that CANNOT be out-healed.");
                     }
                 }
+                // ⛔ TAKING DAMAGE MUST NOT DEPEND ON KNOWING WHO FROM (operator 2026-08-12: MageFresh
+                // "started taking damage but no enemy in view"). InCombat was derived ONLY from
+                // SWING_DAMAGE naming us as defender, so damage that arrives as a DOT or a scripted HP
+                // change left the bot at 64/407 with aggro=0 and inCombat=FALSE — it did not heal, did
+                // not flee, and died on a ~35s loop inside the JCQ instance while believing it was safe.
+                // An unexplained HP DROP is combat, full stop; attribution is a nice-to-have on top.
+                if (Hp is { } prevHp && hpNow < (int)prevHp && _stoneHealPendingUntil <= DateTime.UtcNow)
+                {
+                    var lost = (int)prevHp - hpNow;
+                    LastHitAtUtc = DateTime.UtcNow;          // => InCombat true, so heal/flee engage
+                    _recentIncoming.Enqueue((DateTime.UtcNow, lost));
+                    while (_recentIncoming.Count > 512) _recentIncoming.TryDequeue(out _);
+                    if (Aggressors.Count == 0)
+                        _logLevel?.Invoke(BotLogLevel.Note,
+                            $"[damage] ⛔ CRITICAL: took {lost} with NO tracked attacker (hp {prevHp}->{hpNow}" +
+                            (MaxHp is { } mx && mx > 0 ? $"/{mx}" : "") + "). Source is a DOT or a scripted " +
+                            "hit we do not attribute — treating it as COMBAT anyway so heal/flee engage.");
+                }
                 Hp = hp;
                 HpChanged?.Invoke(hp);
             }
