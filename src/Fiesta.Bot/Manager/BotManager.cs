@@ -241,7 +241,12 @@ public sealed class BotManager : IAsyncDisposable
         if (!_bots.TryGetValue(id, out var handle)) return false;
         var opts = handle.Options;
         var (sname, ssrc, stick) = (handle.LastScriptName, handle.LastScriptSource, handle.LastScriptTickMs);
-        handle.Log("RELOG requested — clean logout → re-login → re-apply script");
+        // ⛔ CRITICAL, and tagged so it can never be missed again. A relog costs a FULL town pass and
+        // resets the driver — on 2026-08-12 bots were relogging every ~4 min (JcqArcher 97 times in an
+        // hour) and it went unnoticed for a whole session because the line read like routine bookkeeping
+        // among thousands of Note lines. Grep `CRITICAL` to find every one.
+        handle.Log($"⛔ CRITICAL: RELOG — clean logout → re-login → re-apply script. " +
+                   $"A relog costs a full town pass; if these repeat, THAT is the levelling blocker.");
         _ = Task.Run(async () =>
         {
             try
