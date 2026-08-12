@@ -805,6 +805,12 @@ public sealed class BotApi
     /// and 0 kills is a real state. Do not treat either as "unset".</para></summary>
     public int questObjProgress(int id, int objIdx) => View?.QuestObjProgress(id, objIdx) ?? 0;
 
+    /// <summary>Report the driver's current phase so the host can account time to it. Safe to call every
+    /// tick — re-reporting the same phase keeps its running total current rather than being ignored.
+    /// <para>Exists because the driver's own phase tally is script-local: it resets on every re-apply and
+    /// only ever reaches a log line, so "where did the night go?" was unanswerable.</para></summary>
+    public void notePhase(string phase) { if (_mgr.Get(Id) is { } h) h.NotePhase(phase); }
+
     /// <summary>Abandon a quest (NC_QUEST_GIVE_UP_REQ). Used to clear a persistence-glitched
     /// quest (active but stuck at 0 progress) so it can be re-accepted fresh.</summary>
     public bool giveUpQuest(int id) => Ok(Wait(_mgr.GiveUpQuestAsync(Id, (ushort)id)));

@@ -262,6 +262,33 @@ public static class BotEndpoints
         // mark. Concretely it exposes the bug class found on 2026-08-05: "Rare Material 4"(q2511) is a
         // type-2 COLLECT objective for an item dropped by mob22 "Marlone" (L26, 9916 HP, GradeType 1) —
         // a boss, reachable only through a collect objective, which the type-1-only boss screen missed.
+        // Where the hours actually go. Answers "why are all three bots in town?" over ANY span, unlike
+        // the note ring buffer which covers ~21 minutes at current density.
+        group.MapGet("/{id}/phases", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            string? cur = bot.CurrentPhase.Phase;
+            double curSecs = bot.CurrentPhase.Seconds;
+            // Include the OPEN phase's elapsed time in its total, or a phase the bot is sitting in right
+            // now reads as zero — which is exactly the "stuck in town" case we are trying to see.
+            var totals = bot.PhaseSeconds.ToDictionary(k => k.Key, v => v.Value);
+            if (cur is not null) totals[cur] = totals.TryGetValue(cur, out var t) ? t + curSecs : curSecs;
+            var sum = totals.Values.Sum();
+            return Results.Ok(new
+            {
+                Current = cur,
+                CurrentSeconds = Math.Round(curSecs, 1),
+                TotalSeconds = Math.Round(sum, 1),
+                Phases = totals.OrderByDescending(kv => kv.Value).Select(kv => new
+                {
+                    Phase = kv.Key,
+                    Seconds = Math.Round(kv.Value, 1),
+                    Pct = sum > 0 ? Math.Round(100 * kv.Value / sum, 1) : 0,
+                }),
+            });
+        }).WithSummary("Seconds accounted to each driver phase (where the time goes)");
+
         group.MapGet("/{id}/quests", (string id) =>
         {
             var bot = manager.Get(id);

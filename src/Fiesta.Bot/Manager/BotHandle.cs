@@ -68,6 +68,44 @@ public sealed class BotHandle
     /// before every cast is traffic the real client does not send, in the window the swing needs.</summary>
     public ushort CurrentTarget { get; internal set; }
 
+    // ── WHERE THE HOURS ACTUALLY GO ──────────────────────────────────────────────────────────────
+    // Operator 2026-08-12: "ALL 3 lvl 19 bots were in town when I just checked on them. That's
+    // abnormal." There was no way to answer it: the driver tallies phase time in a SCRIPT-LOCAL table,
+    // so it resets on every script re-apply and only ever surfaces in a periodic log line -- and the
+    // note ring buffer covers ~21 minutes at current density, far too short to see where a NIGHT went.
+    // Accumulating here makes it survive script re-applies and be queryable at any time.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, double> _phaseSeconds = new();
+    private string? _currentPhase;
+    private DateTime _phaseSinceUtc = DateTime.UtcNow;
+    private readonly object _phaseGate = new();
+
+    /// <summary>Seconds spent in each driver phase since this bot started, newest total wins.</summary>
+    public IReadOnlyDictionary<string, double> PhaseSeconds => _phaseSeconds;
+
+    /// <summary>The phase the driver says it is in, and how long it has been there.</summary>
+    public (string? Phase, double Seconds) CurrentPhase
+    {
+        get { lock (_phaseGate) return (_currentPhase, (DateTime.UtcNow - _phaseSinceUtc).TotalSeconds); }
+    }
+
+    /// <summary>Called by the driver whenever it sets its phase. Closes the previous phase's clock and
+    /// opens the new one. Re-reporting the SAME phase is not a no-op — it keeps the running total
+    /// current, so a phase the bot never leaves still accrues instead of showing zero.</summary>
+    public void NotePhase(string phase)
+    {
+        if (string.IsNullOrWhiteSpace(phase)) return;
+        lock (_phaseGate)
+        {
+            var now = DateTime.UtcNow;
+            if (_currentPhase is { } prev)
+            {
+                var d = (now - _phaseSinceUtc).TotalSeconds;
+                if (d > 0 && d < 3600) _phaseSeconds.AddOrUpdate(prev, d, (_, v) => v + d);
+            }
+            _currentPhase = phase; _phaseSinceUtc = now;
+        }
+    }
+
     public bool LastDialogConcluded { get; internal set; }
 
     /// <summary>The last-applied Lua script (name/source/tick) — kept so a self-relog (bot.relog / stuck
