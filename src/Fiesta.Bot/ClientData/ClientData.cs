@@ -103,6 +103,17 @@ public sealed class ClientData
             // Slicer/Fatal Slash); 0 = a utility/no-damage skill (Snearing Kick, Concussive Charge). Lets
             // the driver pick DAMAGE skills for the kite-chip so a fled mob keeps bleeding vs regenerating.
             MaxWc: GetInt(row, "MaxWC"),
+            // ⛔ MaxMA IS THE OTHER HALF OF "DOES THIS SKILL DEAL DAMAGE", AND IT WAS MISSING.
+            // MaxWC is the WEAPON coefficient; a spell's damage is in MaxMA, and for a caster's nukes
+            // MaxWC is 0. Verified across ActiveSkill.shn: 255 skills carry magic damage with ZERO weapon
+            // damage — every Magic Missile, Ice Bolt and Fire Bolt rank among them. With only MaxWC
+            // exposed, a Mage read as having NO damage skills at all, which quietly broke four separate
+            // rules that ask that question: the "stop auto-attacking once you have a rotation" threshold
+            // never tripped, engageRange() found no ranged damage skill and fell back to melee, the
+            // kite-chip filtered out every nuke, and castRotation's "pick the biggest hit" compared 0
+            // against 0 and took whatever the hash order offered — which is how a Cleric ended up
+            // spamming Protect and Resist and burning its SP stones.
+            MaxMa: GetInt(row, "MaxMA"),
             // STUN: does any abnormal-state effect (StaNameA..D) apply a STUN? A stun skill (Concussive Charge =
             // StaBattleBlowStun, 100%) freezes the target so the bot can safely kite+heal on low HP (operator
             // "stun and kite on low hp"). Detected by the "Stun" substring in the state name — data-driven, NO
@@ -441,6 +452,46 @@ public sealed class ClientData
     //   19 alone (n=25) -> 16 "…Entangle" + 7 "…Bind" (SubStaSpiritThornEntangle, SubStaMarloneEntangle, …)
     private const int ActionBlockActionIndex = 25;
     private IReadOnlySet<uint>? _stunAbstates;
+
+    // AbState InxName -> AbStataIndex (the value that travels on the wire in ABSTATESET/RESET). The whole
+    // client uses names in ActiveSkill (StaNameA..D) and indices on the wire, so this is the join between
+    // "what does this skill apply" and "what is currently on me".
+    private Dictionary<string, uint>? _abstateIndexByName;
+
+    /// <summary>The abstate INDICES a skill applies, from its <c>StaNameA..D</c> resolved through
+    /// <c>AbState.InxName → AbStataIndex</c>. Empty for a skill that applies no abnormal state.
+    ///
+    /// <para>This is what makes a BUFF castable exactly once instead of on cooldown (operator 2026-08-12:
+    /// "buffs will apply an abstate — we just need to check if the target (possibly ourselves) already
+    /// have this abstate, if so, do not cast"). ClericFresh was re-casting Protect [01] and Resist [01]
+    /// every time they came off cooldown, at 30 and 46 SP a press, draining the SP stones it needed for
+    /// the fight. A real player buffs once and then fights.</para></summary>
+    public IReadOnlyList<uint> SkillAbstates(int skillId)
+    {
+        var t = Table("ActiveSkill");
+        var row = t is null ? null : (t.FindByLong("ID", skillId) ?? t.FindByLong("id", skillId));
+        if (row is null) return [];
+        if (_abstateIndexByName is null)
+        {
+            var map = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
+            if (Table("AbState") is { } ab)
+                foreach (var r in ab.Rows)
+                {
+                    var n = GetStr(r, "InxName");
+                    if (!string.IsNullOrEmpty(n)) map[n] = (uint)GetInt(r, "AbStataIndex");
+                }
+            _abstateIndexByName = map;
+        }
+        List<uint>? outp = null;
+        foreach (var col in (string[])["StaNameA", "StaNameB", "StaNameC", "StaNameD"])
+        {
+            var n = GetStr(row, col);
+            // "-" is the client's empty marker in these columns.
+            if (string.IsNullOrEmpty(n) || n == "-") continue;
+            if (_abstateIndexByName.TryGetValue(n, out var idx)) (outp ??= []).Add(idx);
+        }
+        return (IReadOnlyList<uint>?)outp ?? [];
+    }
 
     /// <summary>True if this abstate is a STUN (blocks actions as well as movement), as opposed to a
     /// ROOT/entangle which only blocks movement. Both are move-blocking, so
@@ -923,8 +974,14 @@ public sealed record PortalDest(int Index, int GroupNo, string Map, int MinLevel
 /// facing requirement. <see cref="IsMovingSkill"/> = castable while moving (no STOP needed).
 /// <see cref="DelayTimeMs"/> = cooldown (ms). <see cref="Range"/> = cast range (0 = melee).
 /// <see cref="Sp"/> = mana cost.</summary>
-public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0, int DemandType = 0)
+public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0, int DemandType = 0, int MaxMa = 0)
 {
+    /// <summary>How hard this skill hits, whichever school it uses: <see cref="MaxWc"/> for a weapon
+    /// skill, <see cref="MaxMa"/> for a spell. **Ask this, never MaxWc alone** — a caster's nukes carry
+    /// zero weapon coefficient, so a MaxWc-only test reports every Mage as having no damage skills.
+    /// 0 means the skill deals no direct damage at all (a buff, a stun, a heal).</summary>
+    public int Damage => Math.Max(MaxWc, MaxMa);
+
     /// <summary>Gathering / mount / event-toy skill rather than a combat one — see the DemandType note
     /// at the read site. The watch page hides these unless "show misc" is ticked.</summary>
     public bool IsMisc => DemandType == 2;

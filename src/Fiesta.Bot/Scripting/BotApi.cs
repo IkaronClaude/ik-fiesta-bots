@@ -102,10 +102,16 @@ public sealed class BotApi
         // Mage 20-25, Joker 27+); ==1 is the Trainee/alchemy/event bucket (Mining, Ride Mover, the
         // event water-balloons) — the cast rotation must skip those. Passives aren't in ActiveSkill.
         t["useClass"] = si.UseClass;
-        // maxWc = the skill's weapon-damage coefficient (ActiveSkill.MaxWC). >0 = deals real damage
-        // (Slice&Dice/Bone Slicer/Fatal Slash); 0 = utility with NO damage (Snearing Kick, Concussive
-        // Charge). The kite-chip rotation casts only maxWc>0 skills so a fled mob keeps bleeding.
-        t["maxWc"] = si.MaxWc;
+        // ⛔ ASK `damage`, NOT `maxWc`. maxWc is only the WEAPON coefficient (ActiveSkill.MaxWC); a
+        // spell's damage lives in maxMa and its maxWc is 0 — true of every Magic Missile, Ice Bolt and
+        // Fire Bolt (255 such skills in ActiveSkill.shn). The driver tested maxWc alone in four places,
+        // so a Mage read as having NO damage skills: it never stopped auto-attacking, engageRange found
+        // no ranged nuke and fell back to melee, the kite-chip cast nothing, and the rotation's
+        // "pick the biggest hit" compared 0 to 0 and took whatever came first — which is how a Cleric
+        // ended up spamming Protect and Resist and burning its SP stones on buffs mid-fight.
+        // `damage` = max(maxWc, maxMa): "how hard does this hit", whichever school it uses. 0 = a buff,
+        // a stun or a heal, i.e. NOT part of a damage rotation.
+        t["maxWc"] = si.MaxWc; t["maxMa"] = si.MaxMa; t["damage"] = si.Damage;
         // stun = the skill applies a STUN abnormal-state (ActiveSkill StaName*, e.g. Concussive Charge =
         // StaBattleBlowStun). The leveler casts a stun on the target when it kites to heal on low HP, so the
         // frozen mob can't chase/hit while the bot creates space (operator "stun and kite on low hp").
@@ -114,6 +120,14 @@ public sealed class BotApi
         // healOverTime = applies a healing abstate (StaName* "Heal", not "CantHeal"). A cleric derives its
         // ally-heal skill from these two flags over its OWN learned skills (operator 2026-07-23).
         t["heal"] = si.Heal; t["healOverTime"] = si.HealOverTime;
+        // abstates = the abnormal-state INDICES this skill applies (ActiveSkill StaNameA..D resolved
+        // through AbState → AbStataIndex, which is the value the wire uses in ABSTATESET/RESET). Compare
+        // against bot.selfAbstates() to answer "do I already have this buff": a buff is worth casting
+        // ONCE, not every time its cooldown expires (operator 2026-08-12 — ClericFresh was re-casting
+        // Protect [01] and Resist [01] at 30 and 46 SP a press and draining its SP stones mid-fight).
+        var abs = NewTable(); var ai = 1;
+        foreach (var a in _mgr.ClientData?.SkillAbstates(id) ?? []) abs[ai++] = (double)a;
+        t["abstates"] = DynValue.NewTable(abs);
         return DynValue.NewTable(t);
     }
 
@@ -434,6 +448,19 @@ public sealed class BotApi
     /// StaQuestEntangle) is active on the bot — the server MOVEFAILs every move until it clears. The
     /// instance/combat lua should WAIT (don't cast/approach/walk into it) while this is true.</summary>
     public bool rooted() => View?.Rooted ?? false;
+
+    /// <summary>The abnormal-state indices currently active on US (unexpired), as a Lua array. This is
+    /// how the driver answers "do I already have this buff" before spending 30-46 SP re-applying it —
+    /// compare against skillInfo(id).abstates. ZoneView has tracked these since the self-abstate channel
+    /// was decoded; nothing had ever read them, which is the read-path-not-built shape the silver rule
+    /// is about. An empty array means no active states, NOT "unknown".</summary>
+    public DynValue selfAbstates()
+    {
+        var t = NewTable();
+        var i = 1;
+        foreach (var a in View?.SelfAbstateSnapshot() ?? []) t[i++] = (double)a;
+        return DynValue.NewTable(t);
+    }
 
     /// <summary>The current map's instance DOORS (room connectors) from its <c>.sbi</c>, each { name, x, y }
     /// with a WORLD-coord centre. The instance/JCQ clear driver walks door-to-door to traverse the rooms
