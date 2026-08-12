@@ -68,6 +68,30 @@ public sealed class BotHandle
     /// before every cast is traffic the real client does not send, in the window the swing needs.</summary>
     public ushort CurrentTarget { get; internal set; }
 
+    /// <summary>True while we believe the SERVER still holds <see cref="CurrentTarget"/> as our target.
+    ///
+    /// <para>⛔ TARGETING IS SERVER STATE AND IT GETS CLEARED WITHOUT ASKING US. BASHSTART (0x242B) carries
+    /// NO target — payload is 0 bytes — so it attacks whatever the server currently has selected, and a cast
+    /// is only accepted against that same selection (operator 2026-08-12: "auto attack requires a targetting
+    /// packet FIRST which must be aimed at this clone ... you can only cast skills on and auto attack the
+    /// exact enemy you are currently targetting").</para>
+    /// <para>The "only re-target when it changes" optimisation therefore needs an invalidation signal, and it
+    /// had none: CurrentTarget was never reset anywhere. After a death, respawn, map handoff or the target
+    /// dying, the bot kept believing it was targeted, skipped the targeting packet, and sent bare BASHSTARTs
+    /// the server had no target for — a swing-less bash. Handles are per-map too, so a retained handle is not
+    /// merely stale, it can name a different entity entirely.</para>
+    /// <para>Kept as a separate flag rather than resetting CurrentTarget to 0, because 0 is a legitimate
+    /// entity handle and must never be overloaded as "none".</para></summary>
+    public bool TargetAsserted { get; internal set; }
+
+    /// <summary>The server has (or may have) dropped our target — re-assert before the next attack.</summary>
+    public void InvalidateTarget(string why)
+    {
+        if (!TargetAsserted) return;
+        TargetAsserted = false;
+        Log(BotLogLevel.Verbose, $"[target] invalidated ({why}) — will re-send TARGETTING before the next attack");
+    }
+
     // ── AUTO-RELOG PACING ────────────────────────────────────────────────────────────────────────
     // A zone drop used to trigger an INSTANT relog, which races the server's own session cleanup: the
     // new login completes, the server still holds the old zone session, and it closes the new one

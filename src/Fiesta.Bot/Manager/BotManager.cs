@@ -598,10 +598,10 @@ public sealed class BotManager : IAsyncDisposable
         // We sent NC_BAT_TARGETTING_REQ before EVERY cast; the real client sends STOP -> CAST with no
         // TARGET at all unless it is switching (223 targets/hour for the player vs our 361 in half that).
         // Re-asserting the same target is pure extra traffic in the exact window the swing needs.
-        if (handle.CurrentTarget != target)
+        if (handle.CurrentTarget != target || !handle.TargetAsserted)
         {
             await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
-            handle.CurrentTarget = target;
+            handle.CurrentTarget = target; handle.TargetAsserted = true;
         }
         await EnsureBattleModeAsync(handle, s, ct);
         // Record WHICH of the three pre-cast paths ran. They are behaviourally different and the old
@@ -989,10 +989,12 @@ public sealed class BotManager : IAsyncDisposable
             return ActionResult.Sent;
         }
 
-        if (handle.CurrentTarget != target)
+        // BASHSTART carries NO target (payload 0b) — it swings at whatever the SERVER has selected. If our
+        // assertion is stale the bash is a silent no-op, which is exactly what a "dead bash" is.
+        if (handle.CurrentTarget != target || !handle.TargetAsserted)
         {
             await s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct);
-            handle.CurrentTarget = target;
+            handle.CurrentTarget = target; handle.TargetAsserted = true;
         }
         await EnsureBattleModeAsync(handle, s, ct);
 
@@ -3632,6 +3634,9 @@ public sealed class BotManager : IAsyncDisposable
 
                 handle.SetPhase(BotPhase.InZone);
                 handle.ZoneEnteredUtc = DateTime.UtcNow;   // relog pacing measures session life from here
+                // Entering a zone clears the server's selection AND renumbers handles — the retained one
+                // can name a different entity here. Re-assert before the next attack.
+                handle.InvalidateTarget("zone entry / map handoff");
                 Log(firstEntry
                     ? $"*** {sel.Name} IN ZONE ({zoneEp}) — running until stopped ***"
                     : $"*** {sel.Name} RE-ENTERED ZONE ({zoneEp}, {currentMap}) after cross-server handoff ***");

@@ -2294,6 +2294,10 @@ public sealed class ZoneView : IDisposable
     private readonly HashSet<ushort> _scenarioFightable = new();
     public bool IsScenarioFightable(ushort handle) { lock (_scenarioFightable) return _scenarioFightable.Contains(handle); }
 
+    /// <summary>Raised when the SERVER's target selection is (or may be) gone: our death, or the target's.
+    /// The manager re-asserts TARGETTING before the next attack — a bash with a stale assertion is a no-op.</summary>
+    public Action<string>? TargetInvalidated { get; set; }
+
     public Func<ushort, bool>? IsHuntableMob { get; set; }
 
     /// <summary>Returns true if an abstate index IMMOBILIZES the target (set by the manager from
