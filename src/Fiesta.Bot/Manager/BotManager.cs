@@ -3162,7 +3162,22 @@ public sealed class BotManager : IAsyncDisposable
                 // Attack range survives the handoff now. It reset to 0 on every cross-server transition,
                 // and since the bot closes to ~1u before swinging, the first hit after a reset pinned it at
                 // ~2u — after which the cast path judged nearly everything OUT OF RANGE. Max ⇒ seed the max.
-                zoneView.SeedMeleeRange(Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarMeleeRange)?.Max ?? -1);
+                // ⛔ SEED THE MEAN, NOT THE MAX. The max latches ONE position-desync outlier and, being
+                // persisted, makes it permanent: every character on this server had meleeRange pinned at
+                // 135-150u (ClericFresh 149.2, Elfyra 149.8, MageFresh 149.7) — just under the 150 seed
+                // guard, so it sailed through on every login and overwrote the in-session learner that was
+                // specifically fixed to resist exactly this.
+                // What it cost: `tooClose` is 0.40 x range, so a 149u range made the bot treat 60u as TOO
+                // CLOSE. ClericFresh — a near-unkillable physical melee — was logging "TOO CLOSE (17u) —
+                // stepping BACK to ~104u standoff" and retreating OUT of melee, unable to kill anything
+                // while the mobs kept hitting it.
+                // The mean over hundreds of connects is robust and, crucially, CORRECT: 50.3 (n=1010),
+                // 51.0 (n=427), 50.9 (n=349), 52.4 (n=171), 50.8 (n=87). That independently reproduces the
+                // real-client capture measured with tools/client_range.py — auto-attack median 49u, Range=0
+                // melee skills median 51u. Two unrelated sources, same answer; the max agrees with neither.
+                var mrStat = Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarMeleeRange);
+                var mrSeed = mrStat is { Count: > 0 } ms ? ms.Sum / ms.Count : -1;
+                zoneView.SeedMeleeRange(mrSeed);
                 zoneView.IsInsideScenarioArea = (areaName, pos) =>          // hold AREAENTRY_ACK until inside the .aid box
                 {
                     if (handle.CurrentMap is not { } m || AreaProvider?.Invoke(m) is not { } areas) return true; // no data → ack now
