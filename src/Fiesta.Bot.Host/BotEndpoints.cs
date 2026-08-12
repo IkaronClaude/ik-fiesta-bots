@@ -1421,6 +1421,25 @@ public static class BotEndpoints
             foreach (var m in bot.PartyMembers.Values)
                 party.Add(new { m.Name, Level = (int)m.Level, Hp = (double)m.Hp, MaxHp = (double)m.MaxHp, X = (double)m.X, Y = (double)m.Y });
         }
+        // THE MAP-ENTER NPC SEED — the bulk 0x1C09 broadcast at infinite range, i.e. every NPC and gate
+        // on this map, not just what is inside AoI right now. The watch page needs it for two things the
+        // live entity list cannot give: drawing named NPC markers across the whole map, and framing the
+        // heatmap on the area that actually matters (operator 2026-08-13: "start not with a single point
+        // but instead a rectangle encompassing ALL npcs loaded on login burst") instead of on a bounding
+        // box that begins as one dot and grows as the bot wanders.
+        var npcs = new List<object>();
+        if (zv is not null)
+            foreach (var n in zv.NpcSeed)
+                npcs.Add(new
+                {
+                    n.MobId,
+                    Name = cd?.Mob(n.MobId)?.Name ?? (n.IsGate ? (n.LinkMap ?? "gate") : $"npc{n.MobId}"),
+                    X = (double)n.X,
+                    Y = (double)n.Y,
+                    n.IsGate,
+                    n.LinkMap,
+                    Dist = self is { } sp2 ? Math.Sqrt(Math.Pow((double)n.X - sp2.X, 2) + Math.Pow((double)n.Y - sp2.Y, 2)) : (double?)null,
+                });
         // Facing + the current target handle travel with self so the map can draw WHERE WE ARE POINTED and
         // WHERE THE TARGET IS. Operator 2026-08-11 theory this exists to test: we may overshoot the mob (or
         // meet its stand-off circle on the wrong side) and end up with the target BEHIND us — which would
@@ -1444,6 +1463,8 @@ public static class BotEndpoints
                 : null,
             Mobs = mobs,
             Party = party,
+            Npcs = npcs,
+            Map = bot.CurrentMap,
             // The full target view travels with the entity poll so the page needs one request, not two.
             Target = TargetView(bot, cd),
         };

@@ -269,6 +269,80 @@ function vitals(l) {
     <div class="muted" style="margin-top:6px">${l.script ?? ''}</div>`;
 }
 
+// ── MINIMAP LAYER (the client's own art, under both canvases) ─────────────────────────────────────
+// Operator 2026-08-13: "I want the /watch UI to actually display the minimap as the real client does,
+// it's a bit hard to follow locations otherwise." So both maps draw the real per-map art underneath.
+//
+// PROJECTION (measured — tools/minimap_orient.py, see MinimapImage.cs): the image spans the FULL square
+// .shbd grid, world [0, worldWidth] x [0, worldHeight], with the Y AXIS FLIPPED:
+//     imgX = worldX / worldWidth * imgW        imgY = (1 - worldY / worldHeight) * imgH
+// flipY beat every other orientation on every map that discriminates (EldGbl02 0.880 vs 0.415 identity)
+// and never lost. Towns are inconclusive because they are mostly rooftops.
+//
+// A map with no art (several instances) simply leaves the canvas background — the markers still draw,
+// so the panel degrades to what it was before rather than breaking.
+const mmCache = new Map();          // map -> {img, meta, failed}
+function minimap(map) {
+  if (!map) return null;
+  let e = mmCache.get(map);
+  if (e) return e.failed ? null : e;
+  e = { img: null, meta: null, failed: false };
+  mmCache.set(map, e);
+  fetch(`/minimap/${encodeURIComponent(map)}.json`).then(r => r.ok ? r.json() : null).then(m => {
+    if (!m || !m.worldWidth) { e.failed = true; return; }   // no grid loaded => cannot place art
+    e.meta = m;
+    const im = new Image();
+    im.onload = () => { e.img = im; };
+    im.onerror = () => { e.failed = true; };
+    im.src = `/minimap/${encodeURIComponent(map)}.png`;
+  }).catch(() => { e.failed = true; });
+  return e;
+}
+// Paint the sub-rectangle of the minimap covering world [wx0,wy0]-[wx1,wy1] into the DESTINATION rect
+// [dx,dy,dw,dh]. The destination is explicit rather than "the whole canvas" because both callers letterbox
+// and pad: the big map insets by `pad` and the combat map by 6px, so filling the canvas would offset the
+// art from the very markers it sits under. Callers pass the same world rect they project markers with.
+function drawMinimapInto(g, map, wx0, wy0, wx1, wy1, dx, dy, dw, dh, alpha) {
+  const e = minimap(map);
+  if (!e || !e.img || !e.meta) return false;
+  const { worldWidth: ww, worldHeight: wh } = e.meta;
+  const iw = e.img.width, ih = e.img.height;
+  const sx = (wx0 / ww) * iw, sw = ((wx1 - wx0) / ww) * iw;
+  // Y flip: the TOP of the canvas is the HIGH world y, which is the LOW image row.
+  const sy = (1 - wy1 / wh) * ih, sh = ((wy1 - wy0) / wh) * ih;
+  g.save();
+  g.globalAlpha = alpha == null ? 1 : alpha;
+  g.imageSmoothingEnabled = true;
+  // Clip, because a world rect can extend past the image edge (the combat map's window near a border)
+  // and drawImage would otherwise stretch the clamped source across the whole destination.
+  g.beginPath(); g.rect(dx, dy, dw, dh); g.clip();
+  try { g.drawImage(e.img, sx, sy, sw, sh, dx, dy, dw, dh); } catch {}
+  g.restore();
+  return true;
+}
+// One NPC marker + name tag, drawn the same way on both canvases so they read alike.
+// Gates are called out separately: "where does this lead" is the thing you want off a gate.
+function drawNpcMarker(g, px, py, name, isGate, linkMap) {
+  g.save();
+  g.beginPath();
+  if (isGate) { g.rect(px - 3.5, py - 3.5, 7, 7); }
+  else { g.moveTo(px, py - 4); g.lineTo(px + 4, py); g.lineTo(px, py + 4); g.lineTo(px - 4, py); g.closePath(); }
+  g.fillStyle = isGate ? 'rgba(188,140,255,.95)' : 'rgba(86,211,236,.95)';
+  g.fill();
+  g.strokeStyle = 'rgba(0,0,0,.65)'; g.lineWidth = 1; g.stroke();
+  const label = isGate ? (linkMap ? `⇢ ${linkMap}` : 'gate') : name;
+  if (label) {
+    g.font = '9px ui-monospace,monospace';
+    g.textAlign = 'center'; g.textBaseline = 'bottom';
+    const w = g.measureText(label).width;
+    g.fillStyle = 'rgba(0,0,0,.55)';                 // plate, so names stay legible over the art
+    g.fillRect(px - w / 2 - 2, py - 15, w + 4, 11);
+    g.fillStyle = isGate ? '#d2b3ff' : '#8ee7f5';
+    g.fillText(label, px, py - 5);
+  }
+  g.restore();
+}
+
 // ── combat map ────────────────────────────────────────────────────────────────────────────────────
 // Zoomed right in, self always dead centre. Each mob is a circle carrying a NUMBER; the legend below
 // maps number → name, so the map stays readable when a dozen of the same mob are on screen.
@@ -299,7 +373,28 @@ function drawCombat(ent, maxHp) {
   for (const r of [0.33, 0.66, 1]) { g.beginPath(); g.arc(cx, cy, r*(W/2-6), 0, Math.PI*2); g.stroke(); }
 
   const sx = ent.self.x, sy = ent.self.y;
-  const toPx = (x,y) => [cx + ((x-sx)/CM_RANGE)*(W/2-6), cy + ((y-sy)/CM_RANGE)*(H/2-6)];
+  // ⚠️ Y IS FLIPPED HERE (changed 2026-08-13) — world +y draws UPWARD, matching the big map and the
+  // minimap art now painted underneath. It previously drew +y downward; with the client's own terrain
+  // on the canvas, "north is down" would put the picture at odds with the game the operator is watching.
+  // THE FACING ARROW BELOW USES THE SAME CONVENTION AND MUST BE CHANGED WITH IT — an earlier version had
+  // the arrow mirrored against its own mobs and the operator caught it. Both flip together or neither does.
+  const toPx = (x,y) => [cx + ((x-sx)/CM_RANGE)*(W/2-6), cy - ((y-sy)/CM_RANGE)*(H/2-6)];
+
+  // The client's own art underneath, framed on exactly the window we project into. toPx maps
+  // ±CM_RANGE onto ±(W/2-6), so the destination is the canvas inset by that same 6px.
+  drawMinimapInto(g, ent.map, sx-CM_RANGE, sy-CM_RANGE, sx+CM_RANGE, sy+CM_RANGE,
+                  cx-(W/2-6), cy-(H/2-6), (W-12), (H-12), 0.55);
+  // Re-draw the range rings on top of the art, or they vanish into it.
+  g.strokeStyle = 'rgba(120,140,165,.35)';
+  for (const r of [0.33, 0.66, 1]) { g.beginPath(); g.arc(cx, cy, r*(W/2-6), 0, Math.PI*2); g.stroke(); }
+
+  // NPCs from the map-enter seed (operator: a marker + name tag, not a mob-like blob). Only those
+  // inside the zoom window; the seed covers the whole map and would otherwise pile up at the edges.
+  for (const n of ent.npcs||[]) {
+    const [px,py] = toPx(n.x, n.y);
+    if (px < 4 || py < 12 || px > W-4 || py > H-4) continue;
+    drawNpcMarker(g, px, py, n.name, n.isGate, n.linkMap);
+  }
 
   // number the DISTINCT mob types present, so the legend is short
   const types = []; const numOf = new Map();
@@ -317,24 +412,40 @@ function drawCombat(ent, maxHp) {
     if (!c) { c = { x:px, y:py, n:0, types:new Map(), aggro:false, quest:false, danger:false }; clusters.push(c); }
     // Keep the circle centred on the pack, not on whichever mob happened to be first.
     c.x = (c.x*c.n + px)/(c.n+1); c.y = (c.y*c.n + py)/(c.n+1); c.n++;
-    const key = numOf.get(m.mobId);
+    const key = m.name || `mob${m.mobId}`;      // key by NAME: the tag on the map is the name itself
     c.types.set(key, (c.types.get(key)||0) + 1);
     if (m.aggro) c.aggro = true;
     if (m.questMob) c.quest = true;
     if (maxHp > 0 && m.maxHitSeen > 0 && m.maxHitSeen >= maxHp*0.15) c.danger = true;
   }
+  // NAME TAGS, not legend numbers (operator 2026-08-13: "it's really hard to tell enemies apart on the
+  // combat map. please put a small nametag above them instead of the 'legend'"). The number→name legend
+  // forced a lookup off-canvas for every glance; the name goes on the mob. A cluster of mixed types lists
+  // each with its count. Names are truncated rather than wrapped so a pack cannot cover the map.
   g.textAlign = 'center'; g.textBaseline = 'middle';
+  const short = s => (s||'?').length > 16 ? (s.slice(0,15) + '…') : (s||'?');
   for (const c of clusters) {
-    const lines = [...c.types.entries()].sort((a,b) => a[0]-b[0]).map(([k,n]) => `${n}x ${k}`);
-    const r = Math.max(9, Math.min(30, 8 + 4*lines.length + 1.4*c.n));
+    const tags = [...c.types.entries()].sort((a,b) => b[1]-a[1])
+      .map(([name,n]) => n > 1 ? `${n}× ${short(name)}` : short(name));
+    const r = Math.max(7, Math.min(22, 7 + 1.4*c.n));
     g.beginPath(); g.arc(c.x, c.y, r, 0, Math.PI*2);
-    g.fillStyle = c.aggro ? 'rgba(248,81,73,.55)' : 'rgba(125,133,144,.22)';
+    g.fillStyle = c.aggro ? 'rgba(248,81,73,.55)' : 'rgba(125,133,144,.30)';
     g.fill();
     if (c.danger) { g.strokeStyle = '#f85149'; g.lineWidth = 2; g.stroke(); }
     if (c.quest)  { g.beginPath(); g.arc(c.x, c.y, r+3, 0, Math.PI*2); g.strokeStyle = '#d4a017'; g.lineWidth = 2; g.stroke(); }
-    g.fillStyle = '#e6edf3'; g.font = '10px ui-monospace,monospace';
-    const lh = 10, top = c.y - ((lines.length-1)*lh)/2;
-    lines.forEach((t,i) => g.fillText(t, c.x, top + i*lh));
+    // Tag ABOVE the circle, on a plate so it stays readable over the terrain art.
+    g.font = '9px ui-monospace,monospace';
+    g.textBaseline = 'bottom';
+    let ty = c.y - r - 3;
+    for (const t of tags.slice(0, 3).reverse()) {
+      const w = g.measureText(t).width;
+      g.fillStyle = 'rgba(0,0,0,.55)';
+      g.fillRect(c.x - w/2 - 2, ty - 10, w + 4, 11);
+      g.fillStyle = c.aggro ? '#ffb4ae' : '#e6edf3';
+      g.fillText(t, c.x, ty);
+      ty -= 11;
+    }
+    g.textBaseline = 'middle';
   }
   for (const p of ent.party||[]) {
     if (!p.x && !p.y) continue;         // MEMBERLOCATION layout not pinned → 0,0 means UNKNOWN, don't draw
@@ -354,13 +465,13 @@ function drawCombat(ent, maxHp) {
     // Whether the world's y points north is irrelevant to this canvas -- what matters is that the arrow
     // and the mob dots agree, or the picture is worse than no picture.
     const a = ent.self.facing * Math.PI/180, L = 26;
-    const ex = cx + Math.cos(a)*L, ey = cy + Math.sin(a)*L;
+    const ex = cx + Math.cos(a)*L, ey = cy - Math.sin(a)*L;   // -sin: toPx flips y, so this must too
     g.strokeStyle = '#3fb950'; g.lineWidth = 2;
     g.beginPath(); g.moveTo(cx, cy); g.lineTo(ex, ey); g.stroke();
     g.beginPath();                                  // arrow head, same convention as the shaft
     g.moveTo(ex, ey);
-    g.lineTo(ex - Math.cos(a-0.4)*7, ey - Math.sin(a-0.4)*7);
-    g.lineTo(ex - Math.cos(a+0.4)*7, ey - Math.sin(a+0.4)*7);
+    g.lineTo(ex - Math.cos(a-0.4)*7, ey + Math.sin(a-0.4)*7);
+    g.lineTo(ex - Math.cos(a+0.4)*7, ey + Math.sin(a+0.4)*7);
     g.closePath(); g.fillStyle = '#3fb950'; g.fill();
   }
   // Target ray. Driven by the server-side TARGET VIEW (ent.target), not by a lookup in the mob list:
@@ -421,10 +532,14 @@ function drawCombat(ent, maxHp) {
   // self last, on top
   g.beginPath(); g.arc(cx, cy, 5, 0, Math.PI*2); g.fillStyle = '#3fb950'; g.fill();
 
+  // The per-mob legend is gone — every mob now carries its own name tag on the canvas. What is left is
+  // the part a tag cannot express (what the rings and colours MEAN) plus the level/id detail, which is
+  // useful but too long to hang over every circle.
   $('#legend').innerHTML = types.length
-    ? types.map(m => `<span><b>${numOf.get(m.mobId)}</b> ${m.name} <span class="muted">(m${m.mobId}${m.level?` L${m.level}`:''})</span></span>`).join('')
-      + '<span class="muted">· gold ring = quest mob · red ring = has hit us hard · solid = aggro'
-        + ' · green arrow = our facing · dashed gold = to current target</span>'
+    ? '<span class="muted">gold ring = quest mob · red ring = has hit us hard · solid = aggro'
+      + ' · green arrow = our facing · dashed gold = to current target'
+      + ' · <span style="color:#8ee7f5">◆ NPC</span> · <span style="color:#d2b3ff">■ gate</span></span>'
+      + types.map(m => `<span class="muted">${m.name} (m${m.mobId}${m.level?` L${m.level}`:''})</span>`).join('')
     : '<span class="muted">nothing in view</span>';
 }
 
@@ -576,11 +691,27 @@ function draw(now) {
   // Always filter to ONE map. Mixing maps in a single bounding box is not a heatmap, it is a collage.
   const mapKey = selectedMap();
   const shown = mapKey ? pts.filter(p=>p.map===mapKey) : pts;
-  if (!shown.length) { g.fillStyle='#30363d'; g.fillText('no trace yet', 10, 20); return; }
+  // ── VIEWPORT: THE NPC RECTANGLE, NOT THE TRACE ────────────────────────────────────────────────
+  // Operator 2026-08-13: "start not with a single point but instead a rectangle encompassing ALL npcs
+  // loaded on login burst." Framing on the trace made the view meaningless early — one point is a
+  // zero-area box, so the first samples filled the canvas at absurd zoom and the frame lurched with
+  // every step. The map-enter NPC seed is the whole map's NPC roster, so its bbox is a stable frame
+  // that means something from the first paint. The trace is then drawn INSIDE that frame, and the box
+  // is only extended if the bot walks outside it.
+  const npcs = (lastEnt && lastEnt.map === (mapKey || (lastLive && lastLive.map)) ? (lastEnt.npcs||[]) : []);
   let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
+  for (const n of npcs) { if(n.x<x0)x0=n.x; if(n.x>x1)x1=n.x; if(n.y<y0)y0=n.y; if(n.y>y1)y1=n.y; }
   for (const p of shown) { if(p.x<x0)x0=p.x; if(p.x>x1)x1=p.x; if(p.y<y0)y0=p.y; if(p.y>y1)y1=p.y; }
-  const pad = 8, sx = (x1-x0)||1, sy = (y1-y0)||1, s = Math.min((W-2*pad)/sx, (H-2*pad)/sy);
+  if (x1 < x0) { g.fillStyle='#30363d'; g.fillText('no trace or NPC seed yet', 10, 20); return; }
+  // Square the box so the minimap art underneath keeps its aspect — a stretched map is a wrong map.
+  const cxw = (x0+x1)/2, cyw = (y0+y1)/2, half = Math.max((x1-x0), (y1-y0), 1)/2 * 1.06;
+  x0 = cxw-half; x1 = cxw+half; y0 = cyw-half; y1 = cyw+half;
+  const pad = 8, sxs = (x1-x0)||1, sys = (y1-y0)||1, s = Math.min((W-2*pad)/sxs, (H-2*pad)/sys);
   const px = p => pad + (p.x-x0)*s, py = p => H - (pad + (p.y-y0)*s);   // flip Y: game +Y is up
+  // The client's own art, framed on the same world rect the points project into: world x0 lands at
+  // px=pad and world y0 at py=H-pad, so the destination is that same inset box.
+  drawMinimapInto(g, mapKey || (lastLive && lastLive.map), x0, y0, x1, y1,
+                  pad, H - pad - sys*s, sxs*s, sys*s, 0.85);
   // Age-based decay is applied HERE, in the browser, so the server never has to pick a curve and the
   // same raw points can be re-rendered with different decay without refetching.
   const span = 30*60*1000;
@@ -589,10 +720,15 @@ function draw(now) {
     g.fillStyle = `rgba(${Math.round(88+167*(1-age))},${Math.round(166-60*age)},${Math.round(255-140*age)},${0.15+0.55*(1-age)})`;
     g.fillRect(px(p)-1.5, py(p)-1.5, 3, 3);
   }
-  const last = shown[shown.length-1];
-  g.fillStyle = '#f85149'; g.beginPath(); g.arc(px(last), py(last), 3.5, 0, 7); g.fill();
-  g.fillStyle = '#7d8590';
-  g.fillText(`${shown.length} pts  x ${x0}-${x1}  y ${y0}-${y1}`, 6, H-6);
+  // NPC markers + name tags on the big map too (operator 2026-08-13), so the frame is readable as a
+  // PLACE — "the bot is by the Smith" — rather than as an abstract cloud of dots.
+  for (const n of npcs) drawNpcMarker(g, px(n), py(n), n.name, n.isGate, n.linkMap);
+  if (shown.length) {
+    const last = shown[shown.length-1];
+    g.fillStyle = '#f85149'; g.beginPath(); g.arc(px(last), py(last), 3.5, 0, 7); g.fill();
+  }
+  g.fillStyle = '#7d8590'; g.textAlign = 'left'; g.textBaseline = 'alphabetic';
+  g.fillText(`${shown.length} pts · ${npcs.length} npc · x ${x0.toFixed(0)}-${x1.toFixed(0)}  y ${y0.toFixed(0)}-${y1.toFixed(0)}`, 6, H-6);
 }
 
 // ── log with severity filter ──────────────────────────────────────────────────────────────────────
@@ -673,7 +809,7 @@ $('#bot').onchange = () => {
   localStorage.setItem('botwatch.bot', $('#bot').value);
   // Everything on the page belongs to ONE bot. Switching without clearing leaves the previous bot's
   // trace, quests and toasts on screen under the new bot's name — which is worse than a blank panel.
-  pts = []; sinceT = 0; lastMap = null; lastLive = null; questList = []; questsById = new Map();
+  pts = []; sinceT = 0; lastMap = null; lastLive = null; lastEnt = null; questList = []; questsById = new Map();
   tickMetrics(); tickTrace(); tickLog(); tickCombat();
 };
 // ── ITEMS ────────────────────────────────────────────────────────────────────────────────────────
@@ -784,6 +920,9 @@ async function tickCombat() {
     if (!r.ok) return;
     const d = await r.json();
     $('#mapname').textContent = d.mapDisplay ? `· ${d.mapDisplay} (${d.map})` : (d.map ? `· ${d.map}` : '');
+    // Keep the latest entity snapshot for the BIG map: the NPC seed it frames on arrives with the
+    // combat poll (5/sec), while the trace poll is far slower.
+    lastEnt = d.entities;
     drawCombat(d.entities, d.maxHp);
   } catch {}
 }
@@ -960,7 +1099,7 @@ function scanEvents(txt) {
   }
   if (toastSeen.size > 4000) toastSeen.clear();
 }
-let lastKilledName = null, lastLive = null;
+let lastKilledName = null, lastLive = null, lastEnt = null;
 let questsById = new Map(), questList = [];
 function questsByName(n) { return questList.find(q => q.name === n); }
 </script>

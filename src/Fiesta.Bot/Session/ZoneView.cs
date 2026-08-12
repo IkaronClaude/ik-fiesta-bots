@@ -2813,12 +2813,29 @@ public sealed class ZoneView : IDisposable
                     LastHitAtUtc = DateTime.UtcNow;          // => InCombat true, so heal/flee engage
                     _recentIncoming.Enqueue((DateTime.UtcNow, lost));
                     while (_recentIncoming.Count > 512) _recentIncoming.TryDequeue(out _);
+                    // ⚠️ THESE BRACES ARE LOAD-BEARING. Without them the CRITICAL line below sat outside
+                    // the `if` (correctly INDENTED but unguarded), so it fired on EVERY hit taken rather
+                    // than only unattributed ones: FighterFresh logged 1295 "NO tracked attacker" lines
+                    // while its attacker was tracked the whole time. A CRITICAL that fires unconditionally
+                    // destroys the signal it exists to give — `grep CRITICAL` is the FIRST thing read on
+                    // any investigation (see CLAUDE.md), and this drowned it.
+                    var hpTail = MaxHp is { } mx && mx > 0 ? $"/{mx}" : "";
                     if (Aggressors.Count == 0)
+                    {
                         BotEventSink?.Invoke("damage-unattributed", $"lost={lost} hp={hpNow}");
                         _logLevel?.Invoke(BotLogLevel.Note,
                             $"[damage] ⛔ CRITICAL: took {lost} with NO tracked attacker (hp {prevHp}->{hpNow}" +
-                            (MaxHp is { } mx && mx > 0 ? $"/{mx}" : "") + "). Source is a DOT or a scripted " +
+                            hpTail + "). Source is a DOT or a scripted " +
                             "hit we do not attribute — treating it as COMBAT anyway so heal/flee engage.");
+                    }
+                    else
+                    {
+                        // Attribution WORKING is the common case; log it at Info so the tail can still
+                        // show who is hitting us without competing with genuine CRITICALs.
+                        _logLevel?.Invoke(BotLogLevel.Info,
+                            $"[damage] took {lost} (hp {prevHp}->{hpNow}{hpTail}) from " +
+                            $"{Aggressors.Count} tracked aggressor(s): {string.Join(",", Aggressors.Take(4).Select(a => "h" + a))}");
+                    }
                 }
                 Hp = hp;
                 HpChanged?.Invoke(hp);

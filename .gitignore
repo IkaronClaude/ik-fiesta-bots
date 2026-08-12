@@ -57,3 +57,4 @@ behavior-graphs/
 !/scripts/social.lua
 !/scripts/guild_buff_sm.lua
 bot-log-1500.txt
+tools/__pycache__/

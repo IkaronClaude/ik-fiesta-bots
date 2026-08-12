@@ -45,6 +45,17 @@ public sealed class ClientData
     /// other client path — absent simply means the watch page draws name tiles instead of art.</summary>
     public string? IconDir => ClientRoot is { } r ? Path.Combine(r, "resmenu", "Icon") : null;
 
+    /// <summary>Where the per-map MINIMAP art lives: <c>&lt;client root&gt;/resmenu/minimap</c>. Same BYO
+    /// deal as the icons — absent just means the watch page draws a plain grid.</summary>
+    public string? MinimapDir => ClientRoot is { } r ? Path.Combine(r, "resmenu", "minimap") : null;
+
+    /// <summary>A map's minimap as a PNG, or null when the client ships no art for it. Cached — the
+    /// watch page requests one per map view and decoding a 512x512 DXT per poll would be silly.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]?> _minimapPng =
+        new(StringComparer.OrdinalIgnoreCase);
+    public byte[]? MinimapPng(string mapName) => _minimapPng.GetOrAdd(mapName, m =>
+        MinimapDir is { } dir ? MinimapImage.Png(dir, m) : null);
+
     /// <summary>Which atlas cell draws this item, from <c>ItemViewInfo.shn</c> (<c>IconFile</c> +
     /// <c>IconIndex</c>). Null when the table or the row is missing.
     /// <para>⚠️ IconIndex 0 is a REAL cell (the first one) and IconFile "-" is the table's own empty

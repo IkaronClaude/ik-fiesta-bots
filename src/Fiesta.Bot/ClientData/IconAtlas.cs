@@ -45,8 +45,10 @@ public static class IconAtlas
         return Png.Encode(tile, IconSize, IconSize);
     }
 
-    /// <summary>DDS → RGBA8888. Supports DXT1/3/5 and uncompressed 32-bit; null otherwise.</summary>
-    private static byte[]? Decode(byte[] b, out int width, out int height)
+    /// <summary>DDS → RGBA8888. Supports DXT1/3/5 and uncompressed 32-bit; null otherwise.
+    /// <para>Internal rather than private because the minimap loader decodes whole surfaces from the
+    /// same client art (see <see cref="MinimapImage"/>) — one DDS decoder, two callers.</para></summary>
+    internal static byte[]? Decode(byte[] b, out int width, out int height)
     {
         width = height = 0;
         if (b.Length < 128 || b[0] != 'D' || b[1] != 'D' || b[2] != 'S' || b[3] != ' ') return null;

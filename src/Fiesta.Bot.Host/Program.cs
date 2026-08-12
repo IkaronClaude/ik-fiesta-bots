@@ -4,8 +4,10 @@
 using System.Security.Cryptography;
 using Fiesta.Bot.Accounts;
 using Fiesta.Bot.Host;
+using Fiesta.Bot.GameData;
 using Fiesta.Bot.Manager;
 using Fiesta.Bot.Net;
+using Fiesta.Bot.Pathfinding;
 using Fiesta.Bot.Scripting;
 
 // Subcommand: `login-test` drives the typed login chain against a live server.
@@ -148,6 +150,39 @@ app.MapGet("/icon/{itemId:int}.png", (int itemId) =>
     var cd = app.Services.GetService<BotManager>()?.ClientData;
     var png = cd?.ItemIconPng(itemId);
     return png is null ? Results.NotFound() : Results.File(png, "image/png");
+}).ExcludeFromDescription();
+
+// MAP MINIMAPS — the client's own per-map art, so /watch shows where a bot is the way the game does
+// instead of an abstract dot field. Same reasoning as /icon for living outside /api: an <img> cannot
+// carry a Bearer token, and this is the operator's own client art. 404 = no art for that map (several
+// instances have none), and the page falls back to a plain grid.
+app.MapGet("/minimap/{map}.png", (string map) =>
+{
+    var cd = app.Services.GetService<BotManager>()?.ClientData;
+    var png = cd?.MinimapPng(map);
+    return png is null ? Results.NotFound() : Results.File(png, "image/png");
+}).ExcludeFromDescription();
+
+// The minimap's WORLD EXTENT, so the page can place a bot on the art instead of guessing a scale.
+// MEASURED, not assumed (tools/minimap_orient.py): the image spans the full square .shbd grid —
+// world [0, tiles*6.25] on both axes — with the Y axis FLIPPED. Correlating each map's walkability
+// mask against its painted ground scored flipY above every other orientation on every map that
+// discriminates (EldGbl02 0.880 vs 0.415 identity, RouVal02 0.635 vs 0.395, Urg 0.494 vs 0.286) and
+// never lost; towns like RouN are inconclusive because they are mostly rooftops. This matches the
+// operator's earlier read of the .shbd ASCII render ("y is flipped but that render is pretty accurate").
+app.MapGet("/minimap/{map}.json", (string map) =>
+{
+    var mgr = app.Services.GetService<BotManager>();
+    var grid = mgr?.GridProvider?.Invoke(map);
+    var cd = mgr?.ClientData;
+    return Results.Ok(new
+    {
+        map,
+        hasArt = cd?.MinimapDir is { } d && MinimapImage.Exists(d, map),
+        worldWidth = grid is null ? (double?)null : grid.WidthTiles * BlockGrid.WorldPerTile,
+        worldHeight = grid is null ? (double?)null : grid.HeightTiles * BlockGrid.WorldPerTile,
+        flipY = true,
+    });
 }).ExcludeFromDescription();
 
 
