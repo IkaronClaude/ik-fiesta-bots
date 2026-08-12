@@ -324,17 +324,19 @@ function drawCombat(ent, maxHp) {
   // casts and produces swing-less bashes at the same time. Two rays make that instant; numbers hide it.
   // Facing null = never set. Draw NOTHING then — a default 0° would be a confident arrow pointing east.
   if (ent.self.facing != null) {
-    // Screen y grows downward while world y grows upward, so the y term is negated for DISPLAY only.
-    // (If our facing convention itself has a sign error, this arrow is exactly what exposes it: the
-    // arrow will point somewhere the bot plainly is not attacking.)
+    // ⚠️ USE THE SAME y CONVENTION AS toPx, WHICH DOES NOT FLIP (it plots cy + (y-sy)*scale, so world
+    // +y is drawn DOWNWARD). The first version negated sin here "because screen y grows downward" and
+    // the arrow came out mirrored against the very mobs it shares a canvas with (operator caught it).
+    // Whether the world's y points north is irrelevant to this canvas -- what matters is that the arrow
+    // and the mob dots agree, or the picture is worse than no picture.
     const a = ent.self.facing * Math.PI/180, L = 26;
-    const ex = cx + Math.cos(a)*L, ey = cy - Math.sin(a)*L;
+    const ex = cx + Math.cos(a)*L, ey = cy + Math.sin(a)*L;
     g.strokeStyle = '#3fb950'; g.lineWidth = 2;
     g.beginPath(); g.moveTo(cx, cy); g.lineTo(ex, ey); g.stroke();
-    g.beginPath();                                  // arrow head
+    g.beginPath();                                  // arrow head, same convention as the shaft
     g.moveTo(ex, ey);
-    g.lineTo(ex - Math.cos(a-0.4)*7, ey + Math.sin(a-0.4)*7);
-    g.lineTo(ex - Math.cos(a+0.4)*7, ey + Math.sin(a+0.4)*7);
+    g.lineTo(ex - Math.cos(a-0.4)*7, ey - Math.sin(a-0.4)*7);
+    g.lineTo(ex - Math.cos(a+0.4)*7, ey - Math.sin(a+0.4)*7);
     g.closePath(); g.fillStyle = '#3fb950'; g.fill();
   }
   // Target ray: only when the target handle matches something actually in view (see the endpoint note
