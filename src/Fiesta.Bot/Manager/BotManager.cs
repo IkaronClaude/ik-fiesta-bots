@@ -1968,18 +1968,34 @@ public sealed class BotManager : IAsyncDisposable
     /// ToX/Y + MinLevel = the destination's arrival coord + level gate, PortalDestIndex = the dest byte.</summary>
     private static IReadOnlyList<GateEdge> BuildPortalEdges(GameData.ClientData cd)
     {
+        // ⛔ ONE TOWN-GATE NETWORK, NOT ONE PER `TP_GroupNo`.
+        // This grouped by TP_GroupNo and built a clique WITHIN each group, which split the gate into three
+        // disjoint networks:
+        //     group 0  RouN, RouVal01, Eld            group 1  EldGbl02, Urg, Urg_Alruin (70)
+        //     group 2  Adl (100), Bera (100)
+        // so there was no Urg->RouN edge at all. TP_GroupNo is the gate's MENU TIER — the MinLevel column
+        // gives it away, group 2 being level 100 and Urg_Alruin 70 — not a separate gate. Operator
+        // 2026-08-12: "town gate connects urg, eld, rouN, RouVal02, and some others … if we're at any town
+        // gate, we can go to RouN or Eld FOR FREE".
+        //
+        // ⭐ THIS IS THE ROUTE THAT MADE NO SENSE, AND IT WAS FORCED:
+        //     [Urg(portal) -> Linkfield02 -> EldPri01 -> Eld -> RouN(portal)]  cost~20691
+        // From EldGbl02 the planner could portal within group 1 to Urg, but Urg had no portal edge to RouN,
+        // so reaching group 0 meant HIKING three maps to Eld and portalling from there. It then beat the
+        // honest direct route (cost~23260) and was executed. Linkfield02 is where JcqArcher spent 14 minutes
+        // wedged, through two pointless relogs. With one clique the answer from EldGbl02 is a single hop.
+        //
+        // MinLevel still gates each DESTINATION individually (the graph search already skips an edge whose
+        // MinLevel exceeds our level), which is the real reason the tiers exist.
         var edges = new List<GateEdge>();
-        foreach (var grp in cd.BuildPortalDests().GroupBy(p => p.GroupNo))
-        {
-            var members = grp.ToList();
-            foreach (var a in members)
-                foreach (var b in members)
-                {
-                    if (a.Index == b.Index || string.Equals(a.Map, b.Map, StringComparison.OrdinalIgnoreCase)) continue;
-                    edges.Add(new GateEdge(a.Map, b.Map, a.X, a.Y, 0,
-                        PortalDestIndex: b.Index, MinLevel: b.MinLevel, ToX: b.X, ToY: b.Y));
-                }
-        }
+        var all = cd.BuildPortalDests().ToList();
+        foreach (var a in all)
+            foreach (var b in all)
+            {
+                if (a.Index == b.Index || string.Equals(a.Map, b.Map, StringComparison.OrdinalIgnoreCase)) continue;
+                edges.Add(new GateEdge(a.Map, b.Map, a.X, a.Y, 0,
+                    PortalDestIndex: b.Index, MinLevel: b.MinLevel, ToX: b.X, ToY: b.Y));
+            }
         return edges;
     }
 
