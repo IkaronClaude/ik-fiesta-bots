@@ -118,6 +118,32 @@ public sealed class BotHandle
     public Action<string, IReadOnlyDictionary<string, double>>? PhasePersist { get; set; }
 
     /// <summary>Carry forward totals from earlier runs of this same bot.</summary>
+    /// <summary>The on-disk mirror of this bot's tail. Set by the manager at spawn.</summary>
+    internal BotLogFile? LogFile { get; set; }
+
+    /// <summary>Load history from BEFORE this process started into the in-memory ring, so /log and the
+    /// snapshot endpoints show a continuous story across pod restarts instead of beginning at zero.
+    /// Marked so a reader can tell restored lines from live ones and does not mistake them for now.</summary>
+    internal void SeedLogFromDisk(IReadOnlyList<string> lines)
+    {
+        if (lines.Count == 0) return;
+        lock (_logGate)
+        {
+            var restored = new List<(BotLogLevel Level, string Line)>(lines.Count + 1);
+            foreach (var l in lines)
+            {
+                // "HH:mm:ss.fff <TAG> …" — recover the level so ?level= filtering still works on history.
+                var lvl = BotLogLevel.Note;
+                var t = l.Length > 13 ? l[13] : 'N';
+                if (t == 'V') lvl = BotLogLevel.Verbose; else if (t == 'I') lvl = BotLogLevel.Info;
+                restored.Add((lvl, l));
+            }
+            restored.Add((BotLogLevel.Note, $"{DateTime.UtcNow:HH:mm:ss.fff} N ── {lines.Count} line(s) above restored from disk (previous session) ──"));
+            _log.InsertRange(0, restored);
+            if (_log.Count > MaxLogLines) _log.RemoveRange(0, _log.Count - MaxLogLines);
+        }
+    }
+
     public void SeedPhaseSeconds(IReadOnlyDictionary<string, double> prior)
     {
         foreach (var (k, v) in prior) if (v > 0) _phaseSeconds.AddOrUpdate(k, v, (_, old) => old + v);
@@ -530,6 +556,9 @@ public sealed class BotHandle
             _log.Add((level, line));
             if (_log.Count > MaxLogLines) _log.RemoveRange(0, _log.Count - MaxLogLines);
         }
+        // Durable copy — flushed per line so the lines just before a crash/SIGTERM survive, which is
+        // the case the file exists for. Outside the ring lock: disk must never stall logging.
+        try { LogFile?.Append(line); } catch { }
         // Fan out to live tailers outside the lock; never let a subscriber break logging.
         try { LogLine?.Invoke(line); } catch { }
     }

@@ -99,6 +99,11 @@ public sealed class BotManager : IAsyncDisposable
         {
             handle.SeedPhaseSeconds(kn.LoadPhaseSeconds(id));
             handle.PhasePersist = kn.SavePhaseSeconds;
+            // The tail, on disk: restore what earlier sessions wrote BEFORE the first new line is
+            // logged, so /log reads as one continuous story across deploys and pod restarts.
+            var logDir = kn.LogDir;
+            handle.SeedLogFromDisk(BotLogFile.LoadRecent(logDir, id, 20_000));
+            handle.LogFile = new BotLogFile(logDir, id);
         }
         handle.RunTask = Task.Run(() => RunBotAsync(handle));
         return handle;

@@ -229,6 +229,10 @@ public sealed class NpcKnowledge
     // recovering two failed bots, minutes before the totals were due to be read. The whole point of the
     // metric is to see where a NIGHT goes, so it has to outlive respawns, deploys and pod restarts.
     // Keyed by bot id on the same persistent claim as the roster.
+    /// <summary>Where per-bot tail files live — on the same persistent claim as the roster, so they
+    /// survive pod restarts (an ephemeral container layer is wiped by every deploy).</summary>
+    public string LogDir => Path.Combine(_rosterDir, "logs");
+
     public void SavePhaseSeconds(string id, IReadOnlyDictionary<string, double> phases)
     {
         if (string.IsNullOrWhiteSpace(id) || phases.Count == 0) return;
