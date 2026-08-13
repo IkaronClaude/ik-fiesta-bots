@@ -15,11 +15,19 @@ namespace Fiesta.Bot.GameData;
 /// </summary>
 public static class IconAtlas
 {
-    public const int IconSize = 32;
+    /// <summary>Atlases are an 8x8 grid of cells, whatever their pixel size.</summary>
+    public const int Columns = 8;
 
     /// <summary>Decode one cell of a DDS atlas to a PNG. Returns null if the file is missing, the
     /// format is one we do not decode, or the index is outside the sheet — the caller renders a
-    /// placeholder rather than a broken image.</summary>
+    /// placeholder rather than a broken image.
+    ///
+    /// <para>⛔ CELL SIZE IS DERIVED, NOT 32. It used to be a hard 32px constant, which is right only for
+    /// the 256x256 item and skill sheets. The <b>abstate</b> sheets are 128x128, so a 32px cell made them
+    /// a 4x4 grid of 16 cells and every icon index above 15 fell off the end and returned null — which is
+    /// why a live buff rendered as a grey box with a number (operator 2026-08-13) even though its row
+    /// plainly said <c>icon=16, iconFile=AbState03</c>. Every family is an 8x8 grid of 64 cells: items and
+    /// skills 256/8 = 32px, abstates 128/8 = 16px. So take the cell size from the sheet.</para></summary>
     public static byte[]? IconPng(string ddsPath, int iconIndex)
     {
         if (!File.Exists(ddsPath)) return null;
@@ -28,21 +36,21 @@ public static class IconAtlas
         var surface = Decode(dds, out var w, out var h);
         if (surface is null || w <= 0 || h <= 0) return null;
 
-        // Cells run left-to-right, top-to-bottom in a grid of IconSize tiles.
-        var perRow = Math.Max(1, w / IconSize);
-        var cells = perRow * Math.Max(1, h / IconSize);
+        var size = Math.Max(1, w / Columns);          // 256 -> 32, 128 -> 16
+        var perRow = Columns;
+        var cells = perRow * Math.Max(1, h / size);
         if (iconIndex < 0 || iconIndex >= cells) return null;
-        var cx = (iconIndex % perRow) * IconSize;
-        var cy = (iconIndex / perRow) * IconSize;
+        var cx = (iconIndex % perRow) * size;
+        var cy = (iconIndex / perRow) * size;
 
-        var tile = new byte[IconSize * IconSize * 4];
-        for (var y = 0; y < IconSize; y++)
+        var tile = new byte[size * size * 4];
+        for (var y = 0; y < size; y++)
         {
             var sy = cy + y;
             if (sy >= h) break;
-            Buffer.BlockCopy(surface, (sy * w + cx) * 4, tile, y * IconSize * 4, Math.Min(IconSize, w - cx) * 4);
+            Buffer.BlockCopy(surface, (sy * w + cx) * 4, tile, y * size * 4, Math.Min(size, w - cx) * 4);
         }
-        return Png.Encode(tile, IconSize, IconSize);
+        return Png.Encode(tile, size, size);
     }
 
     /// <summary>DDS → RGBA8888. Supports DXT1/3/5 and uncompressed 32-bit; null otherwise.

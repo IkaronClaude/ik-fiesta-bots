@@ -117,7 +117,9 @@
    slot's position on screen meant nothing and could not be compared against the client's own bag.
    EQUIPMENT keeps its old single-row flow (.irow) — it is a handful of slots, not a paged bag, and
    stacking it into the bag's column layout was collateral damage from sharing one class. */
-.igrid { display:flex; flex-direction:column; gap:9px }
+/* Pages sit SIDE BY SIDE, two per row (operator 2026-08-13), so today's 2 pages read as one
+   12x4 bag and a future 6 pages would lay out 2x3. */
+.igrid { display:grid; grid-template-columns:repeat(2, max-content); gap:10px; justify-content:start }
 .irow  { display:flex; flex-wrap:wrap; gap:3px }
 .irow .islot { width:40px }
 /* FIXED 40px columns, not 1fr: the slot size was already right, the layout was not. An auto-fill grid
