@@ -60,13 +60,21 @@ public static class MinimapImage
             if (!_dirs.TryGetValue(dir, out index!))
             {
                 index = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var ok = false;
                 try
                 {
                     foreach (var f in Directory.EnumerateFiles(dir))
                         index[Path.GetFileName(f)] = f;
+                    ok = true;
                 }
                 catch { /* no minimap dir — caller falls back to a plain grid */ }
-                _dirs[dir] = index;
+                // ⛔ ONLY CACHE A SUCCESSFUL LISTING. Caching the empty result of a MISSING directory
+                // makes "we have not looked properly yet" indistinguishable from "there is no art", and
+                // it never recovers: the art was uploaded to the running host's shared claim and every
+                // map still reported hasArt=false until the process restarted, because the first probe
+                // (before the upload) had cached an empty index forever. Absence of evidence cached as
+                // evidence of absence — the same shape as reading "nothing yet" as a real answer.
+                if (ok) _dirs[dir] = index;
             }
         }
         // DDS ONLY — the .tga siblings are loading screens (see the type remarks), so a map that ships

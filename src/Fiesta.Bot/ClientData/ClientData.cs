@@ -51,10 +51,18 @@ public sealed class ClientData
 
     /// <summary>A map's minimap as a PNG, or null when the client ships no art for it. Cached — the
     /// watch page requests one per map view and decoding a 512x512 DXT per poll would be silly.</summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]?> _minimapPng =
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> _minimapPng =
         new(StringComparer.OrdinalIgnoreCase);
-    public byte[]? MinimapPng(string mapName) => _minimapPng.GetOrAdd(mapName, m =>
-        MinimapDir is { } dir ? MinimapImage.Png(dir, m) : null);
+    public byte[]? MinimapPng(string mapName)
+    {
+        if (_minimapPng.TryGetValue(mapName, out var hit)) return hit;
+        var png = MinimapDir is { } dir ? MinimapImage.Png(dir, mapName) : null;
+        // Cache HITS only. A null means "no art found *this time*" — which is also what a not-yet-populated
+        // BYO directory returns, and caching that would make art dropped onto the shared claim invisible
+        // until the process restarted. A miss is cheap to retry; a wrong permanent "no" is not.
+        if (png is not null) _minimapPng[mapName] = png;
+        return png;
+    }
 
     /// <summary>Which atlas cell draws this item, from <c>ItemViewInfo.shn</c> (<c>IconFile</c> +
     /// <c>IconIndex</c>). Null when the table or the row is missing.
