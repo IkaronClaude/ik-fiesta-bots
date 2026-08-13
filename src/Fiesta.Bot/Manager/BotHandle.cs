@@ -37,7 +37,21 @@ public sealed class BotHandle
     // "we'll survive having 10MB worth of buffer"). Still filtered per-level on the way out, so a
     // level=note read stays cheap.
     private const int MaxLogLines = 100_000;
+    // ⛔ AND A CHARACTER BUDGET, because the line cap alone does not bound MEMORY. The note above
+    // estimated "100k lines ~= 10MB" from ~100-byte lines — but MEASURED at verbose, a combat line averages
+    // 253 bytes, so the ring actually held ~53MB per bot and ~212MB across four. That, not any leak, is
+    // what put the pod at 503Mi against its 512Mi limit and produced 51 OutOfMemoryExceptions surfacing as
+    // "Dictionary.Resize()" inside whatever allocated next — a symptom that reads like a runaway
+    // collection and is nothing of the sort.
+    // Budgeting CHARS instead of lines keeps the full 100k when they are short (a level=note history still
+    // spans hours) and trims automatically when verbose combat spam makes them long.
+    private const int MaxLogChars = 6_000_000;          // ~14MB per bot once UTF-16 + object headers
+    // Trim in CHUNKS, never one line at a time: List.RemoveRange(0, 1) memmoves the entire backing array,
+    // so trimming per line at a full buffer copied 100k entries for EVERY line logged — 4 bots x ~6
+    // lines/sec x 100k moves. That was burning most of a core (measured 928m against a 1000m limit).
+    private const int TrimChunk = 8_192;
     private readonly List<(BotLogLevel Level, string Line)> _log = new();
+    private long _logChars;
     private readonly object _logGate = new();
 
     private volatile BotPhase _phase = BotPhase.Pending;
@@ -255,7 +269,8 @@ public sealed class BotHandle
             }
             restored.Add((BotLogLevel.Note, $"{DateTime.UtcNow:HH:mm:ss.fff} N ── {lines.Count} line(s) above restored from disk (previous session) ──"));
             _log.InsertRange(0, restored);
-            if (_log.Count > MaxLogLines) _log.RemoveRange(0, _log.Count - MaxLogLines);
+            foreach (var e in restored) _logChars += e.Line.Length;
+            TrimLogLocked();
         }
     }
 
@@ -661,6 +676,33 @@ public sealed class BotHandle
     /// <summary>Append a log line at the given verbosity. The level is stamped into the
     /// text (<c>N</c>/<c>I</c>/<c>V</c> after the timestamp) so a raw tail is still readable,
     /// and retained structurally so the snapshot/tail endpoints can filter by level.</summary>
+    /// <summary>Drop the oldest entries until the ring is inside BOTH budgets. Caller holds _logGate.
+    /// Removes at least <see cref="TrimChunk"/> at a time so the O(n) array shift is amortised instead of
+    /// paid per line.</summary>
+    private void TrimLogLocked()
+    {
+        if (_log.Count <= MaxLogLines && _logChars <= MaxLogChars) return;
+        var drop = 0;
+        var chars = _logChars;
+        var count = _log.Count;
+        while ((count - drop > MaxLogLines || chars > MaxLogChars) && drop < count)
+        {
+            chars -= _log[drop].Line.Length;
+            drop++;
+        }
+        // Take a chunk rather than a line — but never more than a quarter of the buffer, or a burst of
+        // very long lines (6M chars inside 8k lines is reachable at verbose) would wipe the whole history
+        // in one trim and destroy the thing the ring exists for.
+        drop = Math.Min(count, Math.Max(drop, Math.Min(TrimChunk, Math.Max(1, count / 4))));
+        // Recount exactly what we are about to remove — `chars` above stopped as soon as it was under
+        // budget, and we are removing more than that.
+        long removed = 0;
+        for (var i = 0; i < drop; i++) removed += _log[i].Line.Length;
+        _log.RemoveRange(0, drop);
+        _logChars -= removed;
+        if (_logChars < 0) _logChars = 0;
+    }
+
     internal void Log(BotLogLevel level, string message)
     {
         var tag = level switch { BotLogLevel.Verbose => "V", BotLogLevel.Info => "I", _ => "N" };
@@ -668,7 +710,8 @@ public sealed class BotHandle
         lock (_logGate)
         {
             _log.Add((level, line));
-            if (_log.Count > MaxLogLines) _log.RemoveRange(0, _log.Count - MaxLogLines);
+            _logChars += line.Length;
+            TrimLogLocked();
         }
         // Durable copy — flushed per line so the lines just before a crash/SIGTERM survive, which is
         // the case the file exists for. Outside the ring lock: disk must never stall logging.
