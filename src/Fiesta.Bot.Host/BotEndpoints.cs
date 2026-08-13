@@ -1524,6 +1524,46 @@ public static class BotEndpoints
         };
     }
 
+    /// <summary>EVERYTHING about US that a viewer needs — the ONE self projection, shared by the polled
+    /// <c>/entities</c> snapshot, the stream's opening <c>hello</c>, and every <c>self</c> delta.
+    ///
+    /// <para>⛔ IT IS ONE SHAPE ON PURPOSE (operator 2026-08-13: <i>"Are you seeding current movement speed
+    /// correctly at the start of the stream with a 'stream start state' packet? The bot always seems to be
+    /// walking when it should be mounted"</i>). It was two: <c>hello</c> carried only X/Y/Facing/Target,
+    /// while <c>walkSpeed</c> and <c>mounted</c> existed solely on the delta. That is worse than it sounds,
+    /// because a delta is only sent when the state CHANGES — so a bot that was already mounted and standing
+    /// still never produced one, and the page had no way to learn either fact. It drew the marker easing at
+    /// the 120 u/s on-foot default while the character was on a 203 u/s mount.</para>
+    ///
+    /// <para>The general rule this is an instance of: a stream's OPENING state must be able to answer every
+    /// question its deltas can, or any field that happens not to change is unreachable for the life of the
+    /// connection.</para></summary>
+    internal static object? SelfView(BotHandle bot)
+    {
+        var p = bot.Position;
+        if (p is null) return null;
+        var zv = bot.ZoneView;
+        return new
+        {
+            X = (double)p.Value.X,
+            Y = (double)p.Value.Y,
+            Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
+            // RAW handle, no 0-means-none translation: 0 is a legitimate entity handle and this field
+            // simply defaults to 0 before we ever target anything. The page draws the target ray only when
+            // the handle MATCHES a mob currently in view, so an untargeted bot draws nothing without 0
+            // having to be overloaded as a sentinel.
+            Target = (int)bot.CurrentTarget,
+            // The speed a viewer must interpolate at. Mounted is ~203 u/s against 120 on foot, so getting
+            // this wrong is immediately visible as a marker crawling behind the character.
+            WalkSpeed = zv?.WalkSpeed ?? 0,
+            Mounted = zv?.IsMounted ?? false,
+            Hp = zv?.Hp, MaxHp = zv?.MaxHp, Sp = zv?.Sp, MaxSp = zv?.MaxSp,
+            InCombat = zv?.InCombat ?? false,
+            Aggressors = zv?.Aggressors.Count ?? 0,
+            Dead = zv?.Dead ?? false,
+        };
+    }
+
     /// <summary>Mob ids any ACTIVE quest wants — kill and collect objectives alike (a collect drops from a
     /// mob, and checking only kills is the exact miss that let an Iyzel collect quest through).</summary>
     internal static HashSet<int> QuestMobIds(BotHandle bot, GameData.ClientData? cd)
@@ -1599,19 +1639,7 @@ public static class BotEndpoints
         // default of 0° would draw a confident arrow pointing east.
         return new
         {
-            Self = self is { } sp
-                ? new
-                {
-                    X = (double)sp.X,
-                    Y = (double)sp.Y,
-                    Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
-                    // RAW handle, no 0-means-none translation: 0 is a legitimate entity handle and this
-                    // field simply defaults to 0 before we ever target anything. The page draws the target
-                    // ray only when the handle MATCHES a mob currently in view, so an untargeted bot draws
-                    // nothing without 0 having to be overloaded as a sentinel.
-                    Target = (int)bot.CurrentTarget,
-                }
-                : null,
+            Self = SelfView(bot),
             Mobs = mobs,
             Party = party,
             Npcs = npcs,

@@ -242,7 +242,7 @@ public static class EventStreamEndpoint
 
                 // SELF is sampled, not evented — we move because our own script walked us, and there is no
                 // inbound packet for that. Only send when it actually changed, so a parked bot is silent.
-                var sv = SelfView(bot);
+                var sv = BotEndpoints.SelfView(bot);
                 var svJson = JsonSerializer.Serialize(sv, Json);
                 if (svJson != lastSelfJson)
                 {
@@ -271,28 +271,4 @@ public static class EventStreamEndpoint
         await ws.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, ct);
     }
 
-    /// <summary>Everything the map draws about US. The X/Y/Facing/Target names match the <c>Self</c> block
-    /// inside <see cref="BotEndpoints.EntityPanel"/> so the client can patch it straight in; the rest is
-    /// extra the stream can afford to carry because self is one small object.</summary>
-    private static object SelfView(BotHandle bot)
-    {
-        var zv = bot.ZoneView;
-        var p = bot.Position;
-        return new
-        {
-            X = p is { } pp ? (double)pp.X : (double?)null,
-            Y = p is { } pq ? (double)pq.Y : (double?)null,
-            Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
-            Target = (int)bot.CurrentTarget,
-            // Our own speed, so the viewer can ease our marker between samples instead of stepping it.
-            // We move by our own decision with no inbound packet, so self is SAMPLED (see SelfSampleMs) —
-            // interpolation is what turns those samples back into motion.
-            WalkSpeed = zv?.WalkSpeed ?? 0,
-            Hp = zv?.Hp, MaxHp = zv?.MaxHp, Sp = zv?.Sp, MaxSp = zv?.MaxSp,
-            InCombat = zv?.InCombat ?? false,
-            Aggressors = zv?.Aggressors.Count ?? 0,
-            Mounted = zv?.IsMounted ?? false,
-            Dead = zv?.Dead ?? false,
-        };
-    }
 }

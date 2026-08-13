@@ -1065,6 +1065,11 @@ function applyStream(msg) {
     lastEnt = msg.entities; evMaxHp = msg.maxHp || 0;
     anim.clear();
     for (const m of lastEnt.mobs || []) noteMove(m);
+    // ⛔ SEED SELF FROM THE OPENING STATE. Waiting for the first `self` delta is not safe: a delta is only
+    // sent when the state CHANGES, so a bot standing still — mounted, at 203 u/s — never produces one, and
+    // the marker would sit unanimated on a stale position for as long as it stayed put.
+    selfAnim = null; lastSelfAt = 0;
+    if (lastEnt.self) noteSelfMove(lastEnt.self, null);
     $('#mapname').textContent = msg.mapDisplay ? `· ${msg.mapDisplay} (${lastEnt.map})` : (lastEnt.map ? `· ${lastEnt.map}` : '');
   } else if (!lastEnt) {
     return;                       // a delta before hello describes a picture we do not have yet
