@@ -749,8 +749,8 @@ public static class BotEndpoints
                 .Select(a => new
                 {
                     abStateId = (int)a,
-                    name = cd?.AbStateView((int)a)?.Name,
-                    descript = cd?.AbStateView((int)a)?.Descript,
+                    name = cd?.AbStateByWireIndex((int)a)?.Name,
+                    descript = cd?.AbStateByWireIndex((int)a)?.Descript,
                 })
                 .ToArray();
             return Results.Ok(new { id, count = skills.Count, skills = skills
@@ -1238,9 +1238,9 @@ public static class BotEndpoints
                 .Select(a => new
                 {
                     Id = (int)a,
-                    Name = cd?.AbStateView((int)a)?.Name,
-                    Descript = cd?.AbStateView((int)a)?.Descript,
-                    HasIcon = cd?.AbStateView((int)a) is not null,
+                    Name = cd?.AbStateByWireIndex((int)a)?.Name,
+                    Descript = cd?.AbStateByWireIndex((int)a)?.Descript,
+                    HasIcon = cd?.AbStateByWireIndex((int)a)?.File is not null,
                 }).ToArray(),
             // Character sheet: the fixed stats a human reads next to HP. Decoded at zone-entry since
             // 2026-07-29 but only ever logged — now stored and surfaced. Null when the CHAR_PARAMETER_DATA

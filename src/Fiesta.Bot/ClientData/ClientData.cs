@@ -140,21 +140,47 @@ public sealed class ClientData
 
     /// <summary>A buff/debuff's icon cell + text from <c>AbStateView.shn</c> (<c>iconFile</c>/<c>icon</c>,
     /// lower-cased column names here, unlike the skill/item tables). Same atlas scheme again.</summary>
-    public (string File, int Index, string? Name, string? Descript)? AbStateView(int abStateId)
+    /// ⛔ NAME AND ICON ARE SEPARATE FACTS. This used to return null whenever the row had no
+    /// <c>iconFile</c>, which threw away the NAME as well — so a live buff rendered as a grey box with a
+    /// bare id (operator 2026-08-13) even though the client data knew what it was called. Missing art is
+    /// not missing knowledge: return whatever the row has, and let the caller decide what it can draw.
+    public (string? File, int Index, string? Name, string? Descript)? AbStateView(int abStateId)
     {
         var t = Table("AbStateView");
         var row = t?.FindByLong("ID", abStateId);
         if (row is null) return null;
         var file = GetStr(row, "iconFile");
-        if (string.IsNullOrEmpty(file) || file == "-") return null;
+        if (string.IsNullOrEmpty(file) || file == "-") file = null;
         return (file, GetInt(row, "icon"), GetStr(row, "inxName"), GetStr(row, "Descript"));
+    }
+
+    /// <summary>Resolve a WIRE abstate index (what NC_BRIEFINFO_ABSTATE_CHANGE carries, e.g. 728) to its
+    /// <see cref="AbStateView"/> row.
+    ///
+    /// <para>⛔ TWO ID SPACES, AND THE WIRE USES THE OTHER ONE. <c>AbStateView.ID</c> is sparse (9315,
+    /// 9321, 9337…), so looking the wire value up there simply misses and the buff rendered as a grey box
+    /// with a bare number. The wire value is <c>AbState.shn</c>'s <c>AbStataIndex</c>; that row's
+    /// <c>ID</c> is the key into AbStateView. Same shape as the ActiveSkill/PassiveSkill id-space trap
+    /// already recorded in this codebase — an id is only meaningful with its table.</para></summary>
+    public (string? File, int Index, string? Name, string? Descript)? AbStateByWireIndex(int wireIndex)
+    {
+        var t = Table("AbState");
+        if (t is null) return AbStateView(wireIndex);       // no join table — try the direct read
+        foreach (var row in t.Rows)
+            if (GetInt(row, "AbStataIndex") == wireIndex)
+            {
+                var view = AbStateView(GetInt(row, "ID"));
+                // Even with no view row, AbState itself knows the internal name — better than a number.
+                return view ?? (null, 0, GetStr(row, "InxName"), null);
+            }
+        return null;
     }
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte[]> _abStatePng = new();
     public byte[]? AbStateIconPng(int abStateId)
     {
         if (_abStatePng.TryGetValue(abStateId, out var hit)) return hit;
-        if (IconDir is not { } dir || AbStateView(abStateId) is not { } av) return null;
+        if (IconDir is not { } dir || AbStateByWireIndex(abStateId) is not { } av || av.File is null) return null;
         var path = ResolveIconFile(dir, av.File);
         var png = path is null ? null : IconAtlas.IconPng(path, av.Index);
         if (png is not null) _abStatePng[abStateId] = png;
