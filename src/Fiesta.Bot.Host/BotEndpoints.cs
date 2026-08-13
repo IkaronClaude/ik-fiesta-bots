@@ -1457,6 +1457,43 @@ public static class BotEndpoints
         };
     }
 
+    /// <summary>ONE entity as the NPC LAYER draws it (a named marker, not a mob blob), or null when it does
+    /// not belong on that layer. Extracted from <see cref="EntityPanel"/> so the polled snapshot and the
+    /// live stream project an NPC identically.
+    ///
+    /// <para>⛔ THE STATIC SEED IS NOT NPC-ONLY. <c>AddOrUpdateNpc</c> feeds it from EVERY briefinfo, so
+    /// mobs, herbs and gathering nodes land in it beside real NPCs — which drew each enemy TWICE (a blue
+    /// NPC diamond AND a white mob tag) and filled the big map with every enemy. The test is
+    /// <c>IsNpc</c>, NOT "huntable": <c>IsHuntableEnemy</c> excludes RESOURCE NODES, so herbs and mushrooms
+    /// sailed through a huntable-based filter straight onto the NPC layer. Gates and actual NPCs only.</para></summary>
+    internal static object? NpcView(BotHandle bot, GameData.ClientData? cd, Session.NearbyNpc n)
+        => NpcCore(bot, cd, (int)n.Handle, n.MobId, n.X, n.Y, n.IsGate, n.LinkMap);
+
+    /// <summary>Same projection for a MAP-ENTER SEED entry, which is keyed by mob id + position and carries
+    /// no handle (it outlives the live sighting on purpose — the seed covers the whole map, not just AoI).</summary>
+    internal static object? NpcView(BotHandle bot, GameData.ClientData? cd, Session.NpcSeedEntry n)
+        => NpcCore(bot, cd, null, (ushort)n.MobId, n.X, n.Y, n.IsGate, n.LinkMap);
+
+    private static object? NpcCore(BotHandle bot, GameData.ClientData? cd, int? handle, ushort mobId,
+                                   uint x, uint y, bool isGate, string? linkMap)
+    {
+        if (!isGate && cd?.Mob(mobId)?.IsNpc != true) return null;
+        // A gate's LinkMap is the map CODE (e.g. "EldCem01"); the client shows the map's NAME.
+        var gateName = isGate ? (cd?.MapDisplayName(linkMap) ?? linkMap ?? "gate") : null;
+        var self = bot.Position;
+        return new
+        {
+            Handle = handle,
+            MobId = (int)mobId,
+            Name = gateName ?? cd?.Mob(mobId)?.Name ?? $"npc{mobId}",
+            X = (double)x,
+            Y = (double)y,
+            IsGate = isGate,
+            LinkMap = gateName ?? linkMap,
+            Dist = self is { } sp ? Math.Sqrt(Math.Pow((double)x - sp.X, 2) + Math.Pow((double)y - sp.Y, 2)) : (double?)null,
+        };
+    }
+
     /// <summary>Mob ids any ACTIVE quest wants — kill and collect objectives alike (a collect drops from a
     /// mob, and checking only kills is the exact miss that let an Iyzel collect quest through).</summary>
     internal static HashSet<int> QuestMobIds(BotHandle bot, GameData.ClientData? cd)
@@ -1522,19 +1559,7 @@ public static class BotEndpoints
                 // tag they already had (operator 2026-08-13: still "shows plants with labels as both blue
                 // npcs and white mobs"), and filled the big map. A gathering node is not an NPC; the only
                 // things that belong on this layer are gates and actual NPCs.
-                if (!n.IsGate && cd?.Mob(n.MobId)?.IsNpc != true) continue;
-                // A gate's LinkMap is the map CODE (e.g. "EldCem01"); the client shows the map's NAME.
-                var gateName = n.IsGate ? (cd?.MapDisplayName(n.LinkMap) ?? n.LinkMap ?? "gate") : null;
-                npcs.Add(new
-                {
-                    n.MobId,
-                    Name = gateName ?? cd?.Mob(n.MobId)?.Name ?? $"npc{n.MobId}",
-                    X = (double)n.X,
-                    Y = (double)n.Y,
-                    n.IsGate,
-                    LinkMap = gateName ?? n.LinkMap,
-                    Dist = self is { } sp2 ? Math.Sqrt(Math.Pow((double)n.X - sp2.X, 2) + Math.Pow((double)n.Y - sp2.Y, 2)) : (double?)null,
-                });
+                if (NpcView(bot, cd, n) is { } nv) npcs.Add(nv);
             }
         // Facing + the current target handle travel with self so the map can draw WHERE WE ARE POINTED and
         // WHERE THE TARGET IS. Operator 2026-08-11 theory this exists to test: we may overshoot the mob (or

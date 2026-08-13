@@ -137,9 +137,23 @@ public static class EventStreamEndpoint
                     // The single most useful thing on a combat map: WHO hit WHOM for how much, as it lands.
                     Post(new { t = "hit", attacker = (int)h.Attacker, defender = (int)h.Defender, dmg = (int)h.Damage, restHp = h.RestHp });
                     break;
-                case BotEventKind.MapChanged:
-                    Post(new { t = "map", map = bot.CurrentMap, mapDisplay = manager.ClientData?.MapDisplayName(bot.CurrentMap) });
+                // ⛔ READ THE MAP FROM THE HANDOFF, NOT FROM bot.CurrentMap. This event is raised BY the
+                // handoff; whether the bot's own field has been updated by the time a subscriber runs is
+                // not something to rely on, and reading it stale is how the page kept the old map's name
+                // (and therefore the old map's background art) after every transition.
+                case BotEventKind.MapChanged when e.Data is Navigation.MapHandoff mh:
+                {
+                    var name = manager.ClientData?.MapName(mh.MapId) ?? bot.CurrentMap;
+                    Post(new
+                    {
+                        t = "map",
+                        mapId = mh.MapId,
+                        map = name,
+                        mapDisplay = manager.ClientData?.MapDisplayName(name),
+                        x = mh.X, y = mh.Y,
+                    });
                     break;
+                }
                 case BotEventKind.MoveFailed when e.Data is ValueTuple<uint, uint> p:
                     Post(new { t = "movefail", x = p.Item1, y = p.Item2 }); break;
                 case BotEventKind.PlayerLeft when e.Data is ushort h2:
@@ -204,13 +218,24 @@ public static class EventStreamEndpoint
                     var cd = manager.ClientData;
                     var aggro = new HashSet<ushort>(bot.ZoneView?.Aggressors ?? []);
                     var questMobs = BotEndpoints.QuestMobIds(bot, cd);
+                    // Index once per drain rather than scanning NearbyNpcs per handle — a map-enter burst
+                    // dirties every entity on the map at once, and that was quadratic.
+                    var live = bot.ZoneView?.NearbyNpcs.ToDictionary(n => n.Handle) ?? [];
                     foreach (var h in changed)
                     {
-                        if (bot.ZoneView?.NearbyNpcs.FirstOrDefault(n => n.Handle == h) is { } n
-                            && BotEndpoints.MobView(bot, cd, n, aggro, questMobs) is { } mv)
-                        {
+                        if (!live.TryGetValue(h, out var n)) continue;
+                        // MOB LAYER first; an entity that is not one is offered to the NPC layer.
+                        // ⛔ THE NPC LAYER IS STREAMED TOO, because the map-enter burst is a genuine PACKET
+                        // BURST and not something to poll for (operator 2026-08-13: "every map change sends
+                        // a login burst with new char info, this packet can be streamed"). Every NPC and
+                        // gate on the new map arrives as briefinfo the instant we spawn in — the same
+                        // AddOrUpdateNpc that seeds the whole-map list — so the NPC layer rebuilds itself
+                        // from the wire. The first version sent this list ONLY inside `hello`, which is why
+                        // a map change left the page holding the previous map's NPCs and its background art.
+                        if (BotEndpoints.MobView(bot, cd, n, aggro, questMobs) is { } mv)
                             await SendAsync(ws, new { t = "entity", e = mv }, ct);
-                        }
+                        else if (BotEndpoints.NpcView(bot, cd, n) is { } nv)
+                            await SendAsync(ws, new { t = "npc", e = nv }, ct);
                     }
                 }
                 foreach (var h in removed) await SendAsync(ws, new { t = "gone", handle = (int)h }, ct);

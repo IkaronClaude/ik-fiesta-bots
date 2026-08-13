@@ -997,19 +997,17 @@ $('#sklevels').addEventListener('change', () => lastLive && skillTiles(lastLive.
 // shape is deliberately shared rather than bespoke.
 let evSock = null, evBot = null, evMaxHp = 0, evAlive = false;
 
-// ⛔ DELTAS FOR SMOOTHNESS, A PERIODIC SNAPSHOT FOR CORRECTNESS. The first version drove the map from the
-// stream ALONE, and anything the server had no change-event for simply never appeared — the operator lost
-// the JCQ clone (its "now fightable" promotion is a mark on a PLAYER record, so none of the entity-mutation
-// sites fired) and the background art froze on the previous map. Both are the same shape: a delta feed is
-// only as complete as the set of places someone remembered to announce from, and a miss is INVISIBLE
-// rather than loud. resyncEntities() re-reads the whole picture every RESYNC_MS on top of the stream, so a
-// path nobody wired self-heals in a couple of seconds instead of staying wrong until reload.
-const RESYNC_MS = 2000;
-let lastResync = 0;
-
+// ⛔ EVERYTHING THE MAP DRAWS COMES OFF THE WIRE — including the NPC layer. The first version streamed
+// only mobs and sent the NPC seed exclusively inside `hello`, so a map change left the page holding the
+// previous map's NPCs and its background art, and the JCQ clone never appeared at all. Both were the same
+// mistake: treating a real packet as if it were only pollable. Operator: "every map change sends a login
+// burst with new char info, this packet can be streamed." It is now, entity by entity, so a new map
+// rebuilds its whole picture from the burst exactly like the game client does.
 function applyStream(msg) {
   if (msg.t === 'hello') {
     lastEnt = msg.entities; evMaxHp = msg.maxHp || 0;
+    anim.clear();
+    for (const m of lastEnt.mobs || []) noteMove(m);
     $('#mapname').textContent = msg.mapDisplay ? `· ${msg.mapDisplay} (${lastEnt.map})` : (lastEnt.map ? `· ${lastEnt.map}` : '');
   } else if (!lastEnt) {
     return;                       // a delta before hello describes a picture we do not have yet
@@ -1018,17 +1016,30 @@ function applyStream(msg) {
     const i = m.findIndex(x => x.handle === msg.e.handle);
     if (i >= 0) m[i] = msg.e; else m.push(msg.e);
     noteMove(msg.e);
+  } else if (msg.t === 'npc') {
+    // Keyed by handle when it has one, else by mob id + position — a seed entry has no handle because it
+    // outlives the live sighting on purpose (the seed covers the whole map, not just what is in AoI).
+    const key = e => e.handle != null ? `h${e.handle}` : `m${e.mobId}@${Math.round(e.x)},${Math.round(e.y)}`;
+    const list = lastEnt.npcs || (lastEnt.npcs = []);
+    const k = key(msg.e);
+    const i = list.findIndex(x => key(x) === k);
+    if (i >= 0) list[i] = msg.e; else list.push(msg.e);
   } else if (msg.t === 'gone') {
+    // ⛔ MOBS ONLY. An NPC leaving AoI must NOT erase its marker: the seed is the whole-map roster and the
+    // real client keeps showing those markers whether or not you are standing next to them. Only a map
+    // change clears the NPC layer.
     if (lastEnt.mobs) lastEnt.mobs = lastEnt.mobs.filter(x => x.handle !== msg.handle);
     anim.delete(msg.handle);
   } else if (msg.t === 'self') {
     noteSelfMove(msg.self, lastEnt.self);
     lastEnt.self = msg.self;
   } else if (msg.t === 'map') {
-    // A new map means every handle we hold belongs to the old one, AND the NPC seed + background art are
-    // for the wrong place. Resync immediately rather than patching: the seed is only ever sent whole.
-    lastEnt.mobs = []; anim.clear();
-    lastResync = 0;
+    // Every handle we hold belongs to the old map, and so do the NPC markers and the background art. Clear
+    // and let the login burst refill it — the map NAME comes from the handoff itself, so the art switches
+    // on this message rather than waiting for anything.
+    lastEnt.map = msg.map; lastEnt.mobs = []; lastEnt.npcs = []; anim.clear();
+    if (lastEnt.self && msg.x != null) { lastEnt.self.x = msg.x; lastEnt.self.y = msg.y; selfAnim = null; }
+    $('#mapname').textContent = msg.mapDisplay ? `· ${msg.mapDisplay} (${msg.map})` : `· ${msg.map}`;
   } else return;                  // hit / chat / castfail / movefail — narration, not map state
 }
 
@@ -1126,20 +1137,17 @@ function frame() {
 }
 requestAnimationFrame(frame);
 
-// Full snapshot on a slow cadence. This is BOTH the fallback for a host/proxy with no WebSocket AND the
-// correctness backstop under a healthy stream (see RESYNC_MS) — map name, NPC seed and any entity whose
-// change had no event all come back from here.
-async function resyncEntities() {
+// THE FALLBACK POLL, and only that. It runs while no stream is delivering — an older host, or a proxy
+// that will not upgrade — so the map still works instead of going blank, and stands down the moment
+// frames arrive. It is deliberately NOT a periodic backstop under a healthy stream: if something is
+// missing from the stream, that is a packet we have not wired, and a poll papering over it would hide
+// exactly the gap worth fixing.
+async function pollEntities() {
   try {
     const r = await api('/entities');
     if (!r.ok) return;
     const d = await r.json();
     $('#mapname').textContent = d.mapDisplay ? `· ${d.mapDisplay} (${d.map})` : (d.map ? `· ${d.map}` : '');
-    if (lastEnt && evAlive) {
-      // Under a live stream, keep the freshest self (sampled at 200ms, faster than this poll) and let
-      // the snapshot own everything else, including the mobs the stream may never have mentioned.
-      d.entities.self = lastEnt.self || d.entities.self;
-    }
     lastEnt = d.entities; evMaxHp = d.maxHp;
     for (const m of lastEnt.mobs || []) noteMove(m);
   } catch {}
@@ -1147,10 +1155,7 @@ async function resyncEntities() {
 
 function tickCombat() {
   connectStream();
-  const now = performance.now();
-  // Poll fast when there is no stream (it is then the only source), slowly when there is (backstop only).
-  const due = evAlive ? RESYNC_MS : 200;
-  if (now - lastResync >= due) { lastResync = now; resyncEntities(); }
+  if (!evAlive) pollEntities();
 }
 setInterval(tickCombat, 200);   tickCombat();
 
