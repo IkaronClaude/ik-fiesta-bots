@@ -1073,6 +1073,10 @@ public sealed class BotApi
     /// the wire because the client ships no attack-range column (MobWeapon.Range is server-side).</summary>
     public double mobAttackRange(int mobId) => View?.MobAttackRange(mobId) ?? -1;
 
+    /// <summary>Observed attack range of a specific ENTITY by handle, or -1. Use for anything the mob-id
+    /// table cannot describe — notably a scenario clone, whose MobId is 0.</summary>
+    public double handleAttackRange(int handle) => View?.HandleAttackRange((ushort)handle) ?? -1;
+
     /// <summary>Mean damage per connecting hit from this mob id, -1 if never observed.</summary>
     public double mobHitAvg(int mobId) => View?.MobHitAvg(mobId) ?? -1;
 

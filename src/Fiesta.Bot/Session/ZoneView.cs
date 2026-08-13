@@ -1157,6 +1157,14 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<int, (int Max, int Count, long Sum)> _mobHits = new();
     // mobId -> (highest, second-highest) observed distance at which it damaged us. See the learning site.
     private readonly ConcurrentDictionary<int, (double, double)> _mobRange = new();
+    // Same, keyed by ENTITY HANDLE, for attackers that have no usable mob id (a scenario clone reads 0).
+    private readonly ConcurrentDictionary<ushort, (double, double)> _handleRange = new();
+
+    /// <summary>Observed attack range of one ENTITY (world units), or -1 if it has never hit us. Needed
+    /// because a scenario clone is a player copy with MobId 0, so <see cref="MobAttackRange"/> cannot
+    /// describe it.</summary>
+    public double HandleAttackRange(ushort handle) =>
+        _handleRange.TryGetValue(handle, out var r) && r.Item2 > 0 ? r.Item2 : -1;
 
     /// <summary>The observed ATTACK RANGE of <paramref name="mobId"/> in world units, or -1 if it has never
     /// hit us. Second-highest connect distance, so a single position desync cannot inflate it. This is the
@@ -1604,7 +1612,46 @@ public sealed class ZoneView : IDisposable
             {
                 int atkMob = _npcs.TryGetValue(h.Attacker, out var an) ? an.MobId
                            : _recentNpcs.TryGetValue(h.Attacker, out var ar) ? ar.Npc.MobId : 0;
+                // ⚔️ LEARN THE ENEMY'S ATTACK RANGE from the distance it hit us at.
+                // The client ships no attack-range column: MobInfo has WeaponType but no Range, and the
+                // Range column lives in server-side MobWeapon.shn, which the bot host does not mount
+                // (CLIENT_DATA_DIR is ressystem) and which a real client would not read. The wire has it —
+                // the distance at which something CONNECTS is its range, the same trick already used for
+                // our own reach. Needed to size the kite circle for ANY ranged enemy.
+                // Kept per HANDLE as well as per mob id, and deliberately OUTSIDE the atkMob > 0 guard: a
+                // scenario clone is a player copy whose MobId reads 0, so the mob-id table can never
+                // describe the one enemy this was written for (the same MobId==0 trap that made a clone
+                // resolve as "Slime"). Second-highest rather than max, because a single position desync
+                // would otherwise latch a permanently inflated range — already learned the hard way on ours.
+                if (SelfPositionProvider?.Invoke() is { } msp)
+                {
+                    double axp = double.NaN, ayp = double.NaN;
+                    if (_npcs.TryGetValue(h.Attacker, out var apn)) { axp = apn.X; ayp = apn.Y; }
+                    else if (_nearby.TryGetValue(h.Attacker, out var app)) { axp = app.X; ayp = app.Y; }
+                    if (!double.IsNaN(axp))
+                    {
+                        var mdx = (double)msp.X - axp; var mdy = (double)msp.Y - ayp;
+                        var mdist = Math.Sqrt(mdx * mdx + mdy * mdy);
+                        if (mdist > 0 && mdist < 2000)
+                        {
+                            if (atkMob > 0)
+                            {
+                                var cur = _mobRange.TryGetValue(atkMob, out var mr) ? mr : (0.0, 0.0);
+                                if (mdist > cur.Item1) cur = (mdist, cur.Item1);
+                                else if (mdist > cur.Item2) cur = (cur.Item1, mdist);
+                                _mobRange[atkMob] = cur;
+                            }
+                            var hcur = _handleRange.TryGetValue(h.Attacker, out var hr) ? hr : (0.0, 0.0);
+                            if (mdist > hcur.Item1) hcur = (mdist, hcur.Item1);
+                            else if (mdist > hcur.Item2) hcur = (hcur.Item1, mdist);
+                            _handleRange[h.Attacker] = hcur;
+                        }
+                    }
+                }
                 _logLevel?.Invoke(BotLogLevel.Info, $"[dmgtaken] mob={atkMob} dmg={h.Damage} resthp={h.RestHp} h={h.Attacker}");
+                _recentIncoming.Enqueue((DateTime.UtcNow, h.Damage));   // feed the live incoming-DPS window
+                MetricSink?.Invoke("damageTaken", h.Damage);
+                while (_recentIncoming.Count > 512) _recentIncoming.TryDequeue(out _);
                 // RETAIN the sample (mobId 0 = unresolved attacker, worthless as a key — skip it).
                 if (atkMob > 0)
                 {
@@ -1613,36 +1660,6 @@ public sealed class ZoneView : IDisposable
                         _ => (h.Damage, 1, h.Damage),
                         (_, s) => (Math.Max(s.Max, h.Damage), s.Count + 1, s.Sum + h.Damage));
                     MobHitSampled?.Invoke(atkMob, h.Damage);   // persist it — this table dies with the session
-                    // ⚔️ LEARN THE *ENEMY'S* ATTACK RANGE, per mob id, from the distance it hit us at.
-                    // The client ships no attack-range column: MobInfo has WeaponType but no Range, and the
-                    // Range column lives in server-side MobWeapon.shn, which the bot host does not mount
-                    // (CLIENT_DATA_DIR is ressystem) and which a real client would not read. The wire has it
-                    // though — the distance at which something CONNECTS is its range, the same trick already
-                    // used to learn our own. Needed to size the kite circle for ANY ranged enemy rather than
-                    // assuming the JCQ clone's, per operator 2026-08-13.
-                    // Second-highest, not max, for the same reason as ours: one position desync would
-                    // otherwise latch a permanently inflated range.
-                    if (SelfPositionProvider?.Invoke() is { } msp)
-                    {
-                        double axp = double.NaN, ayp = double.NaN;
-                        if (_npcs.TryGetValue(h.Attacker, out var apn)) { axp = apn.X; ayp = apn.Y; }
-                        else if (_nearby.TryGetValue(h.Attacker, out var app)) { axp = app.X; ayp = app.Y; }
-                        if (!double.IsNaN(axp))
-                        {
-                            var mdx = (double)msp.X - axp; var mdy = (double)msp.Y - ayp;
-                            var mdist = Math.Sqrt(mdx * mdx + mdy * mdy);
-                            if (mdist > 0 && mdist < 2000)
-                            {
-                                var cur = _mobRange.TryGetValue(atkMob, out var mr) ? mr : (0.0, 0.0);
-                                if (mdist > cur.Item1) cur = (mdist, cur.Item1);
-                                else if (mdist > cur.Item2) cur = (cur.Item1, mdist);
-                                _mobRange[atkMob] = cur;
-                            }
-                        }
-                    }
-                    _recentIncoming.Enqueue((DateTime.UtcNow, h.Damage));   // feed the live incoming-DPS window
-                MetricSink?.Invoke("damageTaken", h.Damage);
-                    while (_recentIncoming.Count > 512) _recentIncoming.TryDequeue(out _);
                     // Announce a new worst-case only — the headline a human needs is "this thing can take
                     // N of my HP in one hit", not every sample. Note level, and only on a real increase.
                     if (upd.Max > prevMax && MaxHp > 0)
