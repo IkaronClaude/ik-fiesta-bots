@@ -29,19 +29,30 @@ public static class KiteCircle
     public const int Samples = 32;
 
     /// <param name="maxDiameter">Upper bound on the loop size in world units.</param>
-    /// <param name="minRadius">Below this a "circle" is too tight to outrun anything on.</param>
+    /// <param name="enemyRange">The chaser's attack range. The loop's DIAMETER must be at least 4x this
+    /// or the manoeuvre is pointless (operator 2026-08-13): on a tight loop "enemy just needs to take
+    /// small adjustment steps to attack, so its 'attacking time' will be like 90%". Wide enough, it has
+    /// to spend most of its time travelling instead — the goal is "it can only hit us like 20% of the
+    /// time or so".</param>
+    /// <param name="leeway">How far OUTSIDE the rim the bot may start. It only has to "almost contain"
+    /// us (operator 2026-08-13) — a loop we are a little outside of is still cheap to ride onto, and
+    /// insisting on strict containment throws away good circles. The ENEMY deliberately does NOT have to
+    /// be inside: an earlier version required that and the operator corrected it.</param>
     /// <returns>(CentreX, CentreY, Radius) of the largest fitting circle, or null when the ground will
-    /// not hold one — the caller then falls back to the straight-line kite.</returns>
+    /// not hold one that satisfies the minimum — the caller then falls back to the straight-line kite
+    /// (and should say so, because that kite ends at the first wall).</returns>
     public static (double Cx, double Cy, double R)? Fit(
-        BlockGrid grid, double px, double py, double maxDiameter = 5000, double minRadius = 300)
+        BlockGrid grid, double px, double py,
+        double maxDiameter = 5000, double enemyRange = 400, double leeway = 100)
     {
+        // 4x enemy RANGE is a diameter, so the floor on the radius is 2x range.
+        var minRadius = Math.Max(150, enemyRange * 2);
         var maxR = maxDiameter / 2.0;
+        if (minRadius > maxR) return null;      // cannot be both big enough to work and within the cap
         // Coarse-to-fine on the radius: the FIRST radius that fits anywhere is the biggest, so stop there.
         for (var r = maxR; r >= minRadius; r *= 0.8)
         {
-            // Centre candidates: the bot itself first (guarantees we start inside), then offsets, which
-            // let the loop slide off a wall we happen to be standing against while still enclosing us.
-            foreach (var (cx, cy) in Centres(px, py, r))
+            foreach (var (cx, cy) in Centres(px, py, r, leeway))
             {
                 if (RimWalkable(grid, cx, cy, r)) return (cx, cy, r);
             }
@@ -61,16 +72,18 @@ public static class KiteCircle
         return pts;
     }
 
-    private static IEnumerable<(double X, double Y)> Centres(double px, double py, double r)
+    private static IEnumerable<(double X, double Y)> Centres(double px, double py, double r, double leeway)
     {
         yield return (px, py);                       // we are dead centre — always start inside
-        // Slide the centre around us at a third and two-thirds of the radius. Keeping |centre - bot| < r
-        // means the bot still starts INSIDE the ring, which is what makes the hand-off onto it cheap.
-        foreach (var frac in new[] { 0.34, 0.66 })
+        // Slide the centre around us, out to where we sit `leeway` OUTSIDE the rim. Strict containment
+        // rejects circles that are perfectly good to ride onto from just outside, so the search goes a
+        // little past r; the blended hand-off pulls us back onto the rim from there anyway.
+        foreach (var frac in new[] { 0.34, 0.66, 1.0 })
             for (var i = 0; i < 8; i++)
             {
                 var a = i * (Math.PI / 4);
-                yield return (px + Math.Cos(a) * r * frac, py + Math.Sin(a) * r * frac);
+                var d = Math.Min(r * frac, r + leeway);
+                yield return (px + Math.Cos(a) * d, py + Math.Sin(a) * d);
             }
     }
 

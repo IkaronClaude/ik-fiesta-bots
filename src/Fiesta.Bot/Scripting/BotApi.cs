@@ -549,14 +549,16 @@ public sealed class BotApi
     /// <summary>Fit the largest WALKABLE circle to kite around, from the map's <c>.shbd</c>:
     /// <c>{cx, cy, r}</c>, or nil when the ground will not hold one (caller falls back to a straight kite).
     /// Cached per map+area because the fit scans the grid and the terrain does not move.</summary>
-    public DynValue kiteCircle(double maxDiameter)
+    public DynValue kiteCircle(double maxDiameter, double enemyRange)
     {
         var grid = _handle.CurrentMap is { } map ? _mgr.GridProvider?.Invoke(map) : null;
         if (grid is null || _handle.Position is not { } p) return DynValue.Nil;
-        var key = $"{_handle.CurrentMap}|{(int)(p.X / 500)}|{(int)(p.Y / 500)}|{(int)maxDiameter}";
+        var key = $"{_handle.CurrentMap}|{(int)(p.X / 500)}|{(int)(p.Y / 500)}|{(int)maxDiameter}|{(int)enemyRange}";
         if (!_kiteCircles.TryGetValue(key, out var fit))
         {
-            fit = Navigation.KiteCircle.Fit(grid, p.X, p.Y, maxDiameter <= 0 ? 5000 : maxDiameter);
+            fit = Navigation.KiteCircle.Fit(grid, p.X, p.Y,
+                                            maxDiameter <= 0 ? 5000 : maxDiameter,
+                                            enemyRange <= 0 ? 400 : enemyRange);
             _kiteCircles[key] = fit;
         }
         if (fit is not { } c) return DynValue.Nil;
