@@ -79,6 +79,36 @@ public static class EventStreamEndpoint
         .WithSummary("WebSocket NDJSON stream of parsed game events — per-entity updates as they arrive");
     }
 
+    /// <summary>THE FULL-STATE PACKET — everything the viewer needs, from ONE read, at ONE instant.
+    ///
+    /// <para>⛔ THE CLIENT MUST NEVER HAVE TO RECONCILE TWO SOURCES (operator 2026-08-13: <i>"our stream
+    /// endpoint should start by sending a first 'full state' packet (similar to a map change packet) rather
+    /// than us relying on 2 separate data sources which can not match (e.g. if stream is called 20ms later
+    /// we could miss a mount packet or whatever)"</i>). A page that stitches a polled snapshot together
+    /// with a live delta feed has no way to know which is newer: the two are read at different instants,
+    /// and anything that happened in the gap — a mount, a death, a map change — is either double-counted or
+    /// lost, with no symptom except a picture that is quietly wrong.</para>
+    ///
+    /// <para>So the stream is SELF-SUFFICIENT: it opens with this, and re-sends it whenever the world is
+    /// wholesale replaced (a map change), exactly as the game's own login burst does. The poll survives
+    /// only for a host with no WebSocket at all, and is never mixed in.</para>
+    ///
+    /// <para>Ordering matters and is not accidental: the pump subscribes to the change events BEFORE
+    /// building this snapshot. Subscribing after would open a window where a change lands between the read
+    /// and the subscription and is lost forever; this way the worst case is an update that repeats one
+    /// already in the snapshot, and every message here is an idempotent upsert.</para></summary>
+    private static object FullState(BotHandle bot, BotManager manager, string kind) => new
+    {
+        t = kind,
+        id = bot.Id,
+        mapDisplay = manager.ClientData?.MapDisplayName(bot.CurrentMap),
+        // The SAME shape /entities returns, so the page has one draw path and hello can be assigned
+        // straight into it. A bespoke stream shape would mean a second renderer, and two renderers of one
+        // scene drift — a streamed mob would end up drawn differently from a polled one.
+        entities = BotEndpoints.EntityPanel(bot, manager.ClientData),
+        maxHp = bot.ZoneView?.MaxHp ?? 0,
+    };
+
     private static async Task PumpAsync(WebSocket ws, BotHandle bot, BotManager manager, CancellationToken outer)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(outer);
@@ -104,6 +134,7 @@ public static class EventStreamEndpoint
         void MarkDirty(ushort h) { lock (dirty) { dirty.Add(h); gone.Remove(h); } Signal(); }
         void MarkGone(ushort h) { lock (dirty) { gone.Add(h); dirty.Remove(h); } Signal(); }
         void Post(object o) { oob.Writer.TryWrite(o); Signal(); }
+        var resendState = false;   // set by a map change; drained by the pump (see FullState)
 
         // ⛔ SUBSCRIBE TO THE *BOT*, NOT THE ZoneView OBJECT. ZoneView is swapped out on a cross-server
         // reconnect (map handoff), so a subscription captured once would go silent after the first gate the
@@ -152,6 +183,13 @@ public static class EventStreamEndpoint
                         mapDisplay = manager.ClientData?.MapDisplayName(name),
                         x = mh.X, y = mh.Y,
                     });
+                    // ⛔ AND RE-SEND THE WHOLE STATE. A map change replaces the world wholesale, so the
+                    // client's picture is not patchable — every handle it holds belongs to the previous
+                    // map. It gets a fresh full state (mobs/NPCs empty at this instant) and the login
+                    // burst then fills it in as briefinfo arrives, which is exactly what the real client
+                    // does. Deferred to the pump rather than sent here: this runs on the session read
+                    // loop, which must never block on a socket write.
+                    resendState = true; Signal();
                     break;
                 }
                 case BotEventKind.MoveFailed when e.Data is ValueTuple<uint, uint> p:
@@ -165,21 +203,7 @@ public static class EventStreamEndpoint
         AttachZoneView(bot.ZoneView);
         try
         {
-            // HELLO = the complete current picture, so the client starts consistent and every later message
-            // is a pure delta. Without it a fresh connection would only learn about entities that happen to
-            // move next, and a stationary mob would never appear at all.
-            // ⛔ IT IS THE *SAME SHAPE* /entities RETURNS, deliberately: the page already has one draw path
-            // built on that object, so hello can be assigned straight into it and the deltas patch it in
-            // place. A bespoke stream shape would mean a second renderer, and two renderers of the same
-            // scene drift — a streamed mob would end up drawn differently from a polled one.
-            await SendAsync(ws, new
-            {
-                t = "hello",
-                id = bot.Id,
-                mapDisplay = manager.ClientData?.MapDisplayName(bot.CurrentMap),
-                entities = BotEndpoints.EntityPanel(bot, manager.ClientData),
-                maxHp = bot.ZoneView?.MaxHp ?? 0,
-            }, ct);
+            await SendAsync(ws, FullState(bot, manager, "hello"), ct);
 
             object? lastSelf = null;
             var lastSelfJson = "";
@@ -202,6 +226,13 @@ public static class EventStreamEndpoint
             while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
             {
                 AttachZoneView(bot.ZoneView);      // survive a map handoff (see AttachZoneView)
+
+                if (resendState)
+                {
+                    resendState = false;
+                    lock (dirty) { dirty.Clear(); gone.Clear(); }   // they named the OLD map's handles
+                    await SendAsync(ws, FullState(bot, manager, "state"), ct);
+                }
 
                 // One-shot events first — they are the "what just happened" narration.
                 while (oob.Reader.TryRead(out var msg)) await SendAsync(ws, msg, ct);

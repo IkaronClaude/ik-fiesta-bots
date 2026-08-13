@@ -641,8 +641,14 @@ function abStateBar(list, live) {
   // a bot trying to mount while something is hitting it never gets on. That is the failure we already
   // measured (the summon refused 0/21 while taking damage, and cancelled our walk each time) — the cost
   // is entirely in mounting, not in staying mounted.
-  if (live) {
-    const on = !!live.mounted;
+  // ⛔ ONE SOURCE, AND IT IS THE STREAM WHEN THE STREAM IS UP. This chip read the /metrics poll while the
+  // combat map read the stream — two reads taken at different instants, so a mount that happened between
+  // them showed a walking character on a mounted map (or the reverse) with no symptom but a wrong picture.
+  // Prefer the streamed self, which is the same value the marker is being interpolated with.
+  const streamSelf = (evAlive && lastEnt && lastEnt.self) ? lastEnt.self : null;
+  const src = streamSelf || live;
+  if (src) {
+    const on = !!src.mounted;
     chips.unshift(`<div class="abchip mount${on ? ' on' : ''}" title="${on ? 'MOUNTED' : 'on foot'}">`
       + `<span class="ab">${on ? '🐎' : '👣'}</span></div>`);
   }
@@ -1061,7 +1067,9 @@ let evSock = null, evBot = null, evMaxHp = 0, evAlive = false;
 // burst with new char info, this packet can be streamed." It is now, entity by entity, so a new map
 // rebuilds its whole picture from the burst exactly like the game client does.
 function applyStream(msg) {
-  if (msg.t === 'hello') {
+  // `hello` (stream open) and `state` (map change) are the SAME full-state packet — the stream is
+  // self-sufficient by design, so there is exactly one code path that installs a whole picture.
+  if (msg.t === 'hello' || msg.t === 'state') {
     lastEnt = msg.entities; evMaxHp = msg.maxHp || 0;
     anim.clear();
     for (const m of lastEnt.mobs || []) noteMove(m);
