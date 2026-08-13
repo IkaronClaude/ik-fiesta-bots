@@ -381,15 +381,75 @@ public sealed class BotHandle
     private readonly object _posGate = new();
     private (uint X, uint Y)? _pos;
 
-    /// <summary>The bot's best-known world position: seeded from the zone-login spawn
-    /// coord and advanced as it issues move commands. Null until in zone (or if the
-    /// spawn coord wasn't captured). Lets navigation default the "from" point.</summary>
-    public (uint X, uint Y)? Position { get { lock (_posGate) return _pos; } }
+    // ── LIVE MOTION SEGMENT (operator 2026-08-13) ────────────────────────────────────────────────
+    // "if we walk from A to B and we're 0.5 sec into it, and change path to C, do we send a packet
+    //  from 0.5*(A+B) towards C, or from B? Because that WOULD movefail (suddenly doing a step that's
+    //  1.5 steps far => fucked)"
+    // Exactly right, and both of the obvious implementations are wrong:
+    //   • committing B at SEND time  -> every re-path starts from a place we never reached (measured:
+    //     "believed @(2015,3528), server snapped to (2114,3526), delta=99"; 44% of moves rejected).
+    //   • committing B only AFTER the travel delay -> a mid-step re-path starts from A instead, which
+    //     is the same error mirrored (up to a full 250u step behind).
+    // So position is not a stored POINT, it is a stored SEGMENT evaluated against the clock: the bot is
+    // at from + (to-from) * clamp(elapsed/duration, 0, 1), which IS 0.5*(A+B) half a second in. A real
+    // client reports its true current position on every frame — measured `from`==previous `to` on only
+    // 2% of frames (Z:/LongCaptureNoDc.pcapng, n=20337) vs our 48-90% before this.
+    private double _segFromX, _segFromY, _segToX, _segToY;
+    private DateTime _segStartUtc;
+    private double _segDurationMs;   // 0 = standing still; _pos is then the whole truth
+
+    /// <summary>The bot's best-known world position, INTERPOLATED along the move currently in flight.
+    /// Seeded from the zone-login spawn coord; advanced continuously (not in jumps) while walking, and
+    /// snapped by a MOVEFAIL to the server's authoritative point. Null until in zone (or if the spawn
+    /// coord wasn't captured). Lets navigation default the "from" point.</summary>
+    public (uint X, uint Y)? Position { get { lock (_posGate) return InterpolatedLocked(); } }
+
+    /// <summary>Current point along the in-flight segment. Caller must hold <see cref="_posGate"/>.</summary>
+    private (uint X, uint Y)? InterpolatedLocked()
+    {
+        if (_pos is not { } p) return null;
+        if (_segDurationMs <= 0) return p;
+        var f = Math.Clamp((DateTime.UtcNow - _segStartUtc).TotalMilliseconds / _segDurationMs, 0.0, 1.0);
+        return ((uint)Math.Round(_segFromX + (_segToX - _segFromX) * f),
+                (uint)Math.Round(_segFromY + (_segToY - _segFromY) * f));
+    }
+
+    /// <summary>
+    /// Begin a move to (toX,toY) at <paramref name="unitsPerSec"/>, and return the position the move
+    /// actually STARTS from — the interpolated point we occupy right now, which is what must go in the
+    /// MOVERUN's `from`. Taking the destination only (never a caller-supplied `from`) makes the
+    /// over-claim that caused the MOVEFAIL storm unexpressible at the call site.
+    /// </summary>
+    internal (uint X, uint Y) BeginMove(uint toX, uint toY, double unitsPerSec)
+    {
+        (uint X, uint Y) cur; (uint X, uint Y)? prev;
+        lock (_posGate)
+        {
+            prev = _pos;
+            cur = InterpolatedLocked() ?? (toX, toY);
+            var dist = Math.Sqrt(Math.Pow(toX - (double)cur.X, 2) + Math.Pow(toY - (double)cur.Y, 2));
+            _segFromX = cur.X; _segFromY = cur.Y; _segToX = toX; _segToY = toY;
+            _segStartUtc = DateTime.UtcNow;
+            _segDurationMs = (unitsPerSec > 0 && dist > 0) ? dist / unitsPerSec * 1000.0 : 0;
+            _pos = cur;   // anchor the segment's origin
+        }
+        SetFacing(cur.X, cur.Y, toX, toY);   // moving A->B IS what turns us to face B
+        NoteMoved(prev, cur);
+        return cur;
+    }
 
     internal void SetPosition(uint x, uint y)
     {
         (uint X, uint Y)? prev;
-        lock (_posGate) { prev = _pos; _pos = (x, y); }
+        // An explicit set (MOVEFAIL snap, zone entry, map handoff) is authoritative: it ends any
+        // in-flight segment, so we stop interpolating away from the point the server just gave us.
+        lock (_posGate) { prev = InterpolatedLocked(); _pos = (x, y); _segDurationMs = 0; }
+        NoteMoved(prev, (x, y));
+    }
+
+    private void NoteMoved((uint X, uint Y)? prev, (uint X, uint Y) cur)
+    {
+        var x = cur.X; var y = cur.Y;
         // 📍 Every position update flows through here — walk steps, MOVEFAIL resyncs, map handoffs — so it is
         // the one place the trace and the distance metric can be fed without hunting call sites.
         // Trace self-rate-limits to 1/sec; DISTANCE is only counted for same-map moves under a sane step cap,

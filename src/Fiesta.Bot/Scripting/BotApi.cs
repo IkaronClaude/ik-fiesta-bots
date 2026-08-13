@@ -1359,6 +1359,15 @@ public sealed class BotApi
     /// moving()-based guard would re-issue travelTo there — cancelling the in-flight gate-use.</summary>
     public bool traveling() => _handle.TravelCts is { IsCancellationRequested: false };
 
+    /// <summary>True while a LOCAL walk (<see cref="BotManager.WalkPath"/>) is streaming move steps —
+    /// the same-map counterpart to <see cref="traveling"/>, which only covers multi-hop CROSS-MAP routes.
+    /// <para>⛔ Exposed 2026-08-13 because the driver's "arrived, so dismount" rule tested only
+    /// <c>traveling()</c>. A same-map walk leaves that false, so the bot read a 1400u walk to an NPC as
+    /// "arrived", dismounted 1.5s in, and covered the rest on foot at ~50% speed — then the mount toggle
+    /// cooldown refused the re-mount (operator: "the mage is not mounting on town trip, just walking
+    /// slowly along"). "Arrived" means no route AND no walk in flight.</para></summary>
+    public bool walking() => _handle.WalkCts is { IsCancellationRequested: false };
+
     /// <summary>Non-moving route query (diagnostic / decision helper): can the bot route to <paramref name="map"/>
     /// from where it is? Returns { result=&lt;TravelResult&gt;, ok=bool, hops, portals, maps={..} }.</summary>
     public DynValue routeTo(string map)

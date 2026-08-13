@@ -2880,40 +2880,29 @@ public sealed class BotManager : IAsyncDisposable
                         while (handle.ZoneView is { CastBarActive: true } && !ct.IsCancellationRequested)
                             await Task.Delay(100, ct);
                         // ⛔ REPORT WHERE WE *ARE*, NOT WHERE WE ARE GOING (measured 2026-08-13).
-                        // `from` must be the bot's LIVE tracked position at send time, never this loop's
-                        // private cursor. MOVEFAIL snaps handle.Position to the server's truth, so re-reading
-                        // it here is what makes the next leg start from a position the server agrees with.
-                        // Measured against real-client captures: a real client's next MOVERUN `from` equals
-                        // the previous `to` only 2% of the time (Z:/LongCaptureNoDc.pcapng, n=20337) / 16%
-                        // (Z:/JCQMany.pcapng, n=403) — it always reports its true current position. Ours was
-                        // 48% (MageFresh) / 90% (JcqArcher) because we committed the DESTINATION at send time,
-                        // and the server rejected 44% of our moves against a real client's 0.25-0.6%.
-                        var live = handle.Position;
-                        double bx = live?.X ?? cx, by = live?.Y ?? cy;
+                        // BeginMove returns the INTERPOLATED point we occupy right now and starts the segment
+                        // in one atomic step, so `from` is always the true current position — including when a
+                        // re-path interrupts a walk half a step in (operator: "if we walk from A to B and we're
+                        // 0.5 sec into it, and change path to C, do we send a packet from 0.5*(A+B) towards C,
+                        // or from B? Because that WOULD movefail"). It does. Measured on real-client captures:
+                        // a real client's `from` equals the previous `to` on only 2% of frames
+                        // (Z:/LongCaptureNoDc.pcapng, n=20337) / 16% (Z:/JCQMany.pcapng, n=403); ours was 48%
+                        // (MageFresh) / 90% (JcqArcher), and the server rejected 44% of our moves vs 0.25-0.6%.
+                        // Pace using the bot's live MOVESPEED-tracked walk speed (fallback: the passed value).
+                        var paceSpeed = handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec;
+                        var from = handle.BeginMove(sx, sy, paceSpeed);
                         var p = new byte[16];
-                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), (uint)Math.Round(bx));
-                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), (uint)Math.Round(by));
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), from.X);
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), from.Y);
                         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), sx);
                         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), sy);
                         await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
                         handle.LastMoveTarget = (sx, sy);  // the tile we're trying to enter (for MOVEFAIL learning)
-                        // Turn toward the step NOW (facing is instant), but do NOT claim to have arrived —
-                        // the walk takes stepDist/paceSpeed to happen. Committing the destination at send time
-                        // put our tracked position up to 121u ahead of the server's ("MOVEFAIL desync — believed
-                        // @(2015,3528), server snapped to (2114,3526), delta=99"), which then became the next
-                        // leg's `from` and got that leg rejected. Each rejection also TTL-blocks a nav cell that
-                        // was never actually blocked, so the phantom walls compound into a wedge.
-                        handle.SetFacing((uint)Math.Round(bx), (uint)Math.Round(by), sx, sy);
-                        var stepDist = Math.Sqrt(Math.Pow(sx - bx, 2) + Math.Pow(sy - by, 2));
+                        var stepDist = Math.Sqrt(Math.Pow(sx - (double)from.X, 2) + Math.Pow(sy - (double)from.Y, 2));
                         steps++;
-                        // Pace using the bot's live MOVESPEED-tracked walk speed.
-                        // Falls back to the passed unitsPerSec if no broadcast yet.
-                        var paceSpeed = handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec;
+                        // Sleep the travel time. Position needs no commit at the end — the segment reaches its
+                        // destination on the clock, and a MOVEFAIL during the delay snaps it and cancels us.
                         await Task.Delay((int)Math.Clamp(stepDist / paceSpeed * 1000, 40, 2000), ct);
-                        // ARRIVED (the travel time has now actually elapsed) — commit the position. If a
-                        // MOVEFAIL landed during the delay it already snapped us and cancelled this walk, so
-                        // this line will not run for a rejected step.
-                        if (!ct.IsCancellationRequested) handle.SetPosition(sx, sy);
                         cx = sx; cy = sy;
                     }
                 }
@@ -2949,17 +2938,27 @@ public sealed class BotManager : IAsyncDisposable
             }
             return ActionResult.Sent;   // treat as handled: the caller must not escalate/re-path on this
         }
-        var result = await ActAsync(id, $"walk ({fromX},{fromY})->({toX},{toY})", s =>
+        // ⛔ THE CALLER'S `from` IS NOT TRUSTED (2026-08-13). Callers pass their own idea of where the bot
+        // is, which is stale the moment a walk is in flight — and this is the path the Lua tick and the nav
+        // re-path use, so a mid-walk re-path here was sending a `from` we had not reached. BeginMove returns
+        // the INTERPOLATED live position and starts the new segment atomically; fromX/fromY are kept only so
+        // the action log still shows what the caller believed (a mismatch is itself worth seeing).
+        var live = _bots.TryGetValue(id, out var mh)
+            ? mh.BeginMove(toX, toY, mh.WalkSpeed > 0 ? mh.WalkSpeed : 120.0)
+            : (X: fromX, Y: fromY);
+        var drift = Math.Sqrt(Math.Pow(live.X - (double)fromX, 2) + Math.Pow(live.Y - (double)fromY, 2));
+        var label = drift > 8
+            ? $"walk ({live.X},{live.Y})->({toX},{toY}) [caller said from ({fromX},{fromY}), drift {drift:F0}u]"
+            : $"walk ({live.X},{live.Y})->({toX},{toY})";
+        return await ActAsync(id, label, s =>
         {
             var p = new byte[16];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), fromX);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), fromY);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), live.X);
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), live.Y);
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), toX);
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), toY);
             return s.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
         });
-        if (result == ActionResult.Sent && _bots.TryGetValue(id, out var h)) h.CommitMove(fromX, fromY, toX, toY);
-        return result;
     }
 
     /// <summary>Issue a GM command (e.g. <c>&amp;levelup 46</c>, <c>&amp;makeitem SafeProtection01</c>).
