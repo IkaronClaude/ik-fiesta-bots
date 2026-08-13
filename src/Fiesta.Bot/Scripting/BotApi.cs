@@ -549,6 +549,35 @@ public sealed class BotApi
     /// <summary>Fit the largest WALKABLE circle to kite around, from the map's <c>.shbd</c>:
     /// <c>{cx, cy, r}</c>, or nil when the ground will not hold one (caller falls back to a straight kite).
     /// Cached per map+area because the fit scans the grid and the terrain does not move.</summary>
+    /// <summary>The WALL-HUGGING kite loop for the room we are in: an ordered ring of {x,y} world
+    /// waypoints with narrow corridors excluded, or an empty table when the room will not yield one.
+    /// Cached per map + coarse position, because the terrain does not move.
+    ///
+    /// <para>Replaces the inscribed-circle fit, which was capped by the room's short axis and degenerate
+    /// when its radius approached the chaser's range (the chaser parks in the middle and never moves).
+    /// Measured in the JCQ clone room: the best circle was r=524u / 3293u circumference, while the wall
+    /// loop spans 1425x1181u with a ~5414u perimeter.</para></summary>
+    public DynValue kiteLoop(double corridorMinWidth)
+    {
+        var grid = _handle.CurrentMap is { } map ? _mgr.GridProvider?.Invoke(map) : null;
+        var t = NewTable();
+        if (grid is null || _handle.Position is not { } p) return DynValue.NewTable(t);
+        var key = $"{_handle.CurrentMap}|{(int)(p.X / 500)}|{(int)(p.Y / 500)}|{(int)corridorMinWidth}";
+        if (!_kiteLoops.TryGetValue(key, out var ring))
+        {
+            ring = Navigation.KiteLoop.Fit(grid, p.X, p.Y,
+                       corridorMinWidth <= 0 ? 260 : corridorMinWidth);
+            _kiteLoops[key] = ring;
+        }
+        var i = 1;
+        foreach (var (x, y) in ring)
+        {
+            var r = NewTable(); r["x"] = x; r["y"] = y; t[i++] = DynValue.NewTable(r);
+        }
+        return DynValue.NewTable(t);
+    }
+    private readonly Dictionary<string, IReadOnlyList<(uint X, uint Y)>> _kiteLoops = new();
+
     public DynValue kiteCircle(double maxDiameter, double enemyRange)
     {
         var grid = _handle.CurrentMap is { } map ? _mgr.GridProvider?.Invoke(map) : null;
