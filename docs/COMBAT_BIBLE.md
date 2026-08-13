@@ -73,6 +73,25 @@ killing blow as "isenchant".
 | `0x0FD1` | Failed to Cast the Skill. |
 | **`0x0FD7`** | **Target user cannot be healed at this time.** |
 
+⚠️ **`0x0FCA` IS A CATCH-ALL — "out of range" is what the server says, not always what it means**
+(operator, 2026-08-13): *"Out of range also appears to be sent on other casting failures e.g. pos desyncs
+as well as invalid target handles, it's a bit of catch-all."* The STRING is correct (re-decoded from the
+client jump table: `tools/decode_error_table.py --table 0x4AA9D0 --base 0x0FC0`), so do not "fix" the
+label again — but do not read it as a pure distance verdict either.
+
+Measured 2026-08-13 over 604 casts (FighterFresh + ClericFresh), which is what a range-only reading
+cannot explain:
+- **100% of 468 paired failures were INSIDE our believed reach**; only 4% were outside the skill's arc.
+- The failure distance is a median of **exactly 34u for every skill**, whether its reach is 52 or 76 —
+  a real range limit would scale with reach.
+- Some fail at **0-1u**, which no range check explains (those are the invalid-handle case).
+- By send mode: `stop+cast` **74%** fail (405/549) vs `face+stop+cast` **21%** (11/52) — consistent with
+  the server evaluating range against our PREVIOUS position, i.e. a position race, not a distance error.
+
+So the three known senders of `0x0FCA` are: genuinely out of range, **position desync**, and **an invalid
+/ stale target handle**. The last one is why the teleport-untarget fix matters — a selection held through
+a teleport names a handle the server no longer has, and the refusal comes back as "out of range".
+
 ⛔ **`0x0FCA` IS RANGE, NOT MOVEMENT.** This codebase called it "precondition unmet; suspect MOVING / no
 committed STOP" for months and that claim was repeated into the 2026-08-11 analysis, including as the
 stated rationale for suppressing the mid-swing face-step. The face-step fix stands on its own evidence

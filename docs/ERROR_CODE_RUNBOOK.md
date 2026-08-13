@@ -79,7 +79,7 @@ Stored decoded in `docs/jumptables/`, named `jumptable_<PACKET>_errors.json`.
 | `0x0FC7` | Cannot use the skill due to Silence State. |
 | **`0x0FC8`** | **Cannot use the skill yet.** (cooldown) |
 | `0x0FC9` | Not enough SP. |
-| **`0x0FCA`** | **The target is out of casting range.** |
+| **`0x0FCA`** | **The target is out of casting range.** ⚠️ CATCH-ALL: also sent for position desyncs and invalid/stale target handles (operator 2026-08-13). See COMBAT_BIBLE.md. |
 | `0x0FCB` | Cannot find the target. |
 | `0x0FCC` | Cannot use the skill on Fear State. |
 | `0x0FCD` | Skill has not been finished normally. |
