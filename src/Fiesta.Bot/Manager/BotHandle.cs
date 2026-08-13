@@ -491,10 +491,22 @@ public sealed class BotHandle
     /// </summary>
     internal void CommitMove(uint fromX, uint fromY, uint toX, uint toY)
     {
+        SetFacing(fromX, fromY, toX, toY);
+        SetPosition(toX, toY);
+    }
+
+    /// <summary>
+    /// Turn to face (toX,toY) from (fromX,fromY) WITHOUT claiming to have arrived there.
+    /// Facing is instant; travel is not. The streaming walker sends a MOVERUN, turns immediately,
+    /// and only commits the new position once the travel time has actually elapsed — committing
+    /// the destination at send time is what put our tracked position up to 121u ahead of the
+    /// server's and got the next leg rejected (44% of our moves vs a real client's 0.25-0.6%).
+    /// </summary>
+    internal void SetFacing(uint fromX, uint fromY, uint toX, uint toY)
+    {
         double dx = (double)toX - fromX, dy = (double)toY - fromY;
         var d = Math.Sqrt(dx * dx + dy * dy);
         if (d > 1) { FacingDx = dx / d; FacingDy = dy / d; }   // sub-unit hops carry no reliable direction
-        SetPosition(toX, toY);
     }
 
     /// <summary>Facing as a compass angle in degrees (0-360), or -1 when nothing has set a heading yet.

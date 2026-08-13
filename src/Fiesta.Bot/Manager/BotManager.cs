@@ -2879,21 +2879,42 @@ public sealed class BotManager : IAsyncDisposable
                         // (4.5s) so this can never block forever.
                         while (handle.ZoneView is { CastBarActive: true } && !ct.IsCancellationRequested)
                             await Task.Delay(100, ct);
+                        // ⛔ REPORT WHERE WE *ARE*, NOT WHERE WE ARE GOING (measured 2026-08-13).
+                        // `from` must be the bot's LIVE tracked position at send time, never this loop's
+                        // private cursor. MOVEFAIL snaps handle.Position to the server's truth, so re-reading
+                        // it here is what makes the next leg start from a position the server agrees with.
+                        // Measured against real-client captures: a real client's next MOVERUN `from` equals
+                        // the previous `to` only 2% of the time (Z:/LongCaptureNoDc.pcapng, n=20337) / 16%
+                        // (Z:/JCQMany.pcapng, n=403) — it always reports its true current position. Ours was
+                        // 48% (MageFresh) / 90% (JcqArcher) because we committed the DESTINATION at send time,
+                        // and the server rejected 44% of our moves against a real client's 0.25-0.6%.
+                        var live = handle.Position;
+                        double bx = live?.X ?? cx, by = live?.Y ?? cy;
                         var p = new byte[16];
-                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), (uint)Math.Round(cx));
-                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), (uint)Math.Round(cy));
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(0), (uint)Math.Round(bx));
+                        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), (uint)Math.Round(by));
                         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(8), sx);
                         System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), sy);
                         await session.SendAsync(new FiestaPacket(OpMoveRun, p), ct);
                         handle.LastMoveTarget = (sx, sy);  // the tile we're trying to enter (for MOVEFAIL learning)
-                        // advance tracked position AND facing as we walk — a walk turns us toward the step
-                        handle.CommitMove((uint)Math.Round(cx), (uint)Math.Round(cy), sx, sy);
-                        var stepDist = Math.Sqrt(Math.Pow(sx - cx, 2) + Math.Pow(sy - cy, 2));
-                        cx = sx; cy = sy; steps++;
+                        // Turn toward the step NOW (facing is instant), but do NOT claim to have arrived —
+                        // the walk takes stepDist/paceSpeed to happen. Committing the destination at send time
+                        // put our tracked position up to 121u ahead of the server's ("MOVEFAIL desync — believed
+                        // @(2015,3528), server snapped to (2114,3526), delta=99"), which then became the next
+                        // leg's `from` and got that leg rejected. Each rejection also TTL-blocks a nav cell that
+                        // was never actually blocked, so the phantom walls compound into a wedge.
+                        handle.SetFacing((uint)Math.Round(bx), (uint)Math.Round(by), sx, sy);
+                        var stepDist = Math.Sqrt(Math.Pow(sx - bx, 2) + Math.Pow(sy - by, 2));
+                        steps++;
                         // Pace using the bot's live MOVESPEED-tracked walk speed.
                         // Falls back to the passed unitsPerSec if no broadcast yet.
                         var paceSpeed = handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec;
                         await Task.Delay((int)Math.Clamp(stepDist / paceSpeed * 1000, 40, 2000), ct);
+                        // ARRIVED (the travel time has now actually elapsed) — commit the position. If a
+                        // MOVEFAIL landed during the delay it already snapped us and cancelled this walk, so
+                        // this line will not run for a rejected step.
+                        if (!ct.IsCancellationRequested) handle.SetPosition(sx, sy);
+                        cx = sx; cy = sy;
                     }
                 }
                 handle.Log(BotLogLevel.Verbose, $"walk-path done ({waypoints.Count} waypoints, {steps} move steps)");
