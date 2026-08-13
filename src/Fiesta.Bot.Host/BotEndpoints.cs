@@ -1424,6 +1424,12 @@ public static class BotEndpoints
             foreach (var n in zv.NearbyNpcs)
             {
                 if (n.IsGate) continue;
+                // ⛔ AND NPCs BELONG TO THE NPC LAYER, NOT HERE. This loop added every non-gate entity,
+                // so an actual NPC (Grand Master Sean, the Soul Stone Merchant, a Teleport Gate) was drawn
+                // BOTH as a white mob tag here and as a blue diamond on the NPC layer — the other half of
+                // the double-render. Fixing only the NPC side left 6 ids still in both layers.
+                // A scenario clone keeps its place here: it is a fightable entity, not an NPC.
+                if (!n.IsScenarioClone && cd?.Mob(n.MobId)?.IsNpc == true) continue;
                 // ⛔ A scenario clone has NO mob id — its MobId field reads 0, which is the real mob
                 // "Slime". Resolving it would draw a level-20 player copy as a level-1 Slime with a
                 // Slime's MaxHp, and ring it in the danger colours of the wrong creature entirely.
