@@ -2940,6 +2940,10 @@ public sealed class ZoneView : IDisposable
         {
             Dead = true; DeadAtUtc = DateTime.UtcNow;
             _log?.Invoke("[combat] DIED (death menu) — revive in place or respawn to town");
+            // NOTE: dying does NOT itself drop the selection — the RESPAWN does, because it teleports you
+            // (operator 2026-08-13: "it's not the death that untargets, it's the respawn as it teleports
+            // you. Teleportation in general untargets"). So the invalidation lives on the teleport paths
+            // (REVIVESAME / LINKSAME / LINKOTHER), not here.
         }
         else if (op == OpCharReviveSame)
         {
@@ -2957,6 +2961,14 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _npcSeedAll.Clear(); _nearby.Clear(); _drops.Clear();
+                // ⛔ TELEPORTING DROPS THE SERVER-SIDE SELECTION (operator 2026-08-13: "Teleportation
+                // in general untargets" — and specifically it is the RESPAWN that untargets after a
+                // death, not the death). This path is every teleport we see: LINKSAME, LINKOTHER and
+                // REVIVESAME all land here. Holding the selection through one leaves the bot bashing a
+                // handle the server no longer associates with us — a silent no-op — and because handles
+                // are per-map and REUSED, that number can name a completely different creature
+                // afterwards. This is the "spuriously retained invalid target".
+                TargetInvalidated?.Invoke("teleported — the server drops the selection on a teleport");
                 _mobAnchor.Clear();   // handles are PER-MAP and get reused — a stale anchor from the previous
                                       // map makes a fresh mob look like it chased thousands of units from home
                 // Same reason, same danger: a retained "this handle is a scenario clone" mark would brand
@@ -3830,6 +3842,14 @@ public sealed class ZoneView : IDisposable
             {
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _npcSeedAll.Clear(); _mobAnchor.Clear();  // entities are per-map; the new map re-broadcasts
+                // ⛔ TELEPORTING DROPS THE SERVER-SIDE SELECTION (operator 2026-08-13: "Teleportation
+                // in general untargets" — and specifically it is the RESPAWN that untargets after a
+                // death, not the death). This path is every teleport we see: LINKSAME, LINKOTHER and
+                // REVIVESAME all land here. Holding the selection through one leaves the bot bashing a
+                // handle the server no longer associates with us — a silent no-op — and because handles
+                // are per-map and REUSED, that number can name a completely different creature
+                // afterwards. This is the "spuriously retained invalid target".
+                TargetInvalidated?.Invoke("teleported — the server drops the selection on a teleport");
                 _nearby.Clear();
                 lock (_scenarioFightable) _scenarioFightable.Clear();   // handles are per-map — see the revive path
                 _drops.Clear();  // ground items are per-map too

@@ -1468,7 +1468,14 @@ public static class BotEndpoints
                 // renders ... "Flower" in light blue and then again in White ... for the SAME flower') —
                 // and filled the big map with every enemy ("Big map should NOT render all enemies").
                 // Gates and genuine NPCs only; anything huntable belongs to the mob layer.
-                if (!n.IsGate && (zv.IsHuntableMob?.Invoke((ushort)n.MobId) ?? false)) continue;
+                // ⛔ THE TEST IS IsNpc, NOT "huntable". IsHuntableEnemy is
+                // `!IsNpc && !IsPlayerSide && Type != ResourceNodeType`, so RESOURCE NODES — herbs,
+                // plants, mushrooms, wood — are not huntable and sailed straight through this filter into
+                // the NPC layer, where they drew a second time as a blue diamond on top of the white mob
+                // tag they already had (operator 2026-08-13: still "shows plants with labels as both blue
+                // npcs and white mobs"), and filled the big map. A gathering node is not an NPC; the only
+                // things that belong on this layer are gates and actual NPCs.
+                if (!n.IsGate && cd?.Mob(n.MobId)?.IsNpc != true) continue;
                 // A gate's LinkMap is the map CODE (e.g. "EldCem01"); the client shows the map's NAME.
                 var gateName = n.IsGate ? (cd?.MapDisplayName(n.LinkMap) ?? n.LinkMap ?? "gate") : null;
                 npcs.Add(new
