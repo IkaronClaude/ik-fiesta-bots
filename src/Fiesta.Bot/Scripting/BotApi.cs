@@ -99,6 +99,23 @@ public sealed class BotApi
     /// 75-minute buffer, only 3 distinct skills ever used, and a median 1.8s between casts for a class
     /// that should empty its bar in 1-2s. Ask this instead and a skill that has started is simply not
     /// ready, so the next pass picks a different one.</para></summary>
+    /// <summary>Mean FINAL damage this skill has actually landed, or -1 with no samples.
+    ///
+    /// <para>⭐ RANK BY THIS, NOT BY THE CLIENT'S `damage` COLUMN. That column is a CONTRIBUTION over a
+    /// shared weapon/magic base (operator: "skill damage is weapon damage — or mdmg depending on skill —
+    /// plus the skill damage"), so it exaggerates the gap between ranks enormously. MEASURED on MageFresh:
+    /// skill 6003 carries `damage` 176 and lands ~104-130; 6002 carries 112 and lands ~110. The table says
+    /// 57% apart; the wire says under 15%.</para>
+    ///
+    /// <para>That difference decides the open question of whether Magic Missile rank 1 (1.8s cooldown)
+    /// out-damages rank 4 (4s) on THROUGHPUT — the operator's rule being that a shorter shared cooldown
+    /// wins whenever the final damage is above ~50%. Pair with <see cref="skillDamageSamples"/>: -1 means
+    /// UNKNOWN and must be EXPLORED, never treated as weak.</para></summary>
+    public double skillDamageAvg(int id) => View?.SkillDamageAvg((ushort)id) ?? -1;
+
+    /// <summary>How many landed hits have been sampled for this skill. 0 = no evidence.</summary>
+    public int skillDamageSamples(int id) => View?.SkillDamageSamples((ushort)id) ?? 0;
+
     public double skillReadyInMs(int id)
     {
         var si = _mgr.ClientData?.Skill(id);

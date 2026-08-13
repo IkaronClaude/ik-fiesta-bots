@@ -2109,6 +2109,27 @@ public sealed class ZoneView : IDisposable
     public DateTime? SkillStartedAtUtc(ushort skillId) =>
         _skillStartedAt.TryGetValue(skillId, out var t) ? t : null;
 
+    // 🎯 MEASURED FINAL DAMAGE PER SKILL, paired cast→hit through the 0x244E/0x2452 `index`.
+    // ⛔ THIS IS THE ONLY HONEST ANSWER TO "WHICH SKILL HITS HARDEST PER SECOND". The client's ActiveSkill
+    // `damage` column is a CONTRIBUTION over a shared weapon/magic base (operator: "skill damage is weapon
+    // damage — or mdmg depending on skill — PLUS the skill damage"), so ranking by it is ranking by the
+    // wrong number: a low rank looks far weaker than it lands. Measured 2026-08-13, MageFresh: skill 6003
+    // carries `damage` 176 and actually lands ~104-130, while 6002 carries 112 and lands ~110 — the gap in
+    // the table is 57%, the gap on the wire is under 15%. Ranking by the table therefore picks the big slow
+    // rank and ignores that a cheaper one on a much shorter cooldown may win on throughput.
+    private readonly ConcurrentDictionary<ushort, ushort> _castIndexSkill = new();
+    private readonly ConcurrentQueue<ushort> _castIndexOrder = new();
+    private readonly ConcurrentDictionary<ushort, (int Count, long Sum, int Max)> _skillDamage = new();
+
+    /// <summary>Mean FINAL damage this skill has actually landed, or -1 with no samples. -1 means UNKNOWN,
+    /// never "weak" — a skill that has never been cast must be explored, not written off.</summary>
+    public double SkillDamageAvg(ushort skillId) =>
+        _skillDamage.TryGetValue(skillId, out var s) && s.Count > 0 ? (double)s.Sum / s.Count : -1;
+
+    /// <summary>How many landed hits have been sampled for this skill (0 = no evidence).</summary>
+    public int SkillDamageSamples(ushort skillId) =>
+        _skillDamage.TryGetValue(skillId, out var s) ? s.Count : 0;
+
     /// <summary>Milliseconds until this skill is usable again, 0 = ready now.
     /// <para>Cooldown runs from the CONFIRMED start plus the skill's own cast time (the operator's rule:
     /// "cd only starts once cast has fully finished; on skills with cast time that is once the cast time
@@ -3215,6 +3236,24 @@ public sealed class ZoneView : IDisposable
                                  : _recentNpcs.TryGetValue(tgt, out var tr) ? tr.Npc.MobId : 0;
                         hits++; dealt += dmg;
                         parts.Add($"mob{tMob} h={tgt} dmg={dmg} resthp={rest}" + (dmg == 0 ? " — WHIFF" : ""));
+                        // 🎯 ATTRIBUTE THIS DAMAGE TO THE SKILL THAT CAUSED IT, via the cast index this
+                        // frame shares with its 0x244E. A WHIFF is not evidence about a skill's power, so
+                        // only landed hits are sampled.
+                        if (dmg > 0)
+                        {
+                            var castIdx = (ushort)(hp2[0] | (hp2[1] << 8));
+                            if (_castIndexSkill.TryGetValue(castIdx, out var srcSkill))
+                            {
+                                var upd = _skillDamage.AddOrUpdate(srcSkill,
+                                    _ => (1, dmg, (int)dmg),
+                                    (_, st) => (st.Count + 1, st.Sum + dmg, Math.Max(st.Max, (int)dmg)));
+                                // Log the RUNNING AVERAGE, not the single hit: one number tells you nothing
+                                // about a skill, and the whole point is comparing throughput between them.
+                                _logLevel?.Invoke(BotLogLevel.Info,
+                                    $"[skilldmg] skill{srcSkill} landed {dmg} — avg {(double)upd.Sum / upd.Count:F1} " +
+                                    $"over {upd.Count} (max {upd.Max})");
+                            }
+                        }
                         if (dmg > 0)
                         {
                             MetricSink?.Invoke("damageDealt", dmg);
@@ -3360,6 +3399,20 @@ public sealed class ZoneView : IDisposable
             {
                 var startedSkill = (ushort)(ps[0] | (ps[1] << 8));
                 NoteSkillStarted(startedSkill);
+                // 🎯 REMEMBER WHICH CAST THIS IS, so the damage that arrives later can be attributed to the
+                // SKILL that caused it. 0x244E is {skill u16, target u16, index u16} and the 0x2452 damage
+                // frame leads with the SAME index — that pairing is what makes "how hard does THIS skill
+                // actually hit?" answerable at all. Without it the only damage figure available is the
+                // client's `damage` COLUMN, which is a contribution over a shared weapon base, not the
+                // number that lands. Bounded: a cast index is used once and never revisited.
+                if (ps.Length >= 6)
+                {
+                    var idx = (ushort)(ps[4] | (ps[5] << 8));
+                    _castIndexSkill[idx] = startedSkill;
+                    while (_castIndexOrder.Count > 256 && _castIndexOrder.TryDequeue(out var old))
+                        _castIndexSkill.TryRemove(old, out _);
+                    _castIndexOrder.Enqueue(idx);
+                }
                 _logLevel?.Invoke(BotLogLevel.Verbose,
                     $"[combat] skill {startedSkill} STARTED (0x244E) — cooldown clock begins");
             }
@@ -4046,6 +4099,18 @@ public sealed class ZoneView : IDisposable
                 TargetInvalidated?.Invoke("teleported — the server drops the selection on a teleport");
                 _nearby.Clear();
                 lock (_scenarioFightable) _scenarioFightable.Clear();   // handles are per-map — see the revive path
+                // ⛔ AND EVERY PER-HANDLE TABLE, FOR THE SAME REASON. Handles are per-map and REUSED, so a
+                // learned attack range / hardest hit kept across a transition is attributed to whatever
+                // creature inherits that number on the new map. This is not a memory concern — a ushort
+                // key bounds them at 65536 rows — it is a CORRECTNESS one: hitsHard() reads
+                // HandleHitMax(), so a stale row from the JCQ clone (97 damage) would make the bot
+                // early-kite a harmless field mob that happened to be handed the same handle.
+                // The mob-ID tables deliberately SURVIVE: a mob id means the same thing on every map, and
+                // that learned danger is the whole point of collecting it.
+                _handleRange.Clear();
+                _handleHits.Clear();
+                _entityMove.Clear();      // in-flight moves belong to the map we just left
+                _castIndexSkill.Clear(); while (_castIndexOrder.TryDequeue(out _)) { }
                 _drops.Clear();  // ground items are per-map too
                 lock (_selfAbstateLock) _selfAbstates.Clear();  // abstates are per-map; server re-broadcasts
                 ShopOpenUtc = default;  // any open shop closes when we leave the map
