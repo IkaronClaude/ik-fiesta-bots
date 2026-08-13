@@ -1461,6 +1461,22 @@ public sealed class ZoneView : IDisposable
         ? -1
         : Math.Max(0, HpStoneCooldownMs - (DateTime.UtcNow - LastHpStoneSuccessUtc).TotalMilliseconds);
 
+    /// <summary>When the SP soul stone last succeeded (0x500A), UtcMinValue if never.</summary>
+    public DateTime LastSpStoneSuccessUtc { get; private set; } = DateTime.MinValue;
+
+    /// <summary>The SP stone's cooldown. ⭐ OPERATOR-STATED 2026-08-13: <i>"both hp and sp cooldowns are 7
+    /// seconds"</i> — the two stones share one cooldown length, so this is deliberately the SAME value the
+    /// HP side uses rather than a second constant that could drift away from it. Nothing observed SP
+    /// independently: I had published null here ("unknown") rather than assume it matched, and the operator
+    /// supplied the fact. It is a game constant learned from a player, which is the one thing the
+    /// no-hardcoding rule allows — and it is not even hardcoded twice.</summary>
+    public double SpStoneCooldownMs => HpStoneCooldownMs;
+
+    /// <summary>Milliseconds until the SP stone is usable again (0 = ready now, -1 = never used yet).</summary>
+    public double SpStoneReadyInMs => SpStoneCooldownMs < 0 || LastSpStoneSuccessUtc == DateTime.MinValue
+        ? -1
+        : Math.Max(0, SpStoneCooldownMs - (DateTime.UtcNow - LastSpStoneSuccessUtc).TotalMilliseconds);
+
     /// <summary>Result code from the most recent <c>NC_ITEM_RELOC_ACK</c> (0x300C), -1 if none seen. This is
     /// the server's answer to every item move, including storage deposits/withdrawals.
     /// <para>Observed codes (packets-JcqFresh.log, 2026-08-05): a storage deposit that produced NO cell change
@@ -3626,6 +3642,7 @@ public sealed class ZoneView : IDisposable
             {
                 SpStoneDepleted = false;
                 if (SpStones is { } n && n > 0) SpStones = n - 1;
+                LastSpStoneSuccessUtc = DateTime.UtcNow;
             }
         }
         else if (op == OpSoulStoneUseFail)

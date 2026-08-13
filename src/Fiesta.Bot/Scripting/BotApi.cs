@@ -1179,6 +1179,16 @@ public sealed class BotApi
     /// Derived from the wire, so it stays correct if the server's value differs from the ~6.9s measured.</summary>
     public double hpStoneCooldownMs() => View?.HpStoneCooldownMs ?? -1;
 
+    /// <summary>Milliseconds until the SP soul stone can fire again (0 = ready, -1 = never used yet).
+    /// The twin of <see cref="hpStoneReadyIn"/>, and the same combat input for a caster: an SP stone on
+    /// cooldown means the mana is not coming, so a rotation that assumes a top-up is about to land is
+    /// planning on something that cannot happen. ⭐ Both stones share a 7s cooldown (operator-stated
+    /// 2026-08-13); only the HP side had ever been timed.</summary>
+    public double spStoneReadyIn() => View?.SpStoneReadyInMs ?? -1;
+
+    /// <summary>The SP soul-stone cooldown in ms. Same length as the HP stone's.</summary>
+    public double spStoneCooldownMs() => View?.SpStoneCooldownMs ?? -1;
+
     /// <summary>Consecutive HP-stone USEFAILs since the last real heal. <b>Non-zero means the bot is asking to
     /// heal and NOT healing</b> — the exact condition that killed it while the log looked healthy.</summary>
     public int hpStoneFailsInARow() => View?.HpStoneFailsSinceSuccess ?? 0;

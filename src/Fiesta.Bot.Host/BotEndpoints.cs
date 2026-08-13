@@ -1235,10 +1235,11 @@ public static class BotEndpoints
             // SOUL STONES AS COOLDOWN TILES (operator 2026-08-13: "display current stone cooldown as a
             // skill-icon-sized button basically exactly like skills"). Same three fields a skill tile
             // renders from, so the page can reuse the tile renderer rather than growing a second one.
-            // ⛔ SP's cooldown is left NULL, not copied from HP. Only the HP stone's gap has been measured
-            // (HpStoneCooldownMs, learned from successful uses); whether SP shares it is unknown, and a
-            // guessed number on a tile is indistinguishable from a measured one once it is drawn. Null
-            // renders as the existing "cd unknown" dashed tile, which is the truth.
+            // ⭐ SP CARRIES A REAL COOLDOWN NOW (operator 2026-08-13: "both hp and sp cooldowns are 7
+            // seconds"). It had been published as null — "unknown" — because only the HP gap had been
+            // measured and I would not assume the two matched; the operator supplied the fact. SP reads
+            // the SAME value the HP side uses rather than a second constant, and its remaining clock comes
+            // from the SP stone's own USESUC (0x500A), which was being handled but not timestamped.
             Stones = new object[]
             {
                 new
@@ -1256,7 +1257,9 @@ public static class BotEndpoints
                 new
                 {
                     Kind = "sp", Count = snap.SpStones, Max = zv?.MaxSpStones ?? 0,
-                    CooldownMs = (double?)null, RemainingMs = (double?)null, Depleted = false,
+                    CooldownMs = zv is null ? (double?)null : zv.SpStoneCooldownMs,
+                    RemainingMs = zv is null ? (double?)null : Math.Max(0, zv.SpStoneReadyInMs),
+                    Depleted = zv?.SpStoneDepleted ?? false,
                 },
             },
             // Active buffs/debuffs for the abstate bar. Reads ZoneView.SelfAbstateSnapshot(), which
