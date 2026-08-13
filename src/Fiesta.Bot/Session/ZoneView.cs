@@ -3170,6 +3170,34 @@ public sealed class ZoneView : IDisposable
                         $"[skillhit] OUR skill hit {hits} target(s) for {dealt} total — {string.Join(" | ", parts)}");
                     MetricSink?.Invoke("skillHits", targets > 0 ? targets : 1);
                 }
+                // ⚔️ SOMEONE ELSE'S SKILL HITTING *US*. This branch did not exist: the frame was parsed and
+                // then dropped unless WE were the caster, so every point of damage from an enemy that fights
+                // with SKILLS rather than melee swings was invisible to the attribution path.
+                // MEASURED 2026-08-13 (MageFresh, JCQ Job1_Dn01): the shadow clone landed 79-99 damage every
+                // ~2.0s — 20-24% of a 407 maxHp mage per hit — and produced 317 "[damage] took N with NO
+                // tracked attacker" lines and `aggressors=0` for the whole fight. Everything downstream was
+                // therefore starved: InCombat stayed false, the aggressor set stayed empty, and neither the
+                // per-handle damage nor the per-handle RANGE tables ever learned the one enemy they were
+                // added for. The kite could not size its loop, could not tell an elite from trash, and its
+                // own trigger (inCombat) could never become true.
+                // Routed through NoteHit so an incoming skill is bookkept EXACTLY like an incoming swing —
+                // one place, no second copy of the aggressor/threat/hp logic to drift.
+                else if (SelfHandle is { } meD)
+                {
+                    const int HeaderLen = 5, EntryLen = 14;
+                    for (var i = 0; i < targets; i++)
+                    {
+                        var off = HeaderLen + i * EntryLen;
+                        if (off + EntryLen > hp2.Length) break;
+                        var tgt = (ushort)(hp2[off] | (hp2[off + 1] << 8));
+                        if (tgt != meD) continue;                       // someone else's fight
+                        var dmg = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(hp2[(off + 4)..]);
+                        var rest = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(hp2[(off + 8)..]);
+                        _logLevel?.Invoke(BotLogLevel.Info,
+                            $"[skillhit] TOOK a skill hit from h={caster} dmg={dmg} resthp={rest}");
+                        NoteHit(new HitInfo(caster, tgt, (ushort)Math.Min(ushort.MaxValue, dmg), rest));
+                    }
+                }
             }
         }
         else if (op == OpBatCastAbort || op == OpBatCastCut)
