@@ -1137,6 +1137,9 @@ const anim = new Map();           // handle -> {fx, fy, tx, ty, spd, t0}  (t0 = 
 // The threshold is DERIVED, not a magic number: anything further than the entity could physically have
 // travelled since we last heard about it (plus a margin for packet jitter) is not movement, it is a
 // correction. Inside that, we ease so ordinary jitter does not make everything twitch.
+// SELF ONLY. Entities need no threshold — they are placed straight from the packet (see noteMove), so
+// they are already exactly where the server says. Self is SAMPLED, with no from/to to chain, so easing
+// between samples is what makes it move at all — and easing is wrong across a teleport.
 const SNAP_MARGIN_U = 60;         // packet-timing slack, in world units
 
 function snapNeeded(cur, fromX, fromY, spd, sinceMs) {
@@ -1145,21 +1148,25 @@ function snapNeeded(cur, fromX, fromY, spd, sinceMs) {
   return Math.hypot(fromX - cur.x, fromY - cur.y) > couldTravel;
 }
 
+// ⛔ AN ENTITY IS PLACED PURELY FROM THE PACKET — never blended with where we had it drawn.
+// I tried blending (continue from the drawn position when it was close to the segment's start, snap only
+// when far) and it looked WORSE, which is the operator's "the interpolation is pretty ugly now with the
+// snapping". The reason is a drift-then-jump sawtooth: the blend branch reset the clock to `now` and threw
+// away the segment's AGE, so the entity started every leg a little behind where the server said it already
+// was. That deficit accumulated leg after leg until it finally exceeded the snap threshold — and then the
+// entity lurched forward. Slow lag, hard jump, repeat.
+// There is nothing to blend anyway: consecutive segments CHAIN, because a move's `from` is the previous
+// move's `to`. Placing every entity at exactly `from + age·speed` is therefore continuous in normal play
+// and jumps ONLY when the server genuinely disagrees with us — which is precisely the snap that was asked
+// for, and it needs no threshold to decide it.
 function noteMove(e) {
   if (!e.move || !(e.move.speed > 0)) { anim.delete(e.handle); return; }
   const m = e.move, now = performance.now();
   const prev = anim.get(e.handle);
-  // Same segment re-sent — keep the original start so the entity does not restart its walk and crawl.
+  // Same segment re-sent — keep the original clock so the entity does not restart its walk and crawl.
   if (prev && prev.tx === m.toX && prev.ty === m.toY && prev.fx === m.fromX && prev.fy === m.fromY) return;
-  const cur = prev ? along(prev, now) : null;
-  const t0 = now - (m.ageMs || 0);
-  const a = { fx: m.fromX, fy: m.fromY, tx: m.toX, ty: m.toY, spd: m.speed, t0 };
-  if (!snapNeeded(cur, m.fromX, m.fromY, m.speed, prev ? now - prev.t0 : 0)) {
-    // Close enough to be the same entity continuing: start the leg from where it is DRAWN, so the tile
-    // does not flick backwards by the few units of prediction error.
-    a.fx = cur.x; a.fy = cur.y; a.t0 = now;
-  }
-  anim.set(e.handle, a);
+  anim.set(e.handle, { fx: m.fromX, fy: m.fromY, tx: m.toX, ty: m.toY, spd: m.speed,
+                       t0: now - (m.ageMs || 0) });
 }
 
 // SELF is sampled, not evented — we move by our own decision with no packet to hang a time on. So ease
