@@ -64,6 +64,38 @@ public sealed class ClientData
         return png;
     }
 
+    /// <summary>The fraction of a map's grid that its MINIMAP IMAGE actually covers, read from the
+    /// client's own <c>MapViewInfo.shn</c> (<c>StartX/StartY/EndX/EndY</c>, normalised 0..511).
+    ///
+    /// <para>⭐ THIS IS WHY RouN LOOKED WRONG. Most maps read 0,0..511,511 — the image is the whole map —
+    /// which is why a full-grid assumption looked "pretty damn spot on" on RouVal02/Urg/EldGbl02. But
+    /// RouN reads <c>104,49..413,358</c> and Eld <c>187,159..379,351</c>: their art covers a SUB-RECTANGLE,
+    /// so placing it across the full grid stretched it. Correlating walkability against the painted ground
+    /// confirms the table beats the assumption exactly where they differ — RouN 0.293 → 0.451, Eld
+    /// 0.282 → 0.593 — and is identical on the maps whose rect is already the full map.</para>
+    ///
+    /// <para>Returned as world-unit bounds, with Y already flipped into world orientation (the image's top
+    /// row is the HIGH world y). Null when the table or the row is missing, and the caller falls back to
+    /// the full grid.</para></summary>
+    public (double X0, double Y0, double X1, double Y1)? MinimapWorldRect(string mapName, double gridWorldW, double gridWorldH)
+    {
+        var t = Table("MapViewInfo");
+        if (t is null) return null;
+        IReadOnlyDictionary<string, object?>? row = null;
+        foreach (var r in t.Rows)
+            if (string.Equals(GetStr(r, "MapName"), mapName, StringComparison.OrdinalIgnoreCase)) { row = r; break; }
+        if (row is null) return null;
+        // 0..511 inclusive over the map; +1 on the ends because End is the last cell, not the edge.
+        const double Norm = 512.0;
+        double sx = GetInt(row, "StartX"), sy = GetInt(row, "StartY");
+        double ex = GetInt(row, "EndX") + 1, ey = GetInt(row, "EndY") + 1;
+        if (ex <= sx || ey <= sy) return null;
+        return (sx / Norm * gridWorldW,
+                (1 - ey / Norm) * gridWorldH,       // flip Y into world orientation
+                ex / Norm * gridWorldW,
+                (1 - sy / Norm) * gridWorldH);
+    }
+
     /// <summary>Which atlas cell draws this item, from <c>ItemViewInfo.shn</c> (<c>IconFile</c> +
     /// <c>IconIndex</c>). Null when the table or the row is missing.
     /// <para>⚠️ IconIndex 0 is a REAL cell (the first one) and IconFile "-" is the table's own empty

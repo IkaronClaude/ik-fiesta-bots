@@ -175,12 +175,24 @@ app.MapGet("/minimap/{map}.json", (string map) =>
     var mgr = app.Services.GetService<BotManager>();
     var grid = mgr?.GridProvider?.Invoke(map);
     var cd = mgr?.ClientData;
+    double? ww = grid is null ? null : grid.WidthTiles * BlockGrid.WorldPerTile;
+    double? wh = grid is null ? null : grid.HeightTiles * BlockGrid.WorldPerTile;
+    // The WORLD RECT THE IMAGE COVERS, from the client's own MapViewInfo.shn — not the whole grid.
+    // Most maps cover the lot (0,0..511,511), but RouN and Eld cover a sub-rectangle, and assuming
+    // otherwise stretched their art (operator: "RouN is really off").
+    var rect = ww is { } w0 && wh is { } h0 ? cd?.MinimapWorldRect(map, w0, h0) : null;
     return Results.Ok(new
     {
         map,
         hasArt = cd?.MinimapDir is { } d && MinimapImage.Exists(d, map),
-        worldWidth = grid is null ? (double?)null : grid.WidthTiles * BlockGrid.WorldPerTile,
-        worldHeight = grid is null ? (double?)null : grid.HeightTiles * BlockGrid.WorldPerTile,
+        worldWidth = ww,
+        worldHeight = wh,
+        // Fall back to the full grid when the table has no row for this map.
+        coverX0 = rect?.X0 ?? 0,
+        coverY0 = rect?.Y0 ?? 0,
+        coverX1 = rect?.X1 ?? ww,
+        coverY1 = rect?.Y1 ?? wh,
+        coverFromTable = rect is not null,
         flipY = true,
     });
 }).ExcludeFromDescription();

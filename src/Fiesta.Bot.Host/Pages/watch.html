@@ -103,7 +103,11 @@
    atlas, served by /icon/<itemId>.png; when it is absent the tile falls back to the item's NAME so
    the panel stays useful on a host with no icon dir rather than showing a grid of broken images. */
 .isec { color:#8b949e; font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin:8px 0 4px }
-.igrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(40px,1fr)); gap:3px }
+/* The bag is drawn as the GAME draws it: pages of 6 wide x 4 high, with a gap between pages
+   (operator 2026-08-13). An auto-fill grid reflowed to whatever width the panel happened to be, so a
+   slot's position on screen meant nothing and could not be compared against the client's own bag. */
+.igrid { display:flex; flex-direction:column; gap:9px }
+.ipage { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:3px }
 .islot { position:relative; aspect-ratio:1; background:#0d1117; border:1px solid #21262d; border-radius:3px;
          display:flex; align-items:center; justify-content:center; overflow:hidden }
 .islot.empty { background:#0b0e13; border-style:dashed; border-color:#161b22 }
@@ -305,11 +309,16 @@ function minimap(map) {
 function drawMinimapInto(g, map, wx0, wy0, wx1, wy1, dx, dy, dw, dh, alpha) {
   const e = minimap(map);
   if (!e || !e.img || !e.meta) return false;
-  const { worldWidth: ww, worldHeight: wh } = e.meta;
+  // The image covers coverX0..coverX1 / coverY0..coverY1 in WORLD units — from the client's own
+  // MapViewInfo.shn, NOT the whole grid. Most maps cover everything, but RouN and Eld cover a
+  // sub-rectangle and assuming the full grid stretched them.
+  const cx0 = e.meta.coverX0, cy0 = e.meta.coverY0, cx1 = e.meta.coverX1, cy1 = e.meta.coverY1;
+  const cw = cx1 - cx0, ch = cy1 - cy0;
+  if (!(cw > 0 && ch > 0)) return false;
   const iw = e.img.width, ih = e.img.height;
-  const sx = (wx0 / ww) * iw, sw = ((wx1 - wx0) / ww) * iw;
+  const sx = ((wx0 - cx0) / cw) * iw, sw = ((wx1 - wx0) / cw) * iw;
   // Y flip: the TOP of the canvas is the HIGH world y, which is the LOW image row.
-  const sy = (1 - wy1 / wh) * ih, sh = ((wy1 - wy0) / wh) * ih;
+  const sy = (1 - (wy1 - cy0) / ch) * ih, sh = ((wy1 - wy0) / ch) * ih;
   g.save();
   g.globalAlpha = alpha == null ? 1 : alpha;
   g.imageSmoothingEnabled = true;
@@ -324,13 +333,14 @@ function drawMinimapInto(g, map, wx0, wy0, wx1, wy1, dx, dy, dw, dh, alpha) {
 // Gates are called out separately: "where does this lead" is the thing you want off a gate.
 function drawNpcMarker(g, px, py, name, isGate, linkMap) {
   g.save();
+  // Gates render exactly like NPCs (operator 2026-08-13) — same diamond, same name-tag plate. Only the
+  // colour differs, so a gate is still identifiable without becoming a second visual language.
   g.beginPath();
-  if (isGate) { g.rect(px - 3.5, py - 3.5, 7, 7); }
-  else { g.moveTo(px, py - 4); g.lineTo(px + 4, py); g.lineTo(px, py + 4); g.lineTo(px - 4, py); g.closePath(); }
+  g.moveTo(px, py - 4); g.lineTo(px + 4, py); g.lineTo(px, py + 4); g.lineTo(px - 4, py); g.closePath();
   g.fillStyle = isGate ? 'rgba(188,140,255,.95)' : 'rgba(86,211,236,.95)';
   g.fill();
   g.strokeStyle = 'rgba(0,0,0,.65)'; g.lineWidth = 1; g.stroke();
-  const label = isGate ? (linkMap ? `⇢ ${linkMap}` : 'gate') : name;
+  const label = isGate ? (linkMap || name || 'gate') : name;
   if (label) {
     g.font = '9px ui-monospace,monospace';
     g.textAlign = 'center'; g.textBaseline = 'bottom';
@@ -698,15 +708,30 @@ function draw(now) {
   // every step. The map-enter NPC seed is the whole map's NPC roster, so its bbox is a stable frame
   // that means something from the first paint. The trace is then drawn INSIDE that frame, and the box
   // is only extended if the bot walks outside it.
-  const npcs = (lastEnt && lastEnt.map === (mapKey || (lastLive && lastLive.map)) ? (lastEnt.npcs||[]) : []);
-  let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;
-  for (const n of npcs) { if(n.x<x0)x0=n.x; if(n.x>x1)x1=n.x; if(n.y<y0)y0=n.y; if(n.y>y1)y1=n.y; }
-  for (const p of shown) { if(p.x<x0)x0=p.x; if(p.x>x1)x1=p.x; if(p.y<y0)y0=p.y; if(p.y>y1)y1=p.y; }
-  if (x1 < x0) { g.fillStyle='#30363d'; g.fillText('no trace or NPC seed yet', 10, 20); return; }
-  // Square the box so the minimap art underneath keeps its aspect — a stretched map is a wrong map.
-  const cxw = (x0+x1)/2, cyw = (y0+y1)/2, half = Math.max((x1-x0), (y1-y0), 1)/2 * 1.06;
-  x0 = cxw-half; x1 = cxw+half; y0 = cyw-half; y1 = cyw+half;
-  const pad = 8, sxs = (x1-x0)||1, sys = (y1-y0)||1, s = Math.min((W-2*pad)/sxs, (H-2*pad)/sys);
+  const drawnMap = mapKey || (lastLive && lastLive.map);
+  const npcs = (lastEnt && lastEnt.map === drawnMap ? (lastEnt.npcs||[]) : []);
+  // ⭐ THE BIG MAP IS THE WHOLE MINIMAP, 1:1, AND NEVER ZOOMS (operator 2026-08-13: "make the big map a
+  // 1:1 of the whole minimap so it fills it fully and never zooms"). Fitting the view to content — first
+  // the trace, then the NPC bbox — made the scale change under the operator as the bot moved, which is
+  // what read as "scaled"/misaligned: the art was correct but its frame kept moving. A FIXED frame of the
+  // full world extent is both stable and directly comparable to the game's own map.
+  const mm = minimap(drawnMap);
+  let x0, y0, x1, y1;
+  if (mm && mm.meta && mm.meta.coverX1 > mm.meta.coverX0) {
+    // Frame on what the ART covers, so 1:1 means the image exactly fills the canvas.
+    x0 = mm.meta.coverX0; y0 = mm.meta.coverY0; x1 = mm.meta.coverX1; y1 = mm.meta.coverY1;
+  } else {
+    // No extent known (no grid / no art): fall back to framing the content so the panel still works.
+    x0=1e9; y0=1e9; x1=-1e9; y1=-1e9;
+    for (const n of npcs) { if(n.x<x0)x0=n.x; if(n.x>x1)x1=n.x; if(n.y<y0)y0=n.y; if(n.y>y1)y1=n.y; }
+    for (const p of shown) { if(p.x<x0)x0=p.x; if(p.x>x1)x1=p.x; if(p.y<y0)y0=p.y; if(p.y>y1)y1=p.y; }
+    if (x1 < x0) { g.fillStyle='#30363d'; g.fillText('no trace or NPC seed yet', 10, 20); return; }
+    const cxw = (x0+x1)/2, cyw = (y0+y1)/2, half = Math.max((x1-x0), (y1-y0), 1)/2 * 1.06;
+    x0 = cxw-half; x1 = cxw+half; y0 = cyw-half; y1 = cyw+half;
+  }
+  // No inset in full-extent mode: "fills it fully" means edge to edge, not an 8px letterbox.
+  const pad = (mm && mm.meta && mm.meta.worldWidth) ? 0 : 8;
+  const sxs = (x1-x0)||1, sys = (y1-y0)||1, s = Math.min((W-2*pad)/sxs, (H-2*pad)/sys);
   const px = p => pad + (p.x-x0)*s, py = p => H - (pad + (p.y-y0)*s);   // flip Y: game +Y is up
   // The client's own art, framed on the same world rect the points project into: world x0 lands at
   // px=pad and world y0 at py=H-pad, so the destination is that same inset box.
@@ -837,10 +862,17 @@ async function tickItems() {
       const bySlot = {}; for (const it of items) bySlot[it.slot] = it;
       const cap = d.capacity || items.length;
       const lo = Math.min(...Object.keys(bySlot).map(Number), 0);
-      let html = '';
       const keys = Object.keys(bySlot).map(Number).sort((a,b)=>a-b);
       const base = keys.length ? Math.min(...keys) : 0;
-      for (let i = 0; i < cap; i++) html += islot(bySlot[base + i]);
+      // PAGES OF 24 (6 wide x 4 high), like the client's bag. Two pages is the whole bag today; the
+      // page count follows capacity so it stays right if the bag grows, and is capped at 2 for now.
+      const PAGE = 24, pages = Math.max(1, Math.min(2, Math.ceil(cap / PAGE)));
+      let html = '';
+      for (let p = 0; p < pages; p++) {
+        html += '<div class="ipage">';
+        for (let i = 0; i < PAGE; i++) html += islot(bySlot[base + p*PAGE + i]);
+        html += '</div>';
+      }
       $('#bag').innerHTML = html;
       $('#bagcap').textContent = `${d.used||items.length}/${cap}`;
       $('#ihint').textContent = `${d.used||items.length} carried`;
