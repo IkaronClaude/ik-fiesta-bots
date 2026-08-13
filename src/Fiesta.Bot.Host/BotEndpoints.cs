@@ -1460,16 +1460,28 @@ public static class BotEndpoints
         var npcs = new List<object>();
         if (zv is not null)
             foreach (var n in zv.NpcSeedAll)
+            {
+                // ⛔ THE STATIC LIST IS NOT NPC-ONLY. AddOrUpdateNpc feeds it from EVERY briefinfo, so
+                // mobs, herbs and gathering nodes land in it alongside real NPCs. Handing all of that to
+                // the page drew each enemy TWICE on the combat map — once as a blue NPC diamond from this
+                // list and once as a white mob tag from the live mob list (operator 2026-08-13: 'double
+                // renders ... "Flower" in light blue and then again in White ... for the SAME flower') —
+                // and filled the big map with every enemy ("Big map should NOT render all enemies").
+                // Gates and genuine NPCs only; anything huntable belongs to the mob layer.
+                if (!n.IsGate && (zv.IsHuntableMob?.Invoke((ushort)n.MobId) ?? false)) continue;
+                // A gate's LinkMap is the map CODE (e.g. "EldCem01"); the client shows the map's NAME.
+                var gateName = n.IsGate ? (cd?.MapDisplayName(n.LinkMap) ?? n.LinkMap ?? "gate") : null;
                 npcs.Add(new
                 {
                     n.MobId,
-                    Name = cd?.Mob(n.MobId)?.Name ?? (n.IsGate ? (n.LinkMap ?? "gate") : $"npc{n.MobId}"),
+                    Name = gateName ?? cd?.Mob(n.MobId)?.Name ?? $"npc{n.MobId}",
                     X = (double)n.X,
                     Y = (double)n.Y,
                     n.IsGate,
-                    n.LinkMap,
+                    LinkMap = gateName ?? n.LinkMap,
                     Dist = self is { } sp2 ? Math.Sqrt(Math.Pow((double)n.X - sp2.X, 2) + Math.Pow((double)n.Y - sp2.Y, 2)) : (double?)null,
                 });
+            }
         // Facing + the current target handle travel with self so the map can draw WHERE WE ARE POINTED and
         // WHERE THE TARGET IS. Operator 2026-08-11 theory this exists to test: we may overshoot the mob (or
         // meet its stand-off circle on the wrong side) and end up with the target BEHIND us — which would
