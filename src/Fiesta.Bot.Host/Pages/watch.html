@@ -633,10 +633,14 @@ function abStateBar(list, live) {
                    : `<span class="ab">${a.id}</span>`)
       + '</div>';
   });
-  // MOUNT STATE beside the buffs (operator 2026-08-13). It belongs here because it behaves like one: it
-  // is a state you are IN that changes what you can do — a mount is cancelled by damage, blocks casting,
-  // and its summon cancels your current walk. Always shown, mounted or not, because "not mounted" is the
-  // answer to a question you are asking when you look, not an absence to hide.
+  // MOUNT STATE beside the buffs (operator 2026-08-13). It belongs here because it behaves like one: a
+  // state you are IN that changes what you can do. Always shown, mounted or not, because "not mounted" is
+  // the answer to a question you are asking when you look, not an absence to hide.
+  // ⛔ RIDING IS NOT CANCELLED BY DAMAGE — CASTING THE MOUNT SKILL IS (operator 2026-08-13, correcting
+  // me). Once you are up, being hit does not dismount you; what damage interrupts is the SUMMON CAST, so
+  // a bot trying to mount while something is hitting it never gets on. That is the failure we already
+  // measured (the summon refused 0/21 while taking damage, and cancelled our walk each time) — the cost
+  // is entirely in mounting, not in staying mounted.
   if (live) {
     const on = !!live.mounted;
     chips.unshift(`<div class="abchip mount${on ? ' on' : ''}" title="${on ? 'MOUNTED' : 'on foot'}">`
