@@ -546,6 +546,64 @@ public sealed class BotApi
     /// hoover can clear it. <paramref name="stepWorld"/> is the sweep spacing (bot-behaviour tuning);
     /// keep it ≤ the server mob AoI for full coverage (smaller = safe, just more points). Empty if no
     /// grid for this map. Pure BYO nav geometry — no baked ids/coords.</summary>
+    /// <summary>Fit the largest WALKABLE circle to kite around, from the map's <c>.shbd</c>:
+    /// <c>{cx, cy, r}</c>, or nil when the ground will not hold one (caller falls back to a straight kite).
+    /// Cached per map+area because the fit scans the grid and the terrain does not move.</summary>
+    public DynValue kiteCircle(double maxDiameter)
+    {
+        var grid = _handle.CurrentMap is { } map ? _mgr.GridProvider?.Invoke(map) : null;
+        if (grid is null || _handle.Position is not { } p) return DynValue.Nil;
+        var key = $"{_handle.CurrentMap}|{(int)(p.X / 500)}|{(int)(p.Y / 500)}|{(int)maxDiameter}";
+        if (!_kiteCircles.TryGetValue(key, out var fit))
+        {
+            fit = Navigation.KiteCircle.Fit(grid, p.X, p.Y, maxDiameter <= 0 ? 5000 : maxDiameter);
+            _kiteCircles[key] = fit;
+        }
+        if (fit is not { } c) return DynValue.Nil;
+        var t = NewTable(); t["cx"] = c.Cx; t["cy"] = c.Cy; t["r"] = c.R;
+        return DynValue.NewTable(t);
+    }
+    private readonly Dictionary<string, (double Cx, double Cy, double R)?> _kiteCircles = new();
+
+    /// <summary>The next kite step: a point to walk to that flees the enemy AND blends smoothly onto the
+    /// kite circle. Returns <c>{x, y, mode}</c> where mode is "flee" | "blend" | "ride".
+    ///
+    /// <para>⛔ THE HAND-OFF IS THE WHOLE POINT (operator 2026-08-13). Running straight and then turning 90°
+    /// onto the circle is a hard turn, and "during this turn you will be in enemy range for like 10 secs
+    /// which is often deadly". So the heading is a WEIGHTED BLEND of straight-away and the circle's
+    /// tangent, weighted by how close to the rim we are: dead centre it is a pure flee, at the rim it is
+    /// pure tangent, and in between it curves — "if we make our angle shallower the closer we get to the
+    /// edge of the circle, we will have a soft handoff from approach to circle". Outside the rim it also
+    /// pulls gently inward so we settle back onto the edge rather than drifting off it.</para></summary>
+    public DynValue kiteStepPoint(double ex, double ey, double cx, double cy, double r, double step, int dir)
+    {
+        if (_handle.Position is not { } p || r <= 1) return DynValue.Nil;
+        double px = p.X, py = p.Y;
+        // Straight away from the enemy — what a naive kite does, and correct while we are well inside.
+        double ax = px - ex, ay = py - ey;
+        var alen = Math.Max(1e-6, Math.Sqrt(ax * ax + ay * ay));
+        ax /= alen; ay /= alen;
+        // Tangent to the circle at our bearing, taken in the requested orbit direction.
+        double rx = px - cx, ry = py - cy;
+        var rlen = Math.Max(1e-6, Math.Sqrt(rx * rx + ry * ry));
+        double ux = rx / rlen, uy = ry / rlen;
+        double tx = -uy * Math.Sign(dir == 0 ? 1 : dir), ty = ux * Math.Sign(dir == 0 ? 1 : dir);
+        // Blend weight: 0 at the centre (pure flee) -> 1 at the rim (pure tangent).
+        var w = Math.Clamp(rlen / r, 0, 1);
+        // Past the rim, steer back toward it instead of running off into unfitted ground.
+        double ix = 0, iy = 0;
+        if (rlen > r) { ix = -ux; iy = -uy; }
+        var hx = ax * (1 - w) + tx * w + ix * Math.Min(1, (rlen - r) / Math.Max(1, r * 0.15));
+        var hy = ay * (1 - w) + ty * w + iy * Math.Min(1, (rlen - r) / Math.Max(1, r * 0.15));
+        var hlen = Math.Max(1e-6, Math.Sqrt(hx * hx + hy * hy));
+        var t2 = NewTable();
+        t2["x"] = Math.Max(0, px + hx / hlen * step);
+        t2["y"] = Math.Max(0, py + hy / hlen * step);
+        t2["mode"] = rlen > r ? "ride" : (w < 0.35 ? "flee" : (w < 0.9 ? "blend" : "ride"));
+        t2["w"] = w;
+        return DynValue.NewTable(t2);
+    }
+
     public DynValue coveragePath(double stepWorld)
     {
         var t = NewTable();
