@@ -604,6 +604,9 @@ public sealed class ZoneView : IDisposable
     // map-change, NOT pruned on BRIEFINFODELETE (NPCs are static). SOURCE OF TRUTH for NPC + gate
     // positions — navigation (quest giver / merchant / gate / cross-map hop) reads from HERE.
     private readonly ConcurrentDictionary<int, NpcSeedEntry> _npcSeed = new();
+    // Same entries, keyed by mob id + POSITION, so several gates/NPCs sharing a mob id all survive.
+    // See NpcSeedAll for why the mob-id-keyed dictionary above cannot answer "draw every gate".
+    private readonly ConcurrentDictionary<(int Mob, uint X, uint Y), NpcSeedEntry> _npcSeedAll = new();
     // Scenario DOOR state, keyed by the door entity HANDLE (from 0x6C09 NC_SCENARIO_DOORSTATE_CMD). Value =
     // last-seen {state byte, last-known position}. Position is captured from _npcs at the time the door state
     // changed (doors spawn as tracked entities); if the handle isn't in _npcs the position is null and only
@@ -788,6 +791,19 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>The full map-enter NPC seed roster (all NPCs+gates the server broadcast on map-enter).</summary>
     public IReadOnlyCollection<NpcSeedEntry> NpcSeed => _npcSeed.Values.ToArray();
+
+    /// <summary>EVERY static entry, including several that share one mob id — unlike <see cref="NpcSeed"/>,
+    /// which is keyed by mob id and therefore keeps only ONE.
+    ///
+    /// <para>⛔ WHY BOTH EXIST. The mob-id keying is right for the question it was built for ("where is NPC
+    /// X on this map", <c>npcLocation</c>), and that use is correct and unchanged. It is wrong for DRAWING
+    /// the map, because gates share mob ids: RouVal02 rendered exactly ONE gate ("Gate EldCem01", mob 32)
+    /// while the others were silently overwritten in the dictionary — operator 2026-08-13: "Maps are only
+    /// displaying gates that we spotted, NOT the gates sent via login burst npc list".</para>
+    ///
+    /// <para>Keyed by mob id + position so repeated broadcasts of the same entity collapse but genuinely
+    /// distinct ones do not.</para></summary>
+    public IReadOnlyCollection<NpcSeedEntry> NpcSeedAll => _npcSeedAll.Values.ToArray();
     /// <summary>Gate entries in the seed: linkMap -> (x,y) — the LIVE current-map gate positions, better
     /// than the static MapLink/MapWayPoint SHN coords for taking a gate. (Current map only.)</summary>
     public IReadOnlyList<(string LinkMap, uint X, uint Y)> SeedGates()
@@ -2940,7 +2956,7 @@ public sealed class ZoneView : IDisposable
             {
                 _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _nearby.Clear(); _drops.Clear();
+                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _npcSeedAll.Clear(); _nearby.Clear(); _drops.Clear();
                 _mobAnchor.Clear();   // handles are PER-MAP and get reused — a stale anchor from the previous
                                       // map makes a fresh mob look like it chased thousands of units from home
                 // Same reason, same danger: a retained "this handle is a scenario clone" mark would brand
@@ -3813,7 +3829,7 @@ public sealed class ZoneView : IDisposable
             if (handoff is { } h)
             {
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _mobAnchor.Clear();  // entities are per-map; the new map re-broadcasts
+                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _npcSeedAll.Clear(); _mobAnchor.Clear();  // entities are per-map; the new map re-broadcasts
                 _nearby.Clear();
                 lock (_scenarioFightable) _scenarioFightable.Clear();   // handles are per-map — see the revive path
                 _drops.Clear();  // ground items are per-map too
@@ -3955,7 +3971,16 @@ public sealed class ZoneView : IDisposable
                 {
                     var slot = (byte)(location & 0xFF);
                     var itemId = (ushort)(p[4] | (p[5] << 8));
-                    if (itemId != 0)
+                    // ⛔ EMPTY IS 0xFFFF, NOT 0 (operator 2026-08-13: "sometimes randomly 2 items change
+                    // to item 65535 x1 ... but then fix themselves later").
+                    // This had the sentinel exactly backwards, breaking it in both directions at once:
+                    // it treated 0 as "slot cleared" — but item id 0 is a REAL item (Leather Boots), the
+                    // golden rule this codebase keeps relearning — and it STORED 0xFFFF as though it were
+                    // an item, which is why a cleared slot rendered as "65535 x1" on the watch page. The
+                    // self-healing the operator saw is the next full item frame (0x1047) rewriting the bag.
+                    // 0xFFFF is the protocol's own empty marker: a sell clears a slot with CELLCHANGE
+                    // {slot -> 0xFFFF}, and a failed pick reports itemid 0xFFFF.
+                    if (itemId != 0xFFFF)
                     {
                         _inventory[slot] = itemId;
                         // stack count = the lot after itemid: len 7 = byte-lot, len 8 = word-lot,
@@ -4293,7 +4318,9 @@ public sealed class ZoneView : IDisposable
         _recentNpcs.TryRemove(handle, out _); // back in view (live) → drop the sticky flicker-bridge copy
         // THE SEED: record every NPC/gate by mobId (the bulk 0x1C09 on map-enter populates this fully).
         // Authoritative roster, kept until map change — the navigation source of truth.
-        _npcSeed[mobid] = new NpcSeedEntry(mobid, x, y, flag == 1, linkMap);
+        var seedEntry = new NpcSeedEntry(mobid, x, y, flag == 1, linkMap);
+        _npcSeed[mobid] = seedEntry;
+        _npcSeedAll[(mobid, x, y)] = seedEntry;
         if (isNew)
         {
             // Gates keep a line each: they are rare and navigationally load-bearing. Mob/NPC appearances are

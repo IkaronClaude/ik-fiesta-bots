@@ -742,11 +742,31 @@ public static class BotEndpoints
             var skills = bot.ZoneView?.LearnedSkills;
             if (skills is null) return Results.Conflict(new { error = "bot is not in zone yet" });
             var cd = manager.ClientData;
+            // ACTIVE BUFFS/DEBUFFS ride along so the watch page can draw an abstate bar in the same poll.
+            // ZoneView.SelfAbstateSnapshot() has existed and been exposed by NOTHING — the third instance
+            // this session of a read path that was declared and never wired to anything that reads it.
+            var abstates = (bot.ZoneView?.SelfAbstateSnapshot() ?? [])
+                .Select(a => new
+                {
+                    abStateId = (int)a,
+                    name = cd?.AbStateView((int)a)?.Name,
+                    descript = cd?.AbStateView((int)a)?.Descript,
+                })
+                .ToArray();
             return Results.Ok(new { id, count = skills.Count, skills = skills
                 .OrderBy(s => s)
-                .Select(s => new { skillId = s, name = cd?.SkillName(s) }) });
+                .Select(s => new
+                {
+                    skillId = s,
+                    name = cd?.SkillName(s),
+                    // Tooltip text + whether we have art, so the page can decide tile vs name-plate
+                    // without a request per skill that 404s.
+                    descript = cd?.SkillView(s)?.Descript,
+                    hasIcon = cd?.SkillView(s) is not null,
+                }),
+                abstates });
         })
-        .WithSummary("List the character's learned skills (skillId + name) from the zone-login skill list");
+        .WithSummary("Learned skills (skillId + name + tooltip) and the character's active buffs/debuffs");
 
         group.MapPost("/{id}/pickup", async (string id, PickupRequest req) =>
         {
@@ -1212,6 +1232,16 @@ public static class BotEndpoints
             // `false` only means no pickup has failed, and a STACKABLE item picks up fine at full occupancy.
             BagFullServerSignal = bot.ZoneView?.BagFull,
             Skills = SkillPanel(bot, cd),
+            // Active buffs/debuffs for the abstate bar. Reads ZoneView.SelfAbstateSnapshot(), which
+            // existed and was wired to nothing until now.
+            AbStates = (bot.ZoneView?.SelfAbstateSnapshot() ?? [])
+                .Select(a => new
+                {
+                    Id = (int)a,
+                    Name = cd?.AbStateView((int)a)?.Name,
+                    Descript = cd?.AbStateView((int)a)?.Descript,
+                    HasIcon = cd?.AbStateView((int)a) is not null,
+                }).ToArray(),
             // Character sheet: the fixed stats a human reads next to HP. Decoded at zone-entry since
             // 2026-07-29 but only ever logged — now stored and surfaced. Null when the CHAR_PARAMETER_DATA
             // block never arrived (a "burst" login): NOT KNOWN, which is not the same as zero.
@@ -1429,7 +1459,7 @@ public static class BotEndpoints
         // box that begins as one dot and grows as the bot wanders.
         var npcs = new List<object>();
         if (zv is not null)
-            foreach (var n in zv.NpcSeed)
+            foreach (var n in zv.NpcSeedAll)
                 npcs.Add(new
                 {
                     n.MobId,
@@ -1599,6 +1629,9 @@ public static class BotEndpoints
                 LastCastAtUtc = lastAt,
                 RemainingMs = remaining,
                 Ready = remaining is null or <= 0,        // never cast this session => ready
+                // Tooltip text + whether the client ships art, so the tile can draw the real icon.
+                Descript = cd.SkillView(id)?.Descript,
+                HasIcon = cd.SkillView(id) is not null,
             });
         }
         return outp.OrderBy(o => ((dynamic)o).Name as string ?? "").ToArray();

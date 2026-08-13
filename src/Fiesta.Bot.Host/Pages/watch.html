@@ -35,8 +35,17 @@
        • COOLING    → dim border + seconds remaining + a radial sweep darkening the remaining fraction
        • UNKNOWN cd → dashed border. A skill whose DelayTime we cannot read must NOT look ready. */
   /* 75% of the old width, 50% of the old height (was a 1:1 square filling 1/8 of the row). */
-  .tiles { display:grid; grid-template-columns:repeat(8, minmax(0,0.75fr)); gap:5px; justify-content:start }
-  .tile { position:relative; aspect-ratio:1.5; border-radius:4px; background:#0b0e13;
+  /* Skill tiles are a GRID OF SLOTS like the bag (operator 2026-08-13: "similar tile grid like
+     inventory slots"), drawing the client's own skill art from ActiveSkillView.shn. */
+  .tiles { display:grid; grid-template-columns:repeat(6, 40px); gap:3px; justify-content:start }
+  .tile img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; image-rendering:pixelated; z-index:0 }
+  /* Buff/debuff bar, half the tile size, sitting above the skills. */
+  .abbar { display:flex; flex-wrap:wrap; gap:3px; margin-bottom:6px; min-height:20px }
+  .abchip { position:relative; width:20px; height:20px; border-radius:3px; background:#0d1117;
+            border:1px solid #2b3440; overflow:hidden; cursor:default }
+  .abchip img { width:100%; height:100%; object-fit:contain; image-rendering:pixelated }
+  .abchip .ab { font-size:7px; line-height:20px; text-align:center; color:var(--dim); display:block }
+  .tile { position:relative; aspect-ratio:1; border-radius:4px; background:#0b0e13;
           border:2px solid #2b3440; overflow:hidden; display:flex; align-items:center; justify-content:center;
           padding:1px; text-align:center; cursor:default }
   .tile .nm { font-size:12px; line-height:1.1; color:var(--fg); word-break:break-word; z-index:2;
@@ -105,9 +114,17 @@
 .isec { color:#8b949e; font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin:8px 0 4px }
 /* The bag is drawn as the GAME draws it: pages of 6 wide x 4 high, with a gap between pages
    (operator 2026-08-13). An auto-fill grid reflowed to whatever width the panel happened to be, so a
-   slot's position on screen meant nothing and could not be compared against the client's own bag. */
+   slot's position on screen meant nothing and could not be compared against the client's own bag.
+   EQUIPMENT keeps its old single-row flow (.irow) — it is a handful of slots, not a paged bag, and
+   stacking it into the bag's column layout was collateral damage from sharing one class. */
 .igrid { display:flex; flex-direction:column; gap:9px }
-.ipage { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:3px }
+.irow  { display:flex; flex-wrap:wrap; gap:3px }
+.irow .islot { width:40px }
+/* FIXED 40px columns, not 1fr: the slot size was already right, the layout was not. An auto-fill grid
+   reflowed to the panel width (it was rendering ~10 wide), and 6x`1fr` then over-corrected by stretching
+   each slot to a sixth of the panel. Six 40px columns keeps the icon size and gives the client's own
+   6-wide x 4-high page, with the flex gap above marking the page boundary. */
+.ipage { display:grid; grid-template-columns:repeat(6, 40px); gap:3px; justify-content:start }
 .islot { position:relative; aspect-ratio:1; background:#0d1117; border:1px solid #21262d; border-radius:3px;
          display:flex; align-items:center; justify-content:center; overflow:hidden }
 .islot.empty { background:#0b0e13; border-style:dashed; border-color:#161b22 }
@@ -158,6 +175,7 @@
           <label><input type="checkbox" id="skmisc"> show misc</label>
           <label><input type="checkbox" id="sklevels"> show all levels</label>
         </div>
+        <div id="abstates" class="abbar"></div>
         <div id="skills" class="tiles"></div>
       </div>
     </div>
@@ -166,7 +184,7 @@
       <h2 class="fold" data-card="items"><span class="chev">▼</span>items <span class="muted" id="ihint"></span></h2>
       <div class="body">
         <div class="isec">worn</div>
-        <div id="worn" class="igrid"></div>
+        <div id="worn" class="irow"></div>
         <div class="isec">bag <span class="muted" id="bagcap"></span></div>
         <div id="bag" class="igrid"></div>
       </div>
@@ -583,6 +601,25 @@ function filterSkills(list) {
   return out;
 }
 
+// Shared HTML escaper — tooltips carry client Descript text straight from the SHN.
+const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
+
+// BUFF/DEBUFF BAR (operator 2026-08-13): the client's own abstate icons at half tile size, above the
+// skills. Name + description on hover. An abstate with no art still shows a chip with its id, because
+// "we are buffed with something we cannot name" is information, not something to hide.
+function abStateBar(list) {
+  const el = $('#abstates');
+  if (!el) return;
+  if (!list || !list.length) { el.innerHTML = ''; return; }
+  el.innerHTML = list.map(a => {
+    const tip = [a.name || `abstate ${a.id}`, a.descript].filter(Boolean).join(' — ');
+    return `<div class="abchip" title="${esc(tip)}">`
+      + (a.hasIcon ? `<img src="/abstateicon/${a.id}.png" alt="" onerror="this.remove()">`
+                   : `<span class="ab">${a.id}</span>`)
+      + '</div>';
+  }).join('');
+}
+
 function skillTiles(all) {
   if (!all || !all.length) { $('#skills').innerHTML = '<span class="muted">no skills</span>'; return; }
   const list = filterSkills(all);
@@ -590,15 +627,20 @@ function skillTiles(all) {
   $('#skhint').textContent = `· ${list.length} shown${hidden ? ` (${hidden} filtered)` : ''} · lit = ready, dashed = cd unknown`;
   $('#skills').innerHTML = list.map(s => {
     const cd = s.cooldownMs || 0, rem = s.remainingMs;
-    if (!cd) return `<div class="tile unk" title="${s.name||s.id} — DelayTime unknown in client data">
-                       <span class="nm">${s.name || s.id}</span></div>`;
+    // Art when the client has it, name text when it does not — never a blank tile.
+    const art = s.hasIcon ? `<img src="/skillicon/${s.id}.png" alt="" onerror="this.remove()">` : '';
+    const tip = [s.name||s.id, s.descript, s.spCost!=null?`sp ${s.spCost}`:null,
+                 s.damage!=null?`dmg ${s.damage}`:null, cd?`cd ${(cd/1000).toFixed(1)}s`:'cd unknown']
+                .filter(Boolean).join(' — ');
+    if (!cd) return `<div class="tile unk" title="${esc(tip)}">${art}
+                       ${art?'':`<span class="nm">${s.name || s.id}</span>`}</div>`;
     const cooling = rem != null && rem > 0;
     // Sweep covers the fraction of the cooldown STILL TO RUN, so the tile visibly empties as it comes up.
     const frac = cooling ? Math.max(0, Math.min(1, rem / cd)) : 0;
     const sweep = cooling
       ? `<div class="sweep" style="background:conic-gradient(rgba(0,0,0,.72) ${frac*360}deg, rgba(0,0,0,0) 0)"></div>` : '';
-    return `<div class="tile ${cooling?'cool':'ready'}" title="${s.name||s.id} · cd ${(cd/1000).toFixed(1)}s · sp ${s.spCost??'?'}">
-              ${sweep}<span class="nm">${s.name || s.id}</span>
+    return `<div class="tile ${cooling?'cool':'ready'}" title="${esc(tip)}">
+              ${art}${sweep}${art?'':`<span class="nm">${s.name || s.id}</span>`}
               ${cooling ? `<span class="cd">${(rem/1000).toFixed(1)}</span>` : ''}</div>`;
   }).join('');
 }
@@ -649,6 +691,7 @@ async function tickMetrics() {
     $('#vitals').innerHTML = vitals(d.live);
     $('#charsheet').innerHTML = charSheet(d.live);
     skillTiles(d.live.skills);
+    abStateBar(d.live.abStates);
     lastLive = d.live;
     questList = d.live.quests || [];
     questsById = new Map(questList.map(q => [q.name, q]));

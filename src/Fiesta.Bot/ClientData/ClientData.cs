@@ -110,6 +110,57 @@ public sealed class ClientData
         return (file, GetInt(row, "IconIndex"));
     }
 
+    /// <summary>A skill's icon cell + display text from <c>ActiveSkillView.shn</c> — the same
+    /// <c>IconFile</c>/<c>IconIndex</c> atlas scheme the items use, so the skill bar can draw the client's
+    /// own art. <c>InxName</c> is the internal name and <c>Descript</c> the tooltip text the client shows.
+    /// <para>⚠️ IconIndex 0 and skill ID 0 are both REAL (skill 0 is "Slice and Dice [01]"), so absence is
+    /// signalled by null and never by a zero.</para></summary>
+    public (string File, int Index, string? Name, string? Descript)? SkillView(int skillId)
+    {
+        var t = Table("ActiveSkillView");
+        var row = t?.FindByLong("ID", skillId);
+        if (row is null) return null;
+        var file = GetStr(row, "IconFile");
+        if (string.IsNullOrEmpty(file) || file == "-") return null;
+        return (file, GetInt(row, "IconIndex"), GetStr(row, "InxName"), GetStr(row, "Descript"));
+    }
+
+    /// <summary>A skill's icon as a PNG, cut from the same atlases as the item icons (ClericSk00 and
+    /// friends already ship alongside them). Null when the client has no art for it.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte[]> _skillPng = new();
+    public byte[]? SkillIconPng(int skillId)
+    {
+        if (_skillPng.TryGetValue(skillId, out var hit)) return hit;
+        if (IconDir is not { } dir || SkillView(skillId) is not { } sv) return null;
+        var path = ResolveIconFile(dir, sv.File);
+        var png = path is null ? null : IconAtlas.IconPng(path, sv.Index);
+        if (png is not null) _skillPng[skillId] = png;   // cache hits only, same reasoning as the minimap
+        return png;
+    }
+
+    /// <summary>A buff/debuff's icon cell + text from <c>AbStateView.shn</c> (<c>iconFile</c>/<c>icon</c>,
+    /// lower-cased column names here, unlike the skill/item tables). Same atlas scheme again.</summary>
+    public (string File, int Index, string? Name, string? Descript)? AbStateView(int abStateId)
+    {
+        var t = Table("AbStateView");
+        var row = t?.FindByLong("ID", abStateId);
+        if (row is null) return null;
+        var file = GetStr(row, "iconFile");
+        if (string.IsNullOrEmpty(file) || file == "-") return null;
+        return (file, GetInt(row, "icon"), GetStr(row, "inxName"), GetStr(row, "Descript"));
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte[]> _abStatePng = new();
+    public byte[]? AbStateIconPng(int abStateId)
+    {
+        if (_abStatePng.TryGetValue(abStateId, out var hit)) return hit;
+        if (IconDir is not { } dir || AbStateView(abStateId) is not { } av) return null;
+        var path = ResolveIconFile(dir, av.File);
+        var png = path is null ? null : IconAtlas.IconPng(path, av.Index);
+        if (png is not null) _abStatePng[abStateId] = png;
+        return png;
+    }
+
     /// <summary>The item icon as a PNG, or null when we have no art for it. Cached: the atlases are
     /// small but decoding one per request for a 48-slot bag redrawn twice a second would not be.</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte[]?> _iconPng = new();

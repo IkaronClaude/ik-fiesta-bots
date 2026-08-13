@@ -152,6 +152,23 @@ app.MapGet("/icon/{itemId:int}.png", (int itemId) =>
     return png is null ? Results.NotFound() : Results.File(png, "image/png");
 }).ExcludeFromDescription();
 
+// SKILL ICONS — same atlas scheme as items (ActiveSkillView.shn IconFile/IconIndex), so the skill bar
+// draws the client's own art instead of text tiles. Outside /api for the same reason as /icon.
+app.MapGet("/skillicon/{skillId:int}.png", (int skillId) =>
+{
+    var cd = app.Services.GetService<BotManager>()?.ClientData;
+    var png = cd?.SkillIconPng(skillId);
+    return png is null ? Results.NotFound() : Results.File(png, "image/png");
+}).ExcludeFromDescription();
+
+// ABSTATE (buff/debuff) ICONS — AbStateView.shn iconFile/icon, same atlases again.
+app.MapGet("/abstateicon/{abStateId:int}.png", (int abStateId) =>
+{
+    var cd = app.Services.GetService<BotManager>()?.ClientData;
+    var png = cd?.AbStateIconPng(abStateId);
+    return png is null ? Results.NotFound() : Results.File(png, "image/png");
+}).ExcludeFromDescription();
+
 // MAP MINIMAPS — the client's own per-map art, so /watch shows where a bot is the way the game does
 // instead of an abstract dot field. Same reasoning as /icon for living outside /api: an <img> cannot
 // carry a Bearer token, and this is the operator's own client art. 404 = no art for that map (several
