@@ -1069,6 +1069,10 @@ public sealed class BotApi
     /// quest selection could ask this question.</para></summary>
     public int mobHitMax(int mobId) => View?.MobHitMax(mobId) ?? -1;
 
+    /// <summary>Observed attack RANGE of a mob (world units), or -1 if it has never hit us. Learned from
+    /// the wire because the client ships no attack-range column (MobWeapon.Range is server-side).</summary>
+    public double mobAttackRange(int mobId) => View?.MobAttackRange(mobId) ?? -1;
+
     /// <summary>Mean damage per connecting hit from this mob id, -1 if never observed.</summary>
     public double mobHitAvg(int mobId) => View?.MobHitAvg(mobId) ?? -1;
 

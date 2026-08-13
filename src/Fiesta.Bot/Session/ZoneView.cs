@@ -1155,6 +1155,13 @@ public sealed class ZoneView : IDisposable
     // answer was never retained. Learned from the wire per the no-hardcoding rule — client MobInfo carries
     // no attack stats, so observation is the only source.
     private readonly ConcurrentDictionary<int, (int Max, int Count, long Sum)> _mobHits = new();
+    // mobId -> (highest, second-highest) observed distance at which it damaged us. See the learning site.
+    private readonly ConcurrentDictionary<int, (double, double)> _mobRange = new();
+
+    /// <summary>The observed ATTACK RANGE of <paramref name="mobId"/> in world units, or -1 if it has never
+    /// hit us. Second-highest connect distance, so a single position desync cannot inflate it. This is the
+    /// client-legal substitute for server-side MobWeapon.Range, which the bot host does not mount.</summary>
+    public double MobAttackRange(int mobId) => _mobRange.TryGetValue(mobId, out var r) && r.Item2 > 0 ? r.Item2 : -1;
 
     /// <summary>Hardest hit ever taken from <paramref name="mobId"/>, or -1 if we have never been hit by it.
     /// Compare against MaxHp to answer "how many hits can this thing kill me in?".</summary>
@@ -1606,6 +1613,33 @@ public sealed class ZoneView : IDisposable
                         _ => (h.Damage, 1, h.Damage),
                         (_, s) => (Math.Max(s.Max, h.Damage), s.Count + 1, s.Sum + h.Damage));
                     MobHitSampled?.Invoke(atkMob, h.Damage);   // persist it — this table dies with the session
+                    // ⚔️ LEARN THE *ENEMY'S* ATTACK RANGE, per mob id, from the distance it hit us at.
+                    // The client ships no attack-range column: MobInfo has WeaponType but no Range, and the
+                    // Range column lives in server-side MobWeapon.shn, which the bot host does not mount
+                    // (CLIENT_DATA_DIR is ressystem) and which a real client would not read. The wire has it
+                    // though — the distance at which something CONNECTS is its range, the same trick already
+                    // used to learn our own. Needed to size the kite circle for ANY ranged enemy rather than
+                    // assuming the JCQ clone's, per operator 2026-08-13.
+                    // Second-highest, not max, for the same reason as ours: one position desync would
+                    // otherwise latch a permanently inflated range.
+                    if (SelfPositionProvider?.Invoke() is { } msp)
+                    {
+                        double axp = double.NaN, ayp = double.NaN;
+                        if (_npcs.TryGetValue(h.Attacker, out var apn)) { axp = apn.X; ayp = apn.Y; }
+                        else if (_nearby.TryGetValue(h.Attacker, out var app)) { axp = app.X; ayp = app.Y; }
+                        if (!double.IsNaN(axp))
+                        {
+                            var mdx = (double)msp.X - axp; var mdy = (double)msp.Y - ayp;
+                            var mdist = Math.Sqrt(mdx * mdx + mdy * mdy);
+                            if (mdist > 0 && mdist < 2000)
+                            {
+                                var cur = _mobRange.TryGetValue(atkMob, out var mr) ? mr : (0.0, 0.0);
+                                if (mdist > cur.Item1) cur = (mdist, cur.Item1);
+                                else if (mdist > cur.Item2) cur = (cur.Item1, mdist);
+                                _mobRange[atkMob] = cur;
+                            }
+                        }
+                    }
                     _recentIncoming.Enqueue((DateTime.UtcNow, h.Damage));   // feed the live incoming-DPS window
                 MetricSink?.Invoke("damageTaken", h.Damage);
                     while (_recentIncoming.Count > 512) _recentIncoming.TryDequeue(out _);
