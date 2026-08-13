@@ -1559,7 +1559,17 @@ public sealed class BotApi
         if (v is not null)
         {
             int i = 1;
-            foreach (var e in v.NpcSeed)
+            // ⛔ NpcSeedAll, NOT NpcSeed. This says "every NPC+gate on the current map (authoritative)" and
+            // for gates it was delivering ONE PER MOB ID, because NpcSeed is a mob-id-keyed dictionary and
+            // every teleport gate shares mob id 32. So all but one gate were dropped, and the survivor's
+            // position got paired with whichever destination won the race — which is exactly the "bogus
+            // gate edge" the router keeps discovering the expensive way:
+            //   [travel] hop 1/2: no gate to 'EldGbl02' in view near (10724,4318) — aborting
+            //   [travel] PRUNED bogus gate edge RouVal02 -> EldGbl02 (gate not there) — will re-route
+            // ClericFresh burned 68% of a 38-minute budget (1549s) walking to gates that were not there,
+            // pruning, re-routing and repeating, at +0 exp. Same root as the map layer only drawing one
+            // gate per map; the nav graph was the other victim.
+            foreach (var e in v.NpcSeedAll)
             {
                 var t = NewTable();
                 t["mobId"] = e.MobId; t["x"] = e.X; t["y"] = e.Y; t["isGate"] = e.IsGate; t["linkMap"] = e.LinkMap;
