@@ -1106,6 +1106,18 @@ public sealed class BotApi
     /// table cannot describe — notably a scenario clone, whose MobId is 0.</summary>
     public double handleAttackRange(int handle) => View?.HandleAttackRange((ushort)handle) ?? -1;
 
+    /// <summary>Hardest hit taken from a specific ENTITY by handle, or -1 if it has never hit us. The
+    /// per-handle twin of <see cref="mobHitMax"/>, for attackers the mob-id table cannot describe (a
+    /// scenario clone reads MobId 0, so every damage sample from it used to be discarded).
+    /// <para>⚠️ -1 means NO EVIDENCE, not "harmless" — check <see cref="handleHitSamples"/> first.</para></summary>
+    public int handleHitMax(int handle) => View?.HandleHitMax((ushort)handle) ?? -1;
+
+    /// <summary>Mean damage per connecting hit from this ENTITY, or -1 if never observed.</summary>
+    public double handleHitAvg(int handle) => View?.HandleHitAvg((ushort)handle) ?? -1;
+
+    /// <summary>How many hits from this ENTITY have been sampled. 0 = no evidence.</summary>
+    public int handleHitSamples(int handle) => View?.HandleHitSamples((ushort)handle) ?? 0;
+
     /// <summary>Mean damage per connecting hit from this mob id, -1 if never observed.</summary>
     public double mobHitAvg(int mobId) => View?.MobHitAvg(mobId) ?? -1;
 

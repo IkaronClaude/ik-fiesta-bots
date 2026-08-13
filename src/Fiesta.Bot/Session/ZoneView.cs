@@ -1159,6 +1159,12 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<int, (double, double)> _mobRange = new();
     // Same, keyed by ENTITY HANDLE, for attackers that have no usable mob id (a scenario clone reads 0).
     private readonly ConcurrentDictionary<ushort, (double, double)> _handleRange = new();
+    // ⛔ AND THE HITS PER HANDLE TOO. _mobHits skips every sample whose attacker resolves to MobId 0 — its
+    // own comment calls such a key "worthless" — which throws away the damage record of exactly the enemy
+    // the threat model is for: a scenario clone is a player copy that reads MobId 0. The range table above
+    // was already fixed this way; the damage table had the same hole. Without it "does this thing hit hard
+    // enough to be worth kiting?" is unanswerable for the one fight where it matters.
+    private readonly ConcurrentDictionary<ushort, (int Max, int Count, long Sum)> _handleHits = new();
 
     /// <summary>Observed attack range of one ENTITY (world units), or -1 if it has never hit us. Needed
     /// because a scenario clone is a player copy with MobId 0, so <see cref="MobAttackRange"/> cannot
@@ -1170,6 +1176,19 @@ public sealed class ZoneView : IDisposable
     /// hit us. Second-highest connect distance, so a single position desync cannot inflate it. This is the
     /// client-legal substitute for server-side MobWeapon.Range, which the bot host does not mount.</summary>
     public double MobAttackRange(int mobId) => _mobRange.TryGetValue(mobId, out var r) && r.Item2 > 0 ? r.Item2 : -1;
+
+    /// <summary>Hardest hit ever taken from ONE ENTITY, or -1 if it has never hit us. The per-handle twin of
+    /// <see cref="MobHitMax"/>, and the only one that can describe a MobId-0 attacker such as a scenario
+    /// clone.</summary>
+    public int HandleHitMax(ushort handle) => _handleHits.TryGetValue(handle, out var s) ? s.Max : -1;
+
+    /// <summary>Mean damage per connecting hit from ONE ENTITY, or -1 if it has never hit us.</summary>
+    public double HandleHitAvg(ushort handle) => _handleHits.TryGetValue(handle, out var s) && s.Count > 0
+        ? (double)s.Sum / s.Count : -1;
+
+    /// <summary>How many hits from this ENTITY we have sampled. 0 means no evidence — which is NOT the same
+    /// as "harmless"; treat an unsampled attacker as unknown.</summary>
+    public int HandleHitSamples(ushort handle) => _handleHits.TryGetValue(handle, out var s) ? s.Count : 0;
 
     /// <summary>Hardest hit ever taken from <paramref name="mobId"/>, or -1 if we have never been hit by it.
     /// Compare against MaxHp to answer "how many hits can this thing kill me in?".</summary>
@@ -1652,6 +1671,21 @@ public sealed class ZoneView : IDisposable
                 _recentIncoming.Enqueue((DateTime.UtcNow, h.Damage));   // feed the live incoming-DPS window
                 MetricSink?.Invoke("damageTaken", h.Damage);
                 while (_recentIncoming.Count > 512) _recentIncoming.TryDequeue(out _);
+                // Per HANDLE first, and OUTSIDE the atkMob guard — see _handleHits. This is the only record
+                // that survives for an attacker whose MobId reads 0.
+                var hPrevMax = _handleHits.TryGetValue(h.Attacker, out var hOld) ? hOld.Max : -1;
+                var hUpd = _handleHits.AddOrUpdate(h.Attacker,
+                    _ => (h.Damage, 1, h.Damage),
+                    (_, s) => (Math.Max(s.Max, h.Damage), s.Count + 1, s.Sum + h.Damage));
+                // Announce a new worst-case for a MobId-less attacker; when it HAS a mob id the [threat] line
+                // below says the same thing with the better key, so don't say it twice.
+                if (atkMob <= 0 && hUpd.Max > hPrevMax && MaxHp > 0)
+                {
+                    _logLevel?.Invoke(BotLogLevel.Note,
+                        $"[threat] entity h={h.Attacker} (no mob id) hits for up to {hUpd.Max} " +
+                        $"(avg {(double)hUpd.Sum / hUpd.Count:F0} over {hUpd.Count}) — that is " +
+                        $"{(int)Math.Ceiling((double)MaxHp / Math.Max(1, hUpd.Max))} hit(s) to kill us at {MaxHp} maxHp");
+                }
                 // RETAIN the sample (mobId 0 = unresolved attacker, worthless as a key — skip it).
                 if (atkMob > 0)
                 {
