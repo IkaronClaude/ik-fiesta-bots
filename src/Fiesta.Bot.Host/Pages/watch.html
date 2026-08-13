@@ -57,6 +57,17 @@
   .tile .cd { position:absolute; bottom:1px; right:2px; font-size:9px; color:var(--warn); z-index:3 }
   /* the radial sweep: conic-gradient darkens the portion of the cooldown still to run */
   .tile .sweep { position:absolute; inset:0; z-index:1; pointer-events:none }
+  /* MOUNT chip: same 20px footprint as an abstate, lit when mounted so it reads at a glance. Always
+     present — "on foot" is an answer, not an absence. */
+  .abchip.mount { border-color:#3d444d }
+  .abchip.mount.on { border-color:var(--ok); box-shadow:0 0 4px rgba(63,185,80,.35) }
+  .abchip.mount .ab { font-size:12px; line-height:20px }
+  /* SOUL STONE tiles: identical to skill tiles (same grid, same sweep), on their own short row so the
+     two most-pressed buttons in a fight are not buried among 30 skills. `out` = none left / depleted. */
+  .stonerow { grid-template-columns:repeat(2, 40px); margin-bottom:6px }
+  .tile.stone .nm { font-size:11px; font-weight:600 }
+  .tile.stone.out { border-color:var(--bad); opacity:.55 }
+  .tile.stone.out .nm { color:var(--dim) }
 
   .maps { display:grid; grid-template-columns:1fr 1fr; gap:10px; max-width:660px }  /* 1.5x the -33% pass */
 
@@ -178,6 +189,9 @@
           <label><input type="checkbox" id="sklevels"> show all levels</label>
         </div>
         <div id="abstates" class="abbar"></div>
+        <!-- Soul stones sit with the skills because they ARE used like one: a cooldown-gated button the
+             bot presses mid-fight. Same tile size and the same sweep, per the operator. -->
+        <div id="stones" class="tiles stonerow"></div>
         <div id="skills" class="tiles"></div>
       </div>
     </div>
@@ -609,16 +623,54 @@ const esc = t => String(t == null ? '' : t).replace(/[&<>"]/g, ch => ({'&':'&amp
 // BUFF/DEBUFF BAR (operator 2026-08-13): the client's own abstate icons at half tile size, above the
 // skills. Name + description on hover. An abstate with no art still shows a chip with its id, because
 // "we are buffed with something we cannot name" is information, not something to hide.
-function abStateBar(list) {
+function abStateBar(list, live) {
   const el = $('#abstates');
   if (!el) return;
-  if (!list || !list.length) { el.innerHTML = ''; return; }
-  el.innerHTML = list.map(a => {
+  const chips = (list || []).map(a => {
     const tip = [a.name || `abstate ${a.id}`, a.descript].filter(Boolean).join(' — ');
     return `<div class="abchip" title="${esc(tip)}">`
       + (a.hasIcon ? `<img src="/abstateicon/${a.id}.png" alt="" onerror="this.remove()">`
                    : `<span class="ab">${a.id}</span>`)
       + '</div>';
+  });
+  // MOUNT STATE beside the buffs (operator 2026-08-13). It belongs here because it behaves like one: it
+  // is a state you are IN that changes what you can do — a mount is cancelled by damage, blocks casting,
+  // and its summon cancels your current walk. Always shown, mounted or not, because "not mounted" is the
+  // answer to a question you are asking when you look, not an absence to hide.
+  if (live) {
+    const on = !!live.mounted;
+    chips.unshift(`<div class="abchip mount${on ? ' on' : ''}" title="${on ? 'MOUNTED' : 'on foot'}">`
+      + `<span class="ab">${on ? '🐎' : '👣'}</span></div>`);
+  }
+  el.innerHTML = chips.join('');
+}
+
+// SOUL STONES AS TILES (operator 2026-08-13: "display current stone cooldown as a skill-icon-sized
+// 'button' basically exactly like skills"). Same markup and the same cooldown sweep the skill tiles use,
+// so a stone reads at a glance the way a skill does. A stone with no measured cooldown renders as the
+// existing dashed "cd unknown" tile rather than inventing a number (SP's gap has never been measured).
+function stoneTiles(list) {
+  const el = $('#stones');
+  if (!el) return;
+  if (!list || !list.length) { el.innerHTML = ''; return; }
+  el.innerHTML = list.map(s => {
+    const cd = s.cooldownMs || 0, rem = s.remainingMs;
+    const label = s.kind === 'hp' ? 'HP' : 'SP';
+    const tip = [`${label} soul stone`, `${s.count} left${s.max ? ` of ${s.max}` : ''}`,
+                 cd ? `cd ${(cd/1000).toFixed(1)}s` : 'cd unknown (never measured for this stone)',
+                 s.depleted ? 'DEPLETED' : null].filter(Boolean).join(' — ');
+    if (s.depleted || !s.count)
+      return `<div class="tile stone out" title="${esc(tip)}"><span class="nm">${label}</span>
+                <span class="cd">0</span></div>`;
+    if (!cd) return `<div class="tile stone unk" title="${esc(tip)}"><span class="nm">${label}</span>
+                       <span class="cd">${s.count}</span></div>`;
+    const cooling = rem != null && rem > 0;
+    const frac = cooling ? Math.max(0, Math.min(1, rem / cd)) : 0;
+    const sweep = cooling
+      ? `<div class="sweep" style="background:conic-gradient(rgba(0,0,0,.72) ${frac*360}deg, rgba(0,0,0,0) 0)"></div>` : '';
+    return `<div class="tile stone ${cooling?'cool':'ready'}" title="${esc(tip)}">
+              <span class="nm">${label}</span>${sweep}
+              <span class="cd">${cooling ? (rem/1000).toFixed(1) : s.count}</span></div>`;
   }).join('');
 }
 
@@ -693,7 +745,8 @@ async function tickMetrics() {
     $('#vitals').innerHTML = vitals(d.live);
     $('#charsheet').innerHTML = charSheet(d.live);
     skillTiles(d.live.skills);
-    abStateBar(d.live.abStates);
+    abStateBar(d.live.abStates, d.live);
+    stoneTiles(d.live.stones);
     lastLive = d.live;
     questList = d.live.quests || [];
     questsById = new Map(questList.map(q => [q.name, q]));
@@ -1073,27 +1126,55 @@ function connectStream() {
 // next packet lands just as the entity arrives — so this reproduces the real motion, it does not guess it.
 const anim = new Map();           // handle -> {fx, fy, tx, ty, spd, t0}  (t0 = local ms when the move began)
 
+// ⛔ SNAP WHEN THE SERVER'S START POSITION DISAGREES WITH OURS (operator 2026-08-13). Interpolation is a
+// PREDICTION, and a prediction that has drifted must be abandoned, not eased away from: if the new
+// segment starts somewhere we are not drawing the entity, our picture is simply wrong — it was teleported,
+// warped, or we missed packets — and sliding it across to catch up shows a journey that never happened.
+// The threshold is DERIVED, not a magic number: anything further than the entity could physically have
+// travelled since we last heard about it (plus a margin for packet jitter) is not movement, it is a
+// correction. Inside that, we ease so ordinary jitter does not make everything twitch.
+const SNAP_MARGIN_U = 60;         // packet-timing slack, in world units
+
+function snapNeeded(cur, fromX, fromY, spd, sinceMs) {
+  if (!cur) return true;                                  // nothing drawn yet — just place it
+  const couldTravel = Math.max(0, spd) * (Math.max(0, sinceMs) / 1000) + SNAP_MARGIN_U;
+  return Math.hypot(fromX - cur.x, fromY - cur.y) > couldTravel;
+}
+
 function noteMove(e) {
   if (!e.move || !(e.move.speed > 0)) { anim.delete(e.handle); return; }
-  const m = e.move;
+  const m = e.move, now = performance.now();
   const prev = anim.get(e.handle);
-  // Same segment re-sent (a resync repeats it) — keep the original start so the entity does not restart
-  // its walk every two seconds and crawl.
+  // Same segment re-sent — keep the original start so the entity does not restart its walk and crawl.
   if (prev && prev.tx === m.toX && prev.ty === m.toY && prev.fx === m.fromX && prev.fy === m.fromY) return;
-  anim.set(e.handle, { fx: m.fromX, fy: m.fromY, tx: m.toX, ty: m.toY, spd: m.speed,
-                       t0: performance.now() - (m.ageMs || 0) });
+  const cur = prev ? along(prev, now) : null;
+  const t0 = now - (m.ageMs || 0);
+  const a = { fx: m.fromX, fy: m.fromY, tx: m.toX, ty: m.toY, spd: m.speed, t0 };
+  if (!snapNeeded(cur, m.fromX, m.fromY, m.speed, prev ? now - prev.t0 : 0)) {
+    // Close enough to be the same entity continuing: start the leg from where it is DRAWN, so the tile
+    // does not flick backwards by the few units of prediction error.
+    a.fx = cur.x; a.fy = cur.y; a.t0 = now;
+  }
+  anim.set(e.handle, a);
 }
 
 // SELF is sampled, not evented — we move by our own decision with no packet to hang a time on. So ease
 // from wherever we are currently drawn toward each new sample at our own walk speed. Same maths, and it
 // turns a 200ms step into continuous motion.
-let selfAnim = null;
+let selfAnim = null, lastSelfAt = 0;
 function noteSelfMove(next, prev) {
   if (!next || next.x == null) return;
+  const now = performance.now();
   const at = selfPos();                       // where we are DRAWN right now, not the last sample
-  const from = at || (prev && prev.x != null ? { x: prev.x, y: prev.y } : { x: next.x, y: next.y });
   const spd = next.walkSpeed > 0 ? next.walkSpeed : 120;
-  selfAnim = { fx: from.x, fy: from.y, tx: next.x, ty: next.y, spd, t0: performance.now() };
+  // Same rule as entities: a jump larger than we could have walked since the last sample is a TELEPORT
+  // (a gate, a revive, a MOVEFAIL snap-back), and easing across it would animate a trip we never took.
+  if (snapNeeded(at, next.x, next.y, spd, lastSelfAt ? now - lastSelfAt : 0)) {
+    selfAnim = { fx: next.x, fy: next.y, tx: next.x, ty: next.y, spd, t0: now };
+  } else {
+    selfAnim = { fx: at.x, fy: at.y, tx: next.x, ty: next.y, spd, t0: now };
+  }
+  lastSelfAt = now;
 }
 
 // Where a segment says the entity is at this instant. Clamped at the destination — an entity that has

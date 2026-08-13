@@ -1232,6 +1232,28 @@ public static class BotEndpoints
             // `false` only means no pickup has failed, and a STACKABLE item picks up fine at full occupancy.
             BagFullServerSignal = bot.ZoneView?.BagFull,
             Skills = SkillPanel(bot, cd),
+            // SOUL STONES AS COOLDOWN TILES (operator 2026-08-13: "display current stone cooldown as a
+            // skill-icon-sized button basically exactly like skills"). Same three fields a skill tile
+            // renders from, so the page can reuse the tile renderer rather than growing a second one.
+            // ⛔ SP's cooldown is left NULL, not copied from HP. Only the HP stone's gap has been measured
+            // (HpStoneCooldownMs, learned from successful uses); whether SP shares it is unknown, and a
+            // guessed number on a tile is indistinguishable from a measured one once it is drawn. Null
+            // renders as the existing "cd unknown" dashed tile, which is the truth.
+            Stones = new object[]
+            {
+                new
+                {
+                    Kind = "hp", Count = snap.HpStones, Max = zv?.MaxHpStones ?? 0,
+                    CooldownMs = zv is null ? (double?)null : zv.HpStoneCooldownMs,
+                    RemainingMs = zv is null ? (double?)null : zv.HpStoneReadyInMs,
+                    Depleted = zv?.HpStoneDepleted ?? false,
+                },
+                new
+                {
+                    Kind = "sp", Count = snap.SpStones, Max = zv?.MaxSpStones ?? 0,
+                    CooldownMs = (double?)null, RemainingMs = (double?)null, Depleted = false,
+                },
+            },
             // Active buffs/debuffs for the abstate bar. Reads ZoneView.SelfAbstateSnapshot(), which
             // existed and was wired to nothing until now.
             AbStates = (bot.ZoneView?.SelfAbstateSnapshot() ?? [])
