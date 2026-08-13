@@ -1245,7 +1245,12 @@ public static class BotEndpoints
                 {
                     Kind = "hp", Count = snap.HpStones, Max = zv?.MaxHpStones ?? 0,
                     CooldownMs = zv is null ? (double?)null : zv.HpStoneCooldownMs,
-                    RemainingMs = zv is null ? (double?)null : zv.HpStoneReadyInMs,
+                    // HpStoneReadyInMs returns -1 for "no successful use this session", which with a KNOWN
+                    // cooldown means READY — so publish 0, not -1. A raw -1 on a UI field is the
+                    // unknown-sentinel shape: the tile would have to know that this particular -1 means
+                    // ready while a -1 elsewhere means unknown. Genuinely-unknown is already expressed by
+                    // CooldownMs being null, which renders as the dashed tile.
+                    RemainingMs = zv is null ? (double?)null : Math.Max(0, zv.HpStoneReadyInMs),
                     Depleted = zv?.HpStoneDepleted ?? false,
                 },
                 new
