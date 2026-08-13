@@ -84,6 +84,28 @@ public sealed class BotApi
         RequestStateHandler(state); return true;
     }
 
+    /// <summary>Milliseconds until this skill can be cast again — 0 means READY. Cooldown and cast time
+    /// come from client data, so the caller passes nothing but the id.
+    ///
+    /// <para>⭐ THIS IS THE SERVER'S CLOCK, NOT OURS. It runs from the CONFIRMED start (0x244E /
+    /// CAST_SUC_ACK), which is the only moment a cooldown actually begins. A driver timing from its own
+    /// SEND cannot work: the confirmation is a round trip away, so at the instant of sending it has not
+    /// arrived and the driver must either bank a cooldown for a cast that may never have happened, or
+    /// bank nothing and re-press.</para>
+    ///
+    /// <para>MEASURED COST OF NOT HAVING THIS (MageFresh, 2026-08-13): the leveler banked its cooldown
+    /// only when <c>castConfirmed()</c> was already true at the send — essentially never — so every cast
+    /// entered a re-press window that blocked the WHOLE rotation for several passes. Result: 15 casts in a
+    /// 75-minute buffer, only 3 distinct skills ever used, and a median 1.8s between casts for a class
+    /// that should empty its bar in 1-2s. Ask this instead and a skill that has started is simply not
+    /// ready, so the next pass picks a different one.</para></summary>
+    public double skillReadyInMs(int id)
+    {
+        var si = _mgr.ClientData?.Skill(id);
+        if (si is null || View is null) return 0;      // unknown skill: never report a phantom cooldown
+        return View.SkillReadyInMs((ushort)id, si.DelayTimeMs, si.CastTimeMs);
+    }
+
     /// <summary>Skill info from client <c>ActiveSkill</c> (cooldown ms, SP cost, range, facing
     /// arc) so scripts can track cooldowns / costs without hardcoding. nil if unknown.</summary>
     public DynValue skillInfo(int id)
