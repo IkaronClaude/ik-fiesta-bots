@@ -1404,7 +1404,59 @@ public static class BotEndpoints
     /// ⚠️ <c>Hp</c> is null until an entity has actually been hit — absent means "never seen hurt", NOT
     /// full and NOT zero. <c>Dir</c> is the raw SHINE_COORD_TYPE byte (0-255); its scale is not pinned, so
     /// it must not be compared numerically with our own <c>Facing</c> in degrees.</summary>
-    private static object EntityPanel(BotHandle bot, GameData.ClientData? cd)
+    /// <summary>ONE nearby entity as the combat map draws it. Extracted from <see cref="EntityPanel"/> so
+    /// the polled snapshot and the live <c>/events</c> stream project an entity IDENTICALLY — two copies of
+    /// this shape would drift, and the page would then render a streamed mob differently from a polled one.
+    /// Returns null for anything that does not belong on the mob layer (gates, real NPCs).</summary>
+    internal static object? MobView(BotHandle bot, GameData.ClientData? cd, Session.NearbyNpc n,
+                                    HashSet<ushort> aggro, HashSet<int> questMobs)
+    {
+        var zv = bot.ZoneView;
+        if (zv is null) return null;
+        if (n.IsGate) return null;
+        // NPCs belong to the NPC layer; a scenario clone stays here — it is a fightable entity.
+        if (!n.IsScenarioClone && cd?.Mob(n.MobId)?.IsNpc == true) return null;
+        // ⛔ A scenario clone has NO mob id — its MobId field reads 0, which is the real mob "Slime".
+        // Resolving it would draw a level-20 player copy as a level-1 Slime with a Slime's MaxHp.
+        var md = n.IsScenarioClone ? null : cd?.Mob(n.MobId);
+        var self = bot.Position;
+        return new
+        {
+            Handle = (int)n.Handle,
+            MobId = n.IsScenarioClone ? (int?)null : (int)n.MobId,
+            IsClone = n.IsScenarioClone,
+            Name = n.IsScenarioClone ? (n.CharName ?? "clone") : md?.Name ?? $"mob{n.MobId}",
+            Level = n.IsScenarioClone ? (n.CharLevel is { } cl ? (int)cl : 0) : md?.Level ?? 0,
+            X = (double)n.X, Y = (double)n.Y,
+            Dir = (int)n.Dir,
+            Hp = zv.EntityHp(n.Handle) is { } h ? (double?)h : null,
+            MaxHp = md?.MaxHp ?? 0,
+            Huntable = n.IsScenarioClone || (zv.IsHuntableMob?.Invoke(n.MobId) ?? true),
+            Aggro = aggro.Contains(n.Handle),
+            QuestMob = !n.IsScenarioClone && questMobs.Contains(n.MobId),
+            // Danger is LEARNED, not baked: the hardest hit this mob type has actually landed on us
+            // (-1 = never hit us, i.e. unknown rather than safe). The page compares it to our MaxHp.
+            // For a clone the per-MOB table cannot describe it, so read the per-HANDLE one.
+            MaxHitSeen = n.IsScenarioClone ? zv.HandleHitMax(n.Handle) : zv.MobHitMax(n.MobId),
+            Dist = self is { } p ? Math.Sqrt(Math.Pow((double)n.X - p.X, 2) + Math.Pow((double)n.Y - p.Y, 2)) : (double?)null,
+        };
+    }
+
+    /// <summary>Mob ids any ACTIVE quest wants — kill and collect objectives alike (a collect drops from a
+    /// mob, and checking only kills is the exact miss that let an Iyzel collect quest through).</summary>
+    internal static HashSet<int> QuestMobIds(BotHandle bot, GameData.ClientData? cd)
+    {
+        var outp = new HashSet<int>();
+        var zv = bot.ZoneView;
+        if (zv is null || cd is null) return outp;
+        foreach (var qid in zv.ActiveQuests.Keys)
+            if (cd.Quest(qid) is { } qd)
+                foreach (var o in qd.Objectives)
+                    if (o.Mob > 0) outp.Add(o.Mob);
+        return outp;
+    }
+
+    internal static object EntityPanel(BotHandle bot, GameData.ClientData? cd)
     {
         var zv = bot.ZoneView;
         var self = bot.Position;
@@ -1413,14 +1465,7 @@ public static class BotEndpoints
         if (zv is not null)
         {
             var aggro = new HashSet<ushort>(zv.Aggressors);
-            // Mobs any ACTIVE quest wants — kill objectives and collect objectives alike (a collect drops
-            // from a mob, and checking only kills is the exact miss that let an Iyzel collect quest through).
-            var questMobs = new HashSet<int>();
-            if (cd is not null)
-                foreach (var qid in zv.ActiveQuests.Keys)
-                    if (cd.Quest(qid) is { } qd)
-                        foreach (var o in qd.Objectives)
-                            if (o.Mob > 0) questMobs.Add(o.Mob);
+            var questMobs = QuestMobIds(bot, cd);
             foreach (var n in zv.NearbyNpcs)
             {
                 if (n.IsGate) continue;
@@ -1433,26 +1478,7 @@ public static class BotEndpoints
                 // ⛔ A scenario clone has NO mob id — its MobId field reads 0, which is the real mob
                 // "Slime". Resolving it would draw a level-20 player copy as a level-1 Slime with a
                 // Slime's MaxHp, and ring it in the danger colours of the wrong creature entirely.
-                var md = n.IsScenarioClone ? null : cd?.Mob(n.MobId);
-                mobs.Add(new
-                {
-                    Handle = (int)n.Handle,
-                    MobId = n.IsScenarioClone ? (int?)null : (int)n.MobId,
-                    IsClone = n.IsScenarioClone,
-                    Name = n.IsScenarioClone ? (n.CharName ?? "clone") : md?.Name ?? $"mob{n.MobId}",
-                    Level = n.IsScenarioClone ? (n.CharLevel is { } cl ? (int)cl : 0) : md?.Level ?? 0,
-                    X = (double)n.X, Y = (double)n.Y,
-                    Dir = (int)n.Dir,
-                    Hp = zv.EntityHp(n.Handle) is { } h ? (double?)h : null,
-                    MaxHp = md?.MaxHp ?? 0,
-                    Huntable = n.IsScenarioClone || (zv.IsHuntableMob?.Invoke(n.MobId) ?? true),
-                    Aggro = aggro.Contains(n.Handle),
-                    QuestMob = !n.IsScenarioClone && questMobs.Contains(n.MobId),
-                    // Danger is LEARNED, not baked: the hardest hit this mob type has actually landed on us
-                    // (-1 = never hit us, i.e. unknown rather than safe). The page compares it to our MaxHp.
-                    MaxHitSeen = n.IsScenarioClone ? -1 : zv.MobHitMax(n.MobId),
-                    Dist = self is { } p ? Math.Sqrt(Math.Pow((double)n.X - p.X, 2) + Math.Pow((double)n.Y - p.Y, 2)) : (double?)null,
-                });
+                if (MobView(bot, cd, n, aggro, questMobs) is { } mv) mobs.Add(mv);
             }
             foreach (var m in bot.PartyMembers.Values)
                 party.Add(new { m.Name, Level = (int)m.Level, Hp = (double)m.Hp, MaxHp = (double)m.MaxHp, X = (double)m.X, Y = (double)m.Y });

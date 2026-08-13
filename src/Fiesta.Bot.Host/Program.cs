@@ -74,6 +74,13 @@ builder.Services.AddSingleton<ScriptStore>();
 
 var app = builder.Build();
 
+// ⛔ BEFORE THE AUTH MIDDLEWARE. The /events stream authenticates via the WebSocket SUBPROTOCOL (a browser
+// cannot set a header on a WebSocket), and `ctx.WebSockets.IsWebSocketRequest` only answers truthfully once
+// this middleware has installed the feature — registered after the auth check, every upgrade would look
+// like a plain request and be rejected. KeepAlive so an idle stream (a parked bot in an empty room) is not
+// culled by an intermediate proxy.
+app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
+
 // Bearer-token auth for the control API. CRITICAL now the host is exposed on a public IP:
 // without this, anyone can list/spawn/stop/drive bots. Enforced on /api/* ONLY when a
 // BOT_API_TOKEN is configured (the cluster sets it via the bot-secrets secret); unset = open,
@@ -84,10 +91,29 @@ if (!string.IsNullOrWhiteSpace(botApiToken))
     var expected = $"Bearer {botApiToken}";
     app.Use(async (ctx, next) =>
     {
-        if (ctx.Request.Path.StartsWithSegments("/api")
-            && !CryptographicOperations.FixedTimeEquals(
-                   System.Text.Encoding.UTF8.GetBytes(ctx.Request.Headers.Authorization.ToString()),
-                   System.Text.Encoding.UTF8.GetBytes(expected)))
+        // ⛔ A BROWSER CANNOT SET A HEADER ON A WEBSOCKET. `new WebSocket(url)` takes no headers at all, so
+        // the /events stream could never authenticate the way every other /api call does. The standard way
+        // round it is the SUBPROTOCOL list, which IS settable from JS — the page connects with
+        // `new WebSocket(url, ['bearer', '<token>'])` and the token arrives in Sec-WebSocket-Protocol.
+        // Deliberately NOT a ?token= query parameter: query strings land in access logs and proxy history,
+        // and this token drives every bot on the host.
+        var authed = CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.UTF8.GetBytes(ctx.Request.Headers.Authorization.ToString()),
+            System.Text.Encoding.UTF8.GetBytes(expected));
+        if (!authed && ctx.WebSockets.IsWebSocketRequest)
+        {
+            foreach (var proto in ctx.WebSockets.WebSocketRequestedProtocols)
+            {
+                if (CryptographicOperations.FixedTimeEquals(
+                        System.Text.Encoding.UTF8.GetBytes(proto),
+                        System.Text.Encoding.UTF8.GetBytes(botApiToken!)))
+                {
+                    authed = true;
+                    break;
+                }
+            }
+        }
+        if (ctx.Request.Path.StartsWithSegments("/api") && !authed)
         {
             ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await ctx.Response.WriteAsJsonAsync(new { error = "Unauthorized. Provide 'Authorization: Bearer <token>'." });
@@ -216,6 +242,7 @@ app.MapGet("/minimap/{map}.json", (string map) =>
 
 
 app.MapBotEndpoints(app.Services.GetService<BotManager>(), xorError);
+app.MapEventStream(app.Services.GetService<BotManager>());
 app.MapAccountEndpoints(app.Services.GetService<ApiAccountProvisioner>(), provisionerError);
 app.MapScriptEndpoints(app.Services.GetService<BotManager>(),
     app.Services.GetRequiredService<ScriptStore>(), xorError);

@@ -988,17 +988,68 @@ $('#sklevels').addEventListener('change', () => lastLive && skillTiles(lastLive.
   z.addEventListener('change', () => { CM_RANGE = Number(z.value); localStorage.setItem('watch:cmzoom', z.value); });
 }
 
-// ── combat map at 5/sec ───────────────────────────────────────────────────────────────────────────
-// Its own cheap endpoint: mob positions change constantly, and /metrics (whole metric snapshot +
-// quest board + trace counts) is far too heavy to poll at this rate.
+// ── combat map: LIVE over a WebSocket, polling only as the fallback ───────────────────────────────
+// Operator 2026-08-13: "Each entity is updated when new info is received, instead of all in one go every
+// second or whatever." The 5/sec poll re-read every entity each time, so a mob that had just moved looked
+// identical to one that had not moved in a minute and the map could never be sharper than the poll.
+// /stream pushes one JSON message per change: `hello` is a whole /entities-shaped snapshot, then `entity`
+// / `gone` / `self` patch it in place. Same object, same draw path — see the endpoint's doc for why the
+// shape is deliberately shared rather than bespoke.
+let evSock = null, evBot = null, evMaxHp = 0, evAlive = false;
+
+function applyStream(msg) {
+  if (msg.t === 'hello') {
+    lastEnt = msg.entities; evMaxHp = msg.maxHp || 0;
+    $('#mapname').textContent = msg.mapDisplay ? `· ${msg.mapDisplay} (${lastEnt.map})` : (lastEnt.map ? `· ${lastEnt.map}` : '');
+  } else if (!lastEnt) {
+    return;                       // a delta before hello describes a picture we do not have yet
+  } else if (msg.t === 'entity') {
+    const m = lastEnt.mobs || (lastEnt.mobs = []);
+    const i = m.findIndex(x => x.handle === msg.e.handle);
+    if (i >= 0) m[i] = msg.e; else m.push(msg.e);
+  } else if (msg.t === 'gone') {
+    if (lastEnt.mobs) lastEnt.mobs = lastEnt.mobs.filter(x => x.handle !== msg.handle);
+  } else if (msg.t === 'self') {
+    lastEnt.self = msg.self;
+  } else if (msg.t === 'map') {
+    // A new map means every handle we hold belongs to the old one. Keeping them would draw the previous
+    // room's mobs over this one until each happened to be re-sent.
+    lastEnt.map = msg.map; lastEnt.mobs = []; lastEnt.npcs = [];
+    $('#mapname').textContent = msg.mapDisplay ? `· ${msg.mapDisplay} (${msg.map})` : `· ${msg.map}`;
+  } else return;                  // hit / chat / castfail / movefail — narration, not map state
+  drawCombat(lastEnt, evMaxHp);
+}
+
+function connectStream() {
+  const who = $('#bot').value, tok = $('#tok').value.trim();
+  if (!who) return;
+  if (evSock && evBot === who && (evSock.readyState === 0 || evSock.readyState === 1)) return;
+  try { evSock && evSock.close(); } catch {}
+  evBot = who; evAlive = false;
+  const url = new URL(`/api/bots/${encodeURIComponent(who)}/stream`, location.origin);
+  url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  // A browser cannot set a header on a WebSocket, so the token rides in the SUBPROTOCOL list and the
+  // server selects the 'bearer' marker back. Without a token, connect plain (a host with no
+  // BOT_API_TOKEN is open, which is the local dev case).
+  const sock = tok ? new WebSocket(url, ['bearer', tok]) : new WebSocket(url);
+  evSock = sock;
+  sock.onmessage = e => { evAlive = true; try { applyStream(JSON.parse(e.data)); } catch {} };
+  sock.onclose = () => { if (evSock === sock) { evSock = null; evAlive = false; } };
+  sock.onerror = () => { try { sock.close(); } catch {} };
+}
+
+// FALLBACK POLL. It runs only while no stream is delivering, so the map still works against an older host
+// (or a proxy that will not upgrade) instead of going blank — and stands down the moment frames arrive.
 async function tickCombat() {
+  connectStream();
+  if (evAlive) return;
   try {
     const r = await api('/entities');
     if (!r.ok) return;
     const d = await r.json();
     $('#mapname').textContent = d.mapDisplay ? `· ${d.mapDisplay} (${d.map})` : (d.map ? `· ${d.map}` : '');
     // Keep the latest entity snapshot for the BIG map: the NPC seed it frames on arrives with the
-    // combat poll (5/sec), while the trace poll is far slower.
+    // combat poll, while the trace poll is far slower.
     lastEnt = d.entities;
     drawCombat(d.entities, d.maxHp);
   } catch {}

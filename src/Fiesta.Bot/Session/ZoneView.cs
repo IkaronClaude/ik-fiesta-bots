@@ -1609,10 +1609,36 @@ public sealed class ZoneView : IDisposable
     public DateTime TargetConfirmedAtUtc { get; private set; } = DateTime.MinValue;
     public uint? EntityHp(ushort handle) => _entityHp.TryGetValue(handle, out var v) ? v : null;
 
+    // ── LIVE ENTITY CHANGE FEED (operator 2026-08-13) ────────────────────────────────────────────────
+    // "Each entity is updated when new info is received, instead of all in one go every second or
+    // whatever." The watch page's combat map polls /entities 5×/sec and re-reads EVERY nearby entity each
+    // time, so a mob that moved once is indistinguishable from one that has not moved in a minute, and the
+    // map's resolution is capped at the poll rate no matter how fast the wire actually is.
+    // These fire on the exact packet that changed something, naming the ONE handle affected. Subscribers
+    // MUST NOT BLOCK — they run on the session read loop (same contract as BotHandle.Events).
+    /// <summary>One tracked entity's state changed (appeared, moved, took damage). Carries the handle
+    /// only; the subscriber re-reads whatever projection it needs, so this never has to know about the
+    /// shape of anyone's view model.</summary>
+    public event Action<ushort>? EntityChanged;
+    /// <summary>One tracked entity left view or died.</summary>
+    public event Action<ushort>? EntityGone;
+
+    /// <summary>Announce a change. Never throws — a bad subscriber cannot kill the read loop.</summary>
+    internal void NoteEntityChanged(ushort handle)
+    {
+        try { EntityChanged?.Invoke(handle); } catch { /* subscriber threw */ }
+    }
+
+    internal void NoteEntityGone(ushort handle)
+    {
+        try { EntityGone?.Invoke(handle); } catch { /* subscriber threw */ }
+    }
+
     private void NoteHit(HitInfo h)
     {
         // Whoever took the hit just told us its remaining hp — attacker or defender, us or them.
         _entityHp[h.Defender] = h.RestHp;
+        NoteEntityChanged(h.Defender);       // its health bar just moved — push it, don't wait for a poll
         if (SelfHandle is { } self && h.Defender == self)
         {
             // Combat-START marker for the tail: a hit arriving after a CombatWindow gap is a fresh
@@ -2575,6 +2601,7 @@ public sealed class ZoneView : IDisposable
                 PlayerLeft?.Invoke(hnd);
             }
             if (_npcs.TryRemove(hnd, out var goneNpc)) StashRecentNpc(hnd, goneNpc); // sticky-hold mobs through AoI flicker
+            NoteEntityGone(hnd);
         }
         else if (op == OpReallyKill)
         {
@@ -2597,6 +2624,7 @@ public sealed class ZoneView : IDisposable
                 bool wasMob = _npcs.TryRemove(dead, out _);
                 bool wasRecent = _recentNpcs.TryRemove(dead, out _); // died while flickered-out of view → evict sticky copy
                 bool wasChar = _nearby.TryRemove(dead, out _);
+                NoteEntityGone(dead);
                 // ⛔ TELL THE MANAGER THE SELECTION IS GONE. TargetInvalidated was declared for exactly
                 // this and then never raised by anything — the invalidation signal the TargetAsserted
                 // doc says the "only re-target when it changes" optimisation requires. Without it the
@@ -3425,6 +3453,7 @@ public sealed class ZoneView : IDisposable
                 lock (_scenarioFightable) _scenarioFightable.Remove(b.handle);
                 if (_nearby.TryRemove(b.handle, out var gone)) PlayerLeft?.Invoke(b.handle);
                 _npcs.TryRemove(b.handle, out _);
+                NoteEntityGone(b.handle);
             }
             else
             {
@@ -3872,6 +3901,7 @@ public sealed class ZoneView : IDisposable
                 if (_nearby.TryGetValue(hnd, out var pl))
                 {
                     _nearby[hnd] = pl with { X = toX, Y = toY };
+                    NoteEntityChanged(hnd);
                 }
                 else if (_npcs.TryGetValue(hnd, out var npc))
                 {
@@ -3883,6 +3913,7 @@ public sealed class ZoneView : IDisposable
                     // the uncertainty) rather than a confident aggro.
                     var (ox, oy) = (npc.X, npc.Y);
                     _npcs[hnd] = npc with { X = toX, Y = toY };
+                    NoteEntityChanged(hnd);
                     // WALK (0x2018) = idle wander → the mob is still around home, so let the anchor follow it.
                     // RUN (0x201A) = chasing → leave the anchor where it is; every step now measures the chase.
                     NoteMobAnchor(hnd, toX, toY, idle: op == OpSomeoneMoveWalk);
@@ -4168,6 +4199,7 @@ public sealed class ZoneView : IDisposable
                 PlayerLeft?.Invoke(hnd);
             }
             if (_npcs.TryRemove(hnd, out var goneNpc)) StashRecentNpc(hnd, goneNpc); // sticky-hold mobs through AoI flicker
+            NoteEntityGone(hnd);
         }
         else if (op == OpPickAck)
         {
@@ -4409,6 +4441,7 @@ public sealed class ZoneView : IDisposable
             c.mode, c.type, c.nKQTeamType);
         var isNew = !_nearby.ContainsKey(c.handle);
         _nearby[c.handle] = player;
+        NoteEntityChanged(c.handle);
         if (isNew)
         {
             // type / nKQTeamType distinguish a real player from a scenario/KQ enemy "character" (the JCQ
@@ -4446,6 +4479,7 @@ public sealed class ZoneView : IDisposable
         var npc = new NearbyNpc(handle, mobid, mode, x, y, flag, linkMap, team, dir);
         var isNew = !_npcs.ContainsKey(handle);
         _npcs[handle] = npc;
+        NoteEntityChanged(handle);
         // First sighting of this handle = it's standing where it lives → seed its spawn anchor (see _mobAnchor).
         if (flag != 1) NoteMobAnchor(handle, x, y, idle: isNew);
         _recentNpcs.TryRemove(handle, out _); // back in view (live) → drop the sticky flicker-bridge copy
