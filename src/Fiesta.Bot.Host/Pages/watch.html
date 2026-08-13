@@ -997,6 +997,16 @@ $('#sklevels').addEventListener('change', () => lastLive && skillTiles(lastLive.
 // shape is deliberately shared rather than bespoke.
 let evSock = null, evBot = null, evMaxHp = 0, evAlive = false;
 
+// ⛔ DELTAS FOR SMOOTHNESS, A PERIODIC SNAPSHOT FOR CORRECTNESS. The first version drove the map from the
+// stream ALONE, and anything the server had no change-event for simply never appeared — the operator lost
+// the JCQ clone (its "now fightable" promotion is a mark on a PLAYER record, so none of the entity-mutation
+// sites fired) and the background art froze on the previous map. Both are the same shape: a delta feed is
+// only as complete as the set of places someone remembered to announce from, and a miss is INVISIBLE
+// rather than loud. resyncEntities() re-reads the whole picture every RESYNC_MS on top of the stream, so a
+// path nobody wired self-heals in a couple of seconds instead of staying wrong until reload.
+const RESYNC_MS = 2000;
+let lastResync = 0;
+
 function applyStream(msg) {
   if (msg.t === 'hello') {
     lastEnt = msg.entities; evMaxHp = msg.maxHp || 0;
@@ -1007,17 +1017,19 @@ function applyStream(msg) {
     const m = lastEnt.mobs || (lastEnt.mobs = []);
     const i = m.findIndex(x => x.handle === msg.e.handle);
     if (i >= 0) m[i] = msg.e; else m.push(msg.e);
+    noteMove(msg.e);
   } else if (msg.t === 'gone') {
     if (lastEnt.mobs) lastEnt.mobs = lastEnt.mobs.filter(x => x.handle !== msg.handle);
+    anim.delete(msg.handle);
   } else if (msg.t === 'self') {
+    noteSelfMove(msg.self, lastEnt.self);
     lastEnt.self = msg.self;
   } else if (msg.t === 'map') {
-    // A new map means every handle we hold belongs to the old one. Keeping them would draw the previous
-    // room's mobs over this one until each happened to be re-sent.
-    lastEnt.map = msg.map; lastEnt.mobs = []; lastEnt.npcs = [];
-    $('#mapname').textContent = msg.mapDisplay ? `· ${msg.mapDisplay} (${msg.map})` : `· ${msg.map}`;
+    // A new map means every handle we hold belongs to the old one, AND the NPC seed + background art are
+    // for the wrong place. Resync immediately rather than patching: the seed is only ever sent whole.
+    lastEnt.mobs = []; anim.clear();
+    lastResync = 0;
   } else return;                  // hit / chat / castfail / movefail — narration, not map state
-  drawCombat(lastEnt, evMaxHp);
 }
 
 function connectStream() {
@@ -1038,21 +1050,107 @@ function connectStream() {
   sock.onerror = () => { try { sock.close(); } catch {} };
 }
 
-// FALLBACK POLL. It runs only while no stream is delivering, so the map still works against an older host
-// (or a proxy that will not upgrade) instead of going blank — and stands down the moment frames arrive.
-async function tickCombat() {
-  connectStream();
-  if (evAlive) return;
+// ── CLIENT-SIDE POSITION INTERPOLATION (operator 2026-08-13) ──────────────────────────────────────
+// "track timestamp of a move command, smoothly interpolate to it with movespeed".
+// An entity's x/y on the wire is its move DESTINATION, not where it is standing: the server says "this
+// mob is walking from A to B at S u/s" and the entity spends distance/S seconds getting there. Drawing
+// the destination teleports it and then freezes it until the next packet — the opposite of what the
+// game shows. The move block carries fromX/fromY/toX/toY/speed plus an AGE in ms (not a timestamp: the
+// browser clock is not the server's, and the skew would offset every entity by hundreds of units at
+// 120 u/s), so we can place it exactly where it should be right now and keep walking it from there.
+// MEASURED: segment length / time-to-next-move-packet = 110-122 u/s against a predicted 120.0, i.e. the
+// next packet lands just as the entity arrives — so this reproduces the real motion, it does not guess it.
+const anim = new Map();           // handle -> {fx, fy, tx, ty, spd, t0}  (t0 = local ms when the move began)
+
+function noteMove(e) {
+  if (!e.move || !(e.move.speed > 0)) { anim.delete(e.handle); return; }
+  const m = e.move;
+  const prev = anim.get(e.handle);
+  // Same segment re-sent (a resync repeats it) — keep the original start so the entity does not restart
+  // its walk every two seconds and crawl.
+  if (prev && prev.tx === m.toX && prev.ty === m.toY && prev.fx === m.fromX && prev.fy === m.fromY) return;
+  anim.set(e.handle, { fx: m.fromX, fy: m.fromY, tx: m.toX, ty: m.toY, spd: m.speed,
+                       t0: performance.now() - (m.ageMs || 0) });
+}
+
+// SELF is sampled, not evented — we move by our own decision with no packet to hang a time on. So ease
+// from wherever we are currently drawn toward each new sample at our own walk speed. Same maths, and it
+// turns a 200ms step into continuous motion.
+let selfAnim = null;
+function noteSelfMove(next, prev) {
+  if (!next || next.x == null) return;
+  const at = selfPos();                       // where we are DRAWN right now, not the last sample
+  const from = at || (prev && prev.x != null ? { x: prev.x, y: prev.y } : { x: next.x, y: next.y });
+  const spd = next.walkSpeed > 0 ? next.walkSpeed : 120;
+  selfAnim = { fx: from.x, fy: from.y, tx: next.x, ty: next.y, spd, t0: performance.now() };
+}
+
+// Where a segment says the entity is at this instant. Clamped at the destination — an entity that has
+// arrived stays put rather than sailing past it, which is what an uncapped extrapolation would do.
+function along(a, now) {
+  const dx = a.tx - a.fx, dy = a.ty - a.fy;
+  const len = Math.hypot(dx, dy);
+  if (!(len > 0) || !(a.spd > 0)) return { x: a.tx, y: a.ty };
+  const f = Math.min(1, Math.max(0, ((now - a.t0) / 1000) * a.spd / len));
+  return { x: a.fx + dx * f, y: a.fy + dy * f };
+}
+function selfPos() {
+  if (!selfAnim) return null;
+  return along(selfAnim, performance.now());
+}
+
+// The positions to DRAW: the snapshot, with every animated entity moved to where it actually is now.
+// A shallow copy per frame so the underlying snapshot keeps the authoritative destinations — the big map,
+// the legend and the distance readouts all still read the real values.
+function interpolated(ent) {
+  if (!ent) return ent;
+  const now = performance.now();
+  const view = Object.assign({}, ent);
+  if (ent.mobs) view.mobs = ent.mobs.map(m => {
+    const a = anim.get(m.handle);
+    if (!a) return m;
+    const p = along(a, now);
+    return Object.assign({}, m, { x: p.x, y: p.y });
+  });
+  const sp = selfPos();
+  if (sp && ent.self) view.self = Object.assign({}, ent.self, { x: sp.x, y: sp.y });
+  return view;
+}
+
+// ── the render loop ───────────────────────────────────────────────────────────────────────────────
+// Drawing only when a packet arrives makes motion as choppy as the packets are; interpolation needs its
+// own clock. requestAnimationFrame also stops the work entirely when the tab is hidden.
+function frame() {
+  if (lastEnt) { try { drawCombat(interpolated(lastEnt), evMaxHp); } catch {} }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Full snapshot on a slow cadence. This is BOTH the fallback for a host/proxy with no WebSocket AND the
+// correctness backstop under a healthy stream (see RESYNC_MS) — map name, NPC seed and any entity whose
+// change had no event all come back from here.
+async function resyncEntities() {
   try {
     const r = await api('/entities');
     if (!r.ok) return;
     const d = await r.json();
     $('#mapname').textContent = d.mapDisplay ? `· ${d.mapDisplay} (${d.map})` : (d.map ? `· ${d.map}` : '');
-    // Keep the latest entity snapshot for the BIG map: the NPC seed it frames on arrives with the
-    // combat poll, while the trace poll is far slower.
-    lastEnt = d.entities;
-    drawCombat(d.entities, d.maxHp);
+    if (lastEnt && evAlive) {
+      // Under a live stream, keep the freshest self (sampled at 200ms, faster than this poll) and let
+      // the snapshot own everything else, including the mobs the stream may never have mentioned.
+      d.entities.self = lastEnt.self || d.entities.self;
+    }
+    lastEnt = d.entities; evMaxHp = d.maxHp;
+    for (const m of lastEnt.mobs || []) noteMove(m);
   } catch {}
+}
+
+function tickCombat() {
+  connectStream();
+  const now = performance.now();
+  // Poll fast when there is no stream (it is then the only source), slowly when there is (backstop only).
+  const due = evAlive ? RESYNC_MS : 200;
+  if (now - lastResync >= due) { lastResync = now; resyncEntities(); }
 }
 setInterval(tickCombat, 200);   tickCombat();
 

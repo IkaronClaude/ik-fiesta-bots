@@ -259,6 +259,10 @@ public static class EventStreamEndpoint
             Y = p is { } pq ? (double)pq.Y : (double?)null,
             Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
             Target = (int)bot.CurrentTarget,
+            // Our own speed, so the viewer can ease our marker between samples instead of stepping it.
+            // We move by our own decision with no inbound packet, so self is SAMPLED (see SelfSampleMs) —
+            // interpolation is what turns those samples back into motion.
+            WalkSpeed = zv?.WalkSpeed ?? 0,
             Hp = zv?.Hp, MaxHp = zv?.MaxHp, Sp = zv?.Sp, MaxSp = zv?.MaxSp,
             InCombat = zv?.InCombat ?? false,
             Aggressors = zv?.Aggressors.Count ?? 0,

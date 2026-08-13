@@ -1616,6 +1616,18 @@ public sealed class ZoneView : IDisposable
     // map's resolution is capped at the poll rate no matter how fast the wire actually is.
     // These fire on the exact packet that changed something, naming the ONE handle affected. Subscribers
     // MUST NOT BLOCK — they run on the session read loop (same contract as BotHandle.Events).
+    /// <summary>The last movement SEGMENT the server announced for an entity: where it started, where it
+    /// is heading, how fast, and when we were told. An entity's stored X/Y is its DESTINATION (that is what
+    /// the bot's targeting wants), so this is the only record that it is still in transit — without it a
+    /// viewer teleports the mob to the end of the segment and then holds it there until the next packet.
+    /// Speed is already converted to world units per second.</summary>
+    private readonly ConcurrentDictionary<ushort, (uint FromX, uint FromY, uint ToX, uint ToY, double Speed, DateTime AtUtc)> _entityMove = new();
+
+    /// <summary>The in-flight move for <paramref name="handle"/>, or null if it has never been seen to
+    /// move. Read <c>AtUtc</c> against now to find how far along the segment it should be drawn.</summary>
+    public (uint FromX, uint FromY, uint ToX, uint ToY, double Speed, DateTime AtUtc)? EntityMove(ushort handle)
+        => _entityMove.TryGetValue(handle, out var m) ? m : null;
+
     /// <summary>One tracked entity's state changed (appeared, moved, took damage). Carries the handle
     /// only; the subscriber re-reads whatever projection it needs, so this never has to know about the
     /// shape of anyone's view model.</summary>
@@ -1631,6 +1643,7 @@ public sealed class ZoneView : IDisposable
 
     internal void NoteEntityGone(ushort handle)
     {
+        _entityMove.TryRemove(handle, out _);   // it is not walking anywhere; don't retain it per-handle
         try { EntityGone?.Invoke(handle); } catch { /* subscriber threw */ }
     }
 
@@ -3469,6 +3482,12 @@ public sealed class ZoneView : IDisposable
                 // version stored a snapshot into _npcs instead, and that snapshot was never updated again
                 // because SOMEONE_MOVE updates the player record and stops.
                 lock (_scenarioFightable) _scenarioFightable.Add(b.handle);
+                // ⛔ ANNOUNCE THE PROMOTION. A clone is a PLAYER record that only becomes a mob by being
+                // marked here — nothing writes to _npcs, so none of the entity-mutation sites fire and a
+                // live viewer never hears about it. Measured 2026-08-13: the operator's combat map stopped
+                // drawing the JCQ clone entirely once the map was fed by the delta stream, because this
+                // was the one transition that made it drawable and it was silent.
+                NoteEntityChanged(b.handle);
                 if (_nearby.TryGetValue(b.handle, out var nb))
                     _logLevel?.Invoke(BotLogLevel.Note,
                         $"[ZoneView] scenario clone h={b.handle} '{nb.Name}' L{nb.Level} is now FIGHTABLE — " +
@@ -3896,8 +3915,22 @@ public sealed class ZoneView : IDisposable
             if (p.Length >= 18)
             {
                 var hnd = (ushort)(p[0] | (p[1] << 8));
+                var frX = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(2, 4));
+                var frY = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(6, 4));
                 var toX = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(10, 4));
                 var toY = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(14, 4));
+                // 🏃 THE MOVE SEGMENT, for anything that wants to draw the entity WHERE IT ACTUALLY IS.
+                // We store the DESTINATION as the entity's position (below) because that is what the bot's
+                // logic wants — but a mob that was just told to walk 240u is not there yet, it is walking,
+                // and a map drawn from the destination teleports it and then freezes for two seconds.
+                // Raw speed sits at offset 18 in the same units as ACT_MOVESPEED (see SpeedRawToUPerSec).
+                // MEASURED against a live capture (18 segments, 3 entities): segment length / time-until-the
+                // -next-move-packet = 110-122 u/s against a predicted 120.0 — i.e. the server sends the next
+                // packet just as the entity lands, so walking the segment at this speed reproduces the real
+                // motion rather than approximating it.
+                var rawSpeed = p.Length >= 20 ? (ushort)(p[18] | (p[19] << 8)) : (ushort)0;
+                if (rawSpeed > 0)
+                    _entityMove[hnd] = (frX, frY, toX, toY, rawSpeed * SpeedRawToUPerSec, DateTime.UtcNow);
                 if (_nearby.TryGetValue(hnd, out var pl))
                 {
                     _nearby[hnd] = pl with { X = toX, Y = toY };

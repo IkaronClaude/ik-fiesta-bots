@@ -1439,6 +1439,21 @@ public static class BotEndpoints
             // For a clone the per-MOB table cannot describe it, so read the per-HANDLE one.
             MaxHitSeen = n.IsScenarioClone ? zv.HandleHitMax(n.Handle) : zv.MobHitMax(n.MobId),
             Dist = self is { } p ? Math.Sqrt(Math.Pow((double)n.X - p.X, 2) + Math.Pow((double)n.Y - p.Y, 2)) : (double?)null,
+            // 🏃 THE IN-FLIGHT MOVE, so a viewer can draw the entity WHERE IT IS rather than where it is
+            // going. X/Y above are the DESTINATION — a mob told to walk 240u is not there yet.
+            // ⛔ AGE, NOT A TIMESTAMP. A browser's clock is not the server's, and a viewer that subtracted
+            // an absolute server time from its own Date.now() would show every entity offset by the clock
+            // skew — seconds of it, which at 120 u/s is hundreds of units of error. An elapsed-milliseconds
+            // figure needs no clock agreement at all.
+            Move = zv.EntityMove(n.Handle) is { } mvv
+                ? new
+                {
+                    FromX = (double)mvv.FromX, FromY = (double)mvv.FromY,
+                    ToX = (double)mvv.ToX, ToY = (double)mvv.ToY,
+                    Speed = Math.Round(mvv.Speed, 1),
+                    AgeMs = Math.Round((DateTime.UtcNow - mvv.AtUtc).TotalMilliseconds),
+                }
+                : null,
         };
     }
 
