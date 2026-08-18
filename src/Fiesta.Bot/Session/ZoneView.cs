@@ -107,6 +107,8 @@ public sealed class ZoneView : IDisposable
     public static class CastFailReason
     {
         public const ushort NotEnoughSp = 0x0FC9;
+        /// <summary>The server has us in NON-battle mode, so no skill can be cast until we re-send CHANGEMODE_REQ.</summary>
+        public const ushort NonBattleMode = 0x0FC0;
         public const ushort OutOfRange = 0x0FCA;
 
         public const ushort NotReady = 0x0FC8;

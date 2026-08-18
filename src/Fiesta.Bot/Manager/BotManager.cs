@@ -511,15 +511,30 @@ public sealed class BotManager : IAsyncDisposable
     /// <summary>Turn to face ( , ) and STOP there</summary>
     private static async Task EnsureBattleModeAsync(BotHandle handle, BotSession s, CancellationToken ct)
     {
-        var serverSays = handle.ZoneView?.SelfInBattleMode;
-        if (serverSays == true) { handle.InBattleMode = true; return; }
+        // THERE IS NO SELF-ACK FOR BATTLE MODE. 0x2009 is NC_ACT_SOMEONEchangemode -- it reports OTHER entities,
+        // which is why SelfInBattleMode stayed null forever and this method never trusted its own send: it
+        // re-sent every 500ms and let every cast in between go out in NON-battle mode, failing 0x0FC0. Measured
+        // 2026-08-18 on FighterFresh: 501 failures/minute, 197 sends in 2 minutes each logging "nothing yet",
+        // and ZERO damage dealt.
+        // Ground truth, Z:/CombatExtensive.pcapng (real client, port 9016):
+        //     S<- 0x243D NC_BAT_CEASE_FIRE_CMD      <- the server ENDS combat; we are out of battle mode
+        //     C-> 0x2008 NC_ACT_CHANGEMODE_REQ      <- client re-enters, waits for NOTHING
+        //     C-> 0x2012 NC_ACT_STOP_REQ
+        //     C-> 0x242B NC_BAT_BASHSTART_CMD       -> SWING_START / SWING_DAMAGE follow
+        // So: we are in battle mode from the moment we send the REQ, and we leave it when CEASE_FIRE lands on
+        // our handle. Re-send only when the last CEASE_FIRE is NEWER than our last request.
+        var ceased = handle.ZoneView?.LastBashCeasedAtUtc ?? DateTime.MinValue;
+        if (handle.InBattleMode && ceased <= handle.LastBattleModeSentUtc) return;
+        if (handle.ZoneView?.SelfInBattleMode == true) { handle.InBattleMode = true; return; }
 
-        if ((DateTime.UtcNow - handle.LastBattleModeSentUtc).TotalMilliseconds < 500) return;
+        // Spam guard only -- NOT the correctness gate. Without the check above this was the bug: it skipped the
+        // send and then cast anyway.
+        if ((DateTime.UtcNow - handle.LastBattleModeSentUtc).TotalMilliseconds < 200) return;
         handle.LastBattleModeSentUtc = DateTime.UtcNow;
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
-        handle.InBattleMode = true;   // optimistic ONLY as a send guard; 0x2009 is what actually decides
+        handle.InBattleMode = true;
         handle.Log(BotLogLevel.Verbose,
-            $"battle mode re-asserted (server said {(serverSays is null ? "nothing yet" : "NON-BATTLE")})");
+            $"battle mode asserted (last CEASE_FIRE {(ceased == DateTime.MinValue ? "none" : ceased.ToString("HH:mm:ss.fff"))})");
     }
 
     /// <summary>Mount item class in ItemInfo (mirrors MOUNT_CLASS in level_quest.lua)</summary>
@@ -2537,6 +2552,16 @@ public sealed class BotManager : IAsyncDisposable
                         $"[castfail] 0x{reason:X4} ({ZoneView.CastFailReason.Describe(reason)}) " +
                         $"— dist={g.Dist:F0} reach={g.Range:F0} " +
                         $"offBy={(g.OffByDeg < 0 ? "n/a" : $"{g.OffByDeg:F0}°")} arc={g.ArcDeg}° ({g.Note})");
+                    // NON-BATTLE MODE means the server disagrees with our belief, whatever we think. Drop it so the
+                    // next EnsureBattleModeAsync re-sends CHANGEMODE_REQ instead of skipping it -- this is the
+                    // result-packet feedback that keeps the optimistic model honest when something we do not model
+                    // drops us out of battle mode.
+                    if (reason == ZoneView.CastFailReason.NonBattleMode)
+                    {
+                        handle.InBattleMode = false;
+                        handle.Log(BotLogLevel.Info,
+                            "[combat] cast refused NON-BATTLE MODE (0x0FC0) — clearing battle-mode belief, re-asserting on the next action");
+                    }
                     // Reactive cast-fail handling — lightweight, fire-and-forget
                     if (reason == ZoneView.CastFailReason.NotEnoughSp)
                     {
