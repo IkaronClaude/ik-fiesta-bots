@@ -66,6 +66,11 @@ public sealed class BlockGrid
     public void AttachBdt(BdtGrid? bdt) => _bdt ??= bdt;
     /// <summary>True if this map has a .bdt (terrain/hill map)</summary>
     public bool HasBdt => _bdt is not null;
+
+    /// <summary>Resident bytes: the packed grid plus the clearance map, which is EIGHT TIMES the grid
+    /// (one byte per tile vs one bit) and so dominates -- a 7.2MB .shbd costs ~58MB once inflated.</summary>
+    public long ApproxBytes => _data.LongLength + (_clearance?.LongLength ?? 0);
+    public bool ClearanceBuilt => _clearance is not null;
     /// <summary>Is world (x,y) walkable per the .bdt quadtree?</summary>
     public bool? BdtWalkableWorld(uint worldX, uint worldY) => _bdt?.IsWalkableWorld(worldX, worldY);
 

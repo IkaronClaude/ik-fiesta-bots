@@ -783,6 +783,28 @@ public static class BotEndpoints
             "re-apply it. The lifetime death total is kept. `clearedMark:false` means there was no mark to " +
             "clear — which is not an error, just nothing to do.");
 
+        // MEMORY ATTRIBUTION. The pod OOMKilled at 512Mi with the consumers unattributed for weeks, because
+        // there was no way to ASK. Managed heap + the grid cache (the dominant consumer) are both readable here.
+        group.MapGet("/diag/memory", () =>
+        {
+            var grids = GridCacheStats();
+            return Results.Ok(new
+            {
+                managedHeapMB = Math.Round(GC.GetTotalMemory(false) / 1048576.0, 1),
+                workingSetMB = Math.Round(Environment.WorkingSet / 1048576.0, 1),
+                gcServer = System.Runtime.GCSettings.IsServerGC,
+                heapLimitMB = Math.Round(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1048576.0, 1),
+                gen0 = GC.CollectionCount(0), gen1 = GC.CollectionCount(1), gen2 = GC.CollectionCount(2),
+                gridCache = new
+                {
+                    count = grids.Count,
+                    totalMB = Math.Round(grids.Sum(g => g.Bytes) / 1048576.0, 1),
+                    maps = grids.Select(g => new { g.Map, MB = Math.Round(g.Bytes / 1048576.0, 1), clearance = g.Clearance })
+                }
+            });
+        })
+        .WithSummary("Managed heap, working set and the per-map block-grid cache (the dominant consumer)");
+
         group.MapGet("/{id}/quest-dialog/{dialogId:int}", (string id, int dialogId) =>
         {
             var cd = manager.ClientData;
@@ -1016,7 +1038,40 @@ public static class BotEndpoints
     // Block grids loaded from BLOCKINFO_DIR/ .shbd (BYO), cached per map
     private static readonly ConcurrentDictionary<string, BlockGrid?> _grids = new(StringComparer.OrdinalIgnoreCase);
 
-    internal static BlockGrid? LoadGrid(string map) => _grids.GetOrAdd(map, m =>
+    // LRU BOUND (P0 2026-08-18). This cache never evicted, and a grid is not the size of its file: the
+    // clearance map is one byte PER TILE against one BIT in the packed .shbd, so a 7.2MB map costs ~58MB
+    // resident once a path is computed on it. Four bots roaming a few big maps is the whole 512Mi limit,
+    // which is what OOMKilled the pod and killed a script thread mid-session.
+    private const int MaxCachedGrids = 6;
+    private static readonly ConcurrentDictionary<string, long> _gridUsed = new(StringComparer.OrdinalIgnoreCase);
+    private static long _gridTick;
+
+    internal static IReadOnlyList<(string Map, long Bytes, bool Clearance)> GridCacheStats()
+        => _grids.Where(kv => kv.Value is not null)
+                 .Select(kv => (kv.Key, kv.Value!.ApproxBytes, kv.Value!.ClearanceBuilt))
+                 .OrderByDescending(t => t.Item2).ToList();
+
+    private static void EvictGridsIfNeeded()
+    {
+        while (_grids.Count > MaxCachedGrids)
+        {
+            var oldest = _gridUsed.OrderBy(kv => kv.Value).Select(kv => kv.Key).FirstOrDefault();
+            if (oldest is null || !_grids.TryRemove(oldest, out var dropped)) return;
+            _gridUsed.TryRemove(oldest, out _);
+            Console.Error.WriteLine($"[nav] grid cache evicted '{oldest}' " +
+                $"({(dropped?.ApproxBytes ?? 0) / 1048576.0:F1}MB) — over {MaxCachedGrids}; it reloads on next use.");
+        }
+    }
+
+    internal static BlockGrid? LoadGrid(string map)
+    {
+        var g = LoadGridCore(map);
+        _gridUsed[map] = Interlocked.Increment(ref _gridTick);
+        EvictGridsIfNeeded();
+        return g;
+    }
+
+    private static BlockGrid? LoadGridCore(string map) => _grids.GetOrAdd(map, m =>
     {
         var dir = Environment.GetEnvironmentVariable("BLOCKINFO_DIR");
         if (string.IsNullOrWhiteSpace(dir)) return null;
