@@ -2619,6 +2619,7 @@ public sealed class BotManager : IAsyncDisposable
                 _ = Task.Run(async () =>
                 {
                     var lastPos = handle.Position; var stillSince = DateTime.UtcNow; var lastTicks = -1L;
+                    var scriptRestarts = 0; var lastRestartUtc = DateTime.MinValue;
                     while (!zoneCts.IsCancellationRequested && handle.Phase == BotPhase.InZone)
                     {
                         await Task.Delay(WatchdogPollMs, zoneCts.Token);
@@ -2634,6 +2635,26 @@ public sealed class BotManager : IAsyncDisposable
                             handle.Log(BotLogLevel.Note,
                                 $"WATCHDOG: no script in this process — restored '{saved.Name}' from durable " +
                                 "knowledge (this bot ran it before a restart). Applying it.");
+                        }
+                        // (a2) THE RUNNER EXISTS BUT ITS THREAD IS DEAD (state=error after a FATAL). Branch (a) cannot
+                        // see this — it only checks for a MISSING runner — so a crashed script used to sit there while
+                        // (b) logged the same diagnosis forever: JcqArcher, 2026-08-18, ~60 reports over 50 minutes
+                        // stood motionless being aggroed. Restarting is the job; reporting is not.
+                        if (handle.ScriptRunner?.Status() is { State: "running", Ticks: > 500 }) scriptRestarts = 0;
+                        if (handle.ScriptRunner?.Status() is { State: "error" } dead && handle.LastScriptSource is { } deadSrc)
+                        {
+                            var backoff = Math.Min(30 * Math.Pow(2, Math.Max(0, scriptRestarts - 1)), 300);
+                            if ((DateTime.UtcNow - lastRestartUtc).TotalSeconds >= backoff)
+                            {
+                                scriptRestarts++; lastRestartUtc = DateTime.UtcNow;
+                                handle.Log(BotLogLevel.Note,
+                                    $"⛔ WATCHDOG: script '{dead.Name}' is DEAD (state=error, ticks={dead.Ticks}) — the FATAL was: " +
+                                    $"{dead.LastError ?? "(none recorded)"}. Restarting it (attempt {scriptRestarts}).");
+                                ApplyScript(handle.Id, handle.LastScriptName ?? "level_quest", deadSrc,
+                                            handle.LastScriptTickMs <= 0 ? 400 : handle.LastScriptTickMs);
+                                stillSince = DateTime.UtcNow;
+                                continue;
+                            }
                         }
                         if (handle.ScriptRunner is null && handle.LastScriptSource is { } src)
                         {
