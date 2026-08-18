@@ -53,35 +53,7 @@ public static class ScriptEndpoints
             bots.MapPost("/{id}/statemachine", (string id) => Unavailable()).WithSummary("Apply a state machine (unavailable)");
             bots.MapPost("/{id}/script/stop", (string id) => Unavailable()).WithSummary("Stop a script (unavailable)");
             bots.MapGet("/{id}/script", (string id) => Unavailable()).WithSummary("Script status (unavailable)");
-            bots.MapGet("/{id}/profile", (string id, int? top) =>
-        {
-            if (manager.Get(id) is null) return Results.NotFound();
-            var p = manager.ScriptProfile(id);
-            if (p is null) return Results.Ok(new { id, running = false });
-            var n = Math.Clamp(top ?? 25, 1, 500);
-            return Results.Ok(new
-            {
-                id,
-                running = true,
-                tick = p.Ticks,
-                tickMs = Math.Round(p.TickMs, 1),
-                inCallMs = Math.Round(p.InMs, 1),
-                luaMs = Math.Round(p.GapMs, 1),
-                unattributedMs = Math.Round(p.TickMs - p.InMs - p.GapMs, 1),
-                calls = p.Calls,
-                rows = p.Rows.Take(n).Select(r => new
-                {
-                    r.Name, r.Calls,
-                    inMs = Math.Round(r.InMs, 2),
-                    maxMs = Math.Round(r.MaxMs, 2),
-                    luaBeforeMs = Math.Round(r.GapMs, 2),
-                    totalMs = Math.Round(r.InMs + r.GapMs, 2),
-                }),
-            });
-        })
-        .WithSummary("Where the LAST tick went: per bot.* call, time spent inside it and the pure-Lua time that ran just before it, worst first")
-        .WithDescription("inCallMs + luaMs + unattributedMs = tickMs. luaBeforeMs attributes Lua-side work to the call that FOLLOWS it, " +
-            "so a phase built entirely of Lua loops still names itself instead of profiling as 'nothing is slow'.");
+            bots.MapGet("/{id}/profile", (string id) => Unavailable()).WithSummary("Tick profile (unavailable)");
 
         bots.MapGet("/{id}/logstream", (string id) => Unavailable()).WithSummary("Live log stream (unavailable)");
             bots.MapPost("/{id}/graph", (string id) => Unavailable()).WithSummary("Apply a behaviour graph (unavailable)");
@@ -184,6 +156,36 @@ public static class ScriptEndpoints
                 : Results.Ok(new { id, running = true, script = st });
         })
         .WithSummary("Debug a bot's running script (state, ticks, events handled, last error, globals)");
+
+        bots.MapGet("/{id}/profile", (string id, int? top) =>
+    {
+        if (manager.Get(id) is null) return Results.NotFound();
+        var p = manager.ScriptProfile(id);
+        if (p is null) return Results.Ok(new { id, running = false });
+        var n = Math.Clamp(top ?? 25, 1, 500);
+        return Results.Ok(new
+        {
+            id,
+            running = true,
+            tick = p.Ticks,
+            tickMs = Math.Round(p.TickMs, 1),
+            inCallMs = Math.Round(p.InMs, 1),
+            luaMs = Math.Round(p.GapMs, 1),
+            unattributedMs = Math.Round(p.TickMs - p.InMs - p.GapMs, 1),
+            calls = p.Calls,
+            rows = p.Rows.Take(n).Select(r => new
+            {
+                r.Name, r.Calls,
+                inMs = Math.Round(r.InMs, 2),
+                maxMs = Math.Round(r.MaxMs, 2),
+                luaBeforeMs = Math.Round(r.GapMs, 2),
+                totalMs = Math.Round(r.InMs + r.GapMs, 2),
+            }),
+        });
+    })
+    .WithSummary("Where the LAST tick went: per bot.* call, time spent inside it and the pure-Lua time that ran just before it, worst first")
+    .WithDescription("inCallMs + luaMs + unattributedMs = tickMs. luaBeforeMs attributes Lua-side work to the call that FOLLOWS it, " +
+        "so a phase built entirely of Lua loops still names itself instead of profiling as 'nothing is slow'.");
 
         bots.MapGet("/{id}/logstream", async (string id, HttpContext ctx, int? tail) =>
         {

@@ -141,6 +141,73 @@ public sealed class BotApi
 
 
 
+    // ── RAW SHN ACCESS FOR LUA (operator 2026-08-18) ────────────────────────────────────────────────
+    // The pattern this exists for: resolve the handles ONCE in on_start, then read by integer forever.
+    //   local T   = bot.shnTable("ItemInfo")
+    //   local C   = { id = bot.shnCol(T,"ID"), name = bot.shnCol(T,"InxName") }
+    //   local row = bot.shnFind(T, C.id, itemId)
+    //   local nm  = bot.shnGet(T, C.name, row)
+    // Every call after the first is an array index -- no table name hashing, no column name hashing, and
+    // no building of a 40-field Lua table just to read one field out of it.
+    private readonly List<FiestaLibReloaded.Shn.ShnTable> _shnHandles = [];
+
+    /// <summary>Handle for a client SHN table, or -1 if the table is not loadable. Resolve once, keep it.</summary>
+    public int shnTable(string name)
+    {
+        if (_mgr.ClientData?.Table(name) is not { } t) return -1;
+        var at = _shnHandles.IndexOf(t);
+        if (at >= 0) return at;
+        _shnHandles.Add(t);
+        return _shnHandles.Count - 1;
+    }
+
+    private FiestaLibReloaded.Shn.ShnTable? Shn(int handle)
+        => (uint)handle < (uint)_shnHandles.Count ? _shnHandles[handle] : null;
+
+    /// <summary>Ordinal of a column, or -1 if absent. Case-insensitive.</summary>
+    public int shnCol(int table, string column) => Shn(table)?.IndexOfColumn(column) ?? -1;
+
+    /// <summary>Row count, or -1 for a bad handle -- so "no such table" cannot read as "empty table".</summary>
+    public int shnRows(int table) => Shn(table)?.RowCount ?? -1;
+
+    /// <summary>Row number whose  equals , or -1. Backed by a built-once index.</summary>
+    public int shnFind(int table, string column, double value)
+        => Shn(table)?.FindRow(column, (long)value) ?? -1;
+
+    /// <summary>One cell by ordinals, as a Lua value (number, string or nil).</summary>
+    public DynValue shnGet(int table, int column, int row)
+    {
+        if (Shn(table)?.Value(column, row) is not { } v) return DynValue.Nil;
+        return v switch
+        {
+            string str => DynValue.NewString(str),
+            float f => DynValue.NewNumber(f),
+            double d => DynValue.NewNumber(d),
+            _ => FiestaLibReloaded.Shn.ShnTable.TryToLong(v, out var l) ? DynValue.NewNumber(l) : DynValue.NewString(v.ToString() ?? ""),
+        };
+    }
+
+    /// <summary>Every column name of a table, in on-disk order, so a script can build its own name->ordinal map.</summary>
+    public DynValue shnColumns(int table)
+    {
+        var t = NewTable();
+        if (Shn(table) is { } shn)
+            for (var c = 0; c < shn.Columns.Count; c++) t[c + 1] = shn.Columns[c].Name;
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>Every key of a column's index (e.g. every quest id QuestData defines), unordered.</summary>
+    public DynValue shnKeys(int table, string column)
+    {
+        var t = NewTable();
+        if (Shn(table) is { } shn)
+        {
+            var i = 1;
+            foreach (var k in shn.RowIndex(column).Keys) t[i++] = k;
+        }
+        return DynValue.NewTable(t);
+    }
+
     public void metric(string name, double value = 1) => _handle.Metrics.LogMetric(name, value);
 
     /// <summary>Declare a metric up front (direction + kind), so it appears on /metrics with the right percentile tail even be…</summary>
