@@ -58,3 +58,4 @@ behavior-graphs/
 !/scripts/guild_buff_sm.lua
 bot-log-1500.txt
 tools/__pycache__/
+pathcorpus*.json
