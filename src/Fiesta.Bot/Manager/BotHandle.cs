@@ -792,12 +792,35 @@ public sealed class BotHandle
         try { LogLine?.Invoke(line); } catch { }
     }
 
+    /// <summary>Lines carried in the polled snapshot. "Recent" has to MEAN something — see below.</summary>
+    private const int SnapshotLogLines = 25;
+
     // The polled snapshot stays readable: headline + progress only (drop the verbose firehose).
     // Pull the full stream (incl. Verbose) from the /log tail endpoint when chasing a bug.
+    //
+    // ⛔ THIS WAS THE RESTART LOOP (measured 2026-08-18). The comment said "headline + progress only",
+    // but the code had NO LIMIT: it scanned all 100k ring entries and allocated an array of EVERY
+    // Note+Info line, on EVERY Snapshot() -- i.e. every GET /api/bots (x4 bots) and every GET
+    // /api/bots/{id} -- while holding _logGate, the lock all four bots need to WRITE a log line.
+    // Measured consequence: GET /api/bots took 23.8s to list four bots, cgroup at 500.2MiB/512MiB
+    // (97.7%) and CPU throttled in 192 of 519 periods (30.8s throttled per 52s wall), so /health
+    // could not answer inside the 5s liveness timeout -> kubelet SIGKILLed the container (exit 137,
+    // 6 restarts). Every restart drops all four bots. Same shape as the log-ring OOM fixed in
+    // 46c6b8a: a comment asserting a bound the code never implemented.
+    //
+    // Walk BACKWARDS and stop at SnapshotLogLines. No full scan, no unbounded allocation, and the
+    // lock is held for ~25 iterations instead of 100k.
     private IReadOnlyList<string> RecentLog()
     {
+        var buf = new string[SnapshotLogLines];
+        var n = 0;
         lock (_logGate)
-            return _log.Where(e => e.Level <= BotLogLevel.Info).Select(e => e.Line).ToArray();
+        {
+            for (var i = _log.Count - 1; i >= 0 && n < SnapshotLogLines; i--)
+                if (_log[i].Level <= BotLogLevel.Info) buf[n++] = _log[i].Line;
+        }
+        Array.Reverse(buf, 0, n);          // oldest-first, as callers have always seen it
+        return n == SnapshotLogLines ? buf : buf[..n];
     }
 
     /// <summary>The most recent <paramref name="max"/> log lines at or quieter than
@@ -827,17 +850,30 @@ public sealed class BotHandle
         }
         var lo = Stamp(from, '0');
         var hi = Stamp(to, '9');
+        // Walk BACKWARDS and stop once `max` matches are in hand. The old form built a List of EVERY
+        // matching line and then returned its tail, so `?max=25` still allocated the whole filtered
+        // buffer (up to 100k strings) while holding _logGate — the write lock all four bots contend
+        // for. Same bug as RecentLog() above; this endpoint is polled too. Lines are stored
+        // chronologically, so a reverse walk yields the newest matches directly.
+        bool Match((BotLogLevel Level, string Line) e) =>
+            e.Level <= maxLevel
+            && ((lo is null && hi is null)
+                || (e.Line.Length >= 12
+                    && (lo is null || string.CompareOrdinal(e.Line, 0, lo, 0, 12) >= 0)
+                    && (hi is null || string.CompareOrdinal(e.Line, 0, hi, 0, 12) <= 0)));
+
+        var outp = new List<string>(max > 0 ? Math.Min(max, 4096) : 256);
         lock (_logGate)
         {
-            IEnumerable<(BotLogLevel Level, string Line)> q = _log.Where(e => e.Level <= maxLevel);
-            if (lo is not null || hi is not null)
-                q = q.Where(e => e.Line.Length >= 12
-                    && (lo is null || string.CompareOrdinal(e.Line, 0, lo, 0, 12) >= 0)
-                    && (hi is null || string.CompareOrdinal(e.Line, 0, hi, 0, 12) <= 0));
-            var filtered = q.Select(e => e.Line).ToList();
-            if (max <= 0 || max >= filtered.Count) return filtered;
-            return filtered.GetRange(filtered.Count - max, max);
+            for (var i = _log.Count - 1; i >= 0; i--)
+            {
+                if (!Match(_log[i])) continue;
+                outp.Add(_log[i].Line);
+                if (max > 0 && outp.Count >= max) break;
+            }
         }
+        outp.Reverse();   // chronological, as callers expect
+        return outp;
     }
 
     /// <summary>A consistent, serializable point-in-time view for the API.</summary>
