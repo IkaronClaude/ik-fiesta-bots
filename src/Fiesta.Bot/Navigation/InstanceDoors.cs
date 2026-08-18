@@ -2,16 +2,10 @@ using System.Text;
 
 namespace Fiesta.Bot.Navigation;
 
-/// <summary>A door / room-connector block from a map's <c>.sbi</c> (Shine Block Info), with its CENTRE
-/// already converted to WORLD coords. Instances (e.g. the JCQ promotion Job1_Dn01) lay their rooms out
-/// along these doors, so the instance-clear driver walks door-to-door to traverse the map when no mob is
-/// in view. Pure BYO client/server nav data — no hardcoding.</summary>
+/// <summary>A door / room-connector block from a map's .sbi (Shine Block Info), with its CENTRE already converted to WORLD…</summary>
 public sealed record InstanceDoor(string Name, uint WorldX, uint WorldY);
 
-/// <summary>Parses a <c>.sbi</c> door array (format from gherblino's MapDoorArray): <c>u32 count</c>, then
-/// per door a fixed 56-byte HEAD — <c>name[32]</c> (NUL-terminated) + <c>u32 startX,startY,endX,endY,
-/// dataSize,address</c> (all in TILE coords) — then a mask buffer we ignore. Tile→world = ×6.25 (matches
-/// <see cref="Pathfinding.BlockGrid"/>'s WorldToTile = /6.25).</summary>
+/// <summary>Parses a .sbi door array (format from gherblino's MapDoorArray): u32 count , then per door a fixed 56-byte HEA…</summary>
 public static class InstanceDoors
 {
     private const int HeadSize = 32 + 6 * 4;   // name[32] + 6 u32

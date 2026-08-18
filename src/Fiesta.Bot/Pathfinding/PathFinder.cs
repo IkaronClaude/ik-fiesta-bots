@@ -1,42 +1,20 @@
 namespace Fiesta.Bot.Pathfinding;
 
-/// <summary>
-/// A* over a <see cref="BlockGrid"/> (8-directional, no corner-cutting through
-/// blocked diagonals). Returns a list of world waypoints (tile centres) from the
-/// start tile to the goal tile, ready to feed as MoverunCmd steps. Empty if no
-/// path (or start/goal unwalkable).
-/// </summary>
+/// <summary>A* over a (8-directional, no corner-cutting through blocked diagonals)</summary>
 public static class PathFinder
 {
     private static readonly (int dx, int dy)[] Neighbors =
         { (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1) };
 
-    // A modest heuristic weight makes A* greedier — it explores roughly a corridor toward the
-    // goal instead of a full ellipse, cutting expansions by orders of magnitude on the large,
-    // mostly-open field maps. Paths become slightly suboptimal (fine for a bot) but LONG paths
-    // now finish within budget instead of hitting the cap and falsely reporting "no path" (the
-    // bug that made fully-connected maps like RouCos02 look divided). Bumped 1.5x->2.0x
-    // (2026-06-30): the full cross-map RouCos03 route to the Forest-of-Mist gate needed >10M
-    // expansions at 1.5x but resolves under ~6M at 2.0x (see the raised FindPath maxExpansions).
+    // A modest heuristic weight makes A* greedier — it explores roughly a corridor toward the goal instead of a full…
     private const int GreedyWeightNum = 2, GreedyWeightDen = 1; // 2.0x — fast on open maps
 
-    /// <param name="margin">Obstacle-inflation border in tiles (P0 2026-06-30): the interior of
-    /// the path stays this many tiles clear of any blocked tile so straight runs don't clip an
-    /// object corner (→ MOVEFAIL). The START and GOAL cells (and a small pocket around each) are
-    /// EXEMPT so a bot/target legitimately standing next to a wall isn't stranded. A tile is
-    /// ~6.25 world units, so margin 2 ≈ 12.5 units ≈ 20 cm — safe for narrow gates.</param>
+    /// <summary>Obstacle-inflation border in tiles (P0 2026-06-30): the interior of the path stays this many tiles clear of an…</summary>
     public static IReadOnlyList<(uint X, uint Y)> FindPath(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
         int maxExpansions = 8_000_000, double margin = 2)
     {
-        // Use the HIGHEST obstacle-inflation margin that yields a path, stepping DOWN only as needed
-        // (operator 2026-07-13): 2 → 1.5 → 1 → 0.5 → 0. A high margin keeps the route CENTERED, off the
-        // .shbd edges — which matters in scenario instances where the client .shbd is ~1-2 tiles WIDER
-        // than the server collision, so an edge-hugging route (the old jump-straight-to-margin-0
-        // fallback) rides cells the server MOVEFAILs → the storm. We relax the margin only where a
-        // genuinely narrow pinch needs it; because this runs per-pathfind, the NEXT route past the pinch
-        // independently returns to the highest that works (= "back up to 2 once past it"). Greedy first
-        // (cheap), then admissible (complete), each sweeping the descending margins.
+        // Use the HIGHEST obstacle-inflation margin that yields a path, stepping DOWN only as needed (operator 2026-07-1…
         double[] steps = margin >= 2 ? new[] { 2.0, 1.5, 1.0, 0.5, 0.0 }
                         : margin > 0 ? new[] { margin, 0.0 }
                         : new[] { 0.0 };
@@ -47,18 +25,14 @@ public static class PathFinder
             path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, m, GreedyWeightNum, GreedyWeightDen);
             if (path.Count > 0) { used = m; break; }
         }
-        // Completeness fallback: the greedy heuristic is INADMISSIBLE, so on a route whose direct
-        // corridor is walled it can burn the whole expansion budget in the wrong corridor and give up —
-        // a FALSE "no path" on a genuinely connected map (EldGbl02→EldCem01: greedy exhausts 8M, admissible
-        // finds a 65-wp path in <2s). An ADMISSIBLE (1.0x) heuristic is complete within ~reachable-tiles.
-        // Only pay this when greedy failed at every margin.
+        // Completeness fallback: the greedy heuristic is INADMISSIBLE, so on a route whose direct corridor is walled it…
         if (path.Count == 0)
             foreach (var m in steps)
             {
                 path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, m, 1, 1);
                 if (path.Count > 0) { used = m; break; }
             }
-        // Disc-swept line-of-sight smoothing at the margin we actually pathed with (see SmoothLineOfSight).
+        // Disc-swept line-of-sight smoothing at the margin we actually pathed with (see SmoothLineOfSight)
         return SmoothLineOfSight(grid, path, used);
     }
 
@@ -68,10 +42,7 @@ public static class PathFinder
     {
         var (sx, sy) = grid.WorldToTile(startX, startY);
         var (gx, gy) = grid.WorldToTile(goalX, goalY);
-        // Snap a blocked start/goal to the nearest walkable tile. Mob-spawn CENTRES (from
-        // MobCoordinate) often land on a blocked tile (decoration/edge), which would otherwise
-        // make walkTo reject the whole trip and the grind loop freeze. Snapping lets the bot
-        // path to the walkable edge of the spawn area and pick the mob up from there.
+        // Snap a blocked start/goal to the nearest walkable tile
         if (!grid.IsWalkableTile(sx, sy) && NearestWalkable(grid, sx, sy) is { } ns) (sx, sy) = ns;
         if (!grid.IsWalkableTile(gx, gy) && NearestWalkable(grid, gx, gy) is { } ng2) (gx, gy) = ng2;
         if (!grid.IsWalkableTile(sx, sy) || !grid.IsWalkableTile(gx, gy))
@@ -79,10 +50,7 @@ public static class PathFinder
 
         int W = grid.WidthTiles;
         int Id(int x, int y) => y * W + x;
-        // A cell is passable if it satisfies the inflation margin, OR it lies within `margin`
-        // (Chebyshev) of the start/goal tile — the exemption that lets the path leave a tight
-        // start pocket and approach a goal that legitimately hugs an obstacle. Never passes
-        // through a genuinely blocked tile (IsPathable(...,0) == IsWalkableTile).
+        // A cell is passable if it satisfies the inflation margin, OR it lies within `margin` (Chebyshev) of the start/g…
         int esc = Math.Max(1, (int)Math.Ceiling(margin));
         bool NearEnd(int x, int y) =>
             (Math.Max(Math.Abs(x - sx), Math.Abs(y - sy)) <= esc ||
@@ -120,9 +88,7 @@ public static class PathFinder
         return Array.Empty<(uint, uint)>();
     }
 
-    /// <summary>Spiral outward from a (blocked) tile to the nearest walkable tile, up to
-    /// <paramref name="maxRadius"/> tiles. Null if none found (the point is deep inside a
-    /// large obstacle). Used to snap a blocked start/goal onto walkable ground.</summary>
+    /// <summary>Spiral outward from a (blocked) tile to the nearest walkable tile, up to tiles</summary>
     private static (int x, int y)? NearestWalkable(BlockGrid grid, int tx, int ty, int maxRadius = 40)
     {
         for (int r = 1; r <= maxRadius; r++)
@@ -138,12 +104,7 @@ public static class PathFinder
         return null;
     }
 
-    /// <summary>Drop only TRULY collinear intermediate waypoints, keeping the start, every real
-    /// corner, and the goal — so we issue one MoverunCmd per straight run instead of one per tile.
-    /// Uses an exact collinearity (cross-product) test: a point is dropped only when a→b→c lie on
-    /// one line. (A sign-of-direction test is WRONG for the arbitrary-angle corners that
-    /// <see cref="SmoothLineOfSight"/> now emits — it would merge two differently-sloped runs that
-    /// merely share a direction sign into a single diagonal that cuts through an obstacle.)</summary>
+    /// <summary>Drop only TRULY collinear intermediate waypoints, keeping the start, every real corner, and the goal — so we i…</summary>
     public static IReadOnlyList<(uint X, uint Y)> Simplify(IReadOnlyList<(uint X, uint Y)> path)
     {
         if (path.Count <= 2) return path;
@@ -161,13 +122,7 @@ public static class PathFinder
         return outp;
     }
 
-    /// <summary>Greedy line-of-sight smoothing where each candidate straight run is validated
-    /// by <see cref="SegmentDiscClear"/> — sweeping the player disc (radius = <paramref name="margin"/>
-    /// tiles) along the line rather than testing only its centre. Keeps a waypoint only when the
-    /// disc-swept line from the current anchor to the NEXT point would clip an obstacle; otherwise
-    /// the point is skipped, collapsing many tiles into one clean MOVERUN. The START and GOAL tiles
-    /// (and an <c>esc</c>-tile pocket around each) are margin-exempt so a run that legitimately hugs
-    /// a wall at either end is still allowed (matches the pathfinder's own exemption).</summary>
+    /// <summary>Greedy line-of-sight smoothing where each candidate straight run is validated by — sweeping the player disc (r…</summary>
     private static IReadOnlyList<(uint X, uint Y)> SmoothLineOfSight(
         BlockGrid grid, IReadOnlyList<(uint X, uint Y)> path, double margin)
     {
@@ -183,8 +138,7 @@ public static class PathFinder
         int anchor = 0;
         for (int i = 1; i < path.Count - 1; i++)
         {
-            // Can the anchor still "see" the point after i with a clear disc-sweep? If not, we
-            // must commit point i as a corner and re-anchor there.
+            // Can the anchor still "see" the point after i with a clear disc-sweep?
             if (!SegmentDiscClear(grid, path[anchor], path[i + 1], Passable))
             {
                 outp.Add(path[i]);
@@ -195,10 +149,7 @@ public static class PathFinder
         return outp;
     }
 
-    /// <summary>True if the player disc can sweep the straight world line a→b without touching a
-    /// non-<paramref name="passable"/> tile. Samples at ~half-tile spacing; each sampled tile's
-    /// <c>Passable</c> already encodes the disc (IsPathable(margin) = every tile within margin is
-    /// walkable), so testing the centre samples effectively sweeps a disc of that radius.</summary>
+    /// <summary>True if the player disc can sweep the straight world line a→b without touching a non- tile</summary>
     private static bool SegmentDiscClear(
         BlockGrid grid, (uint X, uint Y) a, (uint X, uint Y) b, Func<int, int, bool> passable)
     {

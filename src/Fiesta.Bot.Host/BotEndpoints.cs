@@ -7,21 +7,14 @@ using Fiesta.Bot.Pathfinding;
 
 namespace Fiesta.Bot.Host;
 
-/// <summary>
-/// HTTP control surface for the multi-bot manager: spawn / list / status / stop.
-/// Thin mapping layer — the request DTO is translated to <see cref="BotSpawnOptions"/>
-/// and all the work lives in <see cref="BotManager"/>. When no XOR table is
-/// configured the manager can't connect, so every endpoint returns 503 with the
-/// reason (the table is BYO — see PROJECT_PLAN.md).
-/// </summary>
+/// <summary>HTTP control surface for the multi-bot manager: spawn / list / status / stop</summary>
 public static class BotEndpoints
 {
     public static void MapBotEndpoints(this WebApplication app, BotManager? manager, string? unavailableReason)
     {
         var group = app.MapGroup("/api/bots").WithTags("Bots");
 
-        // Guard: if the manager couldn't be built (no XOR table), fail every call
-        // with a clear, actionable 503 rather than a null-ref.
+        // Guard: if the manager couldn't be built (no XOR table), fail every call with a clear, actionable 503 rather th…
         if (manager is null)
         {
             IResult Unavailable() => Results.Problem(
@@ -116,22 +109,6 @@ public static class BotEndpoints
         })
         .WithSummary("Status of one bot (incl. recent log)");
 
-        // ⚠️⚠️ `max` IS A REQUEST SIZE, NOT THE BUFFER SIZE. The ring buffer holds 100_000 lines
-        // (BotHandle.MaxLogLines) — roughly 5 hours of verbose history at the measured ~6 lines/sec.
-        // If you do not pass `max` you get the default and silently throw away almost all of it.
-        // This cost real accuracy: with the old 200 default, a level=verbose read returned NINE SECONDS,
-        // and "0 kills, 0 QUEST_MOB_KILL — the bot completes nothing" was reported off exactly that
-        // sample while the bot was in a town phase and actually at q52 5/8 and climbing.
-        //   GET /log?level=note&max=100000                     <- headlines, hours of history
-        //   GET /log?level=info&from=13:41:15&to=13:42:00      <- drill into one moment
-        // A NARROW SAMPLE IS NOT A NEGATIVE RESULT: "I did not see X" means nothing until you know the
-        // window was wide enough to have contained X.
-        // ── METRICS / BOT-WATCH (operator epic 2026-08-05: "a window into everything going on with the bot;
-        // like a stat panel, you look at it and immediately know where the bot is") ────────────────────────
-        // Lightweight companion to /metrics, for the watch page's COMBAT MAP. That map wants ~5 updates a
-        // second and mob positions change constantly, but /metrics carries the whole metric snapshot, the
-        // quest board and the trace counts — far too heavy to poll at that rate. This returns only what the
-        // map draws.
         group.MapGet("/{id}/entities", (string id) =>
         {
             var bot = manager.Get(id);
@@ -148,10 +125,7 @@ public static class BotEndpoints
         })
         .WithSummary("Just the nearby mobs/party for the combat map — cheap enough to poll several times a second");
 
-        // ── THE TARGET VIEW, on its own URL ──────────────────────────────────────────────────────────────
-        // Operator 2026-08-12: the same numbers must be QUERYABLE, not merely drawn, so a script can measure
-        // a whole clone fight rather than a human watching one. Tiny payload, safe to poll at combat rate.
-        // See TargetView for what each field means and for the three things it refuses to fake.
+        // THE TARGET VIEW, on its own URL ────────────────────────────────────────────────────────────── Operator 2026-0…
         group.MapGet("/{id}/target", (string id) =>
         {
             var bot = manager.Get(id);
@@ -195,11 +169,7 @@ public static class BotEndpoints
             "time at least X'); for LowerIsBetter (damageTaken, deaths) the HIGH tail. Samples are batched (default " +
             "500ms) so the window means TIME, not caller frequency.");
 
-        // 📡 STREAMING metrics as NDJSON (operator: "Bonus points if you make this endpoint streamable, e.g.
-        // post 'UpdateRate: 10s' and then every 10s the server pushes a new json object"). One JSON object
-        // per line, flushed each tick, so `curl -N` and browser fetch-readers both work with no framing
-        // beyond a newline. Ends when the client disconnects (the cancellation token) or maxSeconds elapses —
-        // an un-bounded stream would otherwise pin a thread per forgotten tab.
+        // STREAMING metrics as NDJSON (operator: "Bonus points if you make this endpoint streamable
         group.MapGet("/{id}/metrics/stream", async (string id, double? updateRate, int? maxSeconds,
             HttpContext ctx, CancellationToken ct) =>
         {
@@ -209,11 +179,7 @@ public static class BotEndpoints
             var deadline = DateTime.UtcNow.AddSeconds(Math.Clamp(maxSeconds ?? 3600, 1, 86_400));
             ctx.Response.ContentType = "application/x-ndjson";
             ctx.Response.Headers.CacheControl = "no-cache";
-            // ⚠️ MUST use the Web defaults (camelCase). Results.Json — which GET /metrics uses — applies them
-            // automatically, so a bare `new JsonSerializerOptions()` here emits PascalCase and the SAME
-            // payload arrives with different key casing depending on which endpoint you call. Caught live:
-            // the stream's `live.Map/Hp` read as null against a parser written for `/metrics`'s `live.map/hp`,
-            // which looks exactly like "the bot has no data" rather than "the keys are spelled differently".
+            // MUST use the Web defaults (camelCase)
             var opts = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web)
             {
                 WriteIndented = false,
@@ -237,9 +203,7 @@ public static class BotEndpoints
         .WithDescription("?updateRate=SECONDS (default 10, clamped 0.5-300) and ?maxSeconds=N (default 3600) to bound " +
             "the stream. Try: curl -N '.../metrics/stream?updateRate=5'. Each line is the same shape as GET /metrics.");
 
-        // Position trace for the browser-rendered heatmap. Stores raw timestamp+map+coord and lets the client
-        // poll with `since` (operator: "so I can watch what the bot is doing live and also it takes up less
-        // data") — the server never rasterises anything.
+        // Position trace for the browser-rendered heatmap
         group.MapGet("/{id}/trace", (string id, long? since, string? map, bool? recent) =>
         {
             var bot = manager.Get(id);
@@ -278,25 +242,7 @@ public static class BotEndpoints
             "note=headline only (quest accept/finish, level-up, death, purchase, errors); info adds kills/quest-progress; " +
             "verbose adds move/cast/auto-attack. Plain text so `curl .../log?level=info` is directly readable.");
 
-        // 🥈 SILVER RULE ENDPOINT (operator 2026-08-05): "I'd have to run a probe script, which stops the
-        // leveller" is an ARCHITECTURE FAILURE — add the endpoint instead. This is that endpoint for quest
-        // targeting, the exact data whose absence caused a wrong diagnosis twice in one session: I could not
-        // read bot.quest(id).objectives without replacing the running driver, so I inferred a quest's target
-        // from its NAME and was wrong. Everything here is read-only and disturbs nothing.
-        //
-        // It answers "WHY is the bot pursuing this quest, and is that target actually killable?" by joining
-        // the quest's objectives to MobInfo (level / maxHp / gradeType) and to the persisted deprioritize
-        // mark. Concretely it exposes the bug class found on 2026-08-05: "Rare Material 4"(q2511) is a
-        // type-2 COLLECT objective for an item dropped by mob22 "Marlone" (L26, 9916 HP, GradeType 1) —
-        // a boss, reachable only through a collect objective, which the type-1-only boss screen missed.
-        // Where the hours actually go. Answers "why are all three bots in town?" over ANY span, unlike
-        // the note ring buffer which covers ~21 minutes at current density.
-        // RAW TRANSITION LIST, not a rollup (operator 2026-08-12). Cumulative seconds actively misled:
-        // `restock = 46 min` was read as ONE stall when it was ~15 interrupted trips. Counts, p50, p90 and
-        // any other metric are derivable from this array by a script; the reverse is not true.
-        // Typed events, with rollups computed for you. The point of this endpoint is that questions like
-        // "how many relogs, how far apart, what preceded each" become a QUERY rather than a regex over log
-        // prose -- which is how several confident-but-wrong conclusions got made on 2026-08-12.
+        // SILVER RULE ENDPOINT (operator 2026-08-05): "I'd have to run a probe script, which stops the leveller" is an A…
         group.MapGet("/{id}/events", (string id, string? kind, int? max) =>
         {
             var bot = manager.Get(id);
@@ -304,8 +250,7 @@ public static class BotEndpoints
             var all = bot.EventLog(kind);
             var take = Math.Clamp(max ?? 2000, 1, 20000);
             var slice = all.Count > take ? all.Skip(all.Count - take).ToArray() : all;
-            // gaps between consecutive events of the SAME kind -- the shape that distinguishes "one long
-            // stall" from "hundreds of retries", which a cumulative total cannot.
+            // gaps between consecutive events of the SAME kind -- the shape that distinguishes "one long stall" from "hundre…
             var byKind = all.GroupBy(e => e.Kind).Select(g =>
             {
                 var times = g.Select(e => e.AtUtc).OrderBy(t => t).ToArray();
@@ -363,14 +308,10 @@ public static class BotEndpoints
                 {
                     foreach (var o in q.Objectives)
                     {
-                        // Resolve the mob the SAME way the driver must: an objective with mob 0 falls back
-                        // to the quest's own kill target. Reported for BOTH kill (1) and collect (2) types —
-                        // reporting only type 1 is precisely how the boss went unnoticed.
+                        // Resolve the mob the SAME way the driver must: an objective with mob 0 falls back to the quest's own kill targe…
                         var mob = o.Mob != 0 ? o.Mob : q.ObjectiveMob;
                         var mi = mob > 0 ? cd.Mob(mob) : null;
-                        // A boss must be something you FIGHT, so it needs HP. GradeType alone is not enough:
-                        // gathering nodes score high too (mob5018 "Herb" is L150, 0 HP, GradeType 5), and
-                        // treating those as bosses would shelve harmless collection quests.
+                        // A boss must be something you FIGHT, so it needs HP
                         if (mi is not null && mi.MaxHp > 0 && mi.GradeType > maxGrade) maxGrade = mi.GradeType;
                         objectives.Add(new
                         {
@@ -394,10 +335,7 @@ public static class BotEndpoints
                     status,
                     repeatable = q?.Repeatable ?? false,
                     exp = q?.ExpReward ?? 0,
-                    // Remote accept / hand-in flags (QuestData +25 / +88). The driver does NOT use these yet:
-                    // START_REQ 0x4414 + doQuest(npc=0) were tried live and did not accept, so the real
-                    // remote-accept sequence is still undecoded (P1). Exposed so "which quests even claim to
-                    // support it" is answerable from live data instead of by reading offsets.
+                    // Remote accept / hand-in flags (QuestData +25 / +88)
                     remoteAccept = q?.RemoteAcceptable ?? false,      // @25 bIsWaitListProgress = REMOTE ACCEPT
                     questListVisible = q?.IsWaitListView ?? false,    // @24 = visible in quest list, NOT accept
                     remoteHandIn = q?.IsInstantHandIn ?? false,
@@ -405,7 +343,7 @@ public static class BotEndpoints
                     turnInNpc = q?.TurnInNpc ?? 0,
                     objectiveMob = q?.ObjectiveMob ?? -1,
                     objectives,
-                    // The verdict fields — what a targeting decision should hinge on.
+                    // The verdict fields — what a targeting decision should hinge on
                     targetsBoss = maxGrade >= 1,
                     deprioritizedAtLevel = manager.Knowledge.QuestDeprioritizedAtLevel(bot.KnowledgeScope, qid),
                 });
@@ -516,8 +454,7 @@ public static class BotEndpoints
         {
             if (req.Slot is not { } slot)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["slot"] = ["inventory slot is required"] });
-            // invenType 9 = the normal item bag (from the client capture); the
-            // earlier default of 0 made the server reply "no item at that address".
+            // invenType 9 = the normal item bag (from the client capture); the earlier default of 0 made the server reply "n…
             return ToResult(await manager.UseItemAsync(id, slot, req.InvenType ?? 9), id, new { id, usedSlot = slot });
         })
         .WithSummary("Use an inventory item by slot");
@@ -530,9 +467,7 @@ public static class BotEndpoints
         })
         .WithSummary("Open a merchant's shop (click + menu-ack) so the server sends its sell list — then GET /shop");
 
-        // ── PERSONAL STORAGE (warehouse) ──────────────────────────────────────────────────────────────
-        // Read + act, so a deposit can be EXERCISED and VERIFIED directly instead of only through the
-        // driver's policy (Silver Rule: build the path, don't guess whether it works).
+        // PERSONAL STORAGE (warehouse) ────────────────────────────────────────────────────────────── Read + act, so a d…
         group.MapGet("/{id}/storage", (string id) =>
         {
             var bot = manager.Get(id);
@@ -636,14 +571,7 @@ public static class BotEndpoints
             var inv = view?.Inventory;
             if (view is null || inv is null) return Results.Conflict(new { error = "bot is not in zone yet" });
             var cd = manager.ClientData;
-            // NAME + STACK COUNT + the sell/keep inputs, not a bare id list. Why (2026-08-06): the bot
-            // deadlocked on "bag FULL + nothing sellable", blocking the hand-in of THREE complete quests,
-            // which emptied the quest board and dropped it into the last-resort grind at 0 exp/2min. The
-            // bag was 48/48 with FIVE separate slots of one potion and NINE of return scrolls — and the
-            // endpoint could not say whether those were full stacks or mergeable partials, because it
-            // returned only ids. The count was decoded all along (ZoneView.ItemCount); nothing surfaced it.
-            // sellPrice/gradeType/demandLv are exactly the fields the driver's classifier keys on, so a
-            // "why is this not sellable?" question is answerable here instead of by reading ItemInfo by hand.
+            // NAME + STACK COUNT + the sell/keep inputs, not a bare id list
             var rows = inv.OrderBy(kv => kv.Key).Select(kv =>
             {
                 var info = cd?.Item(kv.Value);
@@ -671,7 +599,7 @@ public static class BotEndpoints
             if (bot is null) return Results.NotFound();
             var eq = bot.ZoneView?.Equipment;
             if (eq is null) return Results.Conflict(new { error = "bot is not in zone yet" });
-            // Name the worn item too — an equip panel showing bare ids is a puzzle, not a view.
+            // Name the worn item too — an equip panel showing bare ids is a puzzle, not a view
             return Results.Ok(new { id, worn = eq.OrderBy(kv => kv.Key).Select(kv => new
             {
                 equipSlot = kv.Key,
@@ -687,8 +615,7 @@ public static class BotEndpoints
             if (bot is null) return Results.NotFound();
             var npcs = bot.ZoneView?.NearbyNpcs;
             if (npcs is null) return Results.Conflict(new { error = "bot is not in zone yet" });
-            // Resolve each numeric mobId to its client-side name/level (MobInfo) so the
-            // list is human-readable (e.g. "Teleport Gate") — null if no client data.
+            // Resolve each numeric mobId to its client-side name/level (MobInfo) so the list is human-readable
             var cd = manager.ClientData;
             return Results.Ok(new { id, count = npcs.Count, npcs = npcs
                 .OrderBy(n => n.MobId)
@@ -742,9 +669,7 @@ public static class BotEndpoints
             var skills = bot.ZoneView?.LearnedSkills;
             if (skills is null) return Results.Conflict(new { error = "bot is not in zone yet" });
             var cd = manager.ClientData;
-            // ACTIVE BUFFS/DEBUFFS ride along so the watch page can draw an abstate bar in the same poll.
-            // ZoneView.SelfAbstateSnapshot() has existed and been exposed by NOTHING — the third instance
-            // this session of a read path that was declared and never wired to anything that reads it.
+            // ACTIVE BUFFS/DEBUFFS ride along so the watch page can draw an abstate bar in the same poll
             var abstates = (bot.ZoneView?.SelfAbstateSnapshot() ?? [])
                 .Select(a => new
                 {
@@ -759,8 +684,7 @@ public static class BotEndpoints
                 {
                     skillId = s,
                     name = cd?.SkillName(s),
-                    // Tooltip text + whether we have art, so the page can decide tile vs name-plate
-                    // without a request per skill that 404s.
+                    // Tooltip text + whether we have art, so the page can decide tile vs name-plate without a request per skill that…
                     descript = cd?.SkillView(s)?.Descript,
                     hasIcon = cd?.SkillView(s) is not null,
                 }),
@@ -809,10 +733,7 @@ public static class BotEndpoints
         })
         .WithSummary("Drive a full quest dialogue with an NPC (click + ACK every page; accept or turn-in)");
 
-        // Trigger a REMOTE ACCEPT on demand. Exists so the path can be PROVEN without applying a probe
-        // script (which would replace the running leveler) — the operator's Silver Rule: if verifying
-        // something needs a probe, the missing thing is an endpoint. The driver calls the same
-        // RemoteAcceptQuestAsync, so a success here is a success there.
+        // Trigger a REMOTE ACCEPT on demand
         group.MapPost("/{id}/quest/remote-accept", async (string id, RemoteAcceptRequest req) =>
         {
             if (req.QuestId is not { } q)
@@ -823,7 +744,7 @@ public static class BotEndpoints
             {
                 id,
                 questId = q,
-                // The verdict, from the bot's own state — not from the fact that we sent a packet.
+                // The verdict, from the bot's own state — not from the fact that we sent a packet
                 active = bot?.ZoneView?.IsQuestActive(q) ?? false,
                 remoteAcceptable = manager.ClientData?.Quest(q)?.RemoteAcceptable ?? false,
             });
@@ -833,16 +754,7 @@ public static class BotEndpoints
             "served script pages, exactly as captured in Z:/QuestsRemoteAndMulti.pcapng. `active` in the response is read " +
             "back from the bot's own quest state, so a false there means it genuinely did not take.");
 
-        // OPERATOR OVERRIDE: give a deprioritized quest another chance, without waiting for a level-up.
-        // The mark's only automatic expiry is LEVEL-UP, and every mark is written at the level we fled at —
-        // so once a few quests are marked at the CURRENT level the whole board reads deprioritized and the
-        // bot drops to the last-resort grind, which is the slowest possible route to the level that would
-        // clear them. That ratchet is live right now (seven quests marked at 26 with the char at 26).
-        // A human can see from the watch page that a mark is stale; this is the button that says so.
-        // ⚠️ Clears BOTH the mark and the per-level death counter — clearing only the mark leaves the
-        // counter at the threshold, so the next death re-marks instantly and the override reads as a no-op.
-        // The LIFETIME death total is deliberately kept (it ranks a historically deadly quest lower; the
-        // override re-opens the decision, it does not erase the history).
+        // OPERATOR OVERRIDE: give a deprioritized quest another chance, without waiting for a level-up
         group.MapPost("/{id}/quest/{questId:int}/undeprioritize", (string id, int questId) =>
         {
             var bot = manager.Get(id);
@@ -853,8 +765,7 @@ public static class BotEndpoints
             var cleared = knowledge.ClearQuestDeprioritized(bot.KnowledgeScope, questId);
             var deaths = knowledge.ClearQuestDeathsAtLevel(bot.KnowledgeScope, questId, (int)bot.Level);
             var name = manager.ClientData?.QuestName(questId) ?? $"q{questId}";
-            // Log it on the BOT's own tail. An operator override that only shows in an HTTP response is
-            // invisible in the log everyone actually reads to explain what the bot did next.
+            // Log it on the BOT's own tail
             bot.LogOperatorAction($"[operator] UN-DEPRIORITIZED {name}(q{questId}) — mark was lvl{was}" +
                     (deaths > 0 ? $", cleared {deaths} death(s) recorded at lvl{bot.Level}" : "") +
                     " — the driver will re-evaluate it on its next quest pass.");
@@ -914,9 +825,7 @@ public static class BotEndpoints
             if (req.ToX is not { } tx || req.ToY is not { } ty)
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["req"] = ["toX, toY are required"] });
             var bot = manager.Get(id);
-            // map defaults to the bot's current map (tracked across transitions); from
-            // defaults to the bot's tracked position (seeded from the zone-login spawn
-            // coord, advanced as it walks) — so callers can pass just toX/toY.
+            // map defaults to the bot's current map (tracked across transitions); from defaults to the bot's tracked positio…
             var map = !string.IsNullOrWhiteSpace(req.Map) ? req.Map! : bot?.CurrentMap;
             if (string.IsNullOrWhiteSpace(map))
                 return Results.Conflict(new { error = "no map given and bot's current map is unknown (not in zone yet)" });
@@ -1014,8 +923,7 @@ public static class BotEndpoints
         {
             if (string.IsNullOrWhiteSpace(req.Command))
                 return Results.ValidationProblem(new Dictionary<string, string[]> { ["command"] = ["command is required"] });
-            // GM commands are chat-routed; the server keys off the '&'/'$' prefix.
-            // Prepend '&' if the caller omitted a prefix, for convenience.
+            // GM commands are chat-routed; the server keys off the '&'/'$' prefix
             var cmd = req.Command.Trim();
             if (cmd is [not ('&' or '$'), ..]) cmd = "&" + cmd;
             return ToResult(await manager.GmAsync(id, cmd), id, new { id, gm = cmd });
@@ -1101,7 +1009,7 @@ public static class BotEndpoints
         .WithSummary("Remove a player from your friend list");
     }
 
-    // Block grids loaded from BLOCKINFO_DIR/<Map>.shbd (BYO), cached per map.
+    // Block grids loaded from BLOCKINFO_DIR/ .shbd (BYO), cached per map
     private static readonly ConcurrentDictionary<string, BlockGrid?> _grids = new(StringComparer.OrdinalIgnoreCase);
 
     internal static BlockGrid? LoadGrid(string map) => _grids.GetOrAdd(map, m =>
@@ -1111,14 +1019,7 @@ public static class BotEndpoints
         var path = Path.Combine(dir, m + ".shbd");
         try
         {
-            // ⛔ THE FILENAMES ARE NOT CONSISTENTLY CASED AND THE POD IS LINUX.
-            // BlockInfo ships `Linkfield02.bdt` next to `linkfield02.shbd` — capital B, lowercase s.
-            // Windows does not care; the container does, so LoadGrid("Linkfield02") found nothing and
-            // returned null SILENTLY. A null grid means no pathfinding on that map at all: the bot cannot
-            // walk anywhere, cannot reach a gate, and no relog can fix it because the filename does not
-            // change. JcqArcher sat at (2588,8288) on Linkfield02 for 14 minutes through two relogs while
-            // the operator walked the same ground in the real client without trouble, and the .shbd itself
-            // says that tile and its whole eastern half are WALKABLE — the grid was simply never loaded.
+            // THE FILENAMES ARE NOT CONSISTENTLY CASED AND THE POD IS LINUX
             if (!File.Exists(path))
             {
                 var hit = Directory.EnumerateFiles(dir, "*.shbd")
@@ -1126,7 +1027,7 @@ public static class BotEndpoints
                                                        StringComparison.OrdinalIgnoreCase));
                 if (hit is null)
                 {
-                    // ⛔ NEVER SILENT. No grid = the bot is immobile on this map; that must be loud.
+                    // NEVER SILENT. No grid = the bot is immobile on this map; that must be loud
                     Console.Error.WriteLine($"[nav] ⛔ CRITICAL: no .shbd for map '{m}' in {dir} — " +
                         "pathfinding is DISABLED on this map, the bot will not be able to walk at all.");
                     return null;
@@ -1134,28 +1035,10 @@ public static class BotEndpoints
                 path = hit;
             }
             var grid = BlockGrid.Load(path);
-            // EROSION for scenario-instance maps (2026-07-15). The bot-vs-client compare + MOVEFAIL-desync logging
-            // proved the finale failure is a nav collision mismatch: the instance .shbd walkable border is ~1 tile
-            // WIDER than the SERVER collision, so our path clips cells the server MOVEFAILs → the bot can never
-            // hold a stable position inside a trigger box → e.g. Zone_Mob04's LightOff (fires on the ack re-
-            // checking server-pos) never dispatches. The real client runs the SAME map with 0 MOVEFAIL. Erode the
-            // walkable area 1 tile to match the server so the path never clips → clean run. Data-driven: only maps
-            // WITH a .aid (= scenario instances) are eroded; field maps keep the operator's relaxed nav untouched.
-            // BuildEroded keeps the instance FULLY connected (entry→Kebings→skeletons→Door4→Chiefs).
-            // REVERTED 2026-07-15: 1-tile erosion made instance nav WORSE (R2 MOVEFAIL 33→88, bot pinned 10min,
-            // can't reach the skeleton wave) — it over-constrains the corridors so combat-approach clips even more.
-            // The MOVEFAILs are NOT a simple edge-inset (the Zone_Mob04 439u Y-gap is over-navigation into a
-            // server-blocked region past the trigger, not a 1-tile border). Erosion is the wrong lever. Left OFF.
-            // if (File.Exists(Path.Combine(dir, m + ".aid"))) grid.EnableErosion();
-            // DYNAMIC SCENARIO-DOOR COLLISION (2026-07-15): attach the .sbi door overlays so the pathfinder
-            // matches the SERVER's door-aware collision (the .shbd is baked all-doors-open; a closed door is a
-            // wall only the overlay knows). This is the root fix for the JCQ instance-nav MOVEFAIL storm —
-            // replaces the erosion experiment (wrong lever). Door STATES are pushed live from ZoneView.
+            // EROSION for scenario-instance maps (2026-07-15)
             try { grid.AttachDoors(Fiesta.Bot.Pathfinding.DoorCollision.Load(Path.Combine(dir, m + ".sbi"))); }
             catch { /* no .sbi / malformed → grid runs .shbd-only, unchanged */ }
-            // COMPANION .bdt (2026-07-21): attach the reverse-engineered 50-unit quadtree collision for the
-            // measuring-stick diagnostic (compare .shbd vs .bdt at live MOVEFAIL points). Read-only; does not
-            // change pathfinding yet. Null/absent on flat maps → grid runs .shbd-only, unchanged.
+            // COMPANION .bdt (2026-07-21): attach the reverse-engineered 50-unit quadtree collision for the measuring-stick…
             try { grid.AttachBdt(Fiesta.Bot.Pathfinding.BdtGrid.Load(Path.Combine(dir, m + ".bdt"))); }
             catch { /* no .bdt / malformed → no companion, unchanged */ }
             return grid;
@@ -1163,7 +1046,7 @@ public static class BotEndpoints
         catch { return null; }
     });
 
-    // Instance doors loaded from BLOCKINFO_DIR/<Map>.sbi (BYO), cached per map. Empty list for non-instance maps.
+    // Instance doors loaded from BLOCKINFO_DIR/ .sbi (BYO), cached per map
     private static readonly ConcurrentDictionary<string, IReadOnlyList<Fiesta.Bot.Navigation.InstanceDoor>> _doors = new(StringComparer.OrdinalIgnoreCase);
 
     internal static IReadOnlyList<Fiesta.Bot.Navigation.InstanceDoor> LoadDoors(string map) => _doors.GetOrAdd(map, m =>
@@ -1174,7 +1057,7 @@ public static class BotEndpoints
         catch { return Array.Empty<Fiesta.Bot.Navigation.InstanceDoor>(); }
     });
 
-    // Scenario trigger areas from BLOCKINFO_DIR/<Map>.aid (BYO), cached per map. Empty for non-scenario maps.
+    // Scenario trigger areas from BLOCKINFO_DIR/ .aid (BYO), cached per map
     private static readonly ConcurrentDictionary<string, IReadOnlyList<Fiesta.Bot.Navigation.ScenarioArea>> _areas = new(StringComparer.OrdinalIgnoreCase);
 
     internal static IReadOnlyList<Fiesta.Bot.Navigation.ScenarioArea> LoadAreas(string map) => _areas.GetOrAdd(map, m =>
@@ -1192,16 +1075,10 @@ public static class BotEndpoints
         _ => Results.NotFound(),
     };
 
-    /// <summary>The always-on vitals for the watch panel: what a human glances at first.
-    /// <para>Deliberately built ON TOP of the existing <see cref="BotHandle.Snapshot"/> rather than
-    /// re-deriving fields from ZoneView. Re-deriving would create a second, silently-diverging view of the
-    /// same truth — the panel would eventually disagree with /api/bots/{id} and there would be no way to tell
-    /// which was right. Only the genuinely NEW numbers are added here.</para></summary>
+    /// <summary>The always-on vitals for the watch panel: what a human glances at first</summary>
     private static object LivePanel(BotHandle bot) => LivePanel(bot, null, null);
 
-    /// <summary>Overload that can also report SKILL COOLDOWNS. The cooldown LENGTH lives in client data
-    /// (ActiveSkill.DelayTime) and the last-use TIMESTAMP lives in ZoneView, so neither alone can answer
-    /// "is this skill ready?" — the manager is where both are reachable, hence the optional parameter.</summary>
+    /// <summary>Overload that can also report SKILL COOLDOWNS</summary>
     private static object LivePanel(BotHandle bot, GameData.ClientData? cd, Manager.NpcKnowledge? knowledge = null)
     {
         var snap = bot.Snapshot();
@@ -1211,9 +1088,7 @@ public static class BotEndpoints
         return new
         {
             snap.Phase, snap.Map, snap.Position, snap.Level, snap.Exp,
-            // The map's DISPLAY name from MapInfo.shn's `Name` column ("Elderine Cemetery"), beside the
-            // internal code in snap.Map ("EldCem01"). Null when unknown — the page falls back to the code
-            // rather than showing an invented name.
+            // The map's DISPLAY name from MapInfo.shn's `Name` column ("Elderine Cemetery"), beside the internal code in sna…
             MapDisplay = cd?.MapDisplayName(snap.Map),
             snap.Hp, snap.MaxHp, snap.Sp, snap.MaxSp,
             snap.HpStones, snap.SpStones, snap.InCombat, snap.Aggressors,
@@ -1222,35 +1097,16 @@ public static class BotEndpoints
             BagUsed = bagUsed,
             BagFree = bot.ZoneView?.BagFreeSlots,
             BagCapacity = bot.ZoneView?.BagCapacity,
-            // ⚠️ BagFree/BagCapacity are INFERRED (48, +24 if any slot >= 48 is occupied). BagFull is a
-            // STALE EVENT FLAG — set when a pickup FAILED with 0x346 — so `false` only means "no pickup has
-            // failed", NOT "there is room": a STACKABLE item merges into an existing stack and picks up fine
-            // at 48/48. The two are answering DIFFERENT questions, so a mismatch between them is normal and
-            // is NOT evidence about capacity (I previously mistook it for exactly that). Show both, label
-            // the inferred pair as inferred, and let a human read them as what they are.
-            // BagFull is a STALE EVENT FLAG (set when a pickup FAILED with 0x346), not a capacity statement:
-            // `false` only means no pickup has failed, and a STACKABLE item picks up fine at full occupancy.
+            // BagFree/BagCapacity are INFERRED (48, +24 if any slot >= 48 is occupied)
             BagFullServerSignal = bot.ZoneView?.BagFull,
             Skills = SkillPanel(bot, cd),
-            // SOUL STONES AS COOLDOWN TILES (operator 2026-08-13: "display current stone cooldown as a
-            // skill-icon-sized button basically exactly like skills"). Same three fields a skill tile
-            // renders from, so the page can reuse the tile renderer rather than growing a second one.
-            // ⭐ SP CARRIES A REAL COOLDOWN NOW (operator 2026-08-13: "both hp and sp cooldowns are 7
-            // seconds"). It had been published as null — "unknown" — because only the HP gap had been
-            // measured and I would not assume the two matched; the operator supplied the fact. SP reads
-            // the SAME value the HP side uses rather than a second constant, and its remaining clock comes
-            // from the SP stone's own USESUC (0x500A), which was being handled but not timestamped.
             Stones = new object[]
             {
                 new
                 {
                     Kind = "hp", Count = snap.HpStones, Max = zv?.MaxHpStones ?? 0,
                     CooldownMs = zv is null ? (double?)null : zv.HpStoneCooldownMs,
-                    // HpStoneReadyInMs returns -1 for "no successful use this session", which with a KNOWN
-                    // cooldown means READY — so publish 0, not -1. A raw -1 on a UI field is the
-                    // unknown-sentinel shape: the tile would have to know that this particular -1 means
-                    // ready while a -1 elsewhere means unknown. Genuinely-unknown is already expressed by
-                    // CooldownMs being null, which renders as the dashed tile.
+                    // HpStoneReadyInMs returns -1 for "no successful use this session", which with a KNOWN cooldown means READY — so…
                     RemainingMs = zv is null ? (double?)null : Math.Max(0, zv.HpStoneReadyInMs),
                     Depleted = zv?.HpStoneDepleted ?? false,
                 },
@@ -1262,8 +1118,7 @@ public static class BotEndpoints
                     Depleted = zv?.SpStoneDepleted ?? false,
                 },
             },
-            // Active buffs/debuffs for the abstate bar. Reads ZoneView.SelfAbstateSnapshot(), which
-            // existed and was wired to nothing until now.
+            // Active buffs/debuffs for the abstate bar
             AbStates = (bot.ZoneView?.SelfAbstateSnapshot() ?? [])
                 .Select(a => new
                 {
@@ -1272,29 +1127,21 @@ public static class BotEndpoints
                     Descript = cd?.AbStateByWireIndex((int)a)?.Descript,
                     HasIcon = cd?.AbStateByWireIndex((int)a)?.File is not null,
                 }).ToArray(),
-            // Character sheet: the fixed stats a human reads next to HP. Decoded at zone-entry since
-            // 2026-07-29 but only ever logged — now stored and surfaced. Null when the CHAR_PARAMETER_DATA
-            // block never arrived (a "burst" login): NOT KNOWN, which is not the same as zero.
+            // Character sheet: the fixed stats a human reads next to HP
             Stats = zv?.Stats is { } st ? new
             {
                 st.Str, st.End, st.Dex, st.Int, st.Spr,
                 st.DmgMin, st.DmgMax, st.Def, st.Aim, st.Evasion, st.MagicDmg, st.MagicDef,
-                // The exp bar the real client draws. Band is per-LEVEL, so ExpIntoLevel/ExpBand is the
-                // denominator for "N EXP (x%)". Null-ish (0) only when the parameter block never arrived.
+                // The exp bar the real client draws
                 st.PrevExp, st.NextExp,
                 ExpBand = st.NextExp > st.PrevExp ? st.NextExp - st.PrevExp : 0,
             } : null,
             FreeStatPoints = zv is { FreeStatPoints: >= 0 } ? zv.FreeStatPoints : (int?)null,
             Passives = zv?.LearnedPassives?.Select(pid => new { Id = (int)pid, Name = cd?.PassiveSkillName(pid) ?? "" }).ToArray(),
             Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
-            // Live quest board: what is accepted, how far along, and what each one wants. Progress is the
-            // SERVER's credited count (NC_QUEST_NOTIFY_MOB_KILL), not our own kill tally — a mob dying
-            // credits nothing if the quest is not actually tracking it.
+            // Live quest board: what is accepted, how far along, and what each one wants
             Quests = QuestPanel(bot, cd, knowledge),
-            // What the DRIVER says it is doing right now — which quest it picked, what phase it is in, and
-            // where it is walking and why. Published by the Lua (bot.setFocus); the host does not re-derive
-            // it, because its own quest ordering only MIRRORS the driver's sort and can disagree with what
-            // the driver actually chose. Null until the driver has published (no script, or not yet decided).
+            // What the DRIVER says it is doing right now — which quest it picked, what phase it is in, and where it is walki…
             Focus = bot.Focus is { } f ? new
             {
                 f.QuestId,
@@ -1302,22 +1149,18 @@ public static class BotEndpoints
                 f.Phase,
                 f.Destination,
                 f.Reason,
-                // Staleness, so the page can show an intent going cold instead of presenting a frozen one
-                // as current — a driver that stopped publishing looks identical to one that is still going.
+                // Staleness, so the page can show an intent going cold instead of presenting a frozen one as current — a driver…
                 AgeMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - f.AtUnixMs,
             } : null,
-            // Entities for the zoomed combat map. Positions are RAW game coords; the page centres on self.
+            // Entities for the zoomed combat map
             Entities = EntityPanel(bot, cd),
-            // The survivability inequality, surfaced where a human can see both sides at once.
+            // The survivability inequality, surfaced where a human can see both sides at once
             SustainableHealDps = zv is { SustainableHealDps: > 0 } ? zv.SustainableHealDps : (double?)null,
             IncomingDps5s = zv?.IncomingDamageSince(TimeSpan.FromSeconds(5)),
         };
     }
 
-    /// <summary>The accepted-quest board with live state. <c>Need</c> is summed over the quest's kill and
-    /// collect objectives from client data; <c>Progress</c> is the server-credited count. A quest whose
-    /// definition is missing from client data is still listed (with its id) rather than dropped — a silent
-    /// omission would hide exactly the QuestData decode gaps we care about.</summary>
+    /// <summary>The accepted-quest board with live state</summary>
     private static object[] QuestPanel(BotHandle bot, GameData.ClientData? cd, Manager.NpcKnowledge? knowledge)
     {
         var zv = bot.ZoneView;
@@ -1334,8 +1177,7 @@ public static class BotEndpoints
                     need += o.Count;
                     var mobName = o.Mob > 0 ? (cd?.Mob(o.Mob)?.Name ?? $"mob{o.Mob}") : null;
                     if (mobName is not null) mobs.Add(mobName);
-                    // Is this objective's mob on the map we are standing on? MobCoordinate is client data,
-                    // the same table the driver's LOCAL-first preference uses.
+                    // Is this objective's mob on the map we are standing on?
                     var here = o.Mob > 0 && cd?.MobCoordinatesAll(o.Mob)?.Any(ml =>
                         string.Equals(ml.Map, bot.CurrentMap, StringComparison.OrdinalIgnoreCase)) == true;
                     if (here) onMap = true;
@@ -1343,25 +1185,18 @@ public static class BotEndpoints
                     {
                         Index = oi,
                         Kind = o.Type == 1 ? "kill" : o.Type == 2 ? "collect" : $"type{o.Type}",
-                        // Resolve the ITEM name too — a collect goal used to read "collect item3083", which
-                        // is an internal token, not a thing a person recognises. Same rule as mob names:
-                        // show the name, and keep the id visible so UI and logs cross-reference.
+                        // Resolve the ITEM name too — a collect goal used to read "collect item3083", which is an internal token, not a…
                         Target = mobName ?? (o.Item > 0 ? (cd?.ItemName(o.Item) is { Length: > 0 } inm ? inm : $"item{o.Item}") : "?"),
                         MobId = o.Mob,
                         ItemId = o.Item,
                         Need = o.Count,
-                        // Per-objective credit, from the objIdx the server sends with each kill credit.
+                        // Per-objective credit, from the objIdx the server sends with each kill credit
                         Progress = zv.QuestObjProgress(qid, oi),
                         OnCurrentMap = here,
                     });
                 }
             var prog = zv.QuestProgress(qid);
-            // WHY a quest is not being worked. Only reasons the HOST can derive from data it actually has —
-            // the driver's own verdicts (PASSIVE/shelved, UNSOLVABLE) live in Lua and are not duplicated
-            // here, because a second half-copy of that logic would drift and lie. Absent reason = "nothing
-            // known against it", NOT "definitely fine".
-            // Short LABEL for the column, full story in `detail` (the page shows it on hover). The long
-            // form was blowing the panel width out on its own.
+            // WHY a quest is not being worked
             string? reason = null, detail = null;
             var deprioAt = knowledge?.QuestDeprioritizedAtLevel(bot.KnowledgeScope, qid) ?? -1;
             if (deprioAt >= 0 && deprioAt >= (int)bot.Level)
@@ -1378,17 +1213,10 @@ public static class BotEndpoints
                     if (o.Mob <= 0) continue;
                     var md = cd?.Mob(o.Mob);
                     if (md is null) continue;
-                    // TOWER OF IYZEL: instance-only mobs a solo bot can never reach. Detect by MOB ID RANGE —
-                    // hardcoding these is explicitly authorised (CLAUDE.md) precisely because classifying by
-                    // quest NAME is banned. Without it the Iyzel quests sorted to the TOP on their fat exp and
-                    // the panel advertised permanently-shelved work as "next up".
+                    // TOWER OF IYZEL: instance-only mobs a solo bot can never reach
                     if ((o.Mob >= 8100 && o.Mob <= 8138) || o.Mob == 9186 || o.Mob == 9187)
                     { reason = "instance"; detail = $"Tower of Iyzel — instance-only ({md.Name}); needs a party"; break; }
-                    // ⛔ ONLY judge danger on something that can actually FIGHT. Gathering nodes and prop NPCs
-                    // live in MobInfo too and carry nonsense combat columns — live 2026-08-06 the panel
-                    // announced "Herb is a boss/elite (L150, 0 hp)" on a PLANT-COLLECTION quest, because
-                    // GradeType alone said elite. Zero MaxHp or an NPC flag means it is not a fight, so
-                    // neither the boss nor the over-level test means anything for it.
+                    // ONLY judge danger on something that can actually FIGHT
                     if (md.IsNpc || md.MaxHp <= 0) continue;
                     if (md.GradeType >= 1)
                     { reason = "boss"; detail = $"{md.Name} is a boss/elite — L{md.Level}, {md.MaxHp} hp"; break; }
@@ -1414,11 +1242,7 @@ public static class BotEndpoints
                 Known = qd is not null,
             });
         }
-        // Ordered to MIRROR the driver's documented sort — "LOCAL > closer-to-DONE > exp", with anything
-        // ready to hand in first and anything the driver has a reason against last.
-        // ⚠️ This MIRRORS that rule; it is not the driver's own ranking. The real decision (bands,
-        // deprioritization, solvability) lives in the Lua, and a second copy of it here would drift and
-        // start lying. Treat this as "roughly what it will pick next", not as the bot's actual queue.
+        // Ordered to MIRROR the driver's documented sort — "LOCAL > closer-to-DONE > exp", with anything ready to hand i…
         return outp
             .OrderByDescending(o => ((dynamic)o).Ready)
             .ThenBy(o => ((dynamic)o).Reason is null ? 0 : 1)
@@ -1428,26 +1252,16 @@ public static class BotEndpoints
             .ToArray();
     }
 
-    /// <summary>Everything currently in AoI that the combat map draws: mobs (with facing, cur/max hp and
-    /// whether they are huntable) and party members. Handles are included so the page can correlate a row
-    /// with the death report and the packet ring.
-    /// ⚠️ <c>Hp</c> is null until an entity has actually been hit — absent means "never seen hurt", NOT
-    /// full and NOT zero. <c>Dir</c> is the raw SHINE_COORD_TYPE byte (0-255); its scale is not pinned, so
-    /// it must not be compared numerically with our own <c>Facing</c> in degrees.</summary>
-    /// <summary>ONE nearby entity as the combat map draws it. Extracted from <see cref="EntityPanel"/> so
-    /// the polled snapshot and the live <c>/events</c> stream project an entity IDENTICALLY — two copies of
-    /// this shape would drift, and the page would then render a streamed mob differently from a polled one.
-    /// Returns null for anything that does not belong on the mob layer (gates, real NPCs).</summary>
+    /// <summary>Everything currently in AoI that the combat map draws: mobs (with facing, cur/max hp and whether they are hunt…</summary>
     internal static object? MobView(BotHandle bot, GameData.ClientData? cd, Session.NearbyNpc n,
                                     HashSet<ushort> aggro, HashSet<int> questMobs)
     {
         var zv = bot.ZoneView;
         if (zv is null) return null;
         if (n.IsGate) return null;
-        // NPCs belong to the NPC layer; a scenario clone stays here — it is a fightable entity.
+        // NPCs belong to the NPC layer; a scenario clone stays here — it is a fightable entity
         if (!n.IsScenarioClone && cd?.Mob(n.MobId)?.IsNpc == true) return null;
-        // ⛔ A scenario clone has NO mob id — its MobId field reads 0, which is the real mob "Slime".
-        // Resolving it would draw a level-20 player copy as a level-1 Slime with a Slime's MaxHp.
+        // A scenario clone has NO mob id — its MobId field reads 0, which is the real mob "Slime"
         var md = n.IsScenarioClone ? null : cd?.Mob(n.MobId);
         var self = bot.Position;
         return new
@@ -1464,17 +1278,10 @@ public static class BotEndpoints
             Huntable = n.IsScenarioClone || (zv.IsHuntableMob?.Invoke(n.MobId) ?? true),
             Aggro = aggro.Contains(n.Handle),
             QuestMob = !n.IsScenarioClone && questMobs.Contains(n.MobId),
-            // Danger is LEARNED, not baked: the hardest hit this mob type has actually landed on us
-            // (-1 = never hit us, i.e. unknown rather than safe). The page compares it to our MaxHp.
-            // For a clone the per-MOB table cannot describe it, so read the per-HANDLE one.
+            // Danger is LEARNED, not baked: the hardest hit this mob type has actually landed on us (-1 = never hit us
             MaxHitSeen = n.IsScenarioClone ? zv.HandleHitMax(n.Handle) : zv.MobHitMax(n.MobId),
             Dist = self is { } p ? Math.Sqrt(Math.Pow((double)n.X - p.X, 2) + Math.Pow((double)n.Y - p.Y, 2)) : (double?)null,
-            // 🏃 THE IN-FLIGHT MOVE, so a viewer can draw the entity WHERE IT IS rather than where it is
-            // going. X/Y above are the DESTINATION — a mob told to walk 240u is not there yet.
-            // ⛔ AGE, NOT A TIMESTAMP. A browser's clock is not the server's, and a viewer that subtracted
-            // an absolute server time from its own Date.now() would show every entity offset by the clock
-            // skew — seconds of it, which at 120 u/s is hundreds of units of error. An elapsed-milliseconds
-            // figure needs no clock agreement at all.
+            // THE IN-FLIGHT MOVE, so a viewer can draw the entity WHERE IT IS rather than where it is going
             Move = zv.EntityMove(n.Handle) is { } mvv
                 ? new
                 {
@@ -1487,20 +1294,11 @@ public static class BotEndpoints
         };
     }
 
-    /// <summary>ONE entity as the NPC LAYER draws it (a named marker, not a mob blob), or null when it does
-    /// not belong on that layer. Extracted from <see cref="EntityPanel"/> so the polled snapshot and the
-    /// live stream project an NPC identically.
-    ///
-    /// <para>⛔ THE STATIC SEED IS NOT NPC-ONLY. <c>AddOrUpdateNpc</c> feeds it from EVERY briefinfo, so
-    /// mobs, herbs and gathering nodes land in it beside real NPCs — which drew each enemy TWICE (a blue
-    /// NPC diamond AND a white mob tag) and filled the big map with every enemy. The test is
-    /// <c>IsNpc</c>, NOT "huntable": <c>IsHuntableEnemy</c> excludes RESOURCE NODES, so herbs and mushrooms
-    /// sailed through a huntable-based filter straight onto the NPC layer. Gates and actual NPCs only.</para></summary>
+    /// <summary>ONE entity as the NPC LAYER draws it (a named marker, not a mob blob), or null when it does not belong on that…</summary>
     internal static object? NpcView(BotHandle bot, GameData.ClientData? cd, Session.NearbyNpc n)
         => NpcCore(bot, cd, (int)n.Handle, n.MobId, n.X, n.Y, n.IsGate, n.LinkMap);
 
-    /// <summary>Same projection for a MAP-ENTER SEED entry, which is keyed by mob id + position and carries
-    /// no handle (it outlives the live sighting on purpose — the seed covers the whole map, not just AoI).</summary>
+    /// <summary>Same projection for a MAP-ENTER SEED entry, which is keyed by mob id + position and carries no handle (it outl…</summary>
     internal static object? NpcView(BotHandle bot, GameData.ClientData? cd, Session.NpcSeedEntry n)
         => NpcCore(bot, cd, null, (ushort)n.MobId, n.X, n.Y, n.IsGate, n.LinkMap);
 
@@ -1508,7 +1306,7 @@ public static class BotEndpoints
                                    uint x, uint y, bool isGate, string? linkMap)
     {
         if (!isGate && cd?.Mob(mobId)?.IsNpc != true) return null;
-        // A gate's LinkMap is the map CODE (e.g. "EldCem01"); the client shows the map's NAME.
+        // A gate's LinkMap is the map CODE
         var gateName = isGate ? (cd?.MapDisplayName(linkMap) ?? linkMap ?? "gate") : null;
         var self = bot.Position;
         return new
@@ -1524,20 +1322,7 @@ public static class BotEndpoints
         };
     }
 
-    /// <summary>EVERYTHING about US that a viewer needs — the ONE self projection, shared by the polled
-    /// <c>/entities</c> snapshot, the stream's opening <c>hello</c>, and every <c>self</c> delta.
-    ///
-    /// <para>⛔ IT IS ONE SHAPE ON PURPOSE (operator 2026-08-13: <i>"Are you seeding current movement speed
-    /// correctly at the start of the stream with a 'stream start state' packet? The bot always seems to be
-    /// walking when it should be mounted"</i>). It was two: <c>hello</c> carried only X/Y/Facing/Target,
-    /// while <c>walkSpeed</c> and <c>mounted</c> existed solely on the delta. That is worse than it sounds,
-    /// because a delta is only sent when the state CHANGES — so a bot that was already mounted and standing
-    /// still never produced one, and the page had no way to learn either fact. It drew the marker easing at
-    /// the 120 u/s on-foot default while the character was on a 203 u/s mount.</para>
-    ///
-    /// <para>The general rule this is an instance of: a stream's OPENING state must be able to answer every
-    /// question its deltas can, or any field that happens not to change is unreachable for the life of the
-    /// connection.</para></summary>
+    /// <summary>EVERYTHING about US that a viewer needs — the ONE self projection, shared by the polled /entities snapshot, th…</summary>
     internal static object? SelfView(BotHandle bot)
     {
         var p = bot.Position;
@@ -1548,13 +1333,9 @@ public static class BotEndpoints
             X = (double)p.Value.X,
             Y = (double)p.Value.Y,
             Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
-            // RAW handle, no 0-means-none translation: 0 is a legitimate entity handle and this field
-            // simply defaults to 0 before we ever target anything. The page draws the target ray only when
-            // the handle MATCHES a mob currently in view, so an untargeted bot draws nothing without 0
-            // having to be overloaded as a sentinel.
+            // RAW handle, no 0-means-none translation: 0 is a legitimate entity handle and this field simply defaults to 0 b…
             Target = (int)bot.CurrentTarget,
-            // The speed a viewer must interpolate at. Mounted is ~203 u/s against 120 on foot, so getting
-            // this wrong is immediately visible as a marker crawling behind the character.
+            // The speed a viewer must interpolate at
             WalkSpeed = zv?.WalkSpeed ?? 0,
             Mounted = zv?.IsMounted ?? false,
             Hp = zv?.Hp, MaxHp = zv?.MaxHp, Sp = zv?.Sp, MaxSp = zv?.MaxSp,
@@ -1564,8 +1345,7 @@ public static class BotEndpoints
         };
     }
 
-    /// <summary>Mob ids any ACTIVE quest wants — kill and collect objectives alike (a collect drops from a
-    /// mob, and checking only kills is the exact miss that let an Iyzel collect quest through).</summary>
+    /// <summary>Mob ids any ACTIVE quest wants — kill and collect objectives alike (a collect drops from a mob, and checking o…</summary>
     internal static HashSet<int> QuestMobIds(BotHandle bot, GameData.ClientData? cd)
     {
         var outp = new HashSet<int>();
@@ -1591,52 +1371,23 @@ public static class BotEndpoints
             foreach (var n in zv.NearbyNpcs)
             {
                 if (n.IsGate) continue;
-                // ⛔ AND NPCs BELONG TO THE NPC LAYER, NOT HERE. This loop added every non-gate entity,
-                // so an actual NPC (Grand Master Sean, the Soul Stone Merchant, a Teleport Gate) was drawn
-                // BOTH as a white mob tag here and as a blue diamond on the NPC layer — the other half of
-                // the double-render. Fixing only the NPC side left 6 ids still in both layers.
-                // A scenario clone keeps its place here: it is a fightable entity, not an NPC.
+                // AND NPCs BELONG TO THE NPC LAYER, NOT HERE
                 if (!n.IsScenarioClone && cd?.Mob(n.MobId)?.IsNpc == true) continue;
-                // ⛔ A scenario clone has NO mob id — its MobId field reads 0, which is the real mob
-                // "Slime". Resolving it would draw a level-20 player copy as a level-1 Slime with a
-                // Slime's MaxHp, and ring it in the danger colours of the wrong creature entirely.
+                // A scenario clone has NO mob id — its MobId field reads 0, which is the real mob "Slime"
                 if (MobView(bot, cd, n, aggro, questMobs) is { } mv) mobs.Add(mv);
             }
             foreach (var m in bot.PartyMembers.Values)
                 party.Add(new { m.Name, Level = (int)m.Level, Hp = (double)m.Hp, MaxHp = (double)m.MaxHp, X = (double)m.X, Y = (double)m.Y });
         }
-        // THE MAP-ENTER NPC SEED — the bulk 0x1C09 broadcast at infinite range, i.e. every NPC and gate
-        // on this map, not just what is inside AoI right now. The watch page needs it for two things the
-        // live entity list cannot give: drawing named NPC markers across the whole map, and framing the
-        // heatmap on the area that actually matters (operator 2026-08-13: "start not with a single point
-        // but instead a rectangle encompassing ALL npcs loaded on login burst") instead of on a bounding
-        // box that begins as one dot and grows as the bot wanders.
+        // THE MAP-ENTER NPC SEED — the bulk 0x1C09 broadcast at infinite range
         var npcs = new List<object>();
         if (zv is not null)
             foreach (var n in zv.NpcSeedAll)
             {
-                // ⛔ THE STATIC LIST IS NOT NPC-ONLY. AddOrUpdateNpc feeds it from EVERY briefinfo, so
-                // mobs, herbs and gathering nodes land in it alongside real NPCs. Handing all of that to
-                // the page drew each enemy TWICE on the combat map — once as a blue NPC diamond from this
-                // list and once as a white mob tag from the live mob list (operator 2026-08-13: 'double
-                // renders ... "Flower" in light blue and then again in White ... for the SAME flower') —
-                // and filled the big map with every enemy ("Big map should NOT render all enemies").
-                // Gates and genuine NPCs only; anything huntable belongs to the mob layer.
-                // ⛔ THE TEST IS IsNpc, NOT "huntable". IsHuntableEnemy is
-                // `!IsNpc && !IsPlayerSide && Type != ResourceNodeType`, so RESOURCE NODES — herbs,
-                // plants, mushrooms, wood — are not huntable and sailed straight through this filter into
-                // the NPC layer, where they drew a second time as a blue diamond on top of the white mob
-                // tag they already had (operator 2026-08-13: still "shows plants with labels as both blue
-                // npcs and white mobs"), and filled the big map. A gathering node is not an NPC; the only
-                // things that belong on this layer are gates and actual NPCs.
+                // THE STATIC LIST IS NOT NPC-ONLY
                 if (NpcView(bot, cd, n) is { } nv) npcs.Add(nv);
             }
-        // Facing + the current target handle travel with self so the map can draw WHERE WE ARE POINTED and
-        // WHERE THE TARGET IS. Operator 2026-08-11 theory this exists to test: we may overshoot the mob (or
-        // meet its stand-off circle on the wrong side) and end up with the target BEHIND us — which would
-        // explain dead bashes and failing casts at the same time. That is invisible in numbers and obvious
-        // as two rays on a canvas. Facing stays null when unset: -1 means "never faced anything", and a
-        // default of 0° would draw a confident arrow pointing east.
+        // Facing + the current target handle travel with self so the map can draw WHERE WE ARE POINTED and WHERE THE TAR…
         return new
         {
             Self = SelfView(bot),
@@ -1644,38 +1395,18 @@ public static class BotEndpoints
             Party = party,
             Npcs = npcs,
             Map = bot.CurrentMap,
-            // The full target view travels with the entity poll so the page needs one request, not two.
+            // The full target view travels with the entity poll so the page needs one request, not two
             Target = TargetView(bot, cd),
         };
     }
 
-    /// <summary>THE TARGET VIEW (operator 2026-08-12, first task of the JCQ clone investigation): everything
-    /// about the entity the SERVER currently has selected — handle, name, level, cur/max HP, distance, and
-    /// the ANGLE between our facing and the bearing to it.
-    ///
-    /// <para>Why each field earns its place: you may only bash or cast at the server's current selection, a
-    /// cast is refused outside the skill's <c>UsableDegree</c> arc (45° for most melee skills) — so the angle
-    /// is the one geometric fact that decides a cast and it was surfaced nowhere — and level + HP are the two
-    /// numbers that decide the damage race.</para>
-    ///
-    /// <para>⛔ Three things this deliberately does NOT do. (1) It never treats handle 0 as "no target":
-    /// 0 is a legitimate entity handle, so <c>Asserted</c> (a separate flag) is what says whether a selection
-    /// exists. (2) It never renders an unknown HP as full — a mob only reports RestHp once something has hit
-    /// it, so absent stays null and the page prints "?". (3) It resolves the handle even when the entity is
-    /// NOT in view and says so, because "targeting a handle we cannot see" is itself the diagnosis.</para>
-    ///
-    /// <para>The handle is looked up in BOTH entity lists. The JCQ shadow clone lives in both at once — it is
-    /// a scripted copy of our own character (a PLAYER entity) that <c>change2mob</c> also registers as a
-    /// fightable mob — and the two copies can disagree about where it is, so <c>PosDisagreeU</c> reports the
-    /// gap rather than silently picking one.</para></summary>
+    /// <summary>THE TARGET VIEW (operator 2026-08-12, first task of the JCQ clone investigation): everything about the entity…</summary>
     private static object TargetView(BotHandle bot, GameData.ClientData? cd)
     {
         var zv = bot.ZoneView;
         var self = bot.Position;
         var h = bot.CurrentTarget;
 
-        // Resolve from both lists. A player entity carries its own name/level/class; a mob resolves those
-        // from MobInfo. Neither is preferred blindly — see PosDisagreeU below.
         Session.NearbyPlayer? pl = null; Session.NearbyNpc? npc = null;
         if (zv is not null)
         {
@@ -1683,21 +1414,18 @@ public static class BotEndpoints
             foreach (var n in zv.NearbyNpcs) if (n.Handle == h) { npc = n; break; }
         }
 
-        // POSITION comes from the player record when there is one: player movement (SOMEONE_MOVE) updates
-        // the player entry, and for an entity present in both lists the mob copy is never updated at all —
-        // so for the clone the mob copy is frozen at its spawn point.
+        // POSITION comes from the player record when there is one: player movement (SOMEONE_MOVE) updates the player ent…
         double? x = pl is { } pp ? pp.X : npc is { } nn ? nn.X : null;
         double? y = pl is { } pq ? pq.Y : npc is { } nm ? nm.Y : null;
         double? posDisagree = pl is { } a && npc is { } b
             ? Math.Sqrt(Math.Pow((double)a.X - b.X, 2) + Math.Pow((double)a.Y - b.Y, 2))
             : null;
 
-        // A scenario clone has no mob id (its field reads 0, which is the real mob "Slime") — never resolve one.
+        // A scenario clone has no mob id (its field reads 0, which is the real mob "Slime") — never resolve one
         var md = npc is { IsScenarioClone: false } n2 ? cd?.Mob(n2.MobId) : null;
         double? dist = self is { } s && x is { } tx && y is { } ty
             ? Math.Sqrt(Math.Pow(tx - s.X, 2) + Math.Pow(ty - s.Y, 2)) : null;
-        // Bearing us→target in the SAME convention as BotHandle.FacingDeg (atan2 of the vector, 0-360),
-        // so the two can be subtracted. Undefined when we are standing exactly on it.
+        // Bearing us→target in the SAME convention as BotHandle.FacingDeg (atan2 of the vector, 0-360), so the two can b…
         double? bearing = null;
         if (self is { } sp2 && x is { } bx && y is { } by && dist is > 0.0001)
         {
@@ -1705,8 +1433,7 @@ public static class BotEndpoints
             bearing = d < 0 ? d + 360.0 : d;
         }
         var facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null;
-        // Signed-free arc distance, 0-180: how far off our nose the target sits. This is what a
-        // UsableDegree check compares against; > half the arc means the cast is refused.
+        // Signed-free arc distance, 0-180: how far off our nose the target sits
         double? angleOff = facing is { } f && bearing is { } br ? Math.Abs(((br - f + 540.0) % 360.0) - 180.0) : null;
 
         var hp = zv?.EntityHp(h);
@@ -1714,7 +1441,7 @@ public static class BotEndpoints
         return new
         {
             Handle = (int)h,
-            // Whether a selection exists at all. NOT derived from the handle being non-zero.
+            // Whether a selection exists at all
             Asserted = bot.TargetAsserted,
             HeldSeconds = bot.TargetSetAtUtc == DateTime.MinValue
                 ? (double?)null : (DateTime.UtcNow - bot.TargetSetAtUtc).TotalSeconds,
@@ -1725,7 +1452,7 @@ public static class BotEndpoints
             MobId = npc is { IsScenarioClone: false } n5 ? (int)n5.MobId : (int?)null,
             ClassId = pl is { } p5 ? (int)p5.Class : (int?)null,
             ClassName = pl is { } p6 ? cd?.ClassName(p6.Class) : null,
-            // Absent = never seen hurt. NOT full, NOT zero.
+            // Absent = never seen hurt
             Hp = hp is { } hv ? (double?)hv : null,
             MaxHp = maxHp,
             HpPct = hp is { } hv2 && maxHp is > 0 ? Math.Round(100.0 * hv2 / maxHp.Value, 1) : (double?)null,
@@ -1742,10 +1469,7 @@ public static class BotEndpoints
         };
     }
 
-    /// <summary>Learned skills with their cooldown state: length from client data, last-use from ZoneView,
-    /// remaining computed here. Returns an empty list rather than null when client data is unavailable, so
-    /// the panel renders "no skills" instead of breaking — and NEVER invents a cooldown for a skill whose
-    /// DelayTime we cannot read (unknown stays unknown, it does not become "ready").</summary>
+    /// <summary>Learned skills with their cooldown state: length from client data, last-use from ZoneView, remaining computed…</summary>
     private static object[] SkillPanel(BotHandle bot, GameData.ClientData? cd)
     {
         var zv = bot.ZoneView;
@@ -1756,14 +1480,7 @@ public static class BotEndpoints
         {
             var si = cd.Skill(id);
             if (si is null) continue;                     // not in client data — cannot judge, so omit
-            // ⛔ COOLDOWN RUNS FROM THE SERVER'S CONFIRMED START, NOT FROM OUR SEND (operator 2026-08-12:
-            // "the UI STILL shows a cooldown on a skill EVEN ON CAST FAILURE (wrong)").
-            // There are two clocks here and this panel was reading the wrong one. _lastSkillCast is
-            // stamped when we TRANSMIT, so a REFUSED cast greyed the tile out for the full cooldown and
-            // hid the failure behind something that looked like normal cooldown. SkillReadyInMs is the
-            // clock the cast gate itself uses — driven by the server's confirmed start (0x244E /
-            // CAST_SUC_ACK) — so a cast that never started leaves the skill READY, which is the truth.
-            // Same rule the Lua already applies to castAt[]: bank the cooldown on confirmation only.
+            // COOLDOWN RUNS FROM THE SERVER'S CONFIRMED START, NOT FROM OUR SEND (operator 2026-08-12: "the UI STILL shows a…
             var lastAt = zv.SkillLastCastAtUtc(id);
             double? remaining = si.DelayTimeMs > 0
                 ? zv.SkillReadyInMs(id, si.DelayTimeMs, si.CastTimeMs)
@@ -1778,7 +1495,7 @@ public static class BotEndpoints
                 LastCastAtUtc = lastAt,
                 RemainingMs = remaining,
                 Ready = remaining is null or <= 0,        // never cast this session => ready
-                // Tooltip text + whether the client ships art, so the tile can draw the real icon.
+                // Tooltip text + whether the client ships art, so the tile can draw the real icon
                 Descript = cd.SkillView(id)?.Descript,
                 HasIcon = cd.SkillView(id) is not null,
             });
@@ -1788,34 +1505,32 @@ public static class BotEndpoints
 
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/say</c>.</summary>
+/// <summary>Body for POST /api/bots/{id}/say</summary>
 public sealed record SayRequest
 {
     public string? Text { get; init; }
 }
 
-/// <summary>Body for /packetlog. <c>Enabled</c> true (default) starts the dump, false stops it.</summary>
+/// <summary>Body for /packetlog. Enabled true (default) starts the dump, false stops it</summary>
 public sealed record PacketLogRequest
 {
     public bool? Enabled { get; init; }
 }
 
-/// <summary>Body for the party/friend name-only endpoints (invite / accept / decline /
-/// friend add / delete). <c>Name</c> is the target or inviter/requester char name.</summary>
+/// <summary>Body for the party/friend name-only endpoints (invite / accept / decline / friend add / delete)</summary>
 public sealed record NameRequest
 {
     public string? Name { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/target</c> — give either a zone
-/// <c>Target</c> handle or a player <c>Name</c> to resolve from the bot's view.</summary>
+/// <summary>Body for POST /api/bots/{id}/target — give either a zone Target handle or a player Name to resolve from the bo…</summary>
 public sealed record TargetRequest
 {
     public ushort? Target { get; init; }
     public string? Name { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/follow</c>.</summary>
+/// <summary>Body for POST /api/bots/{id}/follow</summary>
 public sealed record FollowRequest
 {
     public string? Name { get; init; }
@@ -1823,22 +1538,21 @@ public sealed record FollowRequest
     public double? UnitsPerSec { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/friend/confirm</c>.</summary>
+/// <summary>Body for POST /api/bots/{id}/friend/confirm</summary>
 public sealed record FriendConfirmRequest
 {
     public string? Name { get; init; }
     public bool Accept { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/cast</c> and <c>/heal</c>.</summary>
+/// <summary>Body for POST /api/bots/{id}/cast and /heal</summary>
 public sealed record CastRequest
 {
     public ushort? Skill { get; init; }
     public ushort? Target { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/castground</c> — a location-targeted skill
-/// (e.g. Frost Nova) cast at world coordinate (<c>X</c>,<c>Y</c>), no target unit.</summary>
+/// <summary>Body for POST /api/bots/{id}/castground — a location-targeted skill</summary>
 public sealed record CastGroundRequest
 {
     public ushort? Skill { get; init; }
@@ -1846,66 +1560,59 @@ public sealed record CastGroundRequest
     public uint? Y { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/attack</c>. Omit <c>Target</c> to hit the
-/// nearest mob in view.</summary>
+/// <summary>Body for POST /api/bots/{id}/attack</summary>
 public sealed record AttackRequest
 {
     public ushort? Skill { get; init; }
     public ushort? Target { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/use-item</c>.</summary>
+/// <summary>Body for POST /api/bots/{id}/use-item</summary>
 public sealed record UseItemRequest
 {
     public byte? Slot { get; init; }
     public byte? InvenType { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/equip</c>.</summary>
+/// <summary>Body for POST /api/bots/{id}/equip</summary>
 public sealed record EquipRequest
 {
     public byte? Slot { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/pickup</c> — the ground-item handle
-/// (from <c>GET /drops</c>). The bot must already be standing near it.</summary>
+/// <summary>Body for POST /api/bots/{id}/pickup — the ground-item handle (from GET /drops )</summary>
 public sealed record PickupRequest
 {
     public ushort? Handle { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/loot</c>. Omit <c>Handle</c> to loot the
-/// nearest ground drop (walk to it + pick).</summary>
+/// <summary>Body for POST /api/bots/{id}/loot</summary>
 public sealed record LootRequest
 {
     public ushort? Handle { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/quest/answer</c>. <c>Result</c> defaults to 1
-/// (proceed/accept).</summary>
+/// <summary>Body for POST /api/bots/{id}/quest/answer</summary>
 public sealed record QuestAnswerRequest
 {
     public uint? Result { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/quest/reward</c>.</summary>
+/// <summary>Body for POST /api/bots/{id}/quest/reward</summary>
 public sealed record QuestRewardRequest
 {
     public ushort? QuestId { get; init; }
     public uint? Index { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/shop-open</c> — the merchant NPC handle.
-/// <c>MenuOption</c> picks the NPC-menu entry (default 1 = shop).</summary>
+/// <summary>Body for POST /api/bots/{id}/shop-open — the merchant NPC handle</summary>
 public sealed record ShopOpenRequest
 {
     public ushort? NpcHandle { get; init; }
     public byte? MenuOption { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/storage/move</c>. <c>Deposit</c> defaults to true
-/// (bag → storage); false withdraws (storage → bag) using the same RELOC packet.</summary>
-/// <summary>Body for <c>POST /api/bots/{id}/quest/remote-accept</c>.</summary>
+/// <summary>Body for POST /api/bots/{id}/storage/move</summary>
 public sealed record RemoteAcceptRequest
 {
     public ushort? QuestId { get; init; }
@@ -1918,23 +1625,21 @@ public sealed record StorageMoveRequest
     public bool? Deposit { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/buy</c>. <c>Lot</c> defaults to 1.</summary>
+/// <summary>Body for POST /api/bots/{id}/buy</summary>
 public sealed record BuyRequest
 {
     public ushort? ItemId { get; init; }
     public uint? Lot { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/sell</c>. <c>Lot</c> defaults to 1.</summary>
+/// <summary>Body for POST /api/bots/{id}/sell</summary>
 public sealed record SellRequest
 {
     public byte? Slot { get; init; }
     public uint? Lot { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/enchant</c>. <c>Equip</c> = gear's equip slot,
-/// <c>Raw</c> = primary enhance-stone inventory slot; <c>RawLeft/Middle/Right</c> = optional
-/// safety/bonus stones (omit for 0xFF = none).</summary>
+/// <summary>Body for POST /api/bots/{id}/enchant</summary>
 public sealed record EnchantRequest
 {
     public byte? Equip { get; init; }
@@ -1945,20 +1650,20 @@ public sealed record EnchantRequest
     public uint? Money { get; init; }
 }
 
-/// <summary>Body for the soul-stone buy endpoints. <c>Number</c> of charges (default 1).</summary>
+/// <summary>Body for the soul-stone buy endpoints</summary>
 public sealed record StoneBuyRequest
 {
     public ushort? Number { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/whisper</c>.</summary>
+/// <summary>Body for POST /api/bots/{id}/whisper</summary>
 public sealed record WhisperRequest
 {
     public string? To { get; init; }
     public string? Text { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/walk</c>. Map coords (u32).</summary>
+/// <summary>Body for POST /api/bots/{id}/walk</summary>
 public sealed record WalkRequest
 {
     public uint? FromX { get; init; }
@@ -1967,7 +1672,7 @@ public sealed record WalkRequest
     public uint? ToY { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/walkto</c>. Pathfinds on <c>Map</c>'s grid.</summary>
+/// <summary>Body for POST /api/bots/{id}/walkto</summary>
 public sealed record WalkToRequest
 {
     public uint? FromX { get; init; }
@@ -1977,41 +1682,34 @@ public sealed record WalkToRequest
     public string? Map { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/gm</c>. The '&' prefix is added if omitted.</summary>
+/// <summary>Body for POST /api/bots/{id}/gm</summary>
 public sealed record GmRequest
 {
     public string? Command { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/use-gate</c>. <c>DestMap</c> is only needed
-/// for multi-destination gates (the map short-name to pick).</summary>
+/// <summary>Body for POST /api/bots/{id}/use-gate</summary>
 public sealed record UseGateRequest
 {
     public ushort? GateHandle { get; init; }
     public string? DestMap { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/travelto</c>. <c>To</c> is the destination
-/// map short-name; <c>UnitsPerSec</c> optionally overrides the walk speed (default 120).</summary>
+/// <summary>Body for POST /api/bots/{id}/travelto</summary>
 public sealed record TravelToRequest
 {
     public string? To { get; init; }
     public double? UnitsPerSec { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/townportal</c>. <c>Dest</c> is the
-/// TownPortal-table destination index (e.g. RouN: 0=RouN,1=RouVal01,2=Eld).</summary>
+/// <summary>Body for POST /api/bots/{id}/townportal</summary>
 public sealed record TownPortalRequest
 {
     public ushort? NpcHandle { get; init; }
     public byte? Dest { get; init; }
 }
 
-/// <summary>
-/// Spawn request as the HTTP client sends it. Password may be supplied plaintext
-/// (<see cref="Password"/>, MD5-hashed here) or pre-hashed (<see cref="PasswordMd5"/>).
-/// Character creation is opt-in: set <see cref="Create"/> (or just <see cref="CharName"/>).
-/// </summary>
+/// <summary>Spawn request as the HTTP client sends it</summary>
 public sealed record SpawnBotRequest
 {
     public string? Host { get; init; }
@@ -2021,40 +1719,33 @@ public sealed record SpawnBotRequest
     public string? PasswordMd5 { get; init; }
     public byte? WorldNo { get; init; }
     public byte? Slot { get; init; }
-    /// <summary>Character to enter BY NAME (stable; preferred over <see cref="Slot"/>). Picking by
-    /// slot/first-avatar logs into the wrong char when a retired char still holds an earlier slot.</summary>
+    /// <summary>Character to enter BY NAME (stable; preferred over )</summary>
     public string? Character { get; init; }
     public string? DataDir { get; init; }
     public int? WmPortFallback { get; init; }
     public string? Id { get; init; }
 
-    // Optional in-band character creation (used only if the slot is empty).
+    // Optional in-band character creation (used only if the slot is empty)
     public bool Create { get; init; }
     public string? CharName { get; init; }
     public string? Class { get; init; }
     public byte? Gender { get; init; }
-    // Full APPEARANCE, so a create can be tested without a redeploy per guess. All optional; 0/absent
-    // keeps the current behaviour (race derived from class, appearance sent as 0).
-    // ⚠️ FaceShape is NOT the FaceInfo row id — it is that row's FT_<class>_<gender> INDEX, which differs
-    // per class on the same row (row 0 is F=0, C=1, A=2, M=3). That is why faceshape=0 creates a Fighter
-    // fine and is not a valid Archer face at all: 0 is simply the Fighter column's first index.
+    // Full APPEARANCE, so a create can be tested without a redeploy per guess
     public byte? Race { get; init; }
     public byte? HairType { get; init; }
     public byte? HairColor { get; init; }
     public byte? FaceShape { get; init; }
 
-    // Optional buff-in-town behavior. Enable with `buff:true`; skill IDs are the
-    // (learnt) buff skills to cast on request — empty until the priest learns them.
+    // Optional buff-in-town behavior
     public bool Buff { get; init; }
     public string? BuffTrigger { get; init; }
     public ushort[]? BuffSkillIds { get; init; }
     public bool BuffAutoNearby { get; init; }
 
-    /// <summary>Log every inbound frame on both links (zone + WM) for introspection.</summary>
+    /// <summary>Log every inbound frame on both links (zone + WM) for introspection</summary>
     public bool LogInbound { get; init; }
 
-    /// <summary>Start the tailable packet dump from the first connection (captures the login +
-    /// zone-enter burst, not just post-spawn). Same file as the /packetlog endpoint.</summary>
+    /// <summary>Start the tailable packet dump from the first connection (captures the login + zone-enter burst, not just post…</summary>
     public bool PacketLog { get; init; }
 
     public BotSpawnOptions ToOptions()
@@ -2077,8 +1768,7 @@ public sealed record SpawnBotRequest
                 ? $"Bot{Random.Shared.Next(1000, 9999)}" : CharName!;
             if (!Enum.TryParse<ClassId>(Class ?? nameof(ClassId.Fighter), ignoreCase: true, out var cls))
                 throw new ArgumentException($"unknown class '{Class}'", nameof(Class));
-            // Pass the NULLABLES straight through — `Race: 0` from a caller must mean "send zero",
-            // not "unspecified". Collapsing them with `?? 0` here is the same sentinel bug one layer up.
+            // Pass the NULLABLES straight through — `Race: 0` from a caller must mean "send zero", not "unspecified"
             createSpec = new CharacterSpec(name, cls, Gender: Gender ?? 0, Slot: Slot ?? 0,
                 Race: Race, HairType: HairType, HairColor: HairColor, FaceShape: FaceShape);
         }
@@ -2092,10 +1782,7 @@ public sealed record SpawnBotRequest
             Slot = Slot,
             Character = string.IsNullOrWhiteSpace(Character) ? null : Character,
             CreateSpec = createSpec,
-            // Per-bot ressystem dir for the [1801] zone-entry checksums. Precedence: the spawn's own
-            // DataDir → the CLIENT_DATA_DIR env (how the in-cluster host points at the NFS-mounted client
-            // data) → the local dev-machine default. Without the env fallback, an in-cluster spawn that
-            // omits DataDir hit the (nonexistent) Z: path and couldn't enter a zone.
+            // Per-bot ressystem dir for the [1801] zone-entry checksums
             DataDir = !string.IsNullOrWhiteSpace(DataDir) ? DataDir!
                 : Environment.GetEnvironmentVariable("CLIENT_DATA_DIR") is { Length: > 0 } cdd ? cdd
                 : "Z:/ClientProd2/ressystem",

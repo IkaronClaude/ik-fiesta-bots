@@ -2,12 +2,7 @@ using System.Text;
 
 namespace Fiesta.Bot.Session;
 
-/// <summary>
-/// Encoding helpers for Fiesta wire strings. The Korean client/server encode text
-/// in code page 949 (EUC-KR); ASCII is a subset, so English names/chat round-trip
-/// unchanged. Fixed-width name fields (Name5 = 20 bytes) are NUL-padded — we trim
-/// at the first NUL on decode.
-/// </summary>
+/// <summary>Encoding helpers for Fiesta wire strings</summary>
 public static class FiestaText
 {
     private static readonly Encoding Korean = ResolveKorean();
@@ -25,7 +20,7 @@ public static class FiestaText
         }
     }
 
-    /// <summary>Decode a NUL-terminated (or full-width) EUC-KR field to a string.</summary>
+    /// <summary>Decode a NUL-terminated (or full-width) EUC-KR field to a string</summary>
     public static string Decode(ReadOnlySpan<byte> bytes)
     {
         var end = bytes.IndexOf((byte)0);
@@ -33,6 +28,6 @@ public static class FiestaText
         return bytes.IsEmpty ? string.Empty : Korean.GetString(bytes);
     }
 
-    /// <summary>Encode a string to EUC-KR bytes (no NUL terminator added).</summary>
+    /// <summary>Encode a string to EUC-KR bytes (no NUL terminator added)</summary>
     public static byte[] Encode(string text) => Korean.GetBytes(text ?? string.Empty);
 }

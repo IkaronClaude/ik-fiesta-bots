@@ -3,23 +3,7 @@ using System.Text;
 
 namespace Fiesta.Bot.Net;
 
-/// <summary>
-/// Loads the BYO XOR table at runtime. The table is intentionally kept out of
-/// this repo (and out of git history of the sibling repos) — see PROJECT_PLAN.md.
-///
-/// Sources, in priority order:
-///   1. <c>XOR_TABLE_HEX</c>  — inline hex string ("0759694A…" or "0x07,0x59,…";
-///                              whitespace, commas and 0x prefixes tolerated).
-///   2. <c>XOR_TABLE_PATH</c> — path to a file holding either a hex string (any
-///                              of the above forms) or the raw binary table. Hex
-///                              is tried first; non-hex content is treated as raw.
-///   3. (neither set)         — returns null. The bot can't connect to a zone
-///                              without it, so callers that need it should throw
-///                              a clear error.
-///
-/// Mirrors fiesta-proxy's <c>Crypto/XorTableLoader</c> so the same operator env
-/// works for both.
-/// </summary>
+/// <summary>Loads the BYO XOR table at runtime</summary>
 public static class XorTableLoader
 {
     public static byte[]? FromEnvironment()
@@ -46,7 +30,7 @@ public static class XorTableLoader
         return null;
     }
 
-    /// <summary>Load the table or throw a clear, actionable error.</summary>
+    /// <summary>Load the table or throw a clear, actionable error</summary>
     public static byte[] Require()
         => FromEnvironment()
            ?? throw new InvalidOperationException(

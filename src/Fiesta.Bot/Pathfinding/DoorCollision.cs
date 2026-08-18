@@ -1,24 +1,9 @@
 namespace Fiesta.Bot.Pathfinding;
 
-/// <summary>
-/// A map's DYNAMIC door collision, loaded from its <c>.sbi</c> (gherblino's MapDoorArray). Each scenario
-/// corridor door owns a tile box plus TWO walkability bitmaps for that box — one per door state — that the
-/// server swaps when the door opens/closes (<c>NC_SCENARIO_DOORSTATE_CMD</c> 0x6C09). The static <c>.shbd</c>
-/// is baked with every door in its OPEN geometry, so a pathfinder that reads only the <c>.shbd</c> sees a
-/// closed door as passable and routes straight into a wall the server enforces → MOVEFAIL storm (the JCQ
-/// Job1_Dn01 instance-nav failure). Loading these overlays and applying <c>bitmap[doorstate]</c> over each
-/// door box makes our collision match the server's exactly — the same door-aware nav the real client does.
-///
-/// <para>File layout (verified against Job1_Dn01, 2026-07-15): <c>u32 count</c>, then <c>count</c> × 56-byte
-/// HEAD (<c>name[32]</c> NUL-terminated + <c>u32 startX,startY,endX,endY,dataSize,address</c>, all in TILE
-/// coords), then a block buffer. Per door the buffer holds <c>2·dataSize</c> bytes at <c>address</c>:
-/// <c>[state0 bitmap][state1 bitmap]</c> where <c>dataSize = (width/8)·height</c>, rows top-to-bottom, LSB-first
-/// within a byte, <b>bit set = blocked</b> (same convention as <see cref="BlockGrid"/>). <c>state1</c> == the
-/// baked <c>.shbd</c> geometry (open); <c>state0</c> = closed. Tile→world = ×6.25.</para>
-/// </summary>
+/// <summary>A map's DYNAMIC door collision, loaded from its .sbi (gherblino's MapDoorArray)</summary>
 public sealed class DoorCollision
 {
-    /// <summary>One door's box (inclusive TILE bounds) and its two per-state walkability bitmaps.</summary>
+    /// <summary>One door's box (inclusive TILE bounds) and its two per-state walkability bitmaps</summary>
     public sealed class Door
     {
         public required string Name { get; init; }
@@ -32,8 +17,7 @@ public sealed class DoorCollision
         public int Width => EndX - StartX + 1;
         public int Height => EndY - StartY + 1;
 
-        /// <summary>Is local tile (lx,ly) blocked in the given door <paramref name="state"/> (0 closed / 1 open)?
-        /// Out-of-bitmap or unknown state → false (defer to the base grid).</summary>
+        /// <summary>Is local tile (lx,ly) blocked in the given door (0 closed / 1 open)?</summary>
         public bool BlockedLocal(int state, int lx, int ly)
         {
             if ((uint)state >= (uint)State.Length) return false;
@@ -47,8 +31,7 @@ public sealed class DoorCollision
     public IReadOnlyList<Door> Doors { get; }
     private DoorCollision(IReadOnlyList<Door> doors) => Doors = doors;
 
-    /// <summary>Parse a <c>.sbi</c>. Returns null if the file is absent, empty, or malformed (caller then runs
-    /// with the static grid only — no door awareness, unchanged from before).</summary>
+    /// <summary>Parse a .sbi . Returns null if the file is absent, empty, or malformed (caller then runs with the static grid…</summary>
     public static DoorCollision? Load(string sbiPath)
     {
         if (!File.Exists(sbiPath)) return null;
@@ -62,7 +45,6 @@ public sealed class DoorCollision
         int headEnd = 4 + count * headSize;
         if (headEnd > b.Length) return null;
 
-        // First pass: heads.
         var heads = new (string name, int sx, int sy, int ex, int ey, int ds, int addr)[count];
         for (int i = 0; i < count; i++)
         {

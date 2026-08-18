@@ -1,22 +1,5 @@
 namespace Fiesta.Bot.Manager;
 
-/// <summary>
-/// The bot's tail, on disk. One rotating file set per bot, flushed after every line.
-///
-/// <para>⛔ WHY: the log ring buffer lived only in memory, so every deploy, pod restart or respawn
-/// destroyed it — and those are precisely the moments you most want to read back what happened. It also
-/// spans only ~21 minutes at note density, so even a healthy bot could not answer "what happened last
-/// night". Roster, learned knowledge and phase totals already persist; this closes the last gap
-/// (operator 2026-08-12).</para>
-///
-/// <para>Flushed per line ON PURPOSE. A buffered writer loses exactly the tail you need — the lines just
-/// before a crash or a SIGTERM — which is the one case this exists for. Cost is an NFS write per line,
-/// accepted deliberately.</para>
-///
-/// <para>Rotation: <c>&lt;id&gt;.log</c> fills to <see cref="MaxLines"/>, then shifts to <c>.1</c>,
-/// <c>.2</c> … and the oldest beyond <see cref="MaxFiles"/> is deleted, so a long-running bot cannot fill
-/// the claim.</para>
-/// </summary>
 public sealed class BotLogFile : IDisposable
 {
     public const int MaxLines = 10_000;
@@ -36,8 +19,7 @@ public sealed class BotLogFile : IDisposable
         {
             Directory.CreateDirectory(_dir);
             var path = Current;
-            // Continue an existing file rather than truncating: a respawn inside one pod lifetime should
-            // extend the bot's story, not restart it.
+            // Continue an existing file rather than truncating: a respawn inside one pod lifetime should extend the bot's st…
             _lines = File.Exists(path) ? CountLines(path) : 0;
             Open();
         }
@@ -73,8 +55,7 @@ public sealed class BotLogFile : IDisposable
         try
         {
             _writer?.Dispose(); _writer = null;
-            // Shift downward from the oldest so nothing is overwritten mid-chain, and drop what falls
-            // off the end — MaxFiles is the cap on total history, not a per-file cap.
+            // Shift downward from the oldest so nothing is overwritten mid-chain, and drop what falls off the end — MaxFiles…
             var oldest = Nth(MaxFiles - 1);
             if (File.Exists(oldest)) File.Delete(oldest);
             for (var n = MaxFiles - 2; n >= 1; n--)
@@ -86,9 +67,7 @@ public sealed class BotLogFile : IDisposable
         finally { try { Open(); } catch { _writer = null; } }
     }
 
-    /// <summary>Read back the most recent <paramref name="max"/> lines for a bot, oldest first, walking
-    /// backwards through the rotated set. Used at spawn so the in-memory ring — and therefore every
-    /// /log and snapshot endpoint — carries history from BEFORE this process started.</summary>
+    /// <summary>Read back the most recent lines for a bot, oldest first, walking backwards through the rotated set</summary>
     public static IReadOnlyList<string> LoadRecent(string dir, string id, int max)
     {
         var res = new List<string>();
@@ -102,11 +81,6 @@ public sealed class BotLogFile : IDisposable
             {
                 if (res.Count >= max) break;
                 if (!File.Exists(f)) continue;
-                // ⛔ NEVER File.ReadAllLines HERE (fixed 2026-08-18). These rotated files are 1-4.6MB each
-                // (100MB total on disk), and reading one whole just to keep its TAIL allocated a string[]
-                // of every line — for up to 10 files x 4 bots, all during spawn. That transient spike is
-                // what OOMKilled the container 96s after start (exit 137, reason=OOMKilled) and dropped all
-                // four bots. Stream instead, keeping only the last `take` lines in a fixed ring.
                 var take = max - res.Count;
                 var ring = new string[take];
                 var n = 0; var total = 0;

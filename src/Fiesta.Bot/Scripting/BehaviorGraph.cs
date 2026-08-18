@@ -2,20 +2,13 @@ using System.Text.Json;
 
 namespace Fiesta.Bot.Scripting;
 
-/// <summary>A state node in a <see cref="BehaviorGraph"/>: a name plus the Lua source that
-/// defines its lifecycle (<c>on_enter()</c>/<c>tick()</c>/<c>on_exit()</c>) and any event
-/// hooks (<c>on_hp</c>, <c>on_hit</c>, …). Each state is its own visible node/script.</summary>
+/// <summary>A state node in a : a name plus the Lua source that defines its lifecycle ( on_enter() / tick() / on_exit() )…</summary>
 public sealed record GraphState(string Name, string Script);
 
-/// <summary>A first-class transition edge <c>From → To</c>. Its <see cref="Check"/> Lua source
-/// defines a <c>check()</c> that returns truthy to fire the transition. Evaluated every tick
-/// while the graph is in <see cref="From"/>.</summary>
+/// <summary>A first-class transition edge From → To</summary>
 public sealed record GraphTransition(string Name, string From, string To, string Check);
 
-/// <summary>A behaviour graph: states (nodes) + transitions (edges) + the <see cref="Initial"/>
-/// state, plus an optional <see cref="Shared"/> helper script loaded into every node's and
-/// transition's environment (so e.g. <c>mob_grind</c> can call a shared <c>survive()</c> that
-/// <c>stay_alive</c> also uses — composition without duplication). Serializable for persistence.</summary>
+/// <summary>A behaviour graph: states (nodes) + transitions (edges) + the state, plus an optional helper script loaded int…</summary>
 public sealed record BehaviorGraph(
     string Name,
     string Initial,
@@ -23,8 +16,7 @@ public sealed record BehaviorGraph(
     IReadOnlyList<GraphTransition> Transitions,
     string? Shared = null);
 
-/// <summary>Disk persistence for behaviour graphs (one JSON file per graph). Survives host
-/// restarts — which also fixes uploaded behaviour vanishing on a rebuild.</summary>
+/// <summary>Disk persistence for behaviour graphs (one JSON file per graph)</summary>
 public sealed class GraphStore
 {
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
@@ -61,7 +53,7 @@ public sealed class GraphStore
         catch { return []; }
     }
 
-    // Per-bot current-state persistence (so a graph resumes its state across host restarts).
+    // Per-bot current-state persistence (so a graph resumes its state across host restarts)
     private string StatePath(string graph, string botId) => Path.Combine(_dir, $"{graph}.{botId}.state");
     public void SaveState(string graph, string botId, string state)
     {

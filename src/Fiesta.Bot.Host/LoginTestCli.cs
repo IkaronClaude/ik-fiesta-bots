@@ -5,13 +5,7 @@ using Fiesta.Bot.Zone;
 
 namespace Fiesta.Bot.Host;
 
-/// <summary>
-/// Throwaway CLI to drive the login→WM chain against a live server while we
-/// build it out. Usage:
-///   dotnet run --project src/Fiesta.Bot.Host -- login-test \
-///       --host 62.171.171.24 --port 9010 --user testuser --pass test123 [--world 0] [--slot N]
-/// XOR table comes from XOR_TABLE_PATH / XOR_TABLE_HEX (BYO, never committed).
-/// </summary>
+/// <summary>Throwaway CLI to drive the login→WM chain against a live server while we build it out</summary>
 public static class LoginTestCli
 {
     public static async Task<int> RunAsync(string[] args)
@@ -33,7 +27,7 @@ public static class LoginTestCli
             createSpec = new CharacterSpec(cname, cls, Gender: gender, Slot: slot ?? 0);
         }
 
-        // Password: --pass = plaintext (MD5'd here), or --passmd5 = already hashed.
+        // Password: --pass = plaintext (MD5'd here), or --passmd5 = already hashed
         BotCredentials creds = opt.TryGetValue("passmd5", out var md5)
             ? new BotCredentials(user, md5)
             : BotCredentials.FromPlaintext(user, opt.GetValueOrDefault("pass", "test123"));
@@ -51,8 +45,7 @@ public static class LoginTestCli
             var login = await chain.RunLoginAsync(new FiestaEndpoint(host, port), creds, worldNo, cts.Token);
             Log($"[ok] OTP acquired, WM advertised at {login.WmAdvertised}");
 
-            // The WM is usually reachable at the same public host; honor the
-            // advertised port. (k8s/proxy may advertise an internal IP.)
+            // The WM is usually reachable at the same public host; honor the advertised port
             var wmEp = new FiestaEndpoint(host, login.WmAdvertised.Port == 0 ? 9013 : login.WmAdvertised.Port);
             var (wm, wmConn) = await chain.RunWmAsync(wmEp, creds, login.Otp, slot, createSpec, cts.Token);
             using (wmConn)
@@ -60,8 +53,7 @@ public static class LoginTestCli
                 Log($"[ok] WM handle={wm.WmHandle}, avatars={wm.Avatars.Count}, " +
                     (wm.ZoneAdvertised is { } z ? $"zone={z}" : "no zone (no avatar / not entered)"));
 
-                // Zone entry: build [1801] from scratch and enter. The WM
-                // connection stays open (the zone validates against it).
+                // Zone entry: build [1801] from scratch and enter
                 if (wm.ZoneAdvertised is { } zoneAdv && wm.Selected is { } sel)
                 {
                     var dataDir = opt.GetValueOrDefault("data-dir", "Z:/ClientProd2/ressystem");
@@ -70,10 +62,7 @@ public static class LoginTestCli
                     var zoneConn = (await zoneEntry.EnterAsync(zoneEp, wm.WmHandle, sel.Name, cts.Token)).Conn;
                     Log($"[ok] *** {sel.Name} IS IN ZONE ({zoneEp}) ***");
 
-                    // Task 16 — bot session runtime: stay in zone. Run a session on
-                    // BOTH connections (each answers its own Misc heartbeats; the WM
-                    // link keeps receiving them while we're in zone). Hold for --hold
-                    // seconds (default 30) to prove we don't get timed out / kicked.
+                    // Task 16 — bot session runtime: stay in zone
                     var holdSec = int.Parse(opt.GetValueOrDefault("hold", "30"));
                     await using var zoneSession = new BotSession(zoneConn, sel.Name, wm.WmHandle, zoneEp, Log);
                     var wmSession = new BotSession(wmConn, sel.Name, wm.WmHandle, wmEp, Log);

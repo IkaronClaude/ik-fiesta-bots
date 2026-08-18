@@ -1,36 +1,8 @@
 namespace Fiesta.Bot.GameData;
 
-/// <summary>
-/// Loads a map's MINIMAP — the same picture the real client draws — from BYO client data at
-/// <c>&lt;client root&gt;/resmenu/minimap/&lt;MapName&gt;.{tga,dds}</c>, and hands it back as a PNG.
-///
-/// <para><b>Client-data traps, all settled by measurement:</b></para>
-/// <list type="number">
-/// <item><b>Mixed case.</b> The extensions are spelled <c>.dds</c> and <c>.DDS</c> in one directory, so
-/// the lookup is case-insensitive — the same trap that silently cost the item icons their art twice.</item>
-/// <item><b>⛔ The <c>.tga</c> files are NOT minimaps — they are LOADING SCREENS.</b> Only two exist
-/// (LinkField01/02) and both are 1024x768 (a 4:3 screen, not a square map); decoding LinkField02.TGA
-/// renders the "Dark Passage II — Now Loading" splash art. An earlier version of this loader preferred
-/// TGA over DDS on the reasoning that it was higher-resolution; that was wrong, and would have drawn a
-/// picture of four chibi adventurers where the map belongs. <b>DDS only.</b></item>
-/// <item><b>Those TGAs also look blank in a viewer</b> — 16bpp ARGB1555 with the alpha bit clear on
-/// every pixel, so anything honouring alpha shows nothing. The TGA decoder below forces opaque and is
-/// kept for <c>tools/tga_to_png.py</c>-style inspection, but it is not used for minimaps.</item>
-/// </list>
-///
-/// <para><b>World↔image mapping (MEASURED — tools/minimap_orient.py).</b> The image spans the FULL square
-/// <c>.shbd</c> grid, world <c>[0, tiles*6.25]</c> on both axes, with <b>Y FLIPPED</b>:
-/// <c>px = worldX/extent*W</c>, <c>py = (1 - worldY/extent)*H</c>. Established by correlating each map's
-/// walkability mask against its painted ground across all four flip candidates: flipY scored highest on
-/// every map that discriminates (EldGbl02 0.880 vs 0.415 identity, RouVal02 0.635 vs 0.395, Urg 0.494 vs
-/// 0.286) and never lost. Towns (RouN, Eld) come out inconclusive because they are mostly rooftops, so
-/// they neither confirm nor contradict. An earlier attempt to fit by drawn-pixel bounding box was a dead
-/// test — minimaps are fully painted, so every image's content bbox is the whole image.</para>
-/// </summary>
 public static class MinimapImage
 {
-    /// <summary>Decode a map's minimap to PNG bytes, or null when the client has no art for it
-    /// (instances and a few link fields have none — the caller draws a plain grid instead).</summary>
+    /// <summary>Decode a map's minimap to PNG bytes, or null when the client has no art for it (instances and a few link field…</summary>
     public static byte[]? Png(string minimapDir, string mapName)
     {
         var path = Resolve(minimapDir, mapName);
@@ -44,11 +16,10 @@ public static class MinimapImage
         return rgba is null || w <= 0 || h <= 0 ? null : GameData.Png.Encode(rgba, w, h);
     }
 
-    /// <summary>True when the client ships art for this map.</summary>
+    /// <summary>True when the client ships art for this map</summary>
     public static bool Exists(string minimapDir, string mapName) => Resolve(minimapDir, mapName) is not null;
 
-    // Index the directory once, case-insensitively, keyed by "<name>.<ext>" so the TGA/DDS preference
-    // is expressible — the item-icon index keys on the bare name and could not tell the two apart.
+    // Index the directory once, case-insensitively, keyed by "
     private static readonly Dictionary<string, Dictionary<string, string>> _dirs = new(StringComparer.OrdinalIgnoreCase);
     private static readonly object _gate = new();
 
@@ -68,29 +39,21 @@ public static class MinimapImage
                     ok = true;
                 }
                 catch { /* no minimap dir — caller falls back to a plain grid */ }
-                // ⛔ ONLY CACHE A SUCCESSFUL LISTING. Caching the empty result of a MISSING directory
-                // makes "we have not looked properly yet" indistinguishable from "there is no art", and
-                // it never recovers: the art was uploaded to the running host's shared claim and every
-                // map still reported hasArt=false until the process restarted, because the first probe
-                // (before the upload) had cached an empty index forever. Absence of evidence cached as
-                // evidence of absence — the same shape as reading "nothing yet" as a real answer.
+                // ONLY CACHE A SUCCESSFUL LISTING
                 if (ok) _dirs[dir] = index;
             }
         }
-        // DDS ONLY — the .tga siblings are loading screens (see the type remarks), so a map that ships
-        // both must still resolve to its .dds.
+        // DDS ONLY — the .tga siblings are loading screens (see the type remarks), so a map that ships both must still r…
         return index.TryGetValue(mapName + ".dds", out var p) ? p : null;
     }
 
-    /// <summary>Uncompressed or RLE truecolour TGA → RGBA8888, forced opaque (see the type remarks:
-    /// these files carry a cleared alpha bit throughout and are not actually transparent).</summary>
+    /// <summary>Uncompressed or RLE truecolour TGA → RGBA8888, forced opaque (see the type remarks: these files carry a cleare…</summary>
     private static byte[]? DecodeTga(byte[] b, out int width, out int height)
     {
         width = height = 0;
         if (b.Length < 18) return null;
         int idLen = b[0], imageType = b[2];
-        // Locals, not the out params: the Put local function below captures them, and C# forbids
-        // capturing an out parameter.
+        // Locals, not the out params: the Put local function below captures them, and C# forbids capturing an out parame…
         int w = b[12] | (b[13] << 8), h = b[14] | (b[15] << 8);
         width = w; height = h;
         int bpp = b[16], descriptor = b[17];
@@ -133,7 +96,7 @@ public static class MinimapImage
             return px;
         }
 
-        // RLE: packets of [header][pixel(s)]; high bit set = run of one repeated pixel.
+        // RLE: packets of [header][pixel(s)]; high bit set = run of one repeated pixel
         int idx = 0, total = w * h;
         while (idx < total && src < b.Length)
         {

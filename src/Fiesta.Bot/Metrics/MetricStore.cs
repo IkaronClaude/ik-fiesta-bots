@@ -2,57 +2,39 @@ using System.Collections.Concurrent;
 
 namespace Fiesta.Bot.Metrics;
 
-/// <summary>Which tail of a metric is the one that matters. Drives whether the reported percentiles are the
-/// LOW tail (for things you want high — HP, exp rate) or the HIGH tail (for things you want low — damage
-/// taken, deaths). Without this a "p95" is ambiguous and the panel shows the uninteresting end.</summary>
+/// <summary>Which tail of a metric is the one that matters</summary>
 public enum MetricDirection
 {
-    /// <summary>Higher is healthier (HP, exp/min, kills). The LOW percentiles are the warning signs.</summary>
+    /// <summary>Higher is healthier (HP, exp/min, kills)</summary>
     HigherIsBetter,
-    /// <summary>Lower is healthier (damage taken, deaths, time stunned). The HIGH percentiles are the warnings.</summary>
+    /// <summary>Lower is healthier (damage taken, deaths, time stunned)</summary>
     LowerIsBetter,
 }
 
-/// <summary>How a metric accumulates within its batch window.</summary>
+/// <summary>How a metric accumulates within its batch window</summary>
 public enum MetricKind
 {
-    /// <summary>A level/reading sampled over time (HP, SP). Batched samples are AVERAGED.</summary>
+    /// <summary>A level/reading sampled over time (HP, SP)</summary>
     Gauge,
-    /// <summary>An event amount that should add up (damage dealt, exp earned, items picked up). Batched
-    /// samples are SUMMED, so "log 30 damage" three times in a batch window records 90, not 30.</summary>
+    /// <summary>An event amount that should add up (damage dealt, exp earned, items picked up)</summary>
     Counter,
 }
 
-/// <summary>One recorded sample: a value and when it happened.</summary>
+/// <summary>One recorded sample: a value and when it happened</summary>
 public readonly record struct MetricSample(DateTime At, double Value);
 
-/// <summary>Windowed statistics for one metric over one time window.</summary>
+/// <summary>Windowed statistics for one metric over one time window</summary>
 public sealed record MetricWindow(
     string Window, int Count, double Avg, double StdDev, double Min, double Max,
     double P95, double P99, double Sum, double PerMinute);
 
-/// <summary>A metric's full current picture: its definition plus stats over every configured window.</summary>
+/// <summary>A metric's full current picture: its definition plus stats over every configured window</summary>
 public sealed record MetricSnapshot(
     string Name, string Direction, string Kind, double? Latest, DateTime? LatestAt,
     IReadOnlyList<MetricWindow> Windows);
 
-/// <summary>
-/// A tiny in-memory metrics engine, one per bot: <c>InitMetric</c> once, <c>LogMetric</c> freely, then read
-/// windowed stats for a live "stat panel" view of the bot.
-/// <para>The point (operator 2026-08-05): <i>"a window into everything going on with the bot — like a stat
-/// panel, you look at it and immediately know where the bot is."</i></para>
-/// <para><b>Batching is what makes the write API safe to call anywhere.</b> Callers log at whatever rate
-/// their code happens to run at — a 400ms Lua tick, a per-packet handler, a burst of 20 hits in one second —
-/// and everything inside a metric's batch window collapses to ONE sample (averaged for a Gauge, summed for a
-/// Counter). So the ring buffer measures TIME, not caller frequency, and nobody has to think about tick
-/// rates. Without it a chatty caller would flush the buffer in seconds and a quiet one would span hours,
-/// making the same "1m avg" mean completely different things per metric.</para>
-/// <para>Thread-safe: packets arrive on the session read loop while HTTP reads the snapshot.</para>
-/// </summary>
 public sealed class MetricStore
 {
-    /// <summary>Ring capacity per metric. At the default 500ms batch this is ~8 minutes of dense history,
-    /// and far more for sparse event metrics — enough for the 1m/5m/10m windows below with headroom.</summary>
     public const int Capacity = 1000;
 
     private static readonly (string Label, TimeSpan Span)[] DefaultWindows =
@@ -70,7 +52,7 @@ public sealed class MetricStore
         public required TimeSpan Batch { get; init; }
         public readonly object Lock = new();
         public readonly Queue<MetricSample> Samples = new(Capacity);
-        // Open batch: accumulating until BatchUntil, then flushed into Samples as one point.
+        // Open batch: accumulating until BatchUntil, then flushed into Samples as one point
         public DateTime BatchUntil;
         public double BatchSum;
         public int BatchCount;
@@ -80,8 +62,7 @@ public sealed class MetricStore
 
     private readonly ConcurrentDictionary<string, Series> _series = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Declare a metric. Safe to call repeatedly (the first definition wins) so call sites can
-    /// self-register without a central list.</summary>
+    /// <summary>Declare a metric. Safe to call repeatedly (the first definition wins) so call sites can self-register without…</summary>
     public void InitMetric(string name, MetricDirection direction, MetricKind kind = MetricKind.Gauge,
         TimeSpan? batch = null)
     {
@@ -95,8 +76,7 @@ public sealed class MetricStore
         });
     }
 
-    /// <summary>Record a value. Auto-registers an unknown metric as a HigherIsBetter Gauge so a new call site
-    /// can never silently drop data just because someone forgot to InitMetric it.</summary>
+    /// <summary>Record a value. Auto-registers an unknown metric as a HigherIsBetter Gauge so a new call site can never silent…</summary>
     public void LogMetric(string name, double value)
     {
         if (string.IsNullOrWhiteSpace(name) || double.IsNaN(value) || double.IsInfinity(value)) return;
@@ -117,8 +97,7 @@ public sealed class MetricStore
         }
     }
 
-    /// <summary>Close the open batch into a single sample. A Gauge averages (it is a level), a Counter sums
-    /// (it is an amount) — averaging a counter would silently under-report bursts.</summary>
+    /// <summary>Close the open batch into a single sample</summary>
     private static void FlushLocked(Series s, DateTime at)
     {
         if (s.BatchCount == 0) return;
@@ -129,7 +108,7 @@ public sealed class MetricStore
         s.BatchCount = 0;
     }
 
-    /// <summary>Every metric's current snapshot, name-sorted for a stable panel layout.</summary>
+    /// <summary>Every metric's current snapshot, name-sorted for a stable panel layout</summary>
     public IReadOnlyList<MetricSnapshot> Snapshot(IReadOnlyList<(string Label, TimeSpan Span)>? windows = null)
     {
         var wins = windows ?? DefaultWindows;
@@ -140,7 +119,7 @@ public sealed class MetricStore
         return outp;
     }
 
-    /// <summary>One metric's snapshot, or null if never declared/logged.</summary>
+    /// <summary>One metric's snapshot, or null if never declared/logged</summary>
     public MetricSnapshot? Snapshot(string name, IReadOnlyList<(string Label, TimeSpan Span)>? windows = null)
         => _series.TryGetValue(name, out var s) ? SnapshotOf(s, windows ?? DefaultWindows) : null;
 
@@ -151,8 +130,7 @@ public sealed class MetricStore
         DateTime? latestAt;
         lock (s.Lock)
         {
-            // Flush the open batch first so a metric that just stopped updating still reports its last
-            // partial window — otherwise a freshly-logged value is invisible for up to one batch period.
+            // Flush the open batch first so a metric that just stopped updating still reports its last partial window — othe…
             FlushLocked(s, DateTime.UtcNow);
             s.BatchUntil = DateTime.UtcNow + s.Batch;
             all = s.Samples.ToArray();
@@ -183,10 +161,6 @@ public sealed class MetricStore
         var std = n > 1 ? Math.Sqrt(varSum / (n - 1)) : 0;
         var sorted = vals.ToArray();
         Array.Sort(sorted);
-        // Report the tail that MATTERS for this metric's direction: for HigherIsBetter the bad case is the
-        // LOW end ("95% of the time HP was at least X"), for LowerIsBetter it is the HIGH end ("95% of the
-        // time damage taken was at most X"). Reporting the wrong tail makes the panel look fine while the
-        // thing you care about is the other end of the distribution.
         double p95, p99;
         if (dir == MetricDirection.HigherIsBetter) { p95 = Quantile(sorted, 0.05); p99 = Quantile(sorted, 0.01); }
         else { p95 = Quantile(sorted, 0.95); p99 = Quantile(sorted, 0.99); }

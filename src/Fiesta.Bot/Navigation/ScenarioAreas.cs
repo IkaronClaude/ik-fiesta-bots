@@ -2,19 +2,10 @@ using System.Text;
 
 namespace Fiesta.Bot.Navigation;
 
-/// <summary>A named scenario trigger AREA from a map's <c>.aid</c> (Area Info Data), centre + half-extents in
-/// WORLD coords. The server's scenario script arms <c>AreaEntry "Name"</c> interrupts on these polygons (e.g.
-/// the JCQ promotion Job1_Dn01: <c>Zone_Mob01..05</c>), each firing ONCE when the player crosses in. The
-/// instance driver walks to the CURRENT armed area's centre (matched to <see cref="ZoneView.LastScenarioArea"/>)
-/// so it triggers each room's wave cleanly IN ORDER instead of blind-sweeping across areas and consuming the
-/// one-shot interrupts out of sequence. Pure BYO nav data — no hardcoding.</summary>
+/// <summary>A named scenario trigger AREA from a map's .aid (Area Info Data), centre + half-extents in WORLD coords</summary>
 public sealed record ScenarioArea(string Name, float CenterX, float CenterY, float HalfX, float HalfY);
 
-/// <summary>Parses a <c>.aid</c> (format from gherblino's AIDEditor): <c>u32 count</c>, then per area a
-/// <c>name[32]</c> (NUL-terminated UTF8) + <c>i32 areaType</c> (0=circle, else square), then the shape
-/// floats — circle: <c>cx,cy,radius</c>; square (oriented box): <c>cx,cy,radiusU,radiusV,angle</c>. Coords are
-/// already WORLD units. We keep the axis-aligned half-extents (radiusU/V, or radius for a circle) — enough to
-/// walk to the centre and test containment; the rotation is ignored for that purpose.</summary>
+/// <summary>Parses a .aid (format from gherblino's AIDEditor): u32 count , then per area a name[32] (NUL-terminated UTF8)…</summary>
 public static class ScenarioAreas
 {
     public static IReadOnlyList<ScenarioArea> Load(string aidPath)

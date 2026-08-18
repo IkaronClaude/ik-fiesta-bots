@@ -2,19 +2,7 @@ using FiestaLibReloaded.Networking;
 
 namespace Fiesta.Bot.Net;
 
-/// <summary>
-/// Fiesta's client→server stream cipher: each body byte is XOR'd against a
-/// fixed BYO table, the position advancing per byte and wrapping mod table
-/// length. The position starts at the handshake <c>seed</c> the server sends.
-///
-/// XOR is symmetric, but the real protocol only encrypts C→S — S→C stays
-/// plaintext — so a client uses one of these for the *send* direction only.
-/// The position is mutable state: every byte transformed advances it, so a
-/// single instance must serialize sends (the connection holds a send lock).
-///
-/// The table itself is operator-provided (BYO) and never shipped in this repo;
-/// see <see cref="XorTableLoader"/> and PROJECT_PLAN.md.
-/// </summary>
+/// <summary>Fiesta's client→server stream cipher: each body byte is XOR'd against a fixed BYO table, the position advancin…</summary>
 public sealed class XorStreamCipher : IFiestaStreamCipher
 {
     private readonly byte[] _table;
@@ -28,7 +16,7 @@ public sealed class XorStreamCipher : IFiestaStreamCipher
         _pos = ((seed % table.Length) + table.Length) % table.Length;
     }
 
-    /// <summary>Current table position (advances as bytes are transformed).</summary>
+    /// <summary>Current table position (advances as bytes are transformed)</summary>
     public int Position => _pos;
 
     public void Transform(Span<byte> data)

@@ -3,72 +3,47 @@ using Fiesta.Bot.Login;
 
 namespace Fiesta.Bot.Manager;
 
-/// <summary>
-/// Everything needed to bring one bot from credentials to in-zone: the server
-/// endpoint, the account, which character to enter (or create), and where its
-/// reference client data lives (for the [1801] checksums). This is the domain
-/// input to <see cref="BotManager.Spawn"/> — the HTTP layer maps its request
-/// DTO onto this. Mirrors the knobs <c>LoginTestCli</c> exposes, minus the
-/// hold timer (a managed bot runs until stopped).
-/// </summary>
+/// <summary>Everything needed to bring one bot from credentials to in-zone: the server endpoint, the account, which charac…</summary>
 public sealed record BotSpawnOptions
 {
-    /// <summary>Public host of the login server (WM/zone reuse it unless the
-    /// server advertises a different IP).</summary>
+    /// <summary>Public host of the login server (WM/zone reuse it unless the server advertises a different IP)</summary>
     public required string Host { get; init; }
 
-    /// <summary>Login server port. Defaults to the conventional 9010.</summary>
+    /// <summary>Login server port. Defaults to the conventional 9010</summary>
     public int LoginPort { get; init; } = 9010;
 
-    /// <summary>Account credentials (password already MD5-hashed —
-    /// see <see cref="BotCredentials"/>).</summary>
+    /// <summary>Account credentials (password already MD5-hashed — see )</summary>
     public required BotCredentials Credentials { get; init; }
 
     public byte WorldNo { get; init; }
 
-    /// <summary>Avatar slot to enter with. Null = first avatar on the account.
-    /// <see cref="Character"/> (by name) takes precedence when both are set.</summary>
+    /// <summary>Avatar slot to enter with</summary>
     public byte? Slot { get; init; }
 
-    /// <summary>Character to enter with, selected BY NAME from the WM avatar list — the stable,
-    /// deterministic identifier (slot ordinal shifts as chars are added/retired, so picking the
-    /// first/slot-0 avatar logs into the wrong char). Null = fall back to <see cref="Slot"/>, then
-    /// the first avatar. Preferred over <see cref="Slot"/> when set.</summary>
+    /// <summary>Character to enter with, selected BY NAME from the WM avatar list — the stable, deterministic identifier (slot…</summary>
     public string? Character { get; init; }
 
-    /// <summary>If the chosen slot is empty (or the account has no avatars),
-    /// create this character in-band first. Null = don't create.</summary>
+    /// <summary>If the chosen slot is empty (or the account has no avatars), create this character in-band first</summary>
     public CharacterSpec? CreateSpec { get; init; }
 
-    /// <summary>Client <c>ressystem</c> dir the [1801] data-file checksums are
-    /// computed from. Must match the server's data files.</summary>
+    /// <summary>Client ressystem dir the [1801] data-file checksums are computed from</summary>
     public string DataDir { get; init; } = "Z:/ClientProd2/ressystem";
 
-    /// <summary>WM port to use when <c>WORLDSELECT_ACK</c> advertises port 0
-    /// (k8s/proxy sometimes does). The advertised port wins when non-zero.</summary>
+    /// <summary>WM port to use when WORLDSELECT_ACK advertises port 0 (k8s/proxy sometimes does)</summary>
     public int WmPortFallback { get; init; } = 9013;
 
-    /// <summary>Optional caller-supplied id. When null the manager assigns one.</summary>
+    /// <summary>Optional caller-supplied id</summary>
     public string? Id { get; init; }
 
-    /// <summary>Fallback start-map short name, used only if the WM avatar list doesn't
-    /// report one (e.g. a freshly created character). Normally the real spawn map comes
-    /// from <see cref="Login.AvatarSummary.LoginMap"/> (the WM avatar's <c>loginmap</c>),
-    /// which the bot then keeps current via transition packets.</summary>
+    /// <summary>Fallback start-map short name, used only if the WM avatar list doesn't report one</summary>
     public string StartMap { get; init; } = "RouN";
 
-    /// <summary>Enable the buff-in-town behavior with this config. Null = the bot
-    /// just idles in town (a <see cref="Session.ZoneView"/> still tracks nearby
-    /// players + chat for status and on-demand <c>/say</c>).</summary>
+    /// <summary>Enable the buff-in-town behavior with this config</summary>
     public BuffConfig? Buff { get; init; }
 
-    /// <summary>Log every inbound frame on both the zone and WM links (opcode +
-    /// dept/cmd + len + hex preview) — packet introspection. Noisy; off by default.</summary>
+    /// <summary>Log every inbound frame on both the zone and WM links (opcode + dept/cmd + len + hex preview) — packet introsp…</summary>
     public bool LogInbound { get; init; }
 
-    /// <summary>Start the tailable both-directions packet dump from the VERY FIRST connection
-    /// (login → WM → zone), so the login handshake and the zone-enter char-info burst (current
-    /// soul-stone counts, vitals, quest/skill seed) are captured — not just post-spawn traffic.
-    /// Equivalent to calling /packetlog right after spawn but without missing the burst.</summary>
+    /// <summary>Start the tailable both-directions packet dump from the VERY FIRST connection (login → WM → zone), so the logi…</summary>
     public bool PacketLog { get; init; }
 }

@@ -3,23 +3,10 @@ using FiestaLibReloaded.Networking;
 
 namespace Fiesta.Bot.Net;
 
-/// <summary>
-/// A synthetic Fiesta *client* connection (the c2s side a real game client
-/// speaks). The protocol is asymmetric:
-///   • S→C frames are plaintext — we read them without transforming.
-///   • C→S frames have their (opcode+payload) XOR'd with the BYO table, the
-///     cipher position starting at the handshake <c>seed</c> the server sends.
-///
-/// This is why we don't reuse FiestaLib's <c>FiestaConnection</c> (which
-/// transforms both directions): here only the send path is enciphered. We still
-/// reuse <see cref="FiestaPacket"/> and all the typed struct bodies.
-///
-/// Framing (both directions): length prefix is 1 byte (1..255) or, for ≥256,
-/// <c>0x00</c> + little-endian u16. Body = opcode (LE u16) + payload.
-/// </summary>
+/// <summary>A synthetic Fiesta *client* connection (the c2s side a real game client speaks)</summary>
 public sealed class FiestaClientConnection : IDisposable
 {
-    /// <summary>Handshake frame opcode: bytes 0x07 0x08 (LE), 2-byte seed payload.</summary>
+    /// <summary>Handshake frame opcode: bytes 0x07 0x08 (LE), 2-byte seed payload</summary>
     public const ushort HandshakeOpcode = 0x0807;
 
     private readonly TcpClient _tcp;
@@ -27,11 +14,10 @@ public sealed class FiestaClientConnection : IDisposable
     private readonly byte[] _xorTable;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
-    /// <summary>Diagnostic sink for connection-level anomalies that are INVISIBLE ON THE WIRE —
-    /// sends after dispose, send-lock contention, write timeouts. Wired to the bot log.</summary>
+    /// <summary>Diagnostic sink for connection-level anomalies that are INVISIBLE ON THE WIRE — sends after dispose, send-lock…</summary>
     public Action<string>? Diag { get; set; }
 
-    // Thresholds. Bot-behaviour timing only, not game facts.
+    // Thresholds. Bot-behaviour timing only, not game facts
     private const int SendLockWaitMs = 5_000;      // give up waiting for the lock (something is stuck)
     private const int SendLockSlowMs = 250;        // warn: we queued behind another sender this long
     private const int SendWriteTimeoutMs = 5_000;  // a write must not outlive this (half-open socket)
@@ -50,18 +36,12 @@ public sealed class FiestaClientConnection : IDisposable
         _xorTable = xorTable;
     }
 
-    /// <summary>
-    /// Optional observer fired for every frame on this connection, in both directions,
-    /// with the <b>plaintext</b> (XOR-decoded) opcode + payload — outbound is captured
-    /// BEFORE the send cipher transforms it, inbound is plaintext already. Set at runtime
-    /// to tap traffic (e.g. a packet log); null = no overhead. Args: (outbound, opcode, payload).
-    /// Must not throw or block — it runs inline on the read/send path.
-    /// </summary>
+    /// <summary>Optional observer fired for every frame on this connection, in both directions, with the plaintext (XOR-decode…</summary>
     public Action<bool, ushort, ReadOnlyMemory<byte>>? PacketTap { get; set; }
 
     public bool HandshakeComplete => _sendCipher is not null;
 
-    /// <summary>The seed the server sent in its handshake frame (0 until handshaked).</summary>
+    /// <summary>The seed the server sent in its handshake frame (0 until handshaked)</summary>
     public int Seed { get; private set; }
 
     public static async Task<FiestaClientConnection> ConnectAsync(
@@ -73,17 +53,7 @@ public sealed class FiestaClientConnection : IDisposable
         return new FiestaClientConnection(tcp, xorTable);
     }
 
-    /// <summary>
-    /// GHOST-FIX (P0, operator 2026-07-28): turn on TCP keepalive so the OS detects a DEAD PEER in
-    /// bounded time. Without it, a HALF-OPEN socket — a hard pod-kill / node failure / network partition
-    /// that never delivers a FIN — leaves <see cref="ReadPacketAsync"/> blocked in <c>ReadAsync</c> for the
-    /// OS default (~2h on Linux). The read loop then never ends → the bot lifecycle can't tear down or
-    /// auto-relog → the exact "couldn't even request a real reconnect with a real connection" wedge the
-    /// operator flagged (and a server-side GHOST session lingers). With keepalive the read faults in ~60s
-    /// (30s idle + 3×10s probes) → EndOfStream/SocketException → clean teardown → auto-relog (a FRESH login
-    /// makes the server drop any stale session). Best-effort: the fine-grained knobs aren't on every
-    /// platform, so each is guarded independently (the coarse KeepAlive flag still applies with OS defaults).
-    /// </summary>
+    /// <summary>GHOST-FIX (P0, operator 2026-07-28): turn on TCP keepalive so the OS detects a DEAD PEER in bounded time</summary>
     private static void EnableKeepAlive(Socket s)
     {
         try { s.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true); } catch { }
@@ -92,11 +62,7 @@ public sealed class FiestaClientConnection : IDisposable
         try { s.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3); } catch { } // dead after this many unanswered probes
     }
 
-    /// <summary>
-    /// Read S→C frames until the server's handshake (<c>[07 08 seedLo seedHi]</c>)
-    /// arrives, then arm the send cipher at that seed. Any non-handshake frames
-    /// seen first are returned in <paramref name="preamble"/> (normally none).
-    /// </summary>
+    /// <summary>Read S→C frames until the server's handshake ( [07 08 seedLo seedHi] ) arrives, then arm the send cipher at th…</summary>
     public async Task WaitForHandshakeAsync(
         List<FiestaPacket>? preamble = null, CancellationToken ct = default)
     {
@@ -114,7 +80,7 @@ public sealed class FiestaClientConnection : IDisposable
         }
     }
 
-    /// <summary>Read one plaintext S→C packet (blocking until a full frame arrives).</summary>
+    /// <summary>Read one plaintext S→C packet (blocking until a full frame arrives)</summary>
     public async ValueTask<FiestaPacket> ReadPacketAsync(CancellationToken ct = default)
     {
         var first = await ReadByteAsync(ct);
@@ -134,7 +100,7 @@ public sealed class FiestaClientConnection : IDisposable
 
         var frame = new byte[frameLen];
         await ReadExactAsync(frame, ct);
-        // S→C is plaintext: no cipher transform.
+        // S→C is plaintext: no cipher transform
         var opcode = (ushort)(frame[0] | (frame[1] << 8));
         var payload = new byte[frameLen - 2];
         if (payload.Length > 0)
@@ -143,13 +109,13 @@ public sealed class FiestaClientConnection : IDisposable
         return new FiestaPacket(opcode, payload);
     }
 
-    /// <summary>Encipher and send one C→S packet. Serialized (cipher is stateful).</summary>
+    /// <summary>Encipher and send one C→S packet</summary>
     public async Task SendAsync(FiestaPacket packet, CancellationToken ct = default)
     {
         if (_sendCipher is null)
             throw new InvalidOperationException("Send before handshake — call WaitForHandshakeAsync first");
 
-        // Tap BEFORE the cipher transform so observers see plaintext (the c2s wire is enciphered).
+        // Tap BEFORE the cipher transform so observers see plaintext (the c2s wire is enciphered)
         PacketTap?.Invoke(true, packet.Opcode, packet.Payload);
 
         var bodyLen = 2 + packet.Payload.Length;
@@ -158,12 +124,7 @@ public sealed class FiestaClientConnection : IDisposable
         body[1] = (byte)(packet.Opcode >> 8);
         packet.Payload.Span.CopyTo(body.AsSpan(2));
 
-        // ===== SEND INSTRUMENTATION (operator 2026-08-04: "add as much logging as possible to catch it
-        // red handed"). A wire capture CANNOT show any of this — a send that blocks or throws before it
-        // reaches the socket leaves no packet. These are the process-level failures we're hunting:
-        //   * a send issued AFTER the connection was disposed (the leveler ticking on a dead link),
-        //   * a long WAIT on _sendLock (someone else is stuck holding it → we freeze, not reacquire),
-        //   * a long WRITE (half-open TCP that never times out — the socket that never closes).
+        // ===== SEND INSTRUMENTATION (operator 2026-08-04: "add as much logging as possible to catch it red handed")
         if (_disposed)
         {
             Diag?.Invoke($"[conn] ⛔ SEND AFTER DISPOSE op=0x{packet.Opcode:X4} — caller is using a dead connection");
@@ -207,9 +168,7 @@ public sealed class FiestaClientConnection : IDisposable
                 wire[2] = (byte)(bodyLen >> 8);
                 Buffer.BlockCopy(body, 0, wire, 3, bodyLen);
             }
-            // WRITE TIMEOUT — without this a half-open TCP socket blocks here until the OS timeout
-            // (minutes) WHILE HOLDING _sendLock, so every later send queues behind it and the bot
-            // freezes rather than reconnecting. Bound it and shout.
+            // WRITE TIMEOUT — without this a half-open TCP socket blocks here until the OS timeout (minutes) WHILE HOLDING _…
             using var wcts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             wcts.CancelAfter(SendWriteTimeoutMs);
             var wStart = Environment.TickCount64;
@@ -231,12 +190,12 @@ public sealed class FiestaClientConnection : IDisposable
         finally
         {
             _lockHolderOpcode = 0; _lockHeldSince = 0;
-            // Never touch a disposed semaphore — Dispose() no longer disposes it (see Dispose).
+            // Never touch a disposed semaphore — Dispose() no longer disposes it (see Dispose)
             try { _sendLock.Release(); } catch (ObjectDisposedException) { }
         }
     }
 
-    /// <summary>Convenience: serialize a typed body and send it.</summary>
+    /// <summary>Convenience: serialize a typed body and send it</summary>
     public Task SendAsync<T>(T body, CancellationToken ct = default) where T : IFiestaPacketBody
         => SendAsync(FiestaPacket.Create(body), ct);
 
@@ -269,10 +228,6 @@ public sealed class FiestaClientConnection : IDisposable
                          "Those senders will now fail fast rather than block.");
         _stream.Dispose();
         _tcp.Dispose();
-        // ⛔ Do NOT dispose _sendLock. A sender may be inside WaitAsync or between Wait and Release;
-        // disposing the semaphore under it throws ObjectDisposedException from arbitrary places (the
-        // "SemaphoreSlim ObjectDisposed spam" already seen when the leveler ticked on a dead link).
-        // SemaphoreSlim without a wait handle holds no unmanaged resource, so letting the GC take it
-        // is safe. Sends after dispose are rejected up-front by the _disposed check in SendAsync.
+        // Do NOT dispose _sendLock
     }
 }

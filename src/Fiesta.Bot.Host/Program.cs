@@ -1,6 +1,4 @@
-// ik-fiesta-bots host — ASP.NET minimal API + multi-bot manager.
-// Health + Swagger + the bot control surface (spawn/list/status/stop). Behaviors
-// (buff/party/gear) land on top of the running BotSessions. See PROJECT_PLAN.md.
+// ik-fiesta-bots host — ASP.NET minimal API + multi-bot manager
 using System.Security.Cryptography;
 using Fiesta.Bot.Accounts;
 using Fiesta.Bot.Host;
@@ -10,7 +8,7 @@ using Fiesta.Bot.Net;
 using Fiesta.Bot.Pathfinding;
 using Fiesta.Bot.Scripting;
 
-// Subcommand: `login-test` drives the typed login chain against a live server.
+// Subcommand: `login-test` drives the typed login chain against a live server
 if (args.Length > 0 && args[0] == "login-test")
     return await LoginTestCli.RunAsync(args[1..]);
 
@@ -19,9 +17,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddOpenApi();
 
-// The BotManager needs the BYO XOR table (cipher for the C→S link). If it's not
-// configured the host still starts — the bot endpoints just return 503 with the
-// reason — so /health and Swagger stay useful in a misconfigured environment.
+// The BotManager needs the BYO XOR table (cipher for the C→S link)
 byte[]? xorTable = null;
 string? xorError = null;
 try
@@ -36,15 +32,12 @@ if (xorTable is not null)
     builder.Services.AddSingleton(sp =>
     {
         var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Bots");
-        // BYO client data dir for SHN game-data reads (skill/item/class tables). Same
-        // default as a bot's --data-dir; override with CLIENT_DATA_DIR. A real client
-        // reads these files, so the bot may too (client SHNs only — see the PROJECT_PLAN
-        // data-source boundary).
+        // BYO client data dir for SHN game-data reads (skill/item/class tables)
         var clientDataDir = Environment.GetEnvironmentVariable("CLIENT_DATA_DIR");
         if (string.IsNullOrWhiteSpace(clientDataDir)) clientDataDir = "Z:/ClientProd2/ressystem";
         return new BotManager(xorTable, m => logger.LogInformation("{BotLog}", m))
         {
-            // Let navigation actions (follow) pathfind over the BYO block grids.
+            // Let navigation actions (follow) pathfind over the BYO block grids
             GridProvider = BotEndpoints.LoadGrid,
             DoorProvider = BotEndpoints.LoadDoors,
             AreaProvider = BotEndpoints.LoadAreas,
@@ -52,9 +45,7 @@ if (xorTable is not null)
         };
     });
 
-// Optional account provisioning via ik-fiesta-api (master-key path). Enabled only
-// when both the API base URL and key are present — otherwise the endpoint 503s.
-// Bots also accept credentials fed directly to spawn, so this is opt-in.
+// Optional account provisioning via ik-fiesta-api (master-key path)
 var apiBaseUrl = Environment.GetEnvironmentVariable("FIESTA_API_BASE_URL");
 var apiKey = Environment.GetEnvironmentVariable("FIESTA_API_KEY");
 string? provisionerError = (apiBaseUrl, apiKey) switch
@@ -68,35 +59,22 @@ if (provisionerError is null)
     builder.Services.AddSingleton(_ => new ApiAccountProvisioner(
         new HttpClient { BaseAddress = new Uri(apiBaseUrl!) }, apiKey!));
 
-// The behaviour-script library (uploaded Lua, applied to bots). Always available —
-// it's just storage; applying to a bot needs the manager (else those endpoints 503).
+// The behaviour-script library (uploaded Lua, applied to bots)
 builder.Services.AddSingleton<ScriptStore>();
 
 var app = builder.Build();
 
-// ⛔ BEFORE THE AUTH MIDDLEWARE. The /events stream authenticates via the WebSocket SUBPROTOCOL (a browser
-// cannot set a header on a WebSocket), and `ctx.WebSockets.IsWebSocketRequest` only answers truthfully once
-// this middleware has installed the feature — registered after the auth check, every upgrade would look
-// like a plain request and be rejected. KeepAlive so an idle stream (a parked bot in an empty room) is not
-// culled by an intermediate proxy.
+// BEFORE THE AUTH MIDDLEWARE
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
 
-// Bearer-token auth for the control API. CRITICAL now the host is exposed on a public IP:
-// without this, anyone can list/spawn/stop/drive bots. Enforced on /api/* ONLY when a
-// BOT_API_TOKEN is configured (the cluster sets it via the bot-secrets secret); unset = open,
-// so the local dev host stays frictionless. /health + the OpenAPI docs stay open.
+// Bearer-token auth for the control API
 var botApiToken = Environment.GetEnvironmentVariable("BOT_API_TOKEN");
 if (!string.IsNullOrWhiteSpace(botApiToken))
 {
     var expected = $"Bearer {botApiToken}";
     app.Use(async (ctx, next) =>
     {
-        // ⛔ A BROWSER CANNOT SET A HEADER ON A WEBSOCKET. `new WebSocket(url)` takes no headers at all, so
-        // the /events stream could never authenticate the way every other /api call does. The standard way
-        // round it is the SUBPROTOCOL list, which IS settable from JS — the page connects with
-        // `new WebSocket(url, ['bearer', '<token>'])` and the token arrives in Sec-WebSocket-Protocol.
-        // Deliberately NOT a ?token= query parameter: query strings land in access logs and proxy history,
-        // and this token drives every bot on the host.
+        // A BROWSER CANNOT SET A HEADER ON A WEBSOCKET
         var authed = CryptographicOperations.FixedTimeEquals(
             System.Text.Encoding.UTF8.GetBytes(ctx.Request.Headers.Authorization.ToString()),
             System.Text.Encoding.UTF8.GetBytes(expected));
@@ -143,18 +121,14 @@ app.MapGet("/health", () => Results.Ok(new
    .WithTags("Meta")
    .WithSummary("Liveness probe");
 
-// --- Public bot status: a super-simple live view for bots.ikaron.uk (P1, operator 2026-07-28).
-// NOT under /api, so it needs no token — it exposes only non-sensitive summary fields (level, map,
-// class, phase, hp), never creds or control. Page polls /status.json. (TODO follow-ups: class-name
-// mapping via ClientData, party grouping + non-bot players — tracked in tickets.md.)
+// --- Public bot status: a super-simple live view for bots.ikaron.uk (P1, operator 2026-07-28)
 var statusMgr = app.Services.GetService<BotManager>();
 app.MapGet("/status.json", () =>
 {
     var bots = statusMgr?.List().Select(b =>
     {
         var s = b.Snapshot();
-        // clsName: resolve the ClassName.shn ClassID → English name for the status page (operator P1);
-        // clients render clsName and fall back to the raw cls if the client data isn't loaded.
+        // clsName: resolve the ClassName.shn ClassID → English name for the status page (operator P1); clients render cl…
         return new { id = s.Id, character = s.Character, level = s.Level, cls = s.Class,
                      clsName = s.Class is { } cid ? statusMgr?.ClientData?.ClassName(cid) : null,
                      map = s.Map, phase = s.Phase, dead = s.Dead, hp = s.Hp, maxHp = s.MaxHp };
@@ -164,13 +138,7 @@ app.MapGet("/status.json", () =>
 
 app.MapGet("/", () => Results.Content(StatusPage.Html, "text/html; charset=utf-8")).ExcludeFromDescription();
 app.MapGet("/watch", () => Results.Content(WatchPage.Html, "text/html; charset=utf-8")).ExcludeFromDescription();
-// ITEM ICONS, cut out of the client's own atlas and served as PNGs so the watch page can draw a bag
-// that looks like the bag. BYO like every other client path: the art comes from
-// <client root>/resmenu/Icon at runtime and is never bundled.
-// ⚠️ Deliberately NOT under /api — an <img> tag cannot send an Authorization header, and an item icon
-// is not sensitive (it is the operator's own client art, same category as /watch itself). 404 when we
-// have no art for an id, which is also what a host with no icon dir returns; the page draws a name
-// tile either way.
+// ITEM ICONS, cut out of the client's own atlas and served as PNGs so the watch page can draw a bag that looks l…
 app.MapGet("/icon/{itemId:int}.png", (int itemId) =>
 {
     var cd = app.Services.GetService<BotManager>()?.ClientData;
@@ -178,8 +146,7 @@ app.MapGet("/icon/{itemId:int}.png", (int itemId) =>
     return png is null ? Results.NotFound() : Results.File(png, "image/png");
 }).ExcludeFromDescription();
 
-// SKILL ICONS — same atlas scheme as items (ActiveSkillView.shn IconFile/IconIndex), so the skill bar
-// draws the client's own art instead of text tiles. Outside /api for the same reason as /icon.
+// SKILL ICONS — same atlas scheme as items (ActiveSkillView.shn IconFile/IconIndex), so the skill bar draws the…
 app.MapGet("/skillicon/{skillId:int}.png", (int skillId) =>
 {
     var cd = app.Services.GetService<BotManager>()?.ClientData;
@@ -187,7 +154,7 @@ app.MapGet("/skillicon/{skillId:int}.png", (int skillId) =>
     return png is null ? Results.NotFound() : Results.File(png, "image/png");
 }).ExcludeFromDescription();
 
-// ABSTATE (buff/debuff) ICONS — AbStateView.shn iconFile/icon, same atlases again.
+// ABSTATE (buff/debuff) ICONS — AbStateView.shn iconFile/icon, same atlases again
 app.MapGet("/abstateicon/{abStateId:int}.png", (int abStateId) =>
 {
     var cd = app.Services.GetService<BotManager>()?.ClientData;
@@ -195,10 +162,7 @@ app.MapGet("/abstateicon/{abStateId:int}.png", (int abStateId) =>
     return png is null ? Results.NotFound() : Results.File(png, "image/png");
 }).ExcludeFromDescription();
 
-// MAP MINIMAPS — the client's own per-map art, so /watch shows where a bot is the way the game does
-// instead of an abstract dot field. Same reasoning as /icon for living outside /api: an <img> cannot
-// carry a Bearer token, and this is the operator's own client art. 404 = no art for that map (several
-// instances have none), and the page falls back to a plain grid.
+// MAP MINIMAPS — the client's own per-map art, so /watch shows where a bot is the way the game does instead of a…
 app.MapGet("/minimap/{map}.png", (string map) =>
 {
     var cd = app.Services.GetService<BotManager>()?.ClientData;
@@ -206,13 +170,6 @@ app.MapGet("/minimap/{map}.png", (string map) =>
     return png is null ? Results.NotFound() : Results.File(png, "image/png");
 }).ExcludeFromDescription();
 
-// The minimap's WORLD EXTENT, so the page can place a bot on the art instead of guessing a scale.
-// MEASURED, not assumed (tools/minimap_orient.py): the image spans the full square .shbd grid —
-// world [0, tiles*6.25] on both axes — with the Y axis FLIPPED. Correlating each map's walkability
-// mask against its painted ground scored flipY above every other orientation on every map that
-// discriminates (EldGbl02 0.880 vs 0.415 identity, RouVal02 0.635 vs 0.395, Urg 0.494 vs 0.286) and
-// never lost; towns like RouN are inconclusive because they are mostly rooftops. This matches the
-// operator's earlier read of the .shbd ASCII render ("y is flipped but that render is pretty accurate").
 app.MapGet("/minimap/{map}.json", (string map) =>
 {
     var mgr = app.Services.GetService<BotManager>();
@@ -220,9 +177,7 @@ app.MapGet("/minimap/{map}.json", (string map) =>
     var cd = mgr?.ClientData;
     double? ww = grid is null ? null : grid.WidthTiles * BlockGrid.WorldPerTile;
     double? wh = grid is null ? null : grid.HeightTiles * BlockGrid.WorldPerTile;
-    // The WORLD RECT THE IMAGE COVERS, from the client's own MapViewInfo.shn — not the whole grid.
-    // Most maps cover the lot (0,0..511,511), but RouN and Eld cover a sub-rectangle, and assuming
-    // otherwise stretched their art (operator: "RouN is really off").
+    // The WORLD RECT THE IMAGE COVERS, from the client's own MapViewInfo.shn — not the whole grid
     var rect = ww is { } w0 && wh is { } h0 ? cd?.MinimapWorldRect(map, w0, h0) : null;
     return Results.Ok(new
     {
@@ -230,7 +185,7 @@ app.MapGet("/minimap/{map}.json", (string map) =>
         hasArt = cd?.MinimapDir is { } d && MinimapImage.Exists(d, map),
         worldWidth = ww,
         worldHeight = wh,
-        // Fall back to the full grid when the table has no row for this map.
+        // Fall back to the full grid when the table has no row for this map
         coverX0 = rect?.X0 ?? 0,
         coverY0 = rect?.Y0 ?? 0,
         coverX1 = rect?.X1 ?? ww,
@@ -247,9 +202,7 @@ app.MapAccountEndpoints(app.Services.GetService<ApiAccountProvisioner>(), provis
 app.MapScriptEndpoints(app.Services.GetService<BotManager>(),
     app.Services.GetRequiredService<ScriptStore>(), xorError);
 
-// BYO client game-data inspection (read-only). Confirms an operator-supplied client
-// SHN loads and surfaces the data feature code reads (e.g. ActiveSkill fields the cast
-// keys off). 503 if no client data dir / bot manager; 404 if the table/skill is absent.
+// BYO client game-data inspection (read-only)
 var gameData = app.MapGroup("/api/gamedata").WithTags("GameData");
 IResult NoClientData() => Results.Problem(
     title: "Client game-data unavailable",
@@ -279,15 +232,7 @@ gameData.MapGet("/skill/{skillId:int}", (int skillId) =>
 })
 .WithSummary("Read an ActiveSkill row's combat fields (facing/cooldown/range/mana) from BYO client data");
 
-// ROSTER RESTORE (tickets.md P0, 2026-08-11): bring back every bot that was running when the process
-// last died. BotManager.Spawn persists its options; an explicit StopAsync de-persists them; a crash, an
-// OOM or a deploy does not — so whatever is left here is exactly "what should be running".
-// WHY THIS EXISTS: the host restarted FOUR times on 2026-08-11 (three deploys + a node OOM) and every
-// time came back with an EMPTY roster — `GET /api/bots` returning `[]`, nobody logged in, and nothing
-// announcing it. The script watchdog already restored WHAT each bot runs; nothing restored THAT it runs.
-// Staggered, because five logins landing together is when the zone-connect drops were seen; and each
-// failure is logged with its id, since a silent restore failure is the same invisibility all over again.
-// The supervisor waits on THIS task rather than on a guessed duration — see its own note.
+// ROSTER RESTORE (tickets.md P0, 2026-08-11): bring back every bot that was running when the process last died
 Task startupRestore = Task.CompletedTask;
 {
     var restoreMgr = app.Services.GetService<BotManager>();
@@ -317,33 +262,13 @@ Task startupRestore = Task.CompletedTask;
     }
 }
 
-// ── ROSTER SUPERVISOR — keeps the roster whole WHILE RUNNING, not just at startup ────────────────
-// Startup restore (above) fixed "came back with an empty roster". It does NOT cover a bot that dies
-// mid-flight, and that is the failure the operator keeps hitting: on repeated checks bots were found
-// `Failed` with the driver stopped, and once a bot had vanished from the roster ENTIRELY. Until now the
-// only thing recovering them was an external python watch loop re-launched by hand, which dies with the
-// session and leaves the roster unguarded exactly when nobody is looking (operator 2026-08-12: "please
-// so this can't happen, even on pod restart or internet outage or whatever").
-//
-// A bot in `Failed` earns nothing, and a bot `InZone` with NO script is worse than idle: it stands in
-// the field and dies. Both are repaired here.
-//
-// Staggered like the startup restore — five logins landing together is when zone-connect drops appeared.
+// ROSTER SUPERVISOR — keeps the roster whole WHILE RUNNING, not just at startup ──────────────── Startup restore…
 {
     var supMgr = app.Services.GetService<BotManager>();
     if (supMgr is not null)
     {
         _ = Task.Run(async () =>
         {
-            // WAIT FOR THE REAL SIGNAL, NOT A GUESS. This was `await Task.Delay(2 minutes)` — a fixed
-            // timer standing in for "has the startup restore finished", and it cost exactly what a
-            // fixed timer always costs. Measured 2026-08-12 after a deploy: the pod came up at 17:19,
-            // three bots lost their zone link ~6s into the fresh login (the server had not yet released
-            // the pre-restart session), and then sat `Failed` — earning nothing, logged in nowhere —
-            // until 17:21:20, when the timer finally expired and the first pass repaired all three
-            // within seconds. Two minutes of guaranteed downtime after EVERY deploy, for a restore that
-            // takes 3 seconds per bot. Awaiting the restore's own task makes the wait exactly as long
-            // as the work it is waiting for.
             try { await startupRestore; } catch { }   // a failed restore must not silence the supervisor
             while (true)
             {
@@ -363,10 +288,7 @@ Task startupRestore = Task.CompletedTask;
                                                   missing ? "MISSING from the roster" : phase);
                             if (!missing)
                             {
-                                // Stop WITHOUT forgetting: this bot is still one we were asked to run, so it
-                                // must stay in the restore roster. Spawn now REPLACES a Failed/Stopped handle
-                                // rather than 409ing on it, so this is just tidy teardown of any lingering
-                                // session — the respawn no longer depends on it having completed.
+                                // Stop WITHOUT forgetting: this bot is still one we were asked to run, so it must stay in the restore roster
                                 try { await supMgr.StopAsync(id, default, forget: false); } catch { }
                                 await Task.Delay(TimeSpan.FromSeconds(3));
                             }
@@ -383,11 +305,7 @@ Task startupRestore = Task.CompletedTask;
     }
 }
 
-// GRACEFUL SHUTDOWN (tickets.md P3): on SIGTERM (a deploy/pod restart), cleanly LOG OUT every running
-// bot before the process exits. StopAsync sends the game quit frames (LOGOUTREADY+quit, WM quit, 3s cap
-// each) — which makes the server DROP the zone session immediately. Without this, a hard pod-kill leaves
-// the connection dropped-but-not-closed → the server holds a GHOST session for many minutes → the respawn
-// gets `cancelled before zone entry`. Bounded to ~20s to stay inside the pod's terminationGracePeriod (30s).
+// GRACEFUL SHUTDOWN (tickets.md P3): on SIGTERM (a deploy/pod restart), cleanly LOG OUT every running bot before…
 {
     var lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();
     var shutdownMgr = app.Services.GetService<BotManager>();

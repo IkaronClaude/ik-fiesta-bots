@@ -1,14 +1,6 @@
 namespace Fiesta.Bot.Zone;
 
-/// <summary>
-/// The Fiesta data-file obfuscation used as a building block of the [1801]
-/// anti-cheat checksum (see <see cref="DataFileChecksums"/>): the zone hashes
-/// each reference .shn as MD5(file[:0x24] + Encrypt(file[0x24:])).
-///
-/// The algorithm is lifted from the Zone.exe routine whose PDB symbol is
-/// (mis)spelled <c>CDataReader::Encription</c> (@0x62A0B0); we spell it correctly
-/// here. We only ever apply it forward.
-/// </summary>
+/// <summary>The Fiesta data-file obfuscation used as a building block of the [1801] anti-cheat checksum (see ): the zone h…</summary>
 public static class Encryption
 {
     public static byte[] Apply(ReadOnlySpan<byte> data)

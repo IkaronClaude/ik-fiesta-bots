@@ -13,18 +13,7 @@ using FiestaLibReloaded.Networking.Structs;
 
 namespace Fiesta.Bot.Manager;
 
-/// <summary>
-/// Owns N bots in parallel, keyed by id. Each <see cref="Spawn"/> kicks off the
-/// full login chain on a background task — Login → WM (with optional in-band
-/// character creation + tutorial decline) → [1801] zone entry → a long-lived
-/// <see cref="BotSession"/> that answers heartbeats until the bot is stopped.
-/// The same orchestration <c>LoginTestCli</c> proved end-to-end, minus the hold
-/// timer: a managed bot runs until <see cref="StopAsync"/> (or a server kick).
-///
-/// Spawn returns immediately with a <see cref="BotHandle"/>; callers poll the
-/// handle's <see cref="BotHandle.Phase"/>/<see cref="BotHandle.Snapshot"/> for
-/// progress. Thread-safe; the control API is the primary caller.
-/// </summary>
+/// <summary>Owns N bots in parallel, keyed by id</summary>
 public sealed class BotManager : IAsyncDisposable
 {
     private readonly byte[] _xorTable;
@@ -32,36 +21,24 @@ public sealed class BotManager : IAsyncDisposable
     private readonly ConcurrentDictionary<string, BotHandle> _bots = new(StringComparer.OrdinalIgnoreCase);
     private int _seq;
 
-    /// <summary>The world map graph, learned by play (gates seen in each map) and
-    /// shared across all bots — so one bot's exploration helps the rest route.</summary>
+    /// <summary>The world map graph, learned by play (gates seen in each map) and shared across all bots — so one bot's explor…</summary>
     public MapGraph Graph { get; } = new();
 
-    /// <summary>Map id↔short-name resolver, learned from gate links and (optionally)
-    /// seeded from a BYO MapInfo dump via <c>MAPINFO_PATH</c>.</summary>
+    /// <summary>Map id↔short-name resolver, learned from gate links and (optionally) seeded from a BYO MapInfo dump via MAPINF…</summary>
     public MapCatalog Catalog { get; } = new();
 
-    /// <summary>Resolves a map short-name to its walkability grid (BYO, from
-    /// <c>BLOCKINFO_DIR</c>). Set by the host so navigation actions (e.g. <see
-    /// cref="Follow"/>) can pathfind around obstacles; null = no grid available,
-    /// callers fall back to straight-line movement.</summary>
+    /// <summary>Resolves a map short-name to its walkability grid (BYO, from BLOCKINFO_DIR )</summary>
     public Func<string, BlockGrid?>? GridProvider { get; set; }
 
-    /// <summary>Per-map instance-door provider (from <c>BLOCKINFO_DIR/&lt;Map&gt;.sbi</c>). Set by the host;
-    /// the Lua instance/JCQ driver reads it (via <c>bot.instanceDoors()</c>) to walk room-to-room.</summary>
+    /// <summary>Per-map instance-door provider (from BLOCKINFO_DIR/&amp;lt;Map&amp;gt;.sbi )</summary>
     public Func<string, IReadOnlyList<Fiesta.Bot.Navigation.InstanceDoor>?>? DoorProvider { get; set; }
-    /// <summary>Per-map scenario-area provider (from <c>BLOCKINFO_DIR/&lt;Map&gt;.aid</c>). The Lua instance
-    /// driver reads it (via <c>bot.scenarioAreas()</c> / <c>bot.scenarioAreaCenter()</c>) to walk to the
-    /// CURRENT armed area's centre and trigger each room's wave in order.</summary>
+    /// <summary>Per-map scenario-area provider (from BLOCKINFO_DIR/&amp;lt;Map&amp;gt;.aid )</summary>
     public Func<string, IReadOnlyList<Fiesta.Bot.Navigation.ScenarioArea>?>? AreaProvider { get; set; }
 
-    /// <summary>BYO client game-data reader (SHN tables from the operator's
-    /// <c>ressystem</c>). Lets feature code resolve client-visible data — e.g. a skill's
-    /// facing arc / cooldown / mana from <c>ActiveSkill</c> — instead of hard-coding it.
-    /// Set by the host; null = no client data dir configured (callers fall back).</summary>
+    /// <summary>BYO client game-data reader (SHN tables from the operator's ressystem )</summary>
     public GameData.ClientData? ClientData { get; set; }
 
-    /// <summary>Durable, per-server store of learnt NPC shop classifications (skip re-probing a town
-    /// that's already been classified once). Shared across all bots this manager runs.</summary>
+    /// <summary>Durable, per-server store of learnt NPC shop classifications (skip re-probing a town that's already been class…</summary>
     public NpcKnowledge Knowledge { get; } = new();
 
     public BotManager(byte[] xorTable, Action<string>? globalLog = null)
@@ -72,22 +49,13 @@ public sealed class BotManager : IAsyncDisposable
         if (seeded > 0) _globalLog?.Invoke($"[nav] MapCatalog seeded {seeded} maps from MAPINFO_PATH");
     }
 
-    /// <summary>Start a bot. Non-blocking — the login chain runs in the background;
-    /// watch the returned handle for progress. Throws only on a duplicate id.</summary>
+    /// <summary>Start a bot. Non-blocking — the login chain runs in the background; watch the returned handle for progress</summary>
     public BotHandle Spawn(BotSpawnOptions options)
     {
         var id = options.Id ?? $"b{Interlocked.Increment(ref _seq)}";
         var handle = new BotHandle(id, options);
         if (!_bots.TryAdd(id, handle))
         {
-            // ⛔ A DEAD BOT MUST NOT HOLD ITS ID HOSTAGE (operator 2026-08-18: "fix the problem of
-            // 'failed' respawns"). A Failed/Stopped bot is a corpse: it cannot self-heal (the liveness
-            // watchdog only runs while Phase==InZone), so the id stayed occupied and EVERY respawn — the
-            // supervisor's and any manual one — got a 409. The supervisor worked around it by calling
-            // StopAsync(forget:false) then sleeping 3s, which is both racy and invisible to an API caller;
-            // measured live this session, all four bots sat Failed while POST /api/bots returned 409.
-            // A corpse carries no session and no script runner, so replacing it is safe and idempotent.
-            // Only a LIVE bot is a genuine conflict.
             var existing = _bots.TryGetValue(id, out var e) ? e : null;
             if (existing is null || existing.Phase is not (BotPhase.Stopped or BotPhase.Failed))
                 throw new InvalidOperationException(
@@ -101,26 +69,18 @@ public sealed class BotManager : IAsyncDisposable
                 throw new InvalidOperationException($"a bot with id '{id}' was re-created concurrently");
         }
 
-        // Log/UI readability: rewrite every bare `mob<id>` token into "Marlone (Id 22)" (operator
-        // 2026-08-05 — "I don't want to see anything like Mob22 in the web UI"). Same rule as
-        // QuestNameResolver ("log quest NAMES, not bare ids"), applied to mobs and done ONCE at the
-        // log choke point so it covers the ~35 Lua call sites and every future one for free.
+        // Log/UI readability: rewrite every bare `mob ` token into "Marlone (Id 22)" (operator 2026-08-05 — "I don't wan…
         handle.MobNameResolver = mobId => ClientData?.Mob(mobId)?.Name;
 
         handle.Log($"spawn requested: {options.Host}:{options.LoginPort} user='{options.Credentials.Username}'");
-        // Remember that this bot SHOULD BE RUNNING so a pod restart can restore it without a human.
-        // Deliberately recorded at spawn REQUEST time, not on success: a bot that fails to log in is
-        // still one we were asked to run, and the restore path retries it. Removed only by an explicit
-        // StopAsync (see ForgetRosterEntry) so "stopped on purpose" stays stopped.
+        // Remember that this bot SHOULD BE RUNNING so a pod restart can restore it without a human
         Knowledge?.SaveRosterEntry(id, options);
-        // Phase accounting must SURVIVE this respawn — a fresh BotHandle would otherwise start at zero
-        // and silently discard however many hours the previous incarnation accumulated.
+        // Phase accounting must SURVIVE this respawn — a fresh BotHandle would otherwise start at zero and silently disc…
         if (Knowledge is { } kn)
         {
             handle.SeedPhaseSeconds(kn.LoadPhaseSeconds(id));
             handle.PhasePersist = kn.SavePhaseSeconds;
-            // The tail, on disk: restore what earlier sessions wrote BEFORE the first new line is
-            // logged, so /log reads as one continuous story across deploys and pod restarts.
+            // The tail, on disk: restore what earlier sessions wrote BEFORE the first new line is logged, so /log reads as o…
             var logDir = kn.LogDir;
             handle.SeedLogFromDisk(BotLogFile.LoadRecent(logDir, id, 20_000));
             handle.LogFile = new BotLogFile(logDir, id);
@@ -133,10 +93,7 @@ public sealed class BotManager : IAsyncDisposable
 
     public BotHandle? Get(string id) => _bots.TryGetValue(id, out var h) ? h : null;
 
-    /// <summary>Toggle a tailable, both-directions, plaintext (XOR-decoded) packet log for a
-    /// bot — every S→C and C→S frame, interleaved in arrival order, with opcode + canonical
-    /// name + a hex/ASCII dump. Returns (found, enabled, path). Path is the file to
-    /// <c>tail -f</c>. Survives cross-server handoffs (re-attached when the zone session swaps).</summary>
+    /// <summary>Toggle a tailable, both-directions, plaintext (XOR-decoded) packet log for a bot — every S→C and C→S frame, in…</summary>
     public (bool Found, bool Enabled, string? Path) SetPacketLog(string id, bool enabled)
     {
         if (!_bots.TryGetValue(id, out var handle)) return (false, false, null);
@@ -145,7 +102,7 @@ public sealed class BotManager : IAsyncDisposable
         {
             if (handle.PacketLog is { } already)
             {
-                // Make sure the current sessions are tapped (e.g. enabled before zone entry).
+                // Make sure the current sessions are tapped
                 if (handle.ZoneSession is { } zs) zs.PacketTap = handle.CombinedTap;
                 if (handle.WmSession is { } ws) ws.PacketTap = handle.CombinedTap;
                 return (true, true, already.Path);
@@ -161,9 +118,7 @@ public sealed class BotManager : IAsyncDisposable
         }
         else
         {
-            // ⛔ Do NOT null the tap here — that would switch off the always-on PacketRing too. Disabling
-            // the FILE log is done by clearing handle.PacketLog below; CombinedTap reads that per frame,
-            // so the ring keeps capturing and the file simply stops being written.
+            // Do NOT null the tap here — that would switch off the always-on PacketRing too
             if (handle.ZoneSession is { } zs) zs.PacketTap = handle.CombinedTap;
             if (handle.WmSession is { } ws) ws.PacketTap = handle.CombinedTap;
             var path = handle.PacketLog?.Path;
@@ -174,17 +129,12 @@ public sealed class BotManager : IAsyncDisposable
         }
     }
 
-    /// <summary>Signal a bot to stop and wait (briefly) for it to wind down.
-    /// Returns false if no such bot. The handle is removed once stopped.</summary>
-    /// <param name="forget">Whether to DE-PERSIST the bot from the restore roster. True for an operator
-    /// stop ("I want this stopped"); FALSE for process shutdown, where every bot is stopped cleanly but
-    /// must come back on the next start — otherwise the graceful-shutdown hook would erase the very roster
-    /// it exists to preserve, and each deploy would still come up empty.</param>
+    /// <summary>Signal a bot to stop and wait (briefly) for it to wind down</summary>
     public async Task<bool> StopAsync(string id, CancellationToken ct = default, bool forget = true)
     {
         if (!_bots.TryGetValue(id, out var handle)) return false;
         handle.Log("stop requested");
-        // Tear down any looping behaviour script/graph first so it stops issuing actions.
+        // Tear down any looping behaviour script/graph first so it stops issuing actions
         handle.ScriptRunner?.Dispose();
         handle.ScriptRunner = null;
         foreach (var g in handle.GraphRunners.Values) g.Dispose();
@@ -195,12 +145,7 @@ public sealed class BotManager : IAsyncDisposable
 
         if (inZone)
         {
-            // Clean logout: send the quit frames (zone: LOGOUTREADY+quit, WM: quit),
-            // then DON'T cancel — keep the sessions running so they answer heartbeats
-            // through the server's ~10s logout countdown (combat-logout: needs ~10s
-            // with no damage). The server closes both links when it completes, which
-            // ends RunTask. Cancelling/closing mid-countdown aborts the logout and
-            // leaves the char "online" → the next login is duplicate-kicked.
+            // Clean logout: send the quit frames (zone: LOGOUTREADY+quit, WM: quit), then DON'T cancel — keep the sessions r…
             using var logoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
             try { await handle.ZoneSession!.LogoutAsync(logoutReady: true, logoutCts.Token); } catch { }
             if (handle.WmSession is { } ws) try { await ws.LogoutAsync(logoutReady: false, logoutCts.Token); } catch { }
@@ -214,17 +159,6 @@ public sealed class BotManager : IAsyncDisposable
         }
         else
         {
-            // ⛔ NO ZONE LINK IS NOT THE SAME AS NOTHING TO LOG OUT. A Failed bot has a dead zone session
-            // but its WM link is usually STILL OPEN — measured 2026-08-11 on three Failed bots at once:
-            // WM uptimes 495s / 613s / 435s. The WM link is what holds the ACCOUNT online (there is no character-level ghost — operator 2026-08-11), so
-            // cancelling without logging it out leaves a STALE SESSION, and the next login on that account
-            // on that ACCOUNT is duplicate-kicked: login and WM both succeed, CHAR_LOGIN_ACK arrives, and then the zone
-            // drops the connection ~76ms after MAP_LOGIN_REQ. That is precisely the failure this method's
-            // own comment above predicts ("leaves the char 'online' -> the next login is duplicate-kicked")
-            // — the clean-logout branch just never covered the case where only the ZONE had died.
-            // Operator: "You should be able to log 5 accounts in at the same time no problem — as long as
-            // they don't have stale sessions." Concurrency was never the issue; unclean stops were, and
-            // this is where they were manufactured.
             if (handle.WmSession is { } wmAlive && wmAlive.State.Connected)
             {
                 using var wmLogoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
@@ -245,26 +179,19 @@ public sealed class BotManager : IAsyncDisposable
             catch (OperationCanceledException) { }
         }
         _bots.TryRemove(id, out _);
-        // An EXPLICIT stop means do not bring this one back on the next restart. A SHUTDOWN stop keeps it.
+        // An EXPLICIT stop means do not bring this one back on the next restart
         if (forget) Knowledge?.ForgetRosterEntry(id);
         handle.Cts.Dispose();
         return true;
     }
 
-    /// <summary>Clean logout + re-login IN PLACE (operator 2026-07-14): StopAsync (clean logout) → re-Spawn
-    /// with the same options → re-apply the same Lua script once back in zone. The recovery for a bot that's
-    /// STUCK — e.g. wedged in a scenario instance whose wave never fired and that would otherwise idle until
-    /// the ~20-min server timeout. Fire-and-forget from the caller (the lua's own tick returns first, THEN
-    /// the stop disposes its now-idle script runner). A short settle delay avoids the duplicate-login kick.</summary>
+    /// <summary>Clean logout + re-login IN PLACE (operator 2026-07-14): StopAsync (clean logout) → re-Spawn with the same opti…</summary>
     public bool Relog(string id)
     {
         if (!_bots.TryGetValue(id, out var handle)) return false;
         var opts = handle.Options;
         var (sname, ssrc, stick) = (handle.LastScriptName, handle.LastScriptSource, handle.LastScriptTickMs);
-        // ⛔ CRITICAL, and tagged so it can never be missed again. A relog costs a FULL town pass and
-        // resets the driver — on 2026-08-12 bots were relogging every ~4 min (JcqArcher 97 times in an
-        // hour) and it went unnoticed for a whole session because the line read like routine bookkeeping
-        // among thousands of Note lines. Grep `CRITICAL` to find every one.
+        // CRITICAL, and tagged so it can never be missed again
         handle.NoteEvent("relog", $"prevSessionSeconds={(handle.ZoneEnteredUtc == DateTime.MinValue ? -1 : (DateTime.UtcNow - handle.ZoneEnteredUtc).TotalSeconds):F0}");
         handle.Log($"⛔ CRITICAL: RELOG — clean logout → re-login → re-apply script. " +
                    $"A relog costs a full town pass; if these repeat, THAT is the levelling blocker.");
@@ -272,26 +199,8 @@ public sealed class BotManager : IAsyncDisposable
         {
             try
             {
-                // ⛔ forget:false — A RELOG IS NOT AN OPERATOR STOP.
-                // StopAsync DE-PERSISTS the bot from the restore roster by default, and Relog used that
-                // default: it removed the bot, then re-Spawn re-added it. Anything landing in the gap
-                // loses the bot PERMANENTLY — neither the startup restore nor the supervisor can bring
-                // back an id that is no longer in the roster, because both iterate over exactly that
-                // roster. The gap is not small: 3s settle, then up to 90s waiting for zone entry, times
-                // up to four attempts, and every deploy rolls the pod straight through it.
-                // Worse, the give-up path below leaves the bot Failed AND forgotten, with a comment
-                // promising "next cron will respawn" — there is no cron, and the supervisor only knows
-                // persisted bots. That is the "a bot vanished from the roster ENTIRELY" P0: measured
-                // 2026-08-12, the host came back up reporting "restoring 2 bot(s)" when five were meant
-                // to be running.
                 await StopAsync(id, forget: false);
-                // BOUNDED RETRY (tickets.md P1, 2026-07-29): a TRANSIENT re-login failure — observed live as
-                // `SocketException: Resource temporarily unavailable` on the zone-connect under cluster load,
-                // right after CHAR_LOGIN_ACK — leaves the bot phase=Failed. The re-login is off a CLEAN WM logout
-                // (the auto-relog path logged the old session out first), so it leaves NO ghost and a retry is
-                // safe (verified: one manual respawn recovered immediately). So instead of sitting Failed until the
-                // next cron, retry the spawn a few times with backoff. Capped + loudly logged so a persistent
-                // failure can't hot-loop (if it ever does, that's a different bug — see the ghost tickets).
+                // BOUNDED RETRY (tickets.md P1, 2026-07-29): a TRANSIENT re-login failure — observed live as `SocketException: R…
                 const int maxAttempts = 4;
                 for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
@@ -319,15 +228,7 @@ public sealed class BotManager : IAsyncDisposable
         return true;
     }
 
-    // ── Behaviour scripting (Lua) ─────────────────────────────────────────────
-    /// <summary>Apply a Lua behaviour script to a bot and start looping it. A new apply
-    /// replaces any script already running ("new upload &gt; new script"). Returns the
-    /// runner, or null if the bot id is unknown. The runner subscribes to the bot's
-    /// stable event hub, runs <c>on_start</c>, then ticks + dispatches events on its own
-    /// thread until <see cref="StopScript"/> / <see cref="StopAsync"/>.</summary>
-    /// <summary>Durable-script key tied to the BOT ID (the same key the restore roster uses), as opposed to
-    /// <see cref="BotHandle.KnowledgeScope"/> which is keyed by character name and is therefore unknown until
-    /// after char-select.</summary>
+    // Behaviour scripting (Lua) ───────────────────────────────────────────── Apply a Lua behaviour script to a bot…
     internal static string ScriptKeyForId(string id) => $"botid|{id}";
 
     public BotScriptRunner? ApplyScript(string id, string name, string source, int tickMs = 250, bool trace = false)
@@ -338,14 +239,7 @@ public sealed class BotManager : IAsyncDisposable
         var runner = new BotScriptRunner(handle, new BotApi(this, handle), name, source, ScriptLog, handle.Cts.Token, tickMs, trace);
         handle.ScriptRunner = runner;
         handle.LastScriptName = name; handle.LastScriptSource = source; handle.LastScriptTickMs = tickMs; // for bot.relog re-apply
-        // PERSIST it too. The fields above are process memory, so a pod restart loses them and the
-        // watchdog below has nothing to restore from — which is exactly how every deploy left the bots
-        // standing in the field with no driver (operator 2026-08-06, raised above P0).
-        // Save under BOTH keys. KnowledgeScope is "host|CharName ?? Character ?? Id", and CharName is only
-        // known AFTER char-select — so for any bot whose character name differs from its id (JcqArcher plays
-        // "Elfyra") the script lands under "host|Elfyra" while a FRESH spawn, before char-select, would look
-        // it up under "host|JcqArcher" and find nothing. Keying by bot id as well ties the script to the same
-        // key as the roster entry, so the two are restored together or not at all.
+        // PERSIST it too. The fields above are process memory, so a pod restart loses them and the watchdog below has no…
         Knowledge?.SaveScript(handle.KnowledgeScope, name, source, tickMs);
         Knowledge?.SaveScript(ScriptKeyForId(id), name, source, tickMs);
         handle.Log($"script '{name}' applied ({source.Length} chars, tick={tickMs}ms{(trace ? ", trace" : "")})");
@@ -353,7 +247,7 @@ public sealed class BotManager : IAsyncDisposable
         return runner;
     }
 
-    /// <summary>Stop a bot's looping script (no-op if none). The bot stays in zone.</summary>
+    /// <summary>Stop a bot's looping script (no-op if none)</summary>
     public bool StopScript(string id)
     {
         if (_bots.TryGetValue(id, out var handle) && handle.ScriptRunner is { } r)
@@ -366,18 +260,14 @@ public sealed class BotManager : IAsyncDisposable
         return false;
     }
 
-    /// <summary>Debug status of a bot's running script (null if no bot / no script).</summary>
+    /// <summary>Debug status of a bot's running script (null if no bot / no script)</summary>
     public ScriptStatus? ScriptStatus(string id)
         => _bots.TryGetValue(id, out var handle) ? handle.ScriptRunner?.Status() : null;
 
-    // ── Behaviour graph (state machine) ───────────────────────────────────────
-    /// <summary>Disk-persisted behaviour-graph library (states + transitions + scripts).
-    /// The host may point this at a chosen directory; defaults under the working dir.</summary>
+    // Behaviour graph (state machine) ─────────────────────────────────────── Disk-persisted behaviour-graph library…
     public Scripting.GraphStore Graphs { get; set; } = new("behavior-graphs");
 
-    /// <summary>Apply a behaviour graph to a bot and start it (replaces any running
-    /// script/graph). <paramref name="startState"/> overrides the graph's initial state
-    /// (e.g. resume the persisted current state). Returns the runner, or null if unknown bot.</summary>
+    /// <summary>Apply a behaviour graph to a bot and start it (replaces any running script/graph)</summary>
     public Scripting.BehaviorGraphRunner? ApplyGraph(string id, Scripting.BehaviorGraph graph, string? startState = null, int tickMs = 250)
     {
         if (!_bots.TryGetValue(id, out var handle)) return null;
@@ -391,8 +281,7 @@ public sealed class BotManager : IAsyncDisposable
         return runner;
     }
 
-    /// <summary>Stop a bot's behaviour graph by <paramref name="graphName"/>, or ALL graphs if
-    /// null. The bot stays in zone. Returns the number stopped.</summary>
+    /// <summary>Stop a bot's behaviour graph by , or ALL graphs if null</summary>
     public int StopGraph(string id, string? graphName = null)
     {
         if (!_bots.TryGetValue(id, out var handle)) return 0;
@@ -408,8 +297,7 @@ public sealed class BotManager : IAsyncDisposable
         return n;
     }
 
-    /// <summary>Request a transition to <paramref name="state"/> in graph <paramref name="graphName"/>
-    /// (or the only running graph if null). Operator flip / external request.</summary>
+    /// <summary>Request a transition to in graph (or the only running graph if null)</summary>
     public bool RequestState(string id, string state, string? graphName = null)
     {
         if (!_bots.TryGetValue(id, out var handle) || handle.GraphRunners.IsEmpty) return false;
@@ -421,28 +309,24 @@ public sealed class BotManager : IAsyncDisposable
         return true;
     }
 
-    /// <summary>Status of all behaviour graphs running on a bot (empty if none).</summary>
+    /// <summary>Status of all behaviour graphs running on a bot (empty if none)</summary>
     public IReadOnlyList<ScriptStatus> GraphStatus(string id)
         => _bots.TryGetValue(id, out var handle) ? handle.GraphRunners.Values.Select(g => g.Status()).ToArray() : [];
 
-    /// <summary>Outcome of a manual in-zone action.</summary>
+    /// <summary>Outcome of a manual in-zone action</summary>
     public enum ActionResult { Sent, NotFound, NotInZone }
 
-    /// <summary>Declare + wire this bot's metrics to real packet events. Called per zone-enter (and per map
-    /// handoff), so it must be idempotent: InitMetric ignores redefinition, and the event hooks are assigned
-    /// (=) rather than accumulated (+=) where a duplicate subscription would double-count.
-    /// <para>Everything here is fed by packets the bot already decodes — no new protocol work — so the panel
-    /// is a VIEW over existing truth rather than a second source of it.</para></summary>
+    /// <summary>Declare + wire this bot's metrics to real packet events</summary>
     private static void RegisterMetrics(BotHandle handle, ZoneView zv)
     {
         var m = handle.Metrics;
-        // Gauges: levels sampled over time. Batch-averaged.
+        // Gauges: levels sampled over time
         m.InitMetric("hp", MetricDirection.HigherIsBetter);
         m.InitMetric("sp", MetricDirection.HigherIsBetter);
         m.InitMetric("hpPct", MetricDirection.HigherIsBetter);
         m.InitMetric("aggressors", MetricDirection.LowerIsBetter);
         m.InitMetric("hpStones", MetricDirection.HigherIsBetter);
-        // Counters: amounts that must ADD UP within a batch, not average.
+        // Counters: amounts that must ADD UP within a batch, not average
         m.InitMetric("damageDealt", MetricDirection.HigherIsBetter, MetricKind.Counter);
         m.InitMetric("damageTaken", MetricDirection.LowerIsBetter, MetricKind.Counter);
         m.InitMetric("expGained", MetricDirection.HigherIsBetter, MetricKind.Counter);
@@ -456,8 +340,7 @@ public sealed class BotManager : IAsyncDisposable
         m.InitMetric("distance", MetricDirection.HigherIsBetter, MetricKind.Counter);
         m.InitMetric("mapChanges", MetricDirection.LowerIsBetter, MetricKind.Counter);
         m.InitMetric("stuns", MetricDirection.LowerIsBetter, MetricKind.Counter);
-        // Split from stuns 2026-08-06: both block movement, but a root still lets us cast. Conflated, it was
-        // impossible to tell which one was costing us time — and the combined counter double-counted anyway.
+        // Split from stuns 2026-08-06: both block movement, but a root still lets us cast
         m.InitMetric("roots", MetricDirection.LowerIsBetter, MetricKind.Counter);
         m.InitMetric("doorsOpened", MetricDirection.HigherIsBetter, MetricKind.Counter);
         m.InitMetric("moveFails", MetricDirection.LowerIsBetter, MetricKind.Counter);
@@ -479,8 +362,7 @@ public sealed class BotManager : IAsyncDisposable
         zv.SpChanged += sp => m.LogMetric("sp", sp);
         zv.MoveFailed += _ => m.LogMetric("moveFails", 1);
         zv.MapChanged += _ => m.LogMetric("mapChanges", 1);
-        // Sampled-on-change rather than polled: these only move when something happens, and a gauge with no
-        // new samples correctly reports its last value rather than a fake zero.
+        // Sampled-on-change rather than polled: these only move when something happens, and a gauge with no new samples…
         zv.HpChanged += _ =>
         {
             m.LogMetric("aggressors", zv.Aggressors.Count);
@@ -488,100 +370,47 @@ public sealed class BotManager : IAsyncDisposable
         };
     }
 
-    /// <summary>Make a bot say <paramref name="text"/> in its zone (local chat).</summary>
+    /// <summary>Make a bot say in its zone (local chat)</summary>
     public Task<ActionResult> SayAsync(string id, string text, CancellationToken ct = default)
         => ActAsync(id, $"say: \"{text}\"", s => s.SendAsync(ChatCodec.BuildChatReq(text), ct));
 
-    /// <summary>Whisper <paramref name="text"/> to the player named <paramref name="to"/>.</summary>
+    /// <summary>Whisper to the player named</summary>
     public Task<ActionResult> WhisperAsync(string id, string to, string text, CancellationToken ct = default)
         => ActAsync(id, $"whisper {to}: \"{text}\"", s => s.SendAsync(ChatCodec.BuildWhisperReq(to, text), ct));
 
-    // The real client's cast sequence (from Z:/Buff.pcapng): TARGET the handle
-    // (BAT TargettingReq), switch to battle/cast mode (ACT ChangemodeReq=2), THEN
-    // send the skill cast (SKILLBASH_OBJ_CAST_REQ). Firing a bare cast with no
-    // preceding target is rejected by the zone with a LinkendClientCmd kick. The
-    // first two have no FiestaLib opcode attribute, so build them by opcode.
+    // The real client's cast sequence (from Z:/Buff.pcapng): TARGET the handle (BAT TargettingReq), switch to battle…
     private static readonly ushort OpBatTarget =
         (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.TargettingReq);
     private static readonly ushort OpActChangeMode =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.ChangemodeReq);
 
-    /// <summary>Cast a skill on a target zone handle, replaying the client's
-    /// target → battle-mode → (face/stop) → cast sequence so the zone accepts it.
-    /// <paramref name="stopFirst"/> chooses whether to face+STOP before the cast:
-    /// <list type="bullet">
-    /// <item><c>true</c> → always face+STOP; <c>false</c> → never (cast while moving)</item>
-    /// <item><c>null</c> (default) → <b>data-driven</b> from the skill's <c>ActiveSkill</c>
-    /// row: face when <c>UsableDegree &gt; 0</c> (facing arc enforced) and/or STOP when it
-    /// isn't a moving-skill. With no client data / unknown skill, falls back to the proven
-    /// default (face+STOP) so a damage cast is never silently rejected.</item>
-    /// </list>
-    /// An offensive SKILLBASH is rejected (NC_BAT_SKILLBASH_CAST_FAIL_ACK) if the server
-    /// considers us moving or out of the facing arc — verified in CombatExtensive.pcapng.
-    /// A heal is castable while moving (IsMovingSkill), so the data path skips the STOP.</summary>
+    /// <summary>Cast a skill on a target zone handle, replaying the client's target → battle-mode → (face/stop) → cast sequenc…</summary>
     public async Task<ActionResult> CastAsync(string id, ushort skill, ushort target, bool? stopFirst = null, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
-        // Record the cast attempt so the cast-fail reactive layer (CastFailed
-        // subscriber) can retry the same skill+target.
+        // Record the cast attempt so the cast-fail reactive layer (CastFailed subscriber) can retry the same skill+targe…
         handle.LastCastSkill = skill;
         handle.LastCastTarget = target;
         var (needFace, needStop) = ResolveFaceStop(skill, stopFirst);
-        // SKILL-CAST THROUGHPUT in an instance (P0 tick 78, boss-fight DPS): FaceAndStop's tiny MOVERUN step
-        // MOVEFAILs in tight instance geometry and BREAKS the facing the auto-attack's server-follow had already
-        // set — so the one-shot skill cast is rejected 0x0FCA while the streamed swings land (CONFIRMED on the
-        // wire: JcqFresh boss fight = only 0x242B BASHSTART, every Bone Slicer/Fatal Slash cast 0x0FCA → the bot
-        // loses its burst DPS and can't out-DPS the ~5000-HP boss). If we've landed a CONNECTING hit in the last
-        // ~2.5s we're already stopped (BASHSTART holds position) AND faced, so cast WITHOUT the disruptive
-        // face-step. Instance-scoped + gated on real damage dealt → field casts keep the proven face+stop.
+        // SKILL-CAST THROUGHPUT in an instance (P0 tick 78, boss-fight DPS): FaceAndStop's tiny MOVERUN step MOVEFAILs i…
         if (handle.ZoneView is { } zv && zv.InScenarioInstance
             && zv.LastRealDamageDealtAtUtc > DateTime.MinValue
             && (DateTime.UtcNow - zv.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500)
         {
             needFace = false; needStop = false;
         }
-        // ⭐ IT IS THE **MOVERUN**, NOT THE STOP, THAT KILLS THE AUTO-ATTACK (Z:/CombatPriest.pcapng,
-        // operator's deliberately-clean capture, 2026-08-04). Handle-filtered, the real client's own
-        // swing stream CONTINUES after every cast with NO new BASHSTART:
-        //     1821 CAST -> skill dmg -> our swing x5
-        //     1875 CAST -> skill dmg -> our swing
-        //     2133 CAST -> skill dmg -> our swing x5
-        // and it only sent 5 BASHSTART all capture while landing 43 auto-attack + 22 skill damage
-        // against 31 taken. Its pre-cast sequence is TARGETTING -> STOP -> CAST, with NO MOVERUN.
-        // Ours was TARGETTING -> MOVERUN -> STOP -> CAST, and that one extra packet is the difference:
-        // MOVING breaks the swing stream, a bare STOP does not. So when we are ALREADY bashing this
-        // target we are by definition already in range and faced (BASHSTART holds position and the
-        // server's swing-follow keeps facing) — send the STOP alone and skip the face-step MOVERUN.
-        // ⚠️ Keep the FULL face+stop everywhere else: an opening cast, a cast on a NEW target, or a cast
-        // while not bashing still need the face-step or the cast is rejected 0x0FCA. An earlier attempt
-        // (171cf5a) dropped BOTH the MOVERUN and the STOP and was reverted — the STOP is load-bearing;
-        // the client sends it before every cast and all 74 casts in the lvl23+ capture succeeded.
-        // Send the MOVERUN face-step ONLY when facing/range genuinely need adjusting. If we're already
-        // in range and already pointing at the target, the step tells the server nothing and just kills
-        // our swings. The STOP still goes out either way — that part IS load-bearing (the client sends
-        // it before every cast; dropping it in 171cf5a caused rejections and was reverted in 94ffe8e).
+        // IT IS THE **MOVERUN**, NOT THE STOP, THAT KILLS THE AUTO-ATTACK (Z:/CombatPriest.pcapng, operator's deliberate…
         var adjust = NeedsFacingAdjust(handle, skill, target);
         if (!adjust) { needFace = false; needStop = false; }
 
-        // ⛔ NEVER FACE-STEP WHILE A BASH IS RUNNING. Every MOVERUN in this codebase comes from
-        // FaceAndStopAsync, and a MOVERUN mid-swing cancels the swing that was about to land — measured
-        // post-fix: SWING_START at +272ms, our face-step at +276ms, CEASE_FIRE at +378ms, no damage.
-        // The BASH ITSELF already faced the target (AutoAttackAsync face+stops before BASHSTART), so the
-        // step tells the server nothing it does not know and costs the whole swing. Downgrade to a bare
-        // STOP, which is the part that is actually load-bearing for a cast.
-        // This is also the remaining source of 0x0FCA "precondition unmet, suspect MOVING".
         if (needFace && handle.ZoneView is { BashActive: true } && handle.BashTarget == target)
         {
             needFace = false; needStop = true;
             handle.Log(BotLogLevel.Verbose, $"cast {skill}: face-step suppressed — bash is running on this target");
         }
 
-        // ── FIX 0: NEVER SEND A CAST THE CLIENT KNOWS IS NOT READY ────────────────────────────────
-        // The real client sent ZERO cooldown failures in an hour (200 casts); we sent 57 in 199. It gates
-        // locally from ActiveSkill.DelayTime and simply does not transmit — pressing the key does nothing.
-        // Cooldown runs from the server's CONFIRMED start (0x244E) plus the cast time, never from our send,
-        // because a refused cast never starts one. Skills we have never cast read as ready.
+        // FIX 0: NEVER SEND A CAST THE CLIENT KNOWS IS NOT READY ──────────────────────────────── The real client sent Z…
         if (ClientData?.Skill(skill) is { } si0 && handle.ZoneView is { } zvcd)
         {
             var readyIn = zvcd.SkillReadyInMs(skill, si0.DelayTimeMs, si0.CastTimeMs);
@@ -592,23 +421,7 @@ public sealed class BotManager : IAsyncDisposable
             }
         }
 
-        // ── CAST RANGE: NEVER ASK FOR A CAST THE TARGET IS TOO FAR AWAY FOR ──────────────────────
-        // 0x0FCA decodes (from the client's own switch — docs/ERROR_CODE_RUNBOOK.md) to
-        // "The target is out of casting range." NOT "moving", which is what this codebase assumed for
-        // months. So the remedy is the range check the real client does before it transmits, exactly
-        // like the cooldown gate: a refused cast still costs the STOP that interrupts our swing stream,
-        // so the cheapest cast is the one we never send. ActiveSkill.Range is the skill's own reach.
-        //
-        // ⚠️ A MELEE SKILL DECLARES `Range = 0` — that is CONTACT reach, not "no limit". The first
-        // version of this gate was written `{ Range: > 0 }`, so it skipped precisely the skills that
-        // were failing: every melee skill in the file (Slice and Dice, Bone Slicer, Fatal Slash … all
-        // Range=0, UsableDegree=45). Measured after the battle-mode fix landed: 0x0FCA was then 100%
-        // of the Cleric's failures (30/30) and 81% of the Fighter's (39/48), while the ranged Archer —
-        // whose skills declare a real Range — sat at 1%. Zero is a value here, not an absence.
-        // For Range=0 the reach is the melee contact range LEARNED from the wire (an archer's differs
-        // from a fighter's); if nothing has connected yet it is 0 and we FAIL OPEN rather than
-        // deadlock — you cannot learn the reach without being allowed to swing (same reasoning as
-        // CastGeometry below, which has always resolved Range=0 this way).
+        // CAST RANGE: NEVER ASK FOR A CAST THE TARGET IS TOO FAR AWAY FOR ────────────────────── 0x0FCA decodes (from the client's own switch — docs/ERROR_CODE_RUNBOOK.md) to "The target is out of casting range…
         if (ClientData?.Skill(skill) is { } sr && handle.Position is { } mp
             && NpcPos(handle, target) is { } tpos)
         {
@@ -624,11 +437,6 @@ public sealed class BotManager : IAsyncDisposable
             }
         }
 
-        // ── FIX 1 of 3: DO NOT CAST INTO A BASH THAT HAS NOT SWUNG YET ────────────────────────────
-        // First damage lands a MEDIAN 418ms after BASHSTART (the swing windup). We were casting ~4ms
-        // after it, every time, so the swing never happened: 81% of our bashes produced ZERO damage
-        // against the real player's 4%. The player casts AFTER SWING_START is acknowledged.
-        // Defer the cast (the caller retries next tick) rather than trading a whole swing for it.
         if (handle.ZoneView is { } zvw && zvw.BashActive
             && handle.LastBashSentUtc > DateTime.MinValue
             && (DateTime.UtcNow - handle.LastBashSentUtc).TotalMilliseconds < BashWindupMs
@@ -639,29 +447,20 @@ public sealed class BotManager : IAsyncDisposable
             return ActionResult.Sent;   // not an error: we simply let the swing land first
         }
 
-        // ── FIX 2 of 3: ONLY RE-TARGET WHEN THE TARGET ACTUALLY CHANGES ───────────────────────────
-        // We sent NC_BAT_TARGETTING_REQ before EVERY cast; the real client sends STOP -> CAST with no
-        // TARGET at all unless it is switching (223 targets/hour for the player vs our 361 in half that).
-        // Re-asserting the same target is pure extra traffic in the exact window the swing needs.
+        // FIX 2 of 3: ONLY RE-TARGET WHEN THE TARGET ACTUALLY CHANGES ─────────────────────────── We sent NC_BAT_TARGETT…
         if (handle.CurrentTarget != target || !handle.TargetAsserted)
         {
             await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
             handle.CurrentTarget = target; handle.TargetAsserted = true; handle.TargetSetAtUtc = DateTime.UtcNow;
             if (handle.ZoneView is { } zvT) zvT.CurrentTargetHandle = target;   // so a death can invalidate it
-            // A cast carries no target either — it hits the server's CURRENT selection. Wait for the
-            // selection we just asked for, or we cast at whatever was selected before (a corpse, after a
-            // kill) and eat 0x0FCA. See AwaitTargetConfirmAsync for the measurement.
+            // A cast carries no target either — it hits the server's CURRENT selection
             var ok = await AwaitTargetConfirmAsync(handle, target, ct);
             handle.Log(BotLogLevel.Verbose,
                 $"cast {skill}: target h={target} {(ok ? "CONFIRMED" : "NOT confirmed (timeout)")} after " +
                 $"{(DateTime.UtcNow - handle.TargetSetAtUtc).TotalMilliseconds:F0}ms");
         }
         await EnsureBattleModeAsync(handle, s, ct);
-        // Record WHICH of the three pre-cast paths ran. They are behaviourally different and the old
-        // two-way `sent=` label lumped the last two together, so "plain cast" in the logs meant either
-        // "STOP only" or "nothing at all" — which is exactly the distinction needed to test whether a
-        // committed STOP is what 0x0FCA actually depends on. Measuring the wrong grouping is why that
-        // hypothesis could be supported but not proven.
+        // Record WHICH of the three pre-cast paths ran
         string sentPath;
         if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
         { await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct); sentPath = "face+stop+cast"; }
@@ -671,18 +470,8 @@ public sealed class BotManager : IAsyncDisposable
         { sentPath = "cast-only(NO-STOP)"; }   // needFace/needStop false AND adjust true — nothing committed
         handle.ZoneView?.NoteCastAttempt(skill, target);   // capture geometry BEFORE the wire, for [castfail]
         await s.SendAsync(new PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ { skill = skill, target = target }, ct);
-        // Open the cast-animation window SPECULATIVELY, right on send. Waiting for the server's
-        // CAST_SUC_ACK would leave a round-trip hole in which the driver fires more casts (that is
-        // precisely how 5 casts went out in 18ms). ZoneView then confirms/ends this from the server's
-        // own packets — the local ActiveSkill.CastTime is only the un-wedge deadline.
         if (handle.ZoneView is { } zvc) zvc.NoteCastSent(ClientData?.Skill(skill)?.CastTimeMs ?? 0);
         if (handle.ZoneView is { } zvs) zvs.NoteSkillCast(skill);   // per-skill, for the cooldown panel
-        // 📐 LOG THE GEOMETRY WITH THE CAST. 0x0FC0 is the bot's #1 combat failure (1281 in one session,
-        // every skill, rejected in 50-100ms) and the leading hypothesis is the 45° facing arc — but that
-        // could not be CONFIRMED because the angle was computed here and thrown away, leaving only distance
-        // to correlate on (which cleared the range hypothesis but not this one). Now every cast states the
-        // distance, the reach, the off-by angle and the skill's arc, so the next cast-fail correlation is a
-        // grep. Info, not Verbose: this is the field needed to close a P0, not per-frame noise.
         var g = _lastCastGeom;
         handle.Log(BotLogLevel.Info,
             $"[castgeom] skill={skill} h={target} dist={g.Dist:F0} reach={g.Range:F0} " +
@@ -692,13 +481,7 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>Decide whether a cast must face the target and/or STOP first. An explicit
-    /// <paramref name="stopFirst"/> forces both on (<c>true</c>) or off (<c>false</c>);
-    /// <c>null</c> reads the skill's <c>ActiveSkill</c> data (face if it enforces a facing
-    /// arc, STOP if it isn't castable while moving), falling back to the proven face+STOP
-    /// default when no client data is available so a damage cast is never silently rejected.
-    /// FaceAndStopAsync turns + commits position in one step, so the two flags both just
-    /// gate that call.</summary>
+    /// <summary>Decide whether a cast must face the target and/or STOP first</summary>
     private (bool NeedFace, bool NeedStop) ResolveFaceStop(ushort skill, bool? stopFirst)
     {
         if (stopFirst is { } force) return (force, force);
@@ -706,14 +489,7 @@ public sealed class BotManager : IAsyncDisposable
         return (true, true); // no data → proven default
     }
 
-    /// <summary>Cast a <b>location-targeted</b> (ground / AoE) skill at a world coordinate —
-    /// e.g. Frost Nova, which has a cast time and takes a target <i>point</i>, not a unit.
-    /// Sends CHANGEMODE, then faces+STOPs toward the cast point when the skill needs it
-    /// (data-driven from <c>ActiveSkill</c> by default — facing arc / moving-skill — same
-    /// rules as <see cref="CastAsync"/>; <paramref name="stopFirst"/> overrides), then
-    /// <c>NC_BAT_SKILLBASH_FLD_CAST_REQ {skill, locate}</c> — no target handle. The caster
-    /// stays put and drops the AoE at (<paramref name="x"/>,<paramref name="y"/>), which
-    /// may be up to the skill's Range away.</summary>
+    /// <summary>Cast a location-targeted (ground / AoE) skill at a world coordinate</summary>
     public async Task<ActionResult> CastGroundAsync(string id, ushort skill, uint x, uint y, bool? stopFirst = null, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -728,37 +504,12 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>Turn to face (<paramref name="tx"/>,<paramref name="ty"/>) and STOP there.
-    /// There's no rotate packet — the client turns via MOVERUN, whose from→to vector sets
-    /// facing — so this sends a tiny capped MOVERUN toward the point (just enough to turn,
-    /// never closing a ranged caster into melee) then a STOP committing the position.
-    /// Used before a cast that enforces UsableDegree and/or isn't a moving-skill. Advances
-    /// the tracked position. No-op if the bot's position is unknown.</summary>
-    /// <summary>Send NC_ACT_CHANGEMODE_REQ (battle mode) only when we aren't already in it.
-    /// Battle mode is a persistent TOGGLE, not a per-action packet: the real client sent it just
-    /// <b>4 times in the whole of CombatExtensive.pcapng</b> (against 8 skill casts and 3 BASHSTARTs),
-    /// while this bot was sending it once per cast — 396 times in a single session. The flag is
-    /// cleared whenever the server drops us out of combat, on death, and on a map change, so we
-    /// re-assert the mode exactly when it can actually have lapsed.</summary>
-    /// <summary>Make sure the server has us in BATTLE mode before we try to act.
-    /// <para>⛔ THE OLD VERSION WAS THE BOT'S BIGGEST COMBAT BUG. It set a local flag the moment it SENT the
-    /// request and never reconciled: `if (handle.InBattleMode) return; send(); handle.InBattleMode = true;`.
-    /// The server puts you back into non-battle when combat goes idle, but nothing ever cleared the flag, so
-    /// this method early-returned forever and every later cast was refused with 0x0FC0 — 1281 times in ONE
-    /// session, the single most common failure the bot produced. It was investigated for months as a FACING
-    /// problem, because the local state said we were fine; the client's own string table renders 0x0FC0 as
-    /// "Cannot use the skill while in nonbattle mode" (docs/ERROR_CODE_RUNBOOK.md).</para>
-    /// <para>Now the SERVER is the authority: ZoneView tracks 0x2009 for our own handle. We re-send whenever
-    /// it says we are not in battle mode, and the local flag is only a send-rate guard so we do not spam the
-    /// request while the answer is in flight. Unknown (never told) is treated as "send it" — a redundant
-    /// change-mode is free, a missing one costs every cast.</para></summary>
+    /// <summary>Turn to face ( , ) and STOP there</summary>
     private static async Task EnsureBattleModeAsync(BotHandle handle, BotSession s, CancellationToken ct)
     {
         var serverSays = handle.ZoneView?.SelfInBattleMode;
         if (serverSays == true) { handle.InBattleMode = true; return; }
 
-        // Not in battle mode (or not yet told). Re-assert, but at most every 500ms so a burst of casts
-        // does not produce a burst of change-mode requests while the broadcast is still on the wire.
         if ((DateTime.UtcNow - handle.LastBattleModeSentUtc).TotalMilliseconds < 500) return;
         handle.LastBattleModeSentUtc = DateTime.UtcNow;
         await s.SendAsync(new FiestaPacket(OpActChangeMode, new byte[] { 0x02 }), ct);
@@ -767,13 +518,10 @@ public sealed class BotManager : IAsyncDisposable
             $"battle mode re-asserted (server said {(serverSays is null ? "nothing yet" : "NON-BATTLE")})");
     }
 
-    /// <summary>Mount item class in <c>ItemInfo</c> (mirrors <c>MOUNT_CLASS</c> in level_quest.lua).</summary>
+    /// <summary>Mount item class in ItemInfo (mirrors MOUNT_CLASS in level_quest.lua)</summary>
     private const int MountItemClass = 23;
 
-    /// <summary>Bag slot holding our mount, or -1. Mirrors the Lua <c>mountSlot()</c> predicate exactly:
-    /// <c>Type == 1 &amp;&amp; ItemClass == 23</c>, taking the HIGHEST <c>DemandLv</c> match.
-    /// <para>Both conditions matter: the Lua comment warns that other items SHARE Class 23 at low DemandLv
-    /// (e.g. id 2505), so a class-only match returns the wrong item once the bag re-sorts.</para></summary>
+    /// <summary>Bag slot holding our mount, or -1</summary>
     private int MountSlot(BotHandle handle)
     {
         if (handle.ZoneView is not { } zv || ClientData is null) return -1;
@@ -787,51 +535,16 @@ public sealed class BotManager : IAsyncDisposable
         return bestSlot;
     }
 
-    /// <summary>Dismount if mounted, and WAIT for the server's RIDE_OFF. Returns true once not mounted.
-    /// <para><b>Why this exists:</b> a gate CANNOT be used while mounted — the server silently ignores the
-    /// click. Proven live 2026-08-04: mounted gate-use aborted after 14s of retries every time, while
-    /// unmounted gate-use transitioned in ~150ms (18:58:19 mounted → abort; 18:59:52 and 18:59:57 unmounted
-    /// → arrived in 153ms/156ms). That silent refusal was looping the whole travel system — the bot mounted
-    /// for speed, failed the gate, re-routed, re-mounted, forever — which is why it went 30+ minutes without
-    /// a single fight while exp went backwards from deaths in transit.</para>
-    /// <para>The mount item is a TOGGLE (<c>NC_ITEM_USE_REQ</c>), and <c>IsMounted</c> only clears when the
-    /// server's RIDE_OFF lands — so firing twice re-mounts. Issue once, then wait for the ack.</para></summary>
     private async Task<bool> EnsureDismountedAsync(string id, BotHandle handle, CancellationToken ct)
     {
-        // The Lua may have JUST sent a mount (its tick is independent of us) with the RIDE_ON ack still in
-        // flight — reading IsMounted right now would see a stale false and skip the dismount, which is
-        // exactly how 97f68e8 no-opped. SuppressMount (set by the caller) stops any further mounting; give
-        // the pending ack a moment to land so we make the decision on settled state.
+        // The Lua may have JUST sent a mount (its tick is independent of us) with the RIDE_ON ack still in flight — read…
         await Task.Delay(350, ct);
         if (handle.ZoneView is not { IsMounted: true }) return true;
         var slot = MountSlot(handle);
         if (slot < 0) { handle.Log("[travel] mounted but no mount item found in bag — cannot dismount for the gate"); return false; }
         handle.Log($"[travel] DISMOUNTING before gate (slot={slot}) — a gate is silently ignored while mounted");
         await UseItemAsync(id, (byte)slot, 0, ct);
-        // ⏱ 3000ms was set JUST UNDER the real dismount latency, so this "failed" essentially every time.
-        // Measured 2026-08-05 over 21 pre-gate dismounts: 20/21 (95%) reported NOT-confirmed, yet the RIDE_OFF
-        // actually landed every single time — at min 3.03s / median 3.14s / max 6.78s. The distribution is
-        // tightly clustered just past 3s (3.03, 3.06, 3.10, 3.11 ×2, 3.12 ×3, 3.13 ×2, 3.14 ×2, 3.16, 3.18 ×2,
-        // 3.19, 3.20, 3.24, 3.61, 6.78), i.e. a ~3.1s server-side dismount animation we were racing by ~100ms.
-        // The consequence is not cosmetic: we then "take the gate anyway" WHILE STILL MOUNTED, and a gate is
-        // SILENTLY ignored while mounted (the very fact this method exists to avoid) — so the hop no-ops and
-        // travel pays a full re-route. This timeout is an UPPER BOUND, not a fixed delay: WaitUntilAsync
-        // returns the moment IsMounted flips, so a generous cap costs nothing on the happy path and only ever
-        // saves a wasted hop. 8s covers the observed max with headroom.
-        // ⛔ STOP WAITING THE MOMENT THE GATE MENU OPENS — otherwise we DEADLOCK against ourselves.
-        // Wire trace of hop 3/4 (2026-08-05), which cost 8.0s of dead air:
-        //     16:41:09.223  C->S ITEM_USE_REQ (dismount)
-        //     16:41:09.265  S->C ITEM_USE_ACK            (accepted in 42ms)
-        //     16:41:09.605  S->C 0x3C01 SERVERMENU_REQ   <- the GATE MENU is ALREADY OPEN, waiting on us
-        //     ...7.6s of us sending NOTHING while we sit in this wait...
-        //     16:41:17.224  C->S 0x3C02 SERVERMENU_ACK   (only after the timeout fires)
-        //     16:41:17.260  S->C RIDE_OFF + MOVESPEED + MAP_LOGOUT
-        // The RIDE_OFF is delivered AS PART OF THE MAP TRANSITION — and the transition cannot happen until
-        // we answer the menu, which we were too busy waiting to answer. Classic "the gate depends on the
-        // thing it gates": the event we block on can only be produced by the action we are blocking.
-        // Measured cost: EVERY hop timed out at the full 8s (4 waits in one 4-hop route ≈ 32s of dead air),
-        // and travel was already ~47% of the bot's time. Raising this cap 3s->8s earlier made it WORSE.
-        // A menu on screen means the gate ALREADY responded, so the dismount has served its purpose.
+        // 3000ms was set JUST UNDER the real dismount latency, so this "failed" essentially every time
         var ok = await WaitUntilAsync(
             () => handle.ZoneView?.IsMounted != true || handle.ZoneView is { ServerMenuOpen: true },
             8000, ct);
@@ -842,11 +555,7 @@ public sealed class BotManager : IAsyncDisposable
         return ok;
     }
 
-    /// <summary>Send NC_ACT_STOP_REQ at our CURRENT position — no MOVERUN step.
-    /// This is what the real client does before a cast while already engaged
-    /// (Z:/CombatPriest.pcapng: TARGETTING → STOP → CAST), and it is why its auto-attack keeps
-    /// streaming through casts. <see cref="FaceAndStopAsync"/>'s MOVERUN is what breaks the swings;
-    /// the STOP itself is harmless and is still required or the cast is rejected 0x0FCA.</summary>
+    /// <summary>Send NC_ACT_STOP_REQ at our CURRENT position — no MOVERUN step</summary>
     private static async Task StopOnlyAsync(BotHandle handle, BotSession s, CancellationToken ct)
     {
         if (handle.Position is not { } pos) return;
@@ -882,49 +591,13 @@ public sealed class BotManager : IAsyncDisposable
         if (dist > 1) { handle.FacingDx = dx / dist; handle.FacingDy = dy / dist; }
     }
 
-    /// <summary>Is a face-step actually REQUIRED to cast <paramref name="skill"/> at
-    /// <paramref name="target"/>? Only send the MOVERUN when it is — the face-step breaks the melee
-    /// swing stream, so an unconditional one silently costs us all our auto-attack damage
-    /// (operator 2026-08-04: "we do need to moverun to ensure we face and we're in range etc. but we
-    /// should only moverun IF AN ADJUSTMENT IS REQUIRED").
-    /// <para>No adjustment is needed when we are BOTH already inside the skill's range AND already
-    /// facing the target within its <c>UsableDegree</c> arc. While auto-attacking the same target the
-    /// server's swing-follow keeps us faced, so that case reliably needs nothing.</para></summary>
-    /// <summary>Why a cast was or wasn't adjusted — the inputs to <see cref="NeedsFacingAdjust"/>, so the
-    /// tail can correlate a cast-fail with the geometry that produced it. <c>OffByDeg</c> is -1 when the
-    /// angle wasn't computed (recent hit / no data / unknown heading).</summary>
+    /// <summary>Is a face-step actually REQUIRED to cast at ?</summary>
     private sealed record CastGeometry(double Dist, double Range, double OffByDeg, int ArcDeg, string Note);
     private CastGeometry _lastCastGeom = new(-1, -1, -1, 0, "none");
 
     private bool NeedsFacingAdjust(BotHandle handle, ushort skill, ushort target)
     {
-        // ⭐ A RECENT CONNECTING HIT IS PROOF we are in range AND faced — the server only lands our swing
-        // when both hold. Check this FIRST, and note why it must come first:
-        // gating on ZoneView.LearnedMeleeRange (as the first version of this did) DEADLOCKS. That value
-        // starts at 0 each session and only grows from OUR OWN connecting swings, so: range 0 → "adjust"
-        // → MOVERUN every cast → MOVERUN breaks the swing stream → almost no swings land → range never
-        // learned → forever. Measured live: 0.9 our-swings per BASHSTART, statistically unchanged from
-        // before the fix, and "LEARNED attack-range" never fired. A gate must never depend on the thing
-        // it is gating.
-        // This signal bootstraps cleanly because the OPENING bash is not preceded by a cast: it survives,
-        // lands a hit, and from then on the MOVERUN is suppressed so the stream persists. It is also the
-        // exact signal the instance-scoped exception above already trusts — generalised to field maps now
-        // that Z:/CombatPriest.pcapng shows the real client sending no MOVERUN before its casts.
-        // ⛔ …BUT A HIT IS EVIDENCE ABOUT THE PAST, AND MOBS MOVE (operator 2026-08-06: "only call face and
-        // stop IF REQUIRED to match range/angle reqs — must also update in case mob has walked somewhere").
-        // Up to 2500ms is plenty of time for the target to walk out of our arc or out of reach, so treating
-        // a stale hit as proof of CURRENT geometry meant we skipped the adjustment exactly when it had
-        // become necessary. Same shape as the stale-heading bug: old evidence read as a present fact.
-        //
-        // The deadlock the short-circuit was written to prevent no longer exists. It hinged on
-        // LearnedMeleeRange starting at 0 every session and only growing from our own connecting swings.
-        // Attack range is now SEEDED from durable knowledge at zone-enter ("[combat] seeded attack-range
-        // 96u from durable knowledge"), so reach is known before the first swing and the measurement can
-        // bootstrap itself. Per the standing lesson: check whether a rule's cause still holds before
-        // quoting the rule.
-        //
-        // So the hit-proof is demoted to what it always honestly was — a FALLBACK for when we cannot
-        // measure. When reach and both positions are known we measure; otherwise the old bootstrap stands.
+        // A RECENT CONNECTING HIT IS PROOF we are in range AND faced — the server only lands our swing when both hold
         var recentHit = handle.ZoneView is { } zvh
             && zvh.LastRealDamageDealtAtUtc > DateTime.MinValue
             && (DateTime.UtcNow - zvh.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500;
@@ -941,15 +614,12 @@ public sealed class BotManager : IAsyncDisposable
         if (dist < 1) { _lastCastGeom = new(dist, -1, -1, 0, "on top of target"); return false; }
 
         var si = ClientData?.Skill(skill);
-        // Range 0 = melee skill; use the melee reach we already close to for auto-attack.
-        // Range 0 = melee: use the reach LEARNED from the wire (an archer's differs from a fighter's),
-        // never a baked constant. If nothing has been learned yet, adjust rather than assume.
+        // Range 0 = melee skill; use the melee reach we already close to for auto-attack
         double range = si is { Range: > 0 } ? si.Range : (handle.ZoneView?.LearnedMeleeRange ?? 0);
         if (range <= 0) { _lastCastGeom = new(dist, 0, -1, 0, "melee reach NOT yet learned"); return true; }
         if (dist > range) { _lastCastGeom = new(dist, range, -1, si?.UsableDegree ?? 0, "OUT OF RANGE"); return true; }
 
-        // Facing: compare our tracked heading against the direction to the target. UsableDegree is the
-        // skill's allowed arc (0 = no facing requirement at all).
+        // Facing: compare our tracked heading against the direction to the target
         var deg = si?.UsableDegree ?? 0;
         if (deg <= 0) { _lastCastGeom = new(dist, range, -1, 0, "skill has no facing arc"); return false; }
         if (handle.FacingDx == 0 && handle.FacingDy == 0)
@@ -962,12 +632,7 @@ public sealed class BotManager : IAsyncDisposable
         return outside;                                   // outside the arc → must turn
     }
 
-    /// <summary>Face (<paramref name="x"/>,<paramref name="y"/>) and STOP — a public wrapper over
-    /// <see cref="FaceAndStopAsync"/>. The MOVERUN+STOP commits the bot's position to the SERVER (the real
-    /// client does exactly this on arrival). Used to make the server register a scenario AreaEntry cross when
-    /// the bot is physically inside a trigger box but its server-side position hasn't committed there — the
-    /// Zone_Mob05 finale: the bot reaches the box client-side but no AREAENTRY_REQ arrives until it STOPs
-    /// (decoded from JCQ.pcapng: player runs into the box then sends NC_ACT_STOP_REQ → server fires the REQ).</summary>
+    /// <summary>Face ( , ) and STOP — a public wrapper over</summary>
     public async Task<ActionResult> CommitStopAsync(string id, uint x, uint y, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -976,10 +641,7 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>Cast a heal skill on yourself (cast target = own handle). The client's
-    /// "a heal lands on me even with an enemy targeted" is a client-side redirect, so
-    /// the bot self-targets explicitly — otherwise the server heals the enemy/ally in
-    /// the cast packet. Needs the self handle (from the [1802] login ack).</summary>
+    /// <summary>Cast a heal skill on yourself (cast target = own handle)</summary>
     public Task<ActionResult> HealSelfAsync(string id, ushort skill, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return Task.FromResult(ActionResult.NotFound);
@@ -987,11 +649,7 @@ public sealed class BotManager : IAsyncDisposable
         return CastAsync(id, skill, self, stopFirst: null, ct: ct); // data-driven: heal is a moving-skill
     }
 
-    /// <summary>Attack: cast a (damage) skill on <paramref name="target"/>, or the
-    /// nearest non-gate mob in view when target is 0. Bare target→mode→cast — it does
-    /// NOT engage auto-attack or move the bot into melee (that would be wrong for a
-    /// ranged/AoE caster; a mage casts without ever auto-attacking). To melee-swing,
-    /// call <see cref="AutoAttackAsync"/> separately.</summary>
+    /// <summary>Attack: cast a (damage) skill on , or the nearest non-gate mob in view when target is 0</summary>
     public Task<ActionResult> AttackAsync(string id, ushort skill, ushort target = 0, CancellationToken ct = default)
     {
         if (target == 0 && _bots.TryGetValue(id, out var h) && NearestMob(h) is { } m) target = m;
@@ -999,34 +657,17 @@ public sealed class BotManager : IAsyncDisposable
         return CastAsync(id, skill, target, ct: ct); // data-driven face/stop from ActiveSkill
     }
 
-    // STOP (ACT StopReq 0x2012): 8 bytes [x u32][y u32] — the position the char halts at.
+    // STOP (ACT StopReq 0x2012): 8 bytes [x u32][y u32] — the position the char halts at
     private static readonly ushort OpActStop =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.StopReq);
-    // ENDOFTRADE (ACT cmd 11 = 0x200B, empty): closes the current NPC shop/trade interaction. Must be
-    // sent before opening a DIFFERENT NPC's shop (the server won't open a 2nd shop while one is open).
+    // ENDOFTRADE (ACT cmd 11 = 0x200B, empty): closes the current NPC shop/trade interaction
     private const ushort OpActEndOfTrade = (ushort)(((int)ProtocolCommand.Act << 10) | 11);
-    // BASHSTART / BASHSTOP (BAT 0x242B / 0x2432, empty): begin / end melee auto-attack on
-    // the current target. While bashing the server streams SWING_START/SWING_DAMAGE
-    // (0x2447/0x2448) until the mob dies or we BASHSTOP — verified in CombatExtensive.pcapng.
+    // BASHSTART / BASHSTOP (BAT 0x242B / 0x2432, empty): begin / end melee auto-attack on the current target
     private const ushort OpBatBashStart = (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.BashstartCmd);
     private const ushort OpBatBashStop = (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.BashstopCmd);
 
-    /// <summary>How long to wait for NC_BAT_TARGETINFO_CMD to confirm a fresh selection before sending
-    /// BASHSTART anyway. One round trip on this server is single-digit ms; 60 leaves generous headroom and
-    /// bounds the cost of a lost ack at 60ms once per engagement.</summary>
     private const int TargetConfirmWaitMs = 60;
 
-    /// <summary>Wait (briefly, bounded) for the server to CONFIRM a freshly-sent target selection before
-    /// acting on it. Returns whether confirmation arrived.
-    /// <para>⛔ Neither BASHSTART nor a skill cast carries a target — both act on whatever the server
-    /// currently has selected. So firing in the same millisecond as the TARGETTING that is meant to
-    /// change that selection acts on the PREVIOUS one, which after a kill is a CORPSE, and the server
-    /// refuses it. Measured on FighterFresh: a live Marlone Archer 17u away, 1 degree off our nose,
-    /// reach 51 — and 0x0FCA "out of casting range" every 450ms for as long as it kept trying, while it
-    /// lost 787 → 332 HP to two mobs it never damaged. The geometry we print is measured against the mob
-    /// we INTEND; the server was still holding the dead one.</para>
-    /// <para>Bounded, so a lost or unparsed TARGETINFO can never wedge an attack: on timeout we proceed
-    /// exactly as before.</para></summary>
     private static async Task<bool> AwaitTargetConfirmAsync(BotHandle handle, ushort target, CancellationToken ct)
     {
         if (handle.ZoneView is not { } zv) return false;
@@ -1036,14 +677,7 @@ public sealed class BotManager : IAsyncDisposable
         return Confirmed();
     }
 
-    /// <summary>Begin auto-attacking (melee swings) a target, or the nearest mob if 0.
-    /// Mirrors the real client (CombatExtensive.pcapng, "click once, many swings"):
-    /// target → battle mode → a short MOVERUN toward the mob + STOP (close to melee
-    /// range and FACE it — a swing is rejected otherwise) → BASHSTART, after which the
-    /// server streams continuous swing/damage until the mob dies or
-    /// <see cref="StopAttackAsync"/>. Auto-attack is inherently melee; skills are cast
-    /// separately via <see cref="AttackAsync"/>/<see cref="CastAsync"/> and are NOT
-    /// coupled to this (a mage never auto-attacks).</summary>
+    /// <summary>Begin auto-attacking (melee swings) a target, or the nearest mob if 0</summary>
     public async Task<ActionResult> AutoAttackAsync(string id, ushort target = 0, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -1051,13 +685,6 @@ public sealed class BotManager : IAsyncDisposable
         if (target == 0 && NearestMob(handle) is { } m) target = m;
         if (target == 0) return ActionResult.NotFound;
 
-        // ── FIX 3 of 3: DO NOT RE-BASH INTO OUR OWN WINDUP ────────────────────────────────────────
-        // CEASE_FIRE is an INTERRUPT, not a failure: for the real player the swing stream resumes on its
-        // own after 46% of them, with no new BASHSTART. We re-bashed at a MEDIAN 355ms — inside the 418ms
-        // windup — in 80% of cases, restarting the windup from zero each time and guaranteeing the stream
-        // never produced anything. 150 bashes -> 30 landed swings (0.20/bash vs the player's 5.96).
-        // Re-issuing on the SAME target inside the windup can only ever destroy progress, so refuse it.
-        // (A target CHANGE is different and still goes through — that is a real new engagement.)
         if (handle.BashTarget == target
             && handle.LastBashSentUtc > DateTime.MinValue
             && (DateTime.UtcNow - handle.LastBashSentUtc).TotalMilliseconds < BashWindupMs)
@@ -1067,8 +694,7 @@ public sealed class BotManager : IAsyncDisposable
             return ActionResult.Sent;
         }
 
-        // BASHSTART carries NO target (payload 0b) — it swings at whatever the SERVER has selected. If our
-        // assertion is stale the bash is a silent no-op, which is exactly what a "dead bash" is.
+        // BASHSTART carries NO target (payload 0b) — it swings at whatever the SERVER has selected
         var justTargeted = false;
         if (handle.CurrentTarget != target || !handle.TargetAsserted)
         {
@@ -1079,25 +705,6 @@ public sealed class BotManager : IAsyncDisposable
         }
         await EnsureBattleModeAsync(handle, s, ct);
 
-        // ⛔ WAIT FOR THE SERVER TO CONFIRM THE SELECTION BEFORE BASHING (operator 2026-08-12:
-        // "from a player's perspective it would make sense if bashing before TARGETINFO should always
-        // fail ... seems like a free thing to try, costs at most 20ms").
-        //
-        // BASHSTART carries NO target — it swings at whatever the server currently has selected — so a
-        // bash processed before our TARGETTING commits attacks the PREVIOUS selection, or nothing, and
-        // dies silently. We were sending TARGET, CHANGEMODE, STOP and BASHSTART inside ONE MILLISECOND
-        // and the TARGETINFO answering that selection arrived 23ms LATER (measured on the wire,
-        // 19:01:05.107-.131, on a bash that produced no swing at all).
-        //
-        // ⚠️ I briefly called this hypothesis refuted, wrongly. An ALIVE bash also had a 1ms send gap,
-        // so the gap "did not correlate". But the send gap and the TARGETINFO round-trip are both noisy
-        // PROXIES for the thing that matters — whether the server committed the selection before it
-        // processed the bash — and a 23ms ack can be a 1ms commit plus a spiky return path. Absence of
-        // correlation in a proxy is not refutation of the mechanism.
-        //
-        // Bounded, so a lost or unparsed TARGETINFO can never wedge the bash: we wait at most
-        // TargetConfirmWaitMs and bash anyway, which is exactly the old behaviour. Cost when it works is
-        // one round trip; cost when it does not is nothing.
         if (justTargeted)
         {
             var confirmed = await AwaitTargetConfirmAsync(handle, target, ct);
@@ -1107,49 +714,10 @@ public sealed class BotManager : IAsyncDisposable
                 $"{(confirmed ? "bashing" : "bashing anyway (timeout)")}");
         }
 
-        // FACE the mob then STOP, exactly like a skill cast (CastAsync) — the server validates
-        // a swing against facing, and a zero-distance moverun (when already adjacent) does NOT
-        // set facing, which is why BASHSTART produced no swings. FaceAndStop always steps a
-        // little toward the target so facing is correct. The CALLER must already be within
-        // melee weapon range (walk there first); this doesn't close large gaps.
-        //
-        // ⛔ …BUT NOT ON A RE-BASH MID-FIGHT. FaceAndStop's MOVERUN is exactly what breaks a swing
-        // stream ("MOVING breaks the swing stream, a bare STOP does not" — CastAsync's own note), so
-        // sending it unconditionally means every re-bash cancels the bash it is starting. Wire proof
-        // (Bot7170, RouVal02, 2026-08-05 08:22): re-bash → MOVERUN → CEASE_FIRE → re-bash, five
-        // "was ACTIVE" cancellations in three seconds (sessions 258→266), halving our damage output
-        // in the fights that were killing the bot.
-        // A CONNECTING HIT in the last 2500ms already proves we are in range AND faced — the server
-        // only lands our swing when both hold — so a re-bash then needs the STOP alone. This is the
-        // same signal, and the same bootstrap argument, that NeedsFacingAdjust uses on the cast path:
-        // the OPENING bash has no recent hit, so it still gets the full face+stop, lands a hit, and
-        // from then on the MOVERUN is suppressed and the stream persists.
         var facedByRecentHit = handle.ZoneView is { } zvf
             && zvf.LastRealDamageDealtAtUtc > DateTime.MinValue
             && (DateTime.UtcNow - zvf.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500;
 
-        // ⛔ …AND THE BOOTSTRAP ARGUMENT ABOVE DOES NOT HOLD. It assumes the opening bash lands a hit,
-        // after which the MOVERUN is suppressed and the stream persists. Measured on ClericFresh over
-        // 18.5 minutes in Job1_Dn01 (tools/swings_per_bash.py): 374 BASHSTART, 92 swings — 0.25 swings
-        // per bash against a real player's 5.96 — 537 CEASE_FIRE, and a dead bash cease-fires at a
-        // MEDIAN OF 70ms. `facedByRecentHit` could fire on only 20% of those bashes, because it asks for
-        // a connecting hit in the last 2.5s and a connecting hit is precisely what the bot cannot get.
-        // An escape hatch whose precondition only the blocked action can produce never opens.
-        //
-        // So ASK THE GEOMETRY INSTEAD, which needs nothing to have gone right first: if our heading is
-        // already pointed at the target, the face-step is a no-op that can only cancel the bash it
-        // precedes, and a bare STOP is enough. This is the same angle the target view surfaces
-        // (GET /api/bots/{id}/target → angleOffDeg).
-        //
-        // ⚠️ HONEST LIMIT ON THE EVIDENCE: bashes that skip the MOVERUN succeed far more often (85% vs
-        // 10%), but that split is exactly the facedByRecentHit split, so it cannot separate "the MOVERUN
-        // breaks the bash" from "a fight that is already landing hits keeps landing them". What IS
-        // established without that confound: the guard almost never fires, and the codebase's own note
-        // says the MOVERUN it fails to suppress is what breaks a swing stream. Both readings point at
-        // the same fix, so it is worth making; the metric to watch afterwards is swings-per-bash.
-        // FaceOkDeg is bot-behaviour tuning (like melee range or tick cadence), not a game fact — the
-        // server's real facing tolerance is unknown, so this stays inside the 22.5 degree half-arc that
-        // every melee skill declares as its UsableDegree, and the angle is logged so it can be tuned.
         const double FaceOkDeg = 20.0;
         var facedByGeometry = false;
         double? bashAngleOff = null;
@@ -1165,35 +733,24 @@ public sealed class BotManager : IAsyncDisposable
         else if (NpcPos(handle, target) is { } tp)
             await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct);
         else
-            // ⛔ NEITHER BRANCH RAN = WE BASH WHILE STILL MOVING. If the target is not in NpcPos (not in
-            // the mob or player maps — AoI flicker, a handle we learned elsewhere), the old code fell
-            // through and sent BASHSTART with no STOP at all. The server then cease-fires within ~47ms,
-            // before we send anything else: measured post-fix, that is what remains of the dead bashes.
-            // A committed STOP is the one thing every successful bash in the player capture has.
             await StopOnlyAsync(handle, s, ct);
         await s.SendAsync(new FiestaPacket(OpBatBashStart, Array.Empty<byte>()), ct);
         handle.LastBashSentUtc = DateTime.UtcNow;   // so a cast can tell "the swing has not started yet"
-        // Remember WHAT we're bashing and that it's running, so the CEASE_FIRE handler can tell a
-        // cancelled swing stream from an idle one and re-issue BASHSTART on the same target.
+        // Remember WHAT we're bashing and that it's running, so the CEASE_FIRE handler can tell a cancelled swing stream…
         handle.BashTarget = target;
         if (handle.ZoneView is { } zvb) zvb.BashActive = true;
-        // Decode -> log it in the same change: WHICH pre-bash path ran and the geometry that chose it,
-        // so "why did this bash die" is answerable from the tail instead of from a packet capture.
+        // Decode -> log it in the same change: WHICH pre-bash path ran and the geometry that chose it, so "why did this…
         handle.Log(BotLogLevel.Verbose,
             $"auto-attack h={target} ({(facedByRecentHit ? "stop-only: recent hit" : facedByGeometry ? "stop-only: already faced" : "face-step+stop")}" +
             $", angleOff={(bashAngleOff is { } ao ? $"{ao:F0}deg" : "unknown")})");
         return ActionResult.Sent;
     }
 
-    /// <summary>Stop auto-attacking (BAT BashstopCmd).</summary>
+    /// <summary>Stop auto-attacking (BAT BashstopCmd)</summary>
     public Task<ActionResult> StopAttackAsync(string id, CancellationToken ct = default)
         => ActAsync(id, "stop auto-attack", s => s.SendAsync(new FiestaPacket(OpBatBashStop, Array.Empty<byte>()), ct));
 
-    /// <summary>Position of a nearby entity by zone handle (null if not in view). Checks mobs
-    /// (<c>_npcs</c>) THEN characters (<c>_nearby</c>): scenario/instance enemies (the JCQ promotion
-    /// "shadow" clones) arrive via LOGINCHARACTER and live in the players map, not the mob map — so
-    /// without this fallback auto-attack couldn't FACE them (FaceAndStop was skipped) and BASHSTART
-    /// produced no swings against them. With it, auto-attack faces + swings any tracked handle.</summary>
+    /// <summary>Position of a nearby entity by zone handle (null if not in view)</summary>
     private static (uint X, uint Y)? NpcPos(BotHandle handle, ushort target)
     {
         if (handle.ZoneView is not { } view) return null;
@@ -1202,11 +759,7 @@ public sealed class BotManager : IAsyncDisposable
         return null;
     }
 
-    /// <summary>Handle of the nearest huntable enemy to the bot (null if none in view).
-    /// Filters out gates, town guards (player-side), shop NPCs, and gatherable resource
-    /// nodes via client MobInfo (<see cref="GameData.ClientData.IsHuntableEnemy"/>) — so
-    /// auto-attack never charges a guard or a herb. Pass an explicit target to
-    /// <see cref="AttackAsync"/> to override the filter.</summary>
+    /// <summary>Handle of the nearest huntable enemy to the bot (null if none in view)</summary>
     private ushort? NearestMob(BotHandle handle)
     {
         if (handle.ZoneView is not { } view || handle.Position is not { } pos) return null;
@@ -1221,15 +774,11 @@ public sealed class BotManager : IAsyncDisposable
         return best;
     }
 
-    /// <summary>Number of mobs currently aggroing the bot (within the combat window) — the
-    /// "am I overwhelmed?" signal a survival script flees on.</summary>
+    /// <summary>Number of mobs currently aggroing the bot (within the combat window) — the "am I overwhelmed?" signal a surviv…</summary>
     public int AggressorCount(string id)
         => _bots.TryGetValue(id, out var h) && h.ZoneView is { } v ? v.Aggressors.Count : 0;
 
-    /// <summary>Flee: walk directly away from the threat (centroid of current aggressors, or
-    /// the nearest mob) by <paramref name="dist"/> world-units. NON-BLOCKING — it just issues
-    /// the walk and returns, so a survival script can keep healing every tick while fleeing.
-    /// Pathfinds over the map grid when available, else a straight retreat.</summary>
+    /// <summary>Flee: walk directly away from the threat (centroid of current aggressors, or the nearest mob) by world-units</summary>
     public ActionResult Flee(string id, double dist = 500, double unitsPerSec = 0)
     {
         if (!_bots.TryGetValue(id, out var h)) return ActionResult.NotFound;
@@ -1256,34 +805,25 @@ public sealed class BotManager : IAsyncDisposable
         return WalkPath(id, wp, unitsPerSec > 0 ? unitsPerSec : 120.0);
     }
 
-    // ── Targeting / follow (zone) ─────────────────────────────────────────────
-    // Targeting and follow are zone-side. A party-tab target (F2–F5 in the client)
-    // is just a BAT TargettingReq on the member's zone handle; untarget (Esc) is a
-    // bare BAT UntargetReq. "Follow" has no dedicated packet at all — the client
-    // targets the player then streams MoverunCmd toward their moving position, which
-    // is why follow drops at a map change (verified in PartyFriendTarget.pcapng).
+    // Targeting / follow (zone) ───────────────────────────────────────────── Targeting and follow are zone-side
     private static readonly ushort OpBatUntarget =
         (ushort)(((int)ProtocolCommand.Bat << 10) | (int)BatOpcode.UntargetReq);
 
-    /// <summary>Target a zone handle (e.g. a party member for buffing).</summary>
+    /// <summary>Target a zone handle</summary>
     public Task<ActionResult> TargetAsync(string id, ushort target, CancellationToken ct = default)
         => ActAsync(id, $"target h={target}",
             s => s.SendAsync(new FiestaPacket(OpBatTarget, new[] { (byte)target, (byte)(target >> 8) }), ct));
 
-    /// <summary>Clear the current target (Esc).</summary>
+    /// <summary>Clear the current target (Esc)</summary>
     public Task<ActionResult> UntargetAsync(string id, CancellationToken ct = default)
         => ActAsync(id, "untarget", s => s.SendAsync(new FiestaPacket(OpBatUntarget, Array.Empty<byte>()), ct));
 
-    /// <summary>Resolve a nearby player by name (case-insensitive) to their zone handle.</summary>
+    /// <summary>Resolve a nearby player by name (case-insensitive) to their zone handle</summary>
     private static ushort? HandleForName(BotHandle handle, string name)
         => handle.ZoneView?.NearbyPlayers
             .FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))?.Handle;
 
-    /// <summary>Follow a nearby player by name: target them, then chase by streaming
-    /// MoverunCmd toward their live position (stopping <paramref name="followDist"/>
-    /// world-units short), refreshed on a background loop until the target leaves
-    /// view, the bot is stopped, or <see cref="StopFollow"/> is called. This mirrors
-    /// the real client — there is no follow packet, so a map change ends the follow.</summary>
+    /// <summary>Follow a nearby player by name: target them, then chase by streaming MoverunCmd toward their live position (st…</summary>
     public ActionResult Follow(string id, string targetName, double followDist = 60.0, double unitsPerSec = 120.0)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -1310,9 +850,7 @@ public sealed class BotManager : IAsyncDisposable
                     {
                         double dx = (double)target.X - pos.X, dy = (double)target.Y - pos.Y;
                         var dist = Math.Sqrt(dx * dx + dy * dy);
-                        // Re-plan when out of range and either the target moved enough
-                        // since the last plan, or our last walk finished short (WalkCts
-                        // cleared) — the latter closes the final gap when they stop.
+                        // Re-plan when out of range and either the target moved enough since the last plan, or our last walk finished sh…
                         var moved = lastPlan is not { } lp
                             || Math.Abs((double)target.X - lp.X) + Math.Abs((double)target.Y - lp.Y) > followDist
                             || handle.WalkCts is null;
@@ -1321,9 +859,7 @@ public sealed class BotManager : IAsyncDisposable
                             var grid = handle.CurrentMap is { } map ? GridProvider?.Invoke(map) : null;
                             if (grid is not null)
                             {
-                                // Pathfind around obstacles (a straight chase snags on
-                                // lanterns/walls → MOVEFAIL), then walk it via WalkPath
-                                // (chunked + MOVEFAIL-aware), trimmed to stop short.
+                                // Pathfind around obstacles (a straight chase snags on lanterns/walls → MOVEFAIL), then walk it via WalkPath (ch…
                                 var path = PathFinder.FindPath(grid, pos.X, pos.Y, target.X, target.Y);
                                 if (path.Count > 0)
                                 {
@@ -1341,7 +877,7 @@ public sealed class BotManager : IAsyncDisposable
                             }
                             else
                             {
-                                // No grid available — one capped straight-line step.
+                                // No grid available — one capped straight-line step
                                 var step = Math.Min(dist - followDist, MaxStepFor(unitsPerSec));
                                 var nx = (uint)Math.Round(pos.X + dx / dist * step);
                                 var ny = (uint)Math.Round(pos.Y + dy / dist * step);
@@ -1365,7 +901,7 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>Stop an in-progress <see cref="Follow"/> loop (no-op if not following).</summary>
+    /// <summary>Stop an in-progress loop (no-op if not following)</summary>
     public ActionResult StopFollow(string id)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -1373,38 +909,24 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    // ── Party (WorldManager link) ─────────────────────────────────────────────
-    // Party and friend traffic is WM-side, not zone-side (verified in
-    // PartyFriendTarget.pcapng). An invite is NC_PARTY_JOIN_REQ {target Name5}; the
-    // recipient answers a join-propose with ALLOW_ACK / REJECT_ACK carrying the
-    // *inviter's* name (no typed struct for those two — build by opcode). Letting an
-    // invite expire = simply not answering.
+    // Party (WorldManager link) ───────────────────────────────────────────── Party and friend traffic is WM-side, n…
     private const ushort OpPartyAllow = (ushort)(((int)ProtocolCommand.Party << 10) | 4); // 0x3804
     private const ushort OpPartyReject = (ushort)(((int)ProtocolCommand.Party << 10) | 5); // 0x3805
-    // Incoming invite: the server asks the invitee with NC_PARTY_JOINPROPOSE_REQ (cmd 3,
-    // 0x3803) carrying the inviter's name. We track it so accept/decline don't need the
-    // name passed in (and so an invite doesn't sit unanswered, wedging the party state).
+    // Incoming invite: the server asks the invitee with NC_PARTY_JOINPROPOSE_REQ (cmd 3, 0x3803) carrying the invite…
     private const ushort OpPartyJoinPropose = (ushort)(((int)ProtocolCommand.Party << 10) | 3); // 0x3803
     private const ushort OpPartyJoinCmd = (ushort)(((int)ProtocolCommand.Party << 10) | 8); // 0x3808 (joined)
-    // Party MEMBER-STATE (the TEAMWORK foundation). Layouts from the PDB extract (all-structs.json):
-    //   MEMBER_LIST(9)/MEMBERINFORM(50): [count u8] then count × { Name5(20) hp(u32) sp(u32) lp(u32) } (32B/member)
-    //   MEMBERCLASS(51): [count u8] then count × { Name5(20) class(u8) level(u8) maxhp(u32) maxsp(u32) maxlp(u32) inform(u8) } (35B)
-    //   MEMBERLOCATION(73): [count u8] then count × <unnamed> (positions) — layout raw-logged to pin from a 2-bot capture.
+    // Party MEMBER-STATE (the TEAMWORK foundation)
     private const ushort OpPartyMemberList     = (ushort)(((int)ProtocolCommand.Party << 10) | 9);  // 0x3809 roster + hp
     private const ushort OpPartyMemberInform   = (ushort)(((int)ProtocolCommand.Party << 10) | 50); // 0x3832 live hp/sp
     private const ushort OpPartyMemberClass    = (ushort)(((int)ProtocolCommand.Party << 10) | 51); // 0x3833 class/level/max
     private const ushort OpPartyMemberLocation = (ushort)(((int)ProtocolCommand.Party << 10) | 73); // 0x3849 positions
     private const ushort OpPartyLeaveCmd       = (ushort)(((int)ProtocolCommand.Party << 10) | 12); // 0x380C we left
     private const ushort OpPartyDismissCmd     = (ushort)(((int)ProtocolCommand.Party << 10) | 31); // 0x381F party disbanded
-    // Incoming friend request: the server asks the bot to confirm with
-    // NC_FRIEND_SET_CONFIRM_REQ (Friend dept 0x15, cmd 3 → 0x5403) carrying the requester's
-    // name (charid). We track it so the bot can auto-confirm (an operator friends the bot and
-    // it accepts on its own). NC_FRIEND_ADD_CMD (cmd 8) means the add went through → clear.
+    // Incoming friend request: the server asks the bot to confirm with NC_FRIEND_SET_CONFIRM_REQ (Friend dept 0x15,…
     private const ushort OpFriendConfirmReq = (ushort)(((int)ProtocolCommand.Friend << 10) | 3); // 0x5403
     private const ushort OpFriendAddCmd = (ushort)(((int)ProtocolCommand.Friend << 10) | 8); // 0x5408
 
-    /// <summary>Subscribe a BotHandle's WM link to track pending party invites + incoming
-    /// friend requests (and clear them when resolved). Called when the WM session is created.</summary>
+    /// <summary>Subscribe a BotHandle's WM link to track pending party invites + incoming friend requests (and clear them when…</summary>
     private void TrackPartyInvites(BotHandle handle, BotSession wm)
         => wm.PacketReceived += pkt =>
         {
@@ -1422,11 +944,7 @@ public sealed class BotManager : IAsyncDisposable
                 { handle.PartyMembers.Clear(); handle.Log("[party] left/dismissed — roster CLEARED"); }
                 else if (pkt.Opcode == OpFriendConfirmReq)
                 {
-                    // In the CONFIRM_REQ the server swaps to the RECIPIENT's view: charid = us (the bot being
-                    // asked), friendid = the OTHER char (the requester). Verified from the wire (0x5403 bytes:
-                    // field@0="IkFresh2"=self, field@20="Bot2433"=requester). Reading charid gave our OWN name,
-                    // so the confirm echoed ourselves back ("can't add yourself") → friend never linked. Read
-                    // friendid (the requester) so FriendConfirmAsync sends the OTHER char's name back.
+                    // In the CONFIRM_REQ the server swaps to the RECIPIENT's view: charid = us (the bot being asked), friendid = the…
                     var requester = FiestaText.Decode(pkt.ReadBody<PROTO_NC_FRIEND_SET_CONFIRM_REQ>().friendid.n5_name);
                     handle.PendingFriendRequester = requester;
                     handle.Log($"friend request from '{requester}' pending — friendConfirm to answer");
@@ -1436,10 +954,7 @@ public sealed class BotManager : IAsyncDisposable
             catch { /* ignore an unparseable WM frame */ }
         };
 
-    // Parse NC_PARTY_MEMBER_LIST_CMD(9). WIRE FORMAT (captured live 2026-07-23 — DIFFERS from the idealized PDB
-    // MEMBER_INFO struct, which claimed name+hp+sp+lp): [count u8] then count × { Name5(20B) + 2 bytes }. The 2
-    // trailing bytes are constant (01 02) across members — likely a member index/flag; NO hp here (hp/class arrive
-    // via MEMBERINFORM/MEMBERCLASS during play). So MEMBER_LIST = the ROSTER: add/prune members by name.
+    // Parse NC_PARTY_MEMBER_LIST_CMD(9)
     private static void ParsePartyRoster(BotHandle handle, ReadOnlySpan<byte> body)
     {
         if (body.Length < 1) return;
@@ -1461,12 +976,7 @@ public sealed class BotManager : IAsyncDisposable
     private static bool IsPartyMemberStateOpcode(ushort op) =>
         op == OpPartyMemberInform || op == OpPartyMemberClass || op == OpPartyMemberLocation;
 
-    // Parse the live member-state packets. WIRE LAYOUTS confirmed from a live co-moving 2-bot party capture
-    // (2026-07-23) — all match the PDB (only MEMBER_LIST differed, handled separately):
-    //   MEMBERINFORM(50): [count u8] then count × { Name5(20) hp(u32) sp(u32) lp(u32) } (32B) — LIVE hp/sp (cleric-heal).
-    //   MEMBERCLASS(51):  [count u8] then count × { Name5(20) class(u8) level(u8) maxhp(u32) maxsp(u32) maxlp(u32) inform(u8) } (35B).
-    //   MEMBERLOCATION(73): [count u8] then count × { Name5(20) x(u32) y(u32) } (28B) — member positions (regroup/shared-kill).
-    // These arrive ZONE-side for co-located members (broadcast as they move/fight); the handler is on both links.
+    // Parse the live member-state packets
     private static void HandlePartyMemberState(BotHandle handle, ushort op, ReadOnlySpan<byte> body)
     {
         if (body.Length < 1) return;
@@ -1488,13 +998,12 @@ public sealed class BotManager : IAsyncDisposable
         }
     }
 
-    /// <summary>Invite <paramref name="targetName"/> to a party (WM link).</summary>
+    /// <summary>Invite to a party (WM link)</summary>
     public Task<ActionResult> PartyInviteAsync(string id, string targetName, CancellationToken ct = default)
         => WmActAsync(id, $"party invite {targetName}",
             s => s.SendAsync(new PROTO_NC_PARTY_JOIN_REQ { target = Name5Of(targetName) }, ct));
 
-    /// <summary>Accept a pending party invite. Pass <paramref name="inviterName"/> explicitly,
-    /// or leave it null to answer the tracked <see cref="BotHandle.PendingPartyInviter"/>.</summary>
+    /// <summary>Accept a pending party invite</summary>
     public Task<ActionResult> PartyAcceptAsync(string id, string? inviterName = null, CancellationToken ct = default)
     {
         var name = ResolveInviter(id, inviterName);
@@ -1504,8 +1013,7 @@ public sealed class BotManager : IAsyncDisposable
             .ContinueWith(t => { if (_bots.TryGetValue(id, out var h)) h.PendingPartyInviter = null; return t.Result; });
     }
 
-    /// <summary>Decline a pending party invite (tracked inviter if <paramref name="inviterName"/>
-    /// is null) — clears the stuck pending state.</summary>
+    /// <summary>Decline a pending party invite (tracked inviter if is null) — clears the stuck pending state</summary>
     public Task<ActionResult> PartyDeclineAsync(string id, string? inviterName = null, CancellationToken ct = default)
     {
         var name = ResolveInviter(id, inviterName);
@@ -1515,7 +1023,7 @@ public sealed class BotManager : IAsyncDisposable
             .ContinueWith(t => { if (_bots.TryGetValue(id, out var h)) h.PendingPartyInviter = null; return t.Result; });
     }
 
-    /// <summary>The explicit inviter name, or the tracked pending one if none was given.</summary>
+    /// <summary>The explicit inviter name, or the tracked pending one if none was given</summary>
     private string? ResolveInviter(string id, string? inviterName)
     {
         if (!string.IsNullOrWhiteSpace(inviterName)) return inviterName;
@@ -1523,22 +1031,18 @@ public sealed class BotManager : IAsyncDisposable
             ? h.PendingPartyInviter : null;
     }
 
-    /// <summary>Send a line to party chat (WM link).</summary>
+    /// <summary>Send a line to party chat (WM link)</summary>
     public Task<ActionResult> PartyChatAsync(string id, string text, CancellationToken ct = default)
         => WmActAsync(id, $"party-chat: \"{text}\"", s => s.SendAsync(ChatCodec.BuildPartyChatReq(text), ct));
 
-    // ── Friend list (WorldManager link) ───────────────────────────────────────
-    // All friend structs carry [self charid Name5][other friendid Name5]; the confirm
-    // adds a trailing accept byte (0x01 accept / 0x00 decline). Add and delete are
-    // one-shot requests; responding to an incoming request is the CONFIRM_ACK.
+    // Friend list (WorldManager link) ─────────────────────────────────────── All friend structs carry [self charid…
 
-    /// <summary>Send a friend request to <paramref name="targetName"/> (WM link).</summary>
+    /// <summary>Send a friend request to (WM link)</summary>
     public Task<ActionResult> FriendAddAsync(string id, string targetName, CancellationToken ct = default)
         => WmActAsync(id, $"friend add {targetName}", (s, self) =>
             s.SendAsync(new PROTO_NC_FRIEND_SET_REQ { charid = Name5Of(self), friendid = Name5Of(targetName) }, ct));
 
-    /// <summary>Answer an incoming friend request from <paramref name="requesterName"/>:
-    /// <paramref name="accept"/> true = add, false = decline (WM link).</summary>
+    /// <summary>Answer an incoming friend request from : true = add, false = decline (WM link)</summary>
     public Task<ActionResult> FriendConfirmAsync(string id, string requesterName, bool accept, CancellationToken ct = default)
     {
         if (_bots.TryGetValue(id, out var h) && string.Equals(h.PendingFriendRequester, requesterName, StringComparison.OrdinalIgnoreCase))
@@ -1550,12 +1054,12 @@ public sealed class BotManager : IAsyncDisposable
             }, ct));
     }
 
-    /// <summary>Remove <paramref name="targetName"/> from the friend list (WM link).</summary>
+    /// <summary>Remove from the friend list (WM link)</summary>
     public Task<ActionResult> FriendDeleteAsync(string id, string targetName, CancellationToken ct = default)
         => WmActAsync(id, $"friend delete {targetName}", (s, self) =>
             s.SendAsync(new PROTO_NC_FRIEND_DEL_REQ { charid = Name5Of(self), friendid = Name5Of(targetName) }, ct));
 
-    /// <summary>Build a 20-byte Name5 from a character name (ASCII, NUL-padded).</summary>
+    /// <summary>Build a 20-byte Name5 from a character name (ASCII, NUL-padded)</summary>
     private static Name5 Name5Of(string name)
     {
         var n5 = new Name5();
@@ -1564,16 +1068,11 @@ public sealed class BotManager : IAsyncDisposable
         return n5;
     }
 
-    // Town multi-select portal (from Portals.pcapng): target the portal NPC, click
-    // it, then select a destination by its TownPortal-table index. Built by opcode —
-    // NPCCLICK (Act cmd 10) and TOWNPORTAL_REQ (Map cmd 26) carry trivial payloads.
+    // Town multi-select portal (from Portals.pcapng): target the portal NPC, click it, then select a destination by…
     private const ushort OpActNpcClick = (ushort)(((int)ProtocolCommand.Act << 10) | 10);     // 0x200A
     private const ushort OpMapTownPortal = (ushort)(((int)ProtocolCommand.Map << 10) | 26);   // 0x181A
 
-    /// <summary>Use a town multi-select portal: target → click the portal NPC →
-    /// select destination <paramref name="dest"/> (its <c>TownPortal</c> table index;
-    /// e.g. in RouN group 0: 0=RouN,1=RouVal01,2=Eld). The bot must already be next
-    /// to the portal NPC. The server then map-transitions the bot.</summary>
+    /// <summary>Use a town multi-select portal: target → click the portal NPC → select destination (its TownPortal table index…</summary>
     public Task<ActionResult> TownPortalAsync(string id, ushort npcHandle, byte dest, CancellationToken ct = default)
         => ActAsync(id, $"town-portal via npc h={npcHandle} -> dest {dest}", async s =>
         {
@@ -1583,29 +1082,14 @@ public sealed class BotManager : IAsyncDisposable
             await s.SendAsync(new FiestaPacket(OpMapTownPortal, new[] { dest }), ct);
         });
 
-    // Field-gate link: a gate is an NPC (flagstate=1) with a handle. The client takes
-    // it the same way it clicks any NPC — target it then NPCClick — and the zone
-    // replies with the LOGOUT + LINKSAME/LINKOTHER transition; no need to walk onto
-    // the tile (just be within the gate's range). For a multi-destination gate the
-    // server first sends MULTY_LINK_CMD and the client picks a destination by map
-    // name via MULTY_LINK_SELECT_REQ. (Verified C->S in Portals.pcapng, 2026-06-11.)
+    // Field-gate link: a gate is an NPC (flagstate=1) with a handle
     private const ushort OpMapMultyLinkSelect = (ushort)(((int)ProtocolCommand.Map << 10) | 31); // 0x181F
-    // SERVERMENU_ACK (Menu dept 0x0F, cmd 2): answers a server menu prompt (0x3C01).
-    // An instance gate (EldPri01) asks "move to Collapsed Prison field?" — option 0 =
-    // Yes (verified C->S in PartyFriendTarget.pcapng).
+    // SERVERMENU_ACK (Menu dept 0x0F, cmd 2): answers a server menu prompt (0x3C01)
     private const ushort OpMenuServerMenuAck = (ushort)((0x0F << 10) | 2); // 0x3C02
-    // MAP_LOGINCOMPLETE (Map dept 6, cmd 3): "finished loading — spawn me in-world".
-    // Sent at initial zone entry (ZoneEntry) and AGAIN after an in-band LINKSAME warp:
-    // the server holds back the new map's entity broadcasts until it sees this, so an
-    // instance (EldPri01) stays silent/empty without it.
+    // MAP_LOGINCOMPLETE (Map dept 6, cmd 3): "finished loading — spawn me in-world"
     private const ushort OpMapLoginComplete = (ushort)(((int)ProtocolCommand.Map << 10) | 3); // 0x1803
 
-    /// <summary>Take a field gate by its NPC handle: target → NPC-click. If the gate
-    /// opens a Yes/No confirm menu (0x3C01, e.g. instance gates like EldPri01), answer
-    /// it with SERVERMENU_ACK option <paramref name="menuOption"/> (0 = Yes). For a
-    /// multi-destination gate, pass <paramref name="destMap"/> to pick the map by name.
-    /// The bot must be within the gate's range; the zone then drives the transition
-    /// (see <see cref="ZoneView.MapChanged"/>).</summary>
+    /// <summary>Take a field gate by its NPC handle: target → NPC-click</summary>
     public async Task<ActionResult> UseGateAsync(string id, ushort gateHandle, string? destMap = null, byte menuOption = 0, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -1613,16 +1097,10 @@ public sealed class BotManager : IAsyncDisposable
         var hb = new byte[] { (byte)gateHandle, (byte)(gateHandle >> 8) };
         var view = handle.ZoneView;
 
-        // An instance gate confirms with a menu (0x3C01 "move to <field>?") before it
-        // transitions you; a plain field gate transitions outright with no menu. The
-        // gate also auto-opens that menu when you stand on its trigger — so if we
-        // spawned on the gate the menu may already be open before we click. Answer an
-        // already-open menu directly; otherwise target+click and poll ~3s for one.
+        // An instance gate confirms with a menu (0x3C01 "move to ?") before it transitions you; a plain field gate trans…
         async Task AnswerMenu()
         {
-            // Capture the parsed menu BEFORE answering (ClearServerMenu wipes it) so the trace shows
-            // exactly what we picked and from what prompt — wrong picks (e.g. landing in a shop instead
-            // of a quest) are then obvious in the tail.
+            // Capture the parsed menu BEFORE answering (ClearServerMenu wipes it) so the trace shows exactly what we picked…
             var title = view?.ServerMenuTitle;
             var picked = view?.ServerMenuOptions.FirstOrDefault(o => o.Reply == menuOption);
             await s.SendAsync(new FiestaPacket(OpMenuServerMenuAck, new[] { menuOption }), ct);
@@ -1655,25 +1133,14 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>Snapshot the gates the bot currently sees into the shared
-    /// <see cref="Graph"/> (auto-discovery): each in-view gate becomes an edge from
-    /// the bot's current map to the gate's destination. No-op until the bot knows its
-    /// current map and is in zone. Returns the number of gate edges observed.</summary>
-    // Don't LEARN gate edges until the map has settled after a transition (operator 2026-07-22): during/just
-    // after a map switch the ZoneView can briefly carry the NEW map's gates while handle.CurrentMap hasn't caught
-    // up, so ObserveGate mis-attributes them to the OLD map — e.g. EldCem01's Eld-gate @(11829,1135) learned as a
-    // bogus RouVal02->Eld edge that then breaks all Eld-bound routing from RouVal02. Safe to skip: the graph is
-    // fully SEEDED up-front from ClientData.BuildGateEdges (all real cross-map links), so learning only refreshes
-    // live handles / adds un-seeded gates — never needed for routing — and the travel loop re-resolves the live
-    // gate handle from the view anyway. A gate genuinely on the current map is re-learned on the next settled call.
+    /// <summary>Snapshot the gates the bot currently sees into the shared (auto-discovery): each in-view gate becomes an edge…</summary>
     private const long GateLearnSettleMs = 2500;
 
     public int ObserveGates(string id)
     {
         if (!_bots.TryGetValue(id, out var handle)) return 0;
         if (handle.CurrentMap is not { } fromMap || handle.ZoneView is not { } view) return 0;
-        // Block learning while the map is still settling after a transition (prevents the stale-CurrentMap
-        // mis-attribution / bogus cross-map edges). Routing is unaffected (seeded graph).
+        // Block learning while the map is still settling after a transition (prevents the stale-CurrentMap mis-attributi…
         if (handle.MsSinceMapChange < GateLearnSettleMs) return 0;
         var n = 0;
         foreach (var gate in view.NearbyNpcs)
@@ -1685,32 +1152,18 @@ public sealed class BotManager : IAsyncDisposable
         return n;
     }
 
-    // ── Autonomous multi-map travel ───────────────────────────────────────────
-    // Stop this far (world units) short of a gate before clicking it — a gate takes
-    // effect within its range, no need to stand on the tile (verified Portals.pcapng).
-    // If a click from range doesn't transition, we close to the exact coord and retry.
+    // Autonomous multi-map travel ─────────────────────────────────────────── Stop this far (world units) short of a…
     private const double GateApproachDist = 60.0;
-    // In a scenario instance, an out-of-range cast target CLOSER than this is NOT client-approached — hold +
-    // autoAttack (already in melee). Farther = approach to melee. Set to 40 (tick 41): the bot must CLOSE to the
-    // scenario mobs or its autoAttack never swings (it was appearing only as DEFENDER, never attacker → 0 kills).
-    // Paired with ScenarioMeleeStop so the approach STOPS melee-short of the mob (doesn't chase into a wall).
+    // In a scenario instance, an out-of-range cast target CLOSER than this is NOT client-approached — hold + autoAtt…
     private const double ScenarioHoldRange = 40.0;
-    // How far SHORT of the target the instance combat-approach stops — closes into swing range without pathing
-    // onto the mob's (possibly wall-adjacent) cell. Slightly under ScenarioHoldRange so once we arrive we HOLD + swing.
+    // How far SHORT of the target the instance combat-approach stops — closes into swing range without pathing onto…
     private const double ScenarioMeleeStop = 30.0;
-    // TOO CLOSE (operator 2026-07-15): standing on top of a mob (~1u, from autoAttack's server-follow dragging us
-    // onto its cell) makes BOTH the swing and the cast fail 0x0FCA "out of range" — the real client stops at
-    // weapon range (~a WeaponType-keyed const, e.g. archers reach far) and NEVER overlaps. So when we're closer
-    // than this, STEP BACK to ScenarioMeleeStop instead of holding at 1u forever (the instance combat-reach wedge:
-    // 5 mobs at 1u, 3 aggressors, 0 kills for minutes). Pure movement tuning, not a game fact. (P1: learn the exact
-    // range dynamically by probing the swing-success distance / reading it off the equipped WeaponType.)
+    // TOO CLOSE (operator 2026-07-15): standing on top of a mob (~1u, from autoAttack's server-follow dragging us on…
     private const double ScenarioTooClose = 20.0;
-    // How close a NearbyNpc must be to a town-portal's known coord to be taken as the portal NPC.
+    // How close a NearbyNpc must be to a town-portal's known coord to be taken as the portal NPC
     private const double PortalNpcRadius = 250.0;
 
-    /// <summary>The live handle of the nearest in-view NPC (excluding field gates) to
-    /// (<paramref name="x"/>,<paramref name="y"/>) within <paramref name="maxDist"/> world-units, or
-    /// null. Used to resolve a town-portal NPC from its known coord once it's in view.</summary>
+    /// <summary>The live handle of the nearest in-view NPC (excluding field gates) to ( , ) within world-units, or null</summary>
     private static ushort? NearestNpcHandle(BotHandle handle, uint x, uint y, double maxDist)
     {
         var npcs = handle.ZoneView?.NearbyNpcs;
@@ -1725,15 +1178,10 @@ public sealed class BotManager : IAsyncDisposable
         return best;
     }
 
-    /// <summary>Outcome of kicking off an autonomous <see cref="TravelTo"/>.</summary>
+    /// <summary>Outcome of kicking off an autonomous</summary>
     public enum TravelResult { Started, NotFound, NotInZone, AlreadyThere, NoRoute }
 
-    /// <summary>Plan and begin autonomous travel to <paramref name="destMap"/>: route
-    /// over the learned gate graph (BFS), then for each hop pathfind to the gate, take
-    /// it, wait for the map transition (in-band LINKSAME or cross-server LINKOTHER), and
-    /// repeat — learning each map's id↔name and gates as it goes. Returns immediately
-    /// with the planned route; the journey runs on a background task (watch the bot log
-    /// and <see cref="BotHandle.CurrentMap"/>). Cancel with <see cref="StopTravel"/>.</summary>
+    /// <summary>Plan and begin autonomous travel to : route over the learned gate graph (BFS), then for each hop pathfind to t…</summary>
     public (TravelResult Result, IReadOnlyList<GateEdge>? Route) TravelTo(string id, string destMap, double unitsPerSec = 120.0)
     {
         if (!_bots.TryGetValue(id, out var handle)) return (TravelResult.NotFound, null);
@@ -1742,14 +1190,11 @@ public sealed class BotManager : IAsyncDisposable
         if (string.Equals(from, destMap, StringComparison.OrdinalIgnoreCase))
             return (TravelResult.AlreadyThere, Array.Empty<GateEdge>());
 
-        // Seed the COMPLETE cross-map web from client nav data once (MapWayPoint/MapLinkPoint) plus the
-        // TOWN-PORTAL edges (TownPortal.shn), so routing works to maps the bot has never visited and can
-        // choose a portal hop when it's cheaper than hiking the field-gate chain.
+        // Seed the COMPLETE cross-map web from client nav data once (MapWayPoint/MapLinkPoint) plus the TOWN-PORTAL edge…
         SeedGraphIfNeeded(id);
         ObserveGates(id); // fold the bot's in-view gates into the graph (refreshes live handles)
 
-        // Cost-gated route: Dijkstra over field gates AND town portals, edge cost = on-map walk distance
-        // to the transition (portal warp ~0). Picks a portal ONLY when toPortal+fromPortal < directWalk.
+        // Cost-gated route: Dijkstra over field gates AND town portals, edge cost = on-map walk distance to the transiti…
         var startPos = handle.Position is { } sp ? (sp.X, sp.Y) : (0u, 0u);
         var costed = Graph.RouteCost(from, startPos, destMap, null, (int)handle.Level, StraightLineCost);
         if (costed is not { Route.Count: > 0 } cr) return (TravelResult.NoRoute, null);
@@ -1765,7 +1210,7 @@ public sealed class BotManager : IAsyncDisposable
         return (TravelResult.Started, route);
     }
 
-    /// <summary>Seed the cross-map graph from client nav data (field gates + town portals) once. Idempotent.</summary>
+    /// <summary>Seed the cross-map graph from client nav data (field gates + town portals) once</summary>
     private void SeedGraphIfNeeded(string id)
     {
         if (Graph.Seeded || ClientData is not { } cd) return;
@@ -1776,9 +1221,7 @@ public sealed class BotManager : IAsyncDisposable
         _bots.TryGetValue(id, out var hh);
         if (n == 0)
         {
-            // An empty seed is a FAILURE to make it visible, not a quiet no-op: with no seeded web the bot
-            // can only route through gates it has physically seen, which strands it (see MapGraph.Seed).
-            // Seeded stays false, so the next RouteInfo/TravelTo retries rather than living with it.
+            // An empty seed is a FAILURE to make it visible, not a quiet no-op: with no seeded web the bot can only route th…
             var why = cd.TableFailures.Count > 0
                 ? " Failed client tables: " + string.Join(", ", cd.TableFailures.Select(kv => $"{kv.Key} ({kv.Value})"))
                 : $" MapWayPoint/MapLinkPoint read clean from {cd.DataDir} but yielded no cross-map links.";
@@ -1790,10 +1233,7 @@ public sealed class BotManager : IAsyncDisposable
                 $"({Graph.Maps().Count} map nodes)");
     }
 
-    /// <summary>Compute the cross-map route WITHOUT starting travel — a diagnostic / decision helper for the
-    /// Lua leveler (e.g. skip an epic whose giver-town is unroutable). Seeds the graph + folds in-view gates
-    /// first, exactly like <see cref="TravelTo"/>. <see cref="TravelResult.Started"/> here means "a route
-    /// exists" (nothing is moved).</summary>
+    /// <summary>Compute the cross-map route WITHOUT starting travel — a diagnostic / decision helper for the Lua leveler</summary>
     public (TravelResult Result, IReadOnlyList<GateEdge>? Route) RouteInfo(string id, string destMap)
     {
         if (!_bots.TryGetValue(id, out var handle)) return (TravelResult.NotFound, null);
@@ -1809,8 +1249,7 @@ public sealed class BotManager : IAsyncDisposable
         return (TravelResult.Started, cr.Route);
     }
 
-    /// <summary>Stop an in-progress <see cref="TravelTo"/> (no-op if not travelling).
-    /// Also aborts the current walk so the bot halts where it is.</summary>
+    /// <summary>Stop an in-progress (no-op if not travelling)</summary>
     public ActionResult StopTravel(string id)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -1833,9 +1272,7 @@ public sealed class BotManager : IAsyncDisposable
                 var edge = route[hop];
                 var expected = edge.ToMap;
 
-                // TOWN-PORTAL hop: walk to the portal NPC, resolve its live handle from view, then
-                // target+click it and select the destination index. Unlike a field gate the portal NPC
-                // isn't a linkMap-carrying gate, so we resolve it as the nearest NPC to its known coord.
+                // TOWN-PORTAL hop: walk to the portal NPC, resolve its live handle from view, then target+click it and select th…
                 if (edge.IsPortal && edge.PortalDestIndex is int destIdx)
                 {
                     if (edge.GateX != 0 || edge.GateY != 0)
@@ -1874,25 +1311,16 @@ public sealed class BotManager : IAsyncDisposable
                     continue;
                 }
 
-                // Walk to the gate's KNOWN location first (seeded from MapWayPoint/MapLinkPoint, or
-                // last observed). A map's gate can be anywhere on it; the old code only took a gate
-                // already in view and aborted otherwise — the #1 cause of "pathfinding failed". By
-                // approaching the stored coords the gate NPC comes into view, then we resolve + click.
+                // Walk to the gate's KNOWN location first (seeded from MapWayPoint/MapLinkPoint, or last observed)
                 if (edge.GateX != 0 || edge.GateY != 0)
                     await ApproachAsync(id, handle, edge.GateX, edge.GateY, GateApproachDist, unitsPerSec, ct);
 
-                // Resolve the live gate to this destination from the current view (now that we're at
-                // its location). Gates arrive in the field MOB briefinfo — wait briefly for it.
+                // Resolve the live gate to this destination from the current view (now that we're at its location)
                 if (!await WaitUntilAsync(() => GateTo(handle, expected) is not null, 8000, ct)
                     || GateTo(handle, expected) is not { } gate)
                 {
                     handle.Log($"[travel] hop {hop + 1}/{route.Count}: no gate to '{expected}' in view near ({edge.GateX},{edge.GateY}) — aborting");
-                    // The edge is BOGUS/stale: we walked to its stored coord ON THIS MAP but the gate to `expected`
-                    // isn't there (coord off-grid / no gate NPC). A mis-learned edge like RouVal02->Eld carrying
-                    // EldCem01's Eld-gate coord (11829,1135) makes Dijkstra pick a non-existent 1-hop over the real
-                    // RouVal02->EldCem01->Eld and permanently breaks the trip (the NPC->map hand-in P1). PRUNE it so
-                    // the next route finds the real path. Guarded: field gates only, and only when we're actually ON
-                    // the edge's source map (never prune on a wrong-map desync); re-learned by ObserveGate if it was real.
+                    // The edge is BOGUS/stale: we walked to its stored coord ON THIS MAP but the gate to `expected` isn't there (coo…
                     if (!edge.IsPortal && string.Equals(handle.CurrentMap, edge.FromMap, StringComparison.OrdinalIgnoreCase)
                         && Graph.RemoveEdge(edge.FromMap, edge.ToMap))
                         handle.Log($"[travel] PRUNED bogus gate edge {edge.FromMap} -> {edge.ToMap} @({edge.GateX},{edge.GateY}) (gate not there) — will re-route");
@@ -1900,20 +1328,13 @@ public sealed class BotManager : IAsyncDisposable
                 }
                 handle.Log($"[travel] hop {hop + 1}/{route.Count}: -> {expected} via gate h={gate.Handle} @({gate.X},{gate.Y})");
 
-                // Walk to within range of the gate (pathfind around obstacles if a grid
-                // is available; else a best-effort straight approach via WalkPath).
+                // Walk to within range of the gate (pathfind around obstacles if a grid is available; else a best-effort straigh…
                 await ApproachAsync(id, handle, gate.X, gate.Y, GateApproachDist, unitsPerSec, ct);
 
-                // Take the gate and wait for the transition. Tell OnMapChanged the
-                // destination we're heading into (PendingDestMap) so it resolves + learns
-                // the real map name from the handoff's id deterministically — before the
-                // cross-server reconnect re-reads it. If clicking from range doesn't fire
-                // the gate, close onto the exact tile and retry once.
+                // Take the gate and wait for the transition
                 handle.PendingDestMap = expected;
                 var seqBefore = handle.MapChangeSeq;
-                // A gate is silently ignored while mounted. Stop the Lua re-mounting FIRST (it mounts on
-                // its own tick during the approach), then dismount — suppress-then-dismount is what closes
-                // the race; dismounting alone loses to a mount that is still in flight.
+                // A gate is silently ignored while mounted
                 handle.SuppressMount = true;
                 await EnsureDismountedAsync(id, handle, ct);
                 await UseGateAsync(id, gate.Handle, ct: ct);
@@ -1921,7 +1342,7 @@ public sealed class BotManager : IAsyncDisposable
                 {
                     handle.Log($"[travel] hop {hop + 1}: gate didn't fire from range — closing in and retrying");
                     await ApproachAsync(id, handle, gate.X, gate.Y, 0, unitsPerSec, ct);
-                    // Re-check: the approach can have re-mounted us, and a mounted gate-click is a no-op.
+                    // Re-check: the approach can have re-mounted us, and a mounted gate-click is a no-op
                     await EnsureDismountedAsync(id, handle, ct);
                     await UseGateAsync(id, gate.Handle, ct: ct);
                     if (!await WaitUntilAsync(() => handle.MapChangeSeq > seqBefore, 8000, ct))
@@ -1935,8 +1356,7 @@ public sealed class BotManager : IAsyncDisposable
                 handle.PendingDestMap = null; // consumed by OnMapChanged
                 handle.SuppressMount = false; // hop taken — transit mounting allowed again
 
-                // A cross-server hop re-logs in on a fresh connection — wait until we're
-                // back in zone before the next hop. In-band LINKSAME stays InZone throughout.
+                // A cross-server hop re-logs in on a fresh connection — wait until we're back in zone before the next hop
                 if (!await WaitUntilAsync(
                         () => handle.Phase == BotPhase.InZone && handle.ZoneSession is not null, 20000, ct))
                 {
@@ -1954,17 +1374,12 @@ public sealed class BotManager : IAsyncDisposable
         finally { if (ReferenceEquals(handle.TravelCts, travelCts)) handle.TravelCts = null; travelCts.Dispose(); }
     }
 
-    /// <summary>The live in-view gate whose link destination is <paramref name="map"/>
-    /// (case-insensitive), or null if none is currently visible.</summary>
+    /// <summary>The live in-view gate whose link destination is (case-insensitive), or null if none is currently visible</summary>
     private static NearbyNpc? GateTo(BotHandle handle, string map)
         => handle.ZoneView?.NearbyNpcs.FirstOrDefault(
             n => n.IsGate && string.Equals(n.LinkMap, map, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>Walk the bot to within <paramref name="stopShort"/> world-units of
-    /// (<paramref name="tx"/>,<paramref name="ty"/>), pathfinding over the current map's
-    /// grid when one is available (a straight WalkPath segment otherwise), then wait
-    /// until it arrives, the walk ends, or a 30 s cap. Used to reach a gate before
-    /// taking it; shared by the travel loop.</summary>
+    /// <summary>Walk the bot to within world-units of ( , ), pathfinding over the current map's grid when one is available (a…</summary>
     private async Task ApproachAsync(string id, BotHandle handle, uint tx, uint ty, double stopShort, double unitsPerSec, CancellationToken ct)
     {
         if (handle.Position is not { } pos) return;
@@ -1975,10 +1390,7 @@ public sealed class BotManager : IAsyncDisposable
             var path = PathFinder.FindPath(grid, pos.X, pos.Y, tx, ty);
             if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
             {
-                // Unreachable on the runtime-augmented grid, but we hold learned MOVEFAIL blocks that may have
-                // wrongly SEVERED a route reachable on the base .shbd (grid-poison that bricked cross-map travel:
-                // IkFresh2 looped forever on an EldGbl02→EldCem01 gate the raw grid CONNECTS to). Forget the
-                // learned blocks and retry once — clearing lets the bot re-path the true static geometry.
+                // Unreachable on the runtime-augmented grid, but we hold learned MOVEFAIL blocks that may have wrongly SEVERED a…
                 var poisoned = grid.RuntimeBlockedCount;
                 grid.ClearRuntimeBlocked();
                 path = PathFinder.FindPath(grid, pos.X, pos.Y, tx, ty);
@@ -1987,9 +1399,7 @@ public sealed class BotManager : IAsyncDisposable
             }
             if (path.Count == 0)
             {
-                // Genuinely disconnected on the base grid too (FindPath snaps a blocked start/goal to nearest
-                // walkable, so empty = truly no route). Do NOT fall back to a blind straight line — that walks
-                // into the obstacle and MOVEFAILs forever. Abort so the caller tries another route / moves on.
+                // Genuinely disconnected on the base grid too (FindPath snaps a blocked start/goal to nearest walkable, so empty…
                 var (stx, sty) = grid.WorldToTile(pos.X, pos.Y);
                 var (gtx, gty) = grid.WorldToTile(tx, ty);
                 handle.Log($"[nav] approach to ({tx},{ty}) UNREACHABLE on {handle.CurrentMap} grid — aborting " +
@@ -2002,7 +1412,7 @@ public sealed class BotManager : IAsyncDisposable
         }
         else wp = new[] { (pos.X, pos.Y), (tx, ty) }; // no grid → best-effort direct
 
-        // Trim trailing waypoints inside stopShort of the target so we halt short of the gate.
+        // Trim trailing waypoints inside stopShort of the target so we halt short of the gate
         if (stopShort > 0 && wp.Count > 2)
         {
             var keep = wp.Count;
@@ -2010,10 +1420,6 @@ public sealed class BotManager : IAsyncDisposable
             wp = wp.Take(keep).ToList();
         }
         WalkPath(id, wp, unitsPerSec);
-        // Wait long enough for the WHOLE path to walk — a valid cross-map route can be thousands of
-        // world units (EldGbl02→gate ≈ 4200u ≈ 60s). A fixed 30s aborts a legit long walk mid-route,
-        // churning re-plans until an upstream stall-timer gives up. Scale the wait to the path length
-        // at the bot's live walk speed (+60% slack for pacing/detours), floored/capped to sane bounds.
         double pathLen = 0;
         for (int i = 1; i < wp.Count; i++) pathLen += Dist(wp[i - 1], wp[i].X, wp[i].Y);
         var speed = handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec;
@@ -2026,36 +1432,14 @@ public sealed class BotManager : IAsyncDisposable
     private static double Dist((uint X, uint Y) a, uint x, uint y)
         => Math.Sqrt(Math.Pow((double)a.X - x, 2) + Math.Pow((double)a.Y - y, 2));
 
-    /// <summary>Straight-line (Euclidean) world-unit distance — the routing cost proxy for an on-map
-    /// walk between two points (cheap, grid-free; good enough to rank routes).</summary>
+    /// <summary>Straight-line (Euclidean) world-unit distance — the routing cost proxy for an on-map walk between two points (…</summary>
     private static double StraightLineCost((uint X, uint Y) a, (uint X, uint Y) b)
         => Math.Sqrt(Math.Pow((double)a.X - b.X, 2) + Math.Pow((double)a.Y - b.Y, 2));
 
-    /// <summary>Build the town-portal routing edges from <c>TownPortal.shn</c>: within each portal
-    /// group, every member map links to every OTHER member (a portal NPC on the from-map warps to the
-    /// dest by its Index). GateX/Y = the portal NPC on the from-map (that map's own arrival coord),
-    /// ToX/Y + MinLevel = the destination's arrival coord + level gate, PortalDestIndex = the dest byte.</summary>
+    /// <summary>Build the town-portal routing edges from TownPortal.shn : within each portal group, every member map links to…</summary>
     private static IReadOnlyList<GateEdge> BuildPortalEdges(GameData.ClientData cd)
     {
-        // ⛔ ONE TOWN-GATE NETWORK, NOT ONE PER `TP_GroupNo`.
-        // This grouped by TP_GroupNo and built a clique WITHIN each group, which split the gate into three
-        // disjoint networks:
-        //     group 0  RouN, RouVal01, Eld            group 1  EldGbl02, Urg, Urg_Alruin (70)
-        //     group 2  Adl (100), Bera (100)
-        // so there was no Urg->RouN edge at all. TP_GroupNo is the gate's MENU TIER — the MinLevel column
-        // gives it away, group 2 being level 100 and Urg_Alruin 70 — not a separate gate. Operator
-        // 2026-08-12: "town gate connects urg, eld, rouN, RouVal02, and some others … if we're at any town
-        // gate, we can go to RouN or Eld FOR FREE".
-        //
-        // ⭐ THIS IS THE ROUTE THAT MADE NO SENSE, AND IT WAS FORCED:
-        //     [Urg(portal) -> Linkfield02 -> EldPri01 -> Eld -> RouN(portal)]  cost~20691
-        // From EldGbl02 the planner could portal within group 1 to Urg, but Urg had no portal edge to RouN,
-        // so reaching group 0 meant HIKING three maps to Eld and portalling from there. It then beat the
-        // honest direct route (cost~23260) and was executed. Linkfield02 is where JcqArcher spent 14 minutes
-        // wedged, through two pointless relogs. With one clique the answer from EldGbl02 is a single hop.
-        //
-        // MinLevel still gates each DESTINATION individually (the graph search already skips an edge whose
-        // MinLevel exceeds our level), which is the real reason the tiers exist.
+        // ONE TOWN-GATE NETWORK, NOT ONE PER `TP_GroupNo`
         var edges = new List<GateEdge>();
         var all = cd.BuildPortalDests().ToList();
         foreach (var a in all)
@@ -2068,8 +1452,7 @@ public sealed class BotManager : IAsyncDisposable
         return edges;
     }
 
-    /// <summary>Poll <paramref name="cond"/> until it's true or <paramref name="timeoutMs"/>
-    /// elapses; returns the final state. Throws if <paramref name="ct"/> is cancelled.</summary>
+    /// <summary>Poll until it's true or elapses; returns the final state</summary>
     private static async Task<bool> WaitUntilAsync(Func<bool> cond, int timeoutMs, CancellationToken ct, int pollMs = 150)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -2081,136 +1464,61 @@ public sealed class BotManager : IAsyncDisposable
         return cond();
     }
 
-    // Soul-stone HP/SP recharge (SOULSTONE dept 20: HP_USE_REQ cmd 7 = 0x5007, SP_USE_REQ
-    // cmd 9 = 0x5009; both empty payload). The in-game "use an HP/SP stone" — draws HP/SP
-    // from the character's soul-stone reserve into the current pool. Its OWN packet, NOT an
-    // item use. Verified C->S in CombatExtensive.pcapng (chat "I will use an SP stone" →
-    // 0x5009). Server replies USESUC_ACK (0x5008/0x500A) on success or USEFAIL_ACK (0x5006).
+    // Soul-stone HP/SP recharge (SOULSTONE dept 20: HP_USE_REQ cmd 7 = 0x5007, SP_USE_REQ cmd 9 = 0x5009; both empty…
     private const ushort OpSoulStoneHpUse = 0x5007;
     private const ushort OpSoulStoneSpUse = 0x5009;
 
-    /// <summary>Recharge current SP from the character's SP soul-stone reserve
-    /// (NC_SOULSTONE_SP_USE_REQ) — the in-game "use an SP stone". Needed before a costly
-    /// cast when current SP is low (the reserve must be charged).</summary>
+    /// <summary>Recharge current SP from the character's SP soul-stone reserve (NC_SOULSTONE_SP_USE_REQ) — the in-game "use an…</summary>
     public Task<ActionResult> UseSoulStoneSpAsync(string id, CancellationToken ct = default)
     {
-        // Don't USE at full SP — the server rejects it (USEFAIL), wasting the call and (worse)
-        // looking like an empty reserve. Skip as a no-op when already full.
+        // Don't USE at full SP — the server rejects it (USEFAIL), wasting the call and (worse) looking like an empty res…
         if (_bots.TryGetValue(id, out var h) && h.ZoneView is { } v && v.Sp is { } sp && v.MaxSp > 0 && sp >= v.MaxSp)
             return Task.FromResult(ActionResult.Sent);
         return ActAsync(id, "soul-stone SP recharge (0x5009)", s =>
         {
-            // Note the kind BEFORE the reply can arrive: USEFAIL (0x5006) is shared HP+SP and only
-            // this correlation lets ZoneView attribute it to the right reserve.
+            // Note the kind BEFORE the reply can arrive: USEFAIL (0x5006) is shared HP+SP and only this correlation lets Zon…
             if (_bots.TryGetValue(id, out var hh)) hh.ZoneView?.NoteStoneUseFired(hp: false);
             return s.SendAsync(new FiestaPacket(OpSoulStoneSpUse, ReadOnlyMemory<byte>.Empty), ct);
         });
     }
 
-    /// <summary>Recharge current HP from the character's HP soul-stone reserve
-    /// (NC_SOULSTONE_HP_USE_REQ) — the in-game "use an HP stone". The combat-survival
-    /// analogue of <see cref="UseSoulStoneSpAsync"/>; an instant out-of-combat-free heal
-    /// from the reserve.</summary>
+    /// <summary>Recharge current HP from the character's HP soul-stone reserve (NC_SOULSTONE_HP_USE_REQ) — the in-game "use an…</summary>
     public Task<ActionResult> UseSoulStoneHpAsync(string id, CancellationToken ct = default)
     {
-        // Don't USE at full HP — the server rejects it (USEFAIL at 100% HP), which both wastes the
-        // call and falsely reads as an empty reserve. Skip as a no-op when already full.
         if (_bots.TryGetValue(id, out var h) && h.ZoneView is { } v && v.Hp is { } hp && v.MaxHp > 0 && hp >= v.MaxHp)
             return Task.FromResult(ActionResult.Sent);
-        // ⛔ DO NOT GATE THE HEAL ON THE LEARNED COOLDOWN. An earlier version of this method did exactly
-        // that and it KILLED THE BOT (2026-08-05, 16:29:09, -264 exp):
-        //     16:29:08.038  HP stone still on cooldown — 5181ms to go (learned cd 12834ms); NOT firing.
-        //     16:29:09.653  DEATH -264      (hp 9%, 11 aggressors)
-        // The estimator takes the MINIMUM gap between successful uses, so it converges on the true cooldown
-        // FROM ABOVE — early in a session it OVERESTIMATES (12834ms here vs the ~6900ms measured once
-        // converged). Using an UPPER bound to BLOCK an action is unsafe by construction: it withholds a heal
-        // that was very likely available, and at 9% HP that is fatal.
-        // To block safely we would need a LOWER bound on the cooldown, which nothing here provides.
-        // So: always fire. A refused USE costs one packet; a withheld heal costs the character. The spam is
-        // cosmetic, the missed heal is not. HpStoneCooldownMs / HpStoneReadyInMs remain exposed for the
-        // driver to REASON with ("I probably cannot heal for Nms, so do not take this fight") — informing a
-        // decision is fine, silently suppressing the action is not.
-        // NOTE the wording: this logs the REQUEST, not a heal. It used to say "recharge", which read as
-        // success — during the 15:30:41 death it printed five times while every use was refused and HP fell
-        // 628->0. The outcome is the 0x5008/0x5006 ack, logged by ZoneView.
         return ActAsync(id, "soul-stone HP USE sent (0x5007) — awaiting ack", s =>
         {
-            // Same correlation as the SP use above — USEFAIL carries no HP/SP marker.
+            // Same correlation as the SP use above — USEFAIL carries no HP/SP marker
             if (_bots.TryGetValue(id, out var hh)) hh.ZoneView?.NoteStoneUseFired(hp: true);
             return s.SendAsync(new FiestaPacket(OpSoulStoneHpUse, ReadOnlyMemory<byte>.Empty), ct);
         });
     }
 
-    // Shop / buy. Clicking a merchant (target → NPCClick) makes the server send the
-    // SHOPOPEN list (decoded by ZoneView). NC_ITEM_BUY_REQ {itemid, lot} then buys an
-    // item the open shop sells; the server deducts money (cheat it with GM &getmoney).
-    // NPCMENUOPEN_ACK (Act cmd 29 = 0x201D): answers the menu a merchant/script NPC opens
-    // after a click, selecting an option (1 = shop, from PurchaseSell.pcapng) — the server
-    // then sends the SHOPOPEN sell list.
+    // Shop / buy. Clicking a merchant (target → NPCClick) makes the server send the SHOPOPEN list (decoded by ZoneVi…
     private const ushort OpActNpcMenuAck = (ushort)(((int)ProtocolCommand.Act << 10) | 29); // 0x201D
 
-    /// <summary>Whether a quest-dialogue page's TEXT (QuestDialog.shn, looked up by
-    /// <paramref name="dialogId"/>) carries the <c>[MENU]</c> tag — the data-driven flag (operator
-    /// 2026-07-01: "there likely is a flag somewhere e.g. in QuestDialogue that decides if a message
-    /// blocks normal buttons or not") that tells us THIS specific page allows bypassing into the NPC's
-    /// normal menu (shop / a different quest) instead of continuing the script. Verified against real
-    /// dialog text: plain continue pages are tagged <c>[NEXT]</c> (must be acked, no bypass — "the
-    /// first page MUST be acked"); a completable page is tagged <c>[SHOW_REWARD]</c>; a bypass-capable
-    /// page (an UNMET quest's action-script line, or a fresh quest-giver's opening line) is tagged
-    /// <c>[MENU]</c> — e.g. quest 32's stuck continuation (dialog 2807) carries `[MENU]`, confirmed
-    /// live: the real client answers it with NC_ACT_NPCMENUOPEN_ACK instead of acking it, and the shop
-    /// opens (QuestsLowLevel.pcapng). Without this per-page check, a multi-line script would either
-    /// wrongly skip pages that MUST be acked to progress, or wrongly keep acking a page that already
-    /// offers the bypass we want.</summary>
+    /// <summary>Whether a quest-dialogue page's TEXT (QuestDialog.shn, looked up by ) carries the [MENU] tag — the data-driven…</summary>
     private bool DialogHasMenuTag(int dialogId)
         => ClientData?.QuestDialog(dialogId)?.Contains("[MENU]", StringComparison.OrdinalIgnoreCase) ?? false;
 
-    /// <summary>True when quest <paramref name="questId"/> is accepted by pressing a MENU BUTTON rather
-    /// than a plain <c>NC_QUEST_SELECT_START_REQ</c>: its START dialog page carries a <c>[BUTTON]</c> tag
-    /// (e.g. the lvl-20 job-change q60015 = "[Begin the quest][1] [MENU]"). The server REFUSES SELECT_START
-    /// on these with err 2881; the real client instead answers the NPC menu the click opens with
-    /// <c>NC_ACT_NPCMENUOPEN_ACK {ack=1}</c> (select the button). HYPOTHESIS being validated live 2026-07-04
-    /// (operator-approved) — scoped to [BUTTON] start pages so it can't regress normal multi-quest givers,
-    /// which SELECT_START correctly and whose start pages have no [BUTTON].</summary>
+    /// <summary>True when quest is accepted by pressing a MENU BUTTON rather than a plain NC_QUEST_SELECT_START_REQ : its STAR…</summary>
     private bool StartAcceptIsButton(int questId)
     {
-        // No 0-as-"none" guard: callers pass a real id (the nullable is unwrapped first).
+        // No 0-as-"none" guard: callers pass a real id (the nullable is unwrapped first)
         if (ClientData?.Quest(questId) is not { } q) return false;
         var dlg = ClientData.QuestDialog(q.StartDialogId);
         return dlg is not null && dlg.Contains("[BUTTON]", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>Open a merchant's shop and wait for its sell list. Mirrors the real client
-    /// (PurchaseSell.pcapng): NPC-click → the server opens the NPC menu (NPCMENUOPEN_REQ) →
-    /// reply NPCMENUOPEN_ACK with <paramref name="menuOption"/> (1 = shop) → the server sends
-    /// the SHOPOPEN list (decoded into <see cref="ZoneView.ShopItems"/>). A plain click alone
-    /// does NOT open the shop — the menu-ack is required.
-    /// ROOT-CAUSED 2026-07-01 (was an infinite loop on npc h=17084/quest 32 — verified via
-    /// packets-IkFresh.log live capture AND QuestsLowLevel.pcapng): a dual-role NPC with an active
-    /// quest pushes that quest's continuation SAY (0x4401) on every click. Blindly acking it
-    /// (NC_QUEST_SCRIPT_CMD_ACK, 0x4402) — what this method used to do — just keeps you IN that
-    /// quest's dialogue if the page doesn't carry `[MENU]`; but when it DOES (see
-    /// <see cref="DialogHasMenuTag"/>), acking it is ALSO wrong — the real client instead answers with
-    /// <c>NC_ACT_NPCMENUOPEN_ACK {ack=1}</c> (0x201D) directly (no preceding server NPCMENUOPEN_REQ
-    /// required) and the server opens the shop immediately. So each queued page is checked individually:
-    /// `[MENU]` present → request the shop menu, don't ack; absent → ack normally (0x4402) to progress
-    /// past a page we're forced through before a bypass becomes available.</summary>
+    /// <summary>Open a merchant's shop and wait for its sell list</summary>
     public async Task<ActionResult> OpenShopAsync(string id, ushort npcHandle, byte menuOption = 1, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
         var view = handle.ZoneView;
         var hb = new byte[] { (byte)npcHandle, (byte)(npcHandle >> 8) };
-        // SYNC request→response open (operator 2026-06-30: "the recency window is insane — sync call with
-        // a timeout"). We RESET the shop/menu signals first so the result reflects ONLY this click (the old
-        // 10s ShopOpen recency window mis-tagged the Anvil as a weapon shop because it was probed within 10s
-        // of the adjacent smith). Then: ENDOFTRADE (clear) → NPCCLICK → STOP_REQ (report we're in range; the
-        // real client always sends it after a click — without it the server treats it as a bare interaction)
-        // → drain any quest pages per DialogHasMenuTag → wait for a DEFINITIVE reply:
-        //   • a shop-open packet (0x3C0x / soul-stone 0x3C05)  ⇒ it IS a shop, return its kind.
-        //   • NC_MENU_RANDOMOPTION_CMD (0x3C0E, the Anvil)     ⇒ NOT a shop — CLOSE the UI, ignore the NPC.
-        //   • nothing tracked within the timeout                ⇒ NOT a shop (untracked NPC) — ignore it.
-        // Outcome is read back by the caller via ZoneView (ShopOpen+LastShopKind / RandomOptionUtc).
+        // SYNC request→response open (operator 2026-06-30: "the recency window is insane — sync call with a timeout")
         var requestedMenu = false;
         for (var reclicks = 0; reclicks < 8; reclicks++)
         {
@@ -2236,7 +1544,7 @@ public sealed class BotManager : IAsyncDisposable
                 }
                 if (view is { } v && v.RandomOptionUtc > DateTime.MinValue)
                 {
-                    // RandomOption (Anvil reforge) — NOT a shop. CLOSE the UI before we move on.
+                    // RandomOption (Anvil reforge) — NOT a shop
                     await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
                     handle.Log($"open shop npc h={npcHandle} — RandomOption menu, NOT a shop — closed, ignoring NPC");
                     return ActionResult.Sent;
@@ -2271,7 +1579,7 @@ public sealed class BotManager : IAsyncDisposable
             }
             handle.Log($"open shop npc h={npcHandle} — no shop reply (re-click {reclicks + 1}/8)");
         }
-        // No tracked reply after repeated re-clicks — close anything left open and treat as not-a-shop.
+        // No tracked reply after repeated re-clicks — close anything left open and treat as not-a-shop
         await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
         handle.Log($"open shop npc h={npcHandle} — not a shop (timeout/untracked) — ignoring NPC");
         return ActionResult.Sent;
@@ -2287,21 +1595,12 @@ public sealed class BotManager : IAsyncDisposable
         _ => "unknown",
     };
 
-    /// <summary>Sell <paramref name="lot"/> of the bag item at <paramref name="slot"/> to
-    /// the open shop (NC_ITEM_SELL_REQ {slot, lot}). Verified in PurchaseSell.pcapng.</summary>
+    /// <summary>Sell of the bag item at to the open shop (NC_ITEM_SELL_REQ {slot, lot})</summary>
     public Task<ActionResult> SellAsync(string id, byte slot, uint lot, CancellationToken ct = default)
         => ActAsync(id, $"sell slot {slot} x{lot}",
             s => s.SendAsync(new PROTO_NC_ITEM_SELL_REQ { slot = slot, lot = lot }, ct));
 
-    /// <summary>Move an item between the BAG and personal STORAGE, and VERIFY it landed.
-    /// <para>Wire shape proven from Z:/Storage.pcapng (operator-annotated "Next I will store a sword"):
-    /// <c>NC_ITEM_RELOC_REQ {from ITEM_INVEN, to ITEM_INVEN}</c> where an ITEM_INVEN is the packed
-    /// <c>(box &lt;&lt; 10) | slot</c> — deposit = bag(9)→storage(6), withdraw = storage(6)→bag(9), the SAME
-    /// packet both ways. The server answers with a PAIR of NC_ITEM_CELLCHANGE_CMD (the swap).
-    /// There is NO dedicated item-deposit packet: NC_ITEM_DEPOSIT/WITHDRAW carry only a `cen`, i.e. money.</para>
-    /// <para>⚠️ FAILS LOUDLY (operator, non-negotiable): the move is confirmed against the CELLCHANGE
-    /// counter, and a timeout is reported as a FAILURE, not assumed to be success. A silent storage no-op
-    /// is indistinguishable from "the bag filled up again" and can burn days before anyone notices.</para></summary>
+    /// <summary>Move an item between the BAG and personal STORAGE, and VERIFY it landed</summary>
     public async Task<ActionResult> StorageMoveAsync(string id, byte fromSlot, byte toSlot,
         bool deposit = true, CancellationToken ct = default)
     {
@@ -2321,23 +1620,17 @@ public sealed class BotManager : IAsyncDisposable
 
         var before = view.CellChangeCount;
         var ackBefore = view.LastRelocAckAtUtc;   // so we report THIS move's ack, never a stale one
-        // What the SOURCE bag cell holds right now. A deposit only counts if THIS cell empties — see below.
+        // What the SOURCE bag cell holds right now
         var srcHadItem = view.Inventory.TryGetValue(fromSlot, out var srcItem);
         await s.SendAsync(new PROTO_NC_ITEM_RELOC_REQ
         {
             from = new FiestaLibReloaded.Networking.Structs.ITEM_INVEN { Inven = from },
             to = new FiestaLibReloaded.Networking.Structs.ITEM_INVEN { Inven = to },
         }, ct);
-        // Wait for the server's CELLCHANGE pair. Confirmation is the ONLY evidence the move happened.
+        // Wait for the server's CELLCHANGE pair
         for (var waited = 0; waited < 3000; waited += 50)
         {
-            // ⛔ "ANY CELLCHANGE HAPPENED" IS NOT PROOF THIS MOVE HAPPENED. CellChangeCount is a GLOBAL
-            // counter, so an unrelated cell update (another slot, the storage side, a stack merge) satisfied
-            // it and the move was reported ok. Live 2026-08-06: SIX deposits logged "ok" and the bag was
-            // still 48/48 afterwards — the whole point of the trip (free a bag slot) had not happened once.
-            // A DEPOSIT succeeded iff the SOURCE BAG CELL EMPTIED; that is the effect we actually want, and
-            // it is directly observable. (Withdraw's source is a storage cell we don't model per-slot yet,
-            // so it still falls back to the counter — flagged in tickets.md rather than pretended away.)
+            // "ANY CELLCHANGE HAPPENED" IS NOT PROOF THIS MOVE HAPPENED
             var confirmed = deposit
                 ? srcHadItem && !(view.Inventory.TryGetValue(fromSlot, out var nowItem) && nowItem == srcItem)
                 : view.CellChangeCount > before;
@@ -2350,14 +1643,11 @@ public sealed class BotManager : IAsyncDisposable
             }
             await Task.Delay(50, ct);
         }
-        // A deposit whose source cell never cleared is a FAILURE even if cells changed elsewhere.
+        // A deposit whose source cell never cleared is a FAILURE even if cells changed elsewhere
         if (deposit && view.CellChangeCount > before)
             handle.Log(BotLogLevel.Note, $"storage DEPOSIT: cells DID change but bag slot {fromSlot} still holds " +
                 $"item {srcItem} — the move did not free the slot (this is what the old any-cellchange check mis-read as success)");
-        // The server DOES answer every RELOC with NC_ITEM_RELOC_ACK (0x300C) — we were just throwing it away,
-        // so this line could only ever say "nothing arrived". Report the code the server actually sent.
-        // Observed: a refused storage deposit answered 586 (0x024A); relocs during a bag auto-arrange answered
-        // 577 (0x0241). No error table exists for these yet, so the code is REPORTED, not interpreted.
+        // The server DOES answer every RELOC with NC_ITEM_RELOC_ACK (0x300C) — we were just throwing it away, so this li…
         var ackTxt = view.LastRelocAckAtUtc > ackBefore
             ? $"server answered RELOC_ACK code={view.LastRelocAckCode} (0x{view.LastRelocAckCode:X4}) — the move was REFUSED, not lost"
             : "and NO RELOC_ACK either — the request itself never landed";
@@ -2368,13 +1658,7 @@ public sealed class BotManager : IAsyncDisposable
 
     private const int MainBagBox = 9;   // matches ZoneView's MainBag — the bag half of a storage move
 
-    /// <summary>Enchant (upgrade) the gear in equip slot <paramref name="equip"/> using the
-    /// enhancement stones at the given inventory slots (NC_ITEM_UPGRADE_REQ, GearEnchantment.pcapng).
-    /// <paramref name="raw"/> = the primary stone (Elrue/Lixir/Xir by + range); the optional
-    /// <paramref name="rawLeft"/>/<paramref name="rawMiddle"/>/<paramref name="rawRight"/> are
-    /// the safety/bonus stones (red = prevent destroy, blue = prevent -1, gold = better chance);
-    /// 0xFF = none. Outcomes: success (+N), no-change, downgrade, or destroy — read the result
-    /// off the inventory / item-update broadcasts.</summary>
+    /// <summary>Enchant (upgrade) the gear in equip slot using the enhancement stones at the given inventory slots (NC_ITEM_UP…</summary>
     public Task<ActionResult> EnchantAsync(string id, byte equip, byte raw,
         byte rawLeft = 0xFF, byte rawMiddle = 0xFF, byte rawRight = 0xFF, uint money = 0, CancellationToken ct = default)
         => ActAsync(id, $"enchant equip {equip} (raw={raw} l={rawLeft} m={rawMiddle} r={rawRight})",
@@ -2383,86 +1667,54 @@ public sealed class BotManager : IAsyncDisposable
                 equip = equip, raw = raw, raw_left = rawLeft, raw_middle = rawMiddle, raw_right = rawRight, gift_money = money
             }, ct));
 
-    /// <summary>Buy <paramref name="number"/> HP soul-stone charges (NC_SOULSTONE_HP_BUY_REQ
-    /// 0x5001) into the reserve that <see cref="UseSoulStoneHpAsync"/> draws from. Bought at a
-    /// healer/soul-stone vendor; needs money. SP analogue: <see cref="BuySpStoneAsync"/>.</summary>
+    /// <summary>Buy HP soul-stone charges (NC_SOULSTONE_HP_BUY_REQ 0x5001) into the reserve that draws from</summary>
     public Task<ActionResult> BuyHpStoneAsync(string id, ushort number, CancellationToken ct = default)
         => ActAsync(id, $"buy HP soul-stone x{number}",
             s => s.SendAsync(new PROTO_NC_SOULSTONE_HP_BUY_REQ { number = number }, ct));
 
-    /// <summary>Buy <paramref name="number"/> SP soul-stone charges (NC_SOULSTONE_SP_BUY_REQ 0x5002).</summary>
+    /// <summary>Buy SP soul-stone charges (NC_SOULSTONE_SP_BUY_REQ 0x5002)</summary>
     public Task<ActionResult> BuySpStoneAsync(string id, ushort number, CancellationToken ct = default)
         => ActAsync(id, $"buy SP soul-stone x{number}",
             s => s.SendAsync(new PROTO_NC_SOULSTONE_SP_BUY_REQ { number = number }, ct));
 
-    // NC_CHAR_REVIVE_REQ (Char cmd 78 = 0x104E): "move to respawn point" -> nearest town,
-    // answered after death (DEADMENU 0x104D). The server then map-transitions to town.
+    // NC_CHAR_REVIVE_REQ (Char cmd 78 = 0x104E): "move to respawn point" -> nearest town, answered after death (DEAD…
     private const ushort OpCharReviveReq = 0x104E;
 
-    /// <summary>Respawn after death — "move to respawn point" (NC_CHAR_REVIVE_REQ), which
-    /// returns the char to the nearest town (a map transition the nav layer handles). Only
-    /// meaningful while <see cref="ZoneView.Dead"/>. NOTE: a nearby cleric can revive in
-    /// place (REVIVESAME) — a behaviour may prefer to wait for that before respawning to a
-    /// possibly-far town; the server auto-respawns after ~2 min dead regardless.</summary>
+    /// <summary>Respawn after death — "move to respawn point" (NC_CHAR_REVIVE_REQ), which returns the char to the nearest town…</summary>
     public Task<ActionResult> RespawnAsync(string id, CancellationToken ct = default)
         => ActAsync(id, "respawn (move to respawn point -> nearest town)",
             s => s.SendAsync(new FiestaPacket(OpCharReviveReq, ReadOnlyMemory<byte>.Empty), ct));
 
-    /// <summary>Buy <paramref name="lot"/> of item <paramref name="itemId"/> from the
-    /// currently-open shop (NC_ITEM_BUY_REQ). The shop must be open (call
-    /// <see cref="OpenShopAsync"/> first) and must sell the item; needs enough money.</summary>
+    /// <summary>Buy of item from the currently-open shop (NC_ITEM_BUY_REQ)</summary>
     public Task<ActionResult> BuyAsync(string id, ushort itemId, uint lot, CancellationToken ct = default)
         => ActAsync(id, $"buy item {itemId} x{lot}",
             s => s.SendAsync(new PROTO_NC_ITEM_BUY_REQ { itemid = itemId, lot = lot }, ct));
 
-    // ── Quests ────────────────────────────────────────────────────────────────
-    /// <summary>Click an NPC (NC_ACT_NPCCLICK_CMD) — starts its quest dialogue / opens its
-    /// menu. The server then drives the dialogue via NC_QUEST_SCRIPT_CMD_REQ.</summary>
+    // Quests ──────────────────────────────────────────────────────────────── Click an NPC (NC_ACT_NPCCLICK_CMD) — s…
     public Task<ActionResult> ClickNpcAsync(string id, ushort npcHandle, CancellationToken ct = default)
         => ActAsync(id, $"click npc h={npcHandle}",
             s => s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct));
 
-    /// <summary>Answer a quest-dialogue step (NC_QUEST_SCRIPT_CMD_ACK). <paramref name="result"/>=1
-    /// proceeds/accepts (the common case); branching quests read the answer from QuestData.shn.</summary>
+    /// <summary>Answer a quest-dialogue step (NC_QUEST_SCRIPT_CMD_ACK)</summary>
     public Task<ActionResult> AnswerQuestAsync(string id, ushort questId, byte qsc, uint result = 1, CancellationToken ct = default)
         => ActAsync(id, $"quest {questId} answer qsc=0x{qsc:X2} result={result}",
             s => s.SendAsync(new PROTO_NC_QUEST_SCRIPT_CMD_ACK { nQuestID = questId, nQSC = qsc, nResult = result }, ct));
 
-    /// <summary>Abandon a quest (NC_QUEST_GIVE_UP_REQ {questId}). Used to clear a
-    /// persistence-glitched quest (loaded active but stuck at 0 progress) so it can be
-    /// re-accepted fresh — the only way out of the status-8 stuck state.</summary>
+    /// <summary>Abandon a quest (NC_QUEST_GIVE_UP_REQ {questId})</summary>
     public Task<ActionResult> GiveUpQuestAsync(string id, ushort questId, CancellationToken ct = default)
         => ActAsync(id, $"quest {questId} give up",
             s => s.SendAsync(new PROTO_NC_QUEST_GIVE_UP_REQ { nQuestID = questId }, ct));
 
-    /// <summary>Start a quest by id (NC_QUEST_START_REQ {questId}). The accept command for
-    /// menu/remote quests where clicking the NPC opens a selection menu (0x201C) rather than a
-    /// direct dialogue — the dialogue-only click can't accept those. Verified in Full.pcapng
-    /// (0x4414 StartReq is "the accept" after browsing a giver's list). Drive the resulting
-    /// accept dialogue with <see cref="DriveQuestDialogueAsync"/> afterward.</summary>
+    /// <summary>Start a quest by id (NC_QUEST_START_REQ {questId})</summary>
     public Task<ActionResult> StartQuestAsync(string id, ushort questId, CancellationToken ct = default)
     {
-        // Stash the questId so the questId-less NC_QUEST_START_ACK can be attributed to it.
+        // Stash the questId so the questId-less NC_QUEST_START_ACK can be attributed to it
         if (_bots.TryGetValue(id, out var h)) h.ZoneView?.NoteQuestStartAttempt(questId);
         return ActAsync(id, $"quest {questId} start req",
             s => s.SendAsync(new PROTO_NC_QUEST_START_REQ { nQuestID = questId }, ct));
     }
 
-    /// <summary>ACCEPT A QUEST REMOTELY from the quest log — no travelling to the giver, no NPC click.
-    /// <para>Sequence, captured in <c>Z:/QuestsRemoteAndMulti.pcapng</c> (operator chat immediately
-    /// before it: "Okay I will remote accept a quest"; no NPC click anywhere near it):
-    /// <code>
-    /// C-> 0x4414 NC_QUEST_START_REQ      {questId}   -> q286
-    /// S-> 0x4401 NC_QUEST_SCRIPT_CMD_REQ (a SAY page)
-    /// S-> 0x4415 NC_QUEST_START_ACK
-    /// C-> 0x4402 NC_QUEST_SCRIPT_CMD_ACK             (ack the served page)
-    /// </code>
-    /// So it is START_REQ followed by the ORDINARY dialogue drain — which is why this just calls
-    /// <see cref="DriveQuestDialogueAsync"/> with <c>npcHandle: 0</c> (its remote mode).</para>
-    /// <para>Only quests with <c>QuestDef.RemoteAcceptable</c> (@25 <c>bIsWaitListProgress</c>) qualify —
-    /// 642 of 2304 in the client data, and 26 of the bot's 28 active quests. Callers must also AND in the
-    /// client-side level floor. VERIFIES by checking the quest actually went ACTIVE; returns
-    /// <see cref="ActionResult.NotFound"/> and logs loudly if it did not, so a silent no-op is impossible.</para></summary>
+    /// <summary>ACCEPT A QUEST REMOTELY from the quest log — no travelling to the giver, no NPC click</summary>
     public async Task<ActionResult> RemoteAcceptQuestAsync(string id, ushort questId, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var h)) return ActionResult.NotFound;
@@ -2474,7 +1726,7 @@ public sealed class BotManager : IAsyncDisposable
         }
         var start = await StartQuestAsync(id, questId, ct);
         if (start != ActionResult.Sent) return start;
-        // Drain the pages START_REQ triggered. npcHandle 0 = remote (no click) — see DriveQuestDialogueAsync.
+        // Drain the pages START_REQ triggered
         await DriveQuestDialogueAsync(id, npcHandle: null, questId: questId, ct: ct);   // null = REMOTE (no NPC)
         var ok = h.ZoneView?.IsQuestActive(questId) == true;
         h.Log(BotLogLevel.Note, ok
@@ -2483,9 +1735,7 @@ public sealed class BotManager : IAsyncDisposable
         return ok ? ActionResult.Sent : ActionResult.NotFound;
     }
 
-    /// <summary>Answer the currently-pending quest dialogue step (from
-    /// <see cref="ZoneView.PendingQuest"/>) — "proceed". Convenience so the caller needn't
-    /// pass the quest id / qsc each step.</summary>
+    /// <summary>Answer the currently-pending quest dialogue step (from ) — "proceed"</summary>
     public Task<ActionResult> ProceedQuestAsync(string id, uint result = 1, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var h) || h.ZoneView?.PendingQuest is not { } q)
@@ -2493,57 +1743,25 @@ public sealed class BotManager : IAsyncDisposable
         return AnswerQuestAsync(id, q.QuestId, q.Qsc, result, ct);
     }
 
-    /// <summary>Drive a whole quest dialogue: click the NPC, then ACK each server-pushed
-    /// script page (NC_QUEST_SCRIPT_CMD_REQ) with <paramref name="result"/> until the server
-    /// stops sending pages. The quest script runs server-side — every SAY line is its own
-    /// 0x4401 page that must be answered — so this loop walks the Start (accept), in-progress,
-    /// or Finish (turn-in) script to completion in one call. <paramref name="result"/>=1 is the
-    /// "proceed/accept" answer (the common case); at the script's IF-RESULT branch this is what
-    /// accepts the quest. Stops when no new page arrives within the per-step timeout or after
-    /// <paramref name="maxSteps"/>. Choice-reward turn-ins: the server sends a reward-select
-    /// prompt (0x4412) on the [SHOW_REWARD] page; if <paramref name="rewardIndex"/> &gt;= 0 this
-    /// answers it mid-dialogue with NC_QUEST_REWARD_SELECT_ITEM_INDEX (the RAW reward slot) BEFORE
-    /// acking the "Complete" page — the order the real client uses (verified in Quest.pcapng).</summary>
+    /// <summary>Drive a whole quest dialogue: click the NPC, then ACK each server-pushed script page (NC_QUEST_SCRIPT_CMD_REQ)…</summary>
     public async Task<ActionResult> DriveQuestDialogueAsync(string id, ushort? npcHandle, uint result = 1, int rewardIndex = -1, int maxSteps = 24, ushort? questId = null, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var h)) return ActionResult.NotFound;
         if (h.Phase != BotPhase.InZone || h.ZoneSession is not { } s) return ActionResult.NotInZone;
         var zv = h.ZoneView;
 
-        // Baseline on the currently-pending step so we only answer pages that arrive AFTER
-        // this click (a stale step from a previous dialogue must not be re-answered).
+        // Baseline on the currently-pending step so we only answer pages that arrive AFTER this click (a stale step from…
         var lastSeen = zv?.PendingQuest?.AtUtc ?? DateTime.MinValue;
         zv?.ClearRewardSelect();
         zv?.ClearNpcMenu();
         zv?.ClearQuestScript();   // drop stale pages so we drain ONLY the burst this click triggers
-        // CLOSE any shop/trade UI still open from a PRECEDING interaction (e.g. buyGear just opened this
-        // same NPC's shop moments ago) before clicking again — same root cause already fixed for
-        // OpenShopAsync (2026-06-23: "the server won't open a 2nd shop while one is open"), just never
-        // applied here. CONFIRMED via a live capture 2026-07-01 (quest 6 hand-in stuck "0 pages acked"
-        // forever): clicking this NPC right after its shop was left open got ZERO response from the
-        // server — no page, no menu, nothing — until the shop was closed first.
-        // ⭐ npcHandle == null means REMOTE: the pages are ALREADY being served (we sent NC_QUEST_START_REQ
-        // from the quest log), so there is no NPC to click — skip the click/stop entirely and go straight
-        // to draining. Clicking handle 0 is a click on a non-existent entity: the server answers nothing,
-        // which is exactly why the 2026-07-14 remote-accept attempt logged "0 pages acked, concluded=False"
-        // and was wrongly written off as "the remote-accept packet sequence is unknown".
-        // It is NOT unknown — Z:/QuestsRemoteAndMulti.pcapng captures it, with the operator's own chat
-        // ("Okay I will remote accept a quest") immediately before and no NPC click anywhere:
-        //     C-> 0x4414 START_REQ {questId}      -> q286
-        //     S<- 0x4401 SCRIPT_CMD_REQ (a SAY page)
-        //     S<- 0x4415 START_ACK
-        //     C-> 0x4402 SCRIPT_CMD_ACK           <- the client acks the served page
-        // i.e. once START_REQ is sent the flow is the ORDINARY dialogue drain below, unchanged.
+        // CLOSE any shop/trade UI still open from a PRECEDING interaction
         if (npcHandle is { } clickHandle)
         {
             await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
             await s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)clickHandle, (byte)(clickHandle >> 8) }), ct);
         }
-        // The real client ALWAYS follows NPCCLICK with STOP_REQ (0x2012) reporting the position it
-        // halted at to talk — and the server only starts pushing the quest script (0x4401) AFTER that
-        // STOP arrives (verified across every accept in QuestsLowLevel.pcapng: click→stop→0x4401→0x4402,
-        // no menu for a plain quest giver). The bot used to click without STOP, so the server treated
-        // the click as a bare/menu interaction and never drove the script. Send STOP at our current pos.
+        // The real client ALWAYS follows NPCCLICK with STOP_REQ (0x2012) reporting the position it halted at to talk — a…
         if (npcHandle is not null && h.Position is { } pos)
         {
             var stop = new byte[8];
@@ -2555,18 +1773,12 @@ public sealed class BotManager : IAsyncDisposable
             ? $"quest dialogue: REMOTE (no npc click) — draining the pages START_REQ already triggered (result={result}, rewardIndex={rewardIndex})"
             : $"quest dialogue: click npc h={npcHandle} + stop, driving (result={result}, rewardIndex={rewardIndex})");
 
-        // A quest GIVER that offers SEVERAL quests opens an NPC MENU (0x201C) on click — the quest
-        // script (0x4401) only arrives AFTER we tell the server WHICH quest to advance. That is the
-        // packet the operator flagged: NC_QUEST_SELECT_START_REQ (0x440F) {nNPCID, nQuestID}, keyed by
-        // the NPC mobId (the menu's payload), not the entity handle. A single-quest giver sends the
-        // script straight away (no menu, questId unused). So wait briefly: if a menu opens before any
-        // quest page AND we were told which quest to take, select it. Without this the bot sits on the
-        // unanswered menu → "0 pages answered" → nothing accepted.
+        // A quest GIVER that offers SEVERAL quests opens an NPC MENU (0x201C) on click — the quest script (0x4401) only…
         for (var w = 0; w < 1500
              && zv?.NpcMenuOpen != true
              && (zv?.PendingQuest?.AtUtc ?? DateTime.MinValue) <= lastSeen; w += 80)
             await Task.Delay(80, ct);
-        // A REMOTE drive never opens an NPC menu (there was no click) — skip the whole menu branch.
+        // A REMOTE drive never opens an NPC menu (there was no click) — skip the whole menu branch
         if (npcHandle is not null && zv?.NpcMenuOpen == true)
         {
             if (questId is { } selQid && !StartAcceptIsButton(selQid))
@@ -2578,34 +1790,21 @@ public sealed class BotManager : IAsyncDisposable
             }
             else if (questId is { } btnQid && StartAcceptIsButton(btnQid))
             {
-                // BUTTON/[MENU]-accept quest (e.g. lvl-20 job-change q60015): SELECT_START is refused 2881;
-                // the real client presses the menu button → NPCMENUOPEN_ACK {ack=1}. Then the server serves
-                // the quest's SAY pages / accepts it, which the drain loop below handles. (operator-approved
-                // hypothesis 2026-07-04; scoped to [BUTTON] start pages.)
+                // BUTTON/[MENU]-accept quest
                 await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = 1 }, ct);
                 zv.ClearNpcMenu();
                 h.Log($"quest dialogue: BUTTON-accept q{btnQid} — answered NPC menu (option 1 = the accept button) npc={zv.MenuNpcId}");
             }
             else
             {
-                // No specific quest given → answer the menu with option 1 (NPCMENUOPEN_ACK) to reach the
-                // quest dialogue. This is the single-quest-giver path (e.g. Remi opens a menu, option 1 =
-                // its one quest). Removing this regressed the leveler into skipping every menu NPC.
+                // No specific quest given → answer the menu with option 1 (NPCMENUOPEN_ACK) to reach the quest dialogue
                 await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = 1 }, ct);
                 zv.ClearNpcMenu();
                 h.Log($"quest dialogue: answered NPC menu (option 1) npc={zv.MenuNpcId} to reach the quest dialogue");
             }
         }
 
-        // DRAIN the server's script-page BURST and ACK each page — the real client acks EVERY SAY page
-        // (0x4402 {questId, nQSC, nResult=1}); the server sends the whole script (SAY×n + a terminal
-        // ACCEPT 0x06 / DONE 0x0A) without waiting for acks (QuestsNew.pcapng: q11 turn-in = 5 acks).
-        // We previously polled a single PendingQuest field which the burst overwrote → only the last page
-        // got acked ("1 page answered") → QUEST_DONE never fired. Now we dequeue all pages.
-        // Ack rule = match the client: ACK SAY pages (and any non-terminal page); do NOT ack the terminal
-        // 0x06 (accept-confirm) / 0x0A (done) — those just signal the dialogue concluded.
-        // DERIVE the per-page menu answers from THIS quest's script (dialogId -> correct nResult), so a
-        // puzzle/choice page is answered with the option that reaches ACCEPT — no hardcoding.
+        // DRAIN the server's script-page BURST and ACK each page — the real client acks EVERY SAY page (0x4402 {questId,…
         var menuAnswers = questId is { } mqid ? DeriveMenuAnswers(mqid) : new Dictionary<int, uint>();
         if (menuAnswers.Count > 0)
             h.Log($"quest {questId}: derived menu answers {string.Join(",", menuAnswers.Select(kv => $"say{kv.Key}=>{kv.Value}"))}");
@@ -2618,20 +1817,7 @@ public sealed class BotManager : IAsyncDisposable
             if (cur is null) { await Task.Delay(50, ct); continue; }
             idle = DateTime.UtcNow.AddSeconds(2.0); // got a page → keep draining the rest of the burst
             lastSeen = cur.AtUtc;
-            // A page for a DIFFERENT quest than the one we're after is continuation NOISE from some OTHER
-            // active quest at this dual-role NPC — never OUR terminal/reward state regardless of its own
-            // qsc, so check this BEFORE the terminal test.
-            // ROOT-CAUSED 2026-07-01 (ground truth via QuestsLowLevel.pcapng + live packets-IkFresh.log,
-            // and QuestDialog.shn text): whether acking a page releases you from it depends on a PER-PAGE
-            // data flag, not a blanket rule — DialogHasMenuTag checks the dialog TEXT for `[MENU]` (vs
-            // plain `[NEXT]` continue pages, which MUST be acked to progress — "the first page MUST be
-            // acked and the last page will then be the one with the buttons", operator 2026-07-01).
-            // `[MENU]` present → this page offers a bypass into the NPC's menu; DON'T ack it — send
-            // NC_QUEST_SELECT_START_REQ (0x440F, the same packet already used to pick a quest off a
-            // multi-quest ACCEPT menu) to ask for OUR quest instead (once, not per-page — idempotent).
-            // `[MENU]` absent → no bypass available at this exact step; ack it normally (result=1) to
-            // progress the OTHER quest's script, same as a real player forced through a NPC's line before
-            // reaching a page where a choice becomes available.
+            // A page for a DIFFERENT quest than the one we're after is continuation NOISE from some OTHER active quest at th…
             if (questId is { } wantQid && cur.QuestId != wantQid)
             {
                 if (cur.Qsc is 0x06 or 0x0A) continue; // someone else's terminal — nothing to act on
@@ -2653,9 +1839,7 @@ public sealed class BotManager : IAsyncDisposable
                 continue;
             }
             if (cur.Qsc is 0x06 or 0x0A) { concluded = true; break; } // ACCEPT/DONE — terminal, no ack
-            // On the [SHOW_REWARD] page (the [Complete the Quest] button), pick the reward BEFORE acking it
-            // — the real client does ack→SELECT→ack (Quest.pcapng). Acking first = Complete with no reward,
-            // which the server rejects/loops. Detect via the QuestDialog text tag.
+            // On the [SHOW_REWARD] page (the [Complete the Quest] button), pick the reward BEFORE acking it — the real clien…
             if (rewardIndex >= 0 && !rewardSelected &&
                 (ClientData?.QuestDialog(cur.DialogId)?.Contains("SHOW_REWARD", StringComparison.OrdinalIgnoreCase) ?? false))
             {
@@ -2663,11 +1847,7 @@ public sealed class BotManager : IAsyncDisposable
                 rewardSelected = true;
                 h.Log($"quest dialogue: reward-select quest={cur.QuestId} index={rewardIndex} (SHOW_REWARD dlg {cur.DialogId})");
             }
-            // Per-page answer, DERIVED from the quest's own script (menuAnswers, keyed by dialogId): a plain
-            // SAY/continue page acks nResult=1 (Next); a MENU page (a SAY immediately followed by an
-            // `IF RESULT==N GOTO MARKx` run) acks the N whose branch traces to ACCEPT. E.g. JCQ q60015 page
-            // SAY 29256 → 4. No hardcoding — the branch that reaches the reward IS the correct puzzle answer
-            // (operator 2026-07-08). Matches the real client (JCQ.pcapng): SAY pages=1, the puzzle page=4.
+            // Per-page answer, DERIVED from the quest's own script (menuAnswers, keyed by dialogId): a plain SAY/continue pa…
             uint pageResult = menuAnswers.TryGetValue((int)cur.DialogId, out var derived) ? derived : 1u;
             await AnswerQuestAsync(id, cur.QuestId, cur.Qsc, pageResult, ct);
             answered++;
@@ -2677,13 +1857,7 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>Derive the per-page MENU answers for a quest straight from its OWN script (data-driven, no
-    /// hardcoding). Fiesta quest scripts branch with <c>IF RESULT == N GOTO MARKx</c> runs; the page that
-    /// answer rides on is the <c>SAY &lt;id&gt;</c> immediately before the run. So we map that SAY's dialogId
-    /// → the RESULT whose branch traces to <c>ACCEPT</c> (through the <c>:MARK</c> labels / GOTO / nested
-    /// menus). The correct puzzle option is simply "the one that reaches the reward" (operator 2026-07-08):
-    /// JCQ q60015's <c>SAY 29256</c> → 4 (MARK4 → MARK5 → ACCEPT), the wrong options dead-end at END. Pages
-    /// not in the map default to nResult=1 (plain continue). Parses Start+Doing+Finish scripts.</summary>
+    /// <summary>Derive the per-page MENU answers for a quest straight from its OWN script (data-driven, no hardcoding)</summary>
     private Dictionary<int, uint> DeriveMenuAnswers(int questId)
     {
         var map = new Dictionary<int, uint>();
@@ -2709,7 +1883,7 @@ public sealed class BotManager : IAsyncDisposable
         for (int i = 0; i < lines.Count; i++)
             if (lines[i].StartsWith(':')) label[lines[i][1..].Trim()] = i;
 
-        // Does the block at :<lbl> reach ACCEPT (following GOTO + nested IF-RESULT menus)? Cycle-guarded.
+        // Does the block at : reach ACCEPT (following GOTO + nested IF-RESULT menus)?
         bool BlockReaches(string lbl, HashSet<string> visiting)
         {
             if (!visiting.Add(lbl) || !label.TryGetValue(lbl, out var start)) return false;
@@ -2749,68 +1923,41 @@ public sealed class BotManager : IAsyncDisposable
         }
     }
 
-    /// <summary>Select a quest reward item by index (NC_QUEST_REWARD_SELECT_ITEM_INDEX_CMD) —
-    /// e.g. the class-appropriate reward.</summary>
+    /// <summary>Select a quest reward item by index (NC_QUEST_REWARD_SELECT_ITEM_INDEX_CMD)</summary>
     public Task<ActionResult> SelectQuestRewardAsync(string id, ushort questId, uint itemIndex, CancellationToken ct = default)
         => ActAsync(id, $"quest {questId} reward index {itemIndex}",
             s => s.SendAsync(new PROTO_NC_QUEST_REWARD_SELECT_ITEM_INDEX_CMD { nQuestID = questId, nSelectedItemIndex = itemIndex }, ct));
 
-    /// <summary>Use an inventory item by slot (invenType: 0 = normal bag).</summary>
+    /// <summary>Use an inventory item by slot (invenType: 0 = normal bag)</summary>
     public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)
         => ActAsync(id, $"use item slot={slot} type={invenType}",
             s => s.SendAsync(new PROTO_NC_ITEM_USE_REQ { invenslot = slot, invenType = invenType }, ct));
 
-    /// <summary>Spend ONE unspent stat point on stat <paramref name="stat"/> (0=STR,1=END,2=DEX,3=INT,4=MP —
-    /// CHARSTATDISTSTR order). Sends NC_CHAR_STAT_INCPOINT_REQ (0x105C); the server replies INCPOINTSUC_ACK
-    /// (0x105F) + a fresh REMAINPOINT (0x105B), both tracked in ZoneView.</summary>
+    /// <summary>Spend ONE unspent stat point on stat (0=STR,1=END,2=DEX,3=INT,4=MP — CHARSTATDISTSTR order)</summary>
     public Task<ActionResult> IncStatAsync(string id, byte stat, CancellationToken ct = default)
         => ActAsync(id, $"inc stat {stat}",
             s => s.SendAsync(new PROTO_NC_CHAR_STAT_INCPOINT_REQ { stat = stat }, ct));
 
-    /// <summary>Equip the inventory item at <paramref name="slot"/> (the server
-    /// derives the target equipment slot from the item itself).</summary>
+    /// <summary>Equip the inventory item at (the server derives the target equipment slot from the item itself)</summary>
     public Task<ActionResult> EquipAsync(string id, byte slot, CancellationToken ct = default)
         => ActAsync(id, $"equip inventory slot {slot}",
             s => s.SendAsync(new PROTO_NC_ITEM_EQUIP_REQ { slot = slot }, ct));
 
-    /// <summary>Pick up a ground item by its entity handle (NC_ITEM_PICK_REQ {itemhandle},
-    /// the handle from <see cref="ZoneView.Drops"/> / a DROPEDITEM broadcast). Must be close
-    /// to the item — use <see cref="LootAsync"/> to walk to it first. The server replies with
-    /// CELLCHANGE (bag gains the item) + MAP_LOGOUT (item despawns) + PICK_ACK; success is
-    /// judged by the bag change, not the ack error (see <see cref="ZoneView.PickResult"/>).
-    /// Blocked when the inventory is full or the char is in a mini-house etc. — those failures
-    /// aren't yet pinned to a code, so check the drop actually left view.</summary>
+    /// <summary>Pick up a ground item by its entity handle (NC_ITEM_PICK_REQ {itemhandle}, the handle from / a DROPEDITEM broa…</summary>
     public Task<ActionResult> PickupAsync(string id, ushort itemHandle, CancellationToken ct = default)
         => ActAsync(id, $"pickup item h={itemHandle}", s =>
         {
-            // Arm the pick-ack pacing gate (ZoneView.CanPick): the server handles ONE item-cell
-            // pick at a time — the driver polls canPick() and never bursts pick requests.
+            // Arm the pick-ack pacing gate (ZoneView.CanPick): the server handles ONE item-cell pick at a time — the driver…
             if (_bots.TryGetValue(id, out var hh)) hh.ZoneView?.MarkPickSent();
             return s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = itemHandle }, ct);
         });
 
-    /// <summary>Fire the client's inventory "auto sort": NC_ITEM_AUTO_ARRANGE_INVEN_REQ (0x304A,
-    /// empty payload). The server compacts + STACKS the bag (merging non-stacked duplicates like
-    /// quest-reward port scrolls that don't stack by default) and streams the new layout back as a
-    /// burst of NC_ITEM_CELLCHANGE_CMD (0x3001) — which the existing bag model already applies — plus
-    /// an NC_ITEM_AUTO_ARRANGE_INVEN_ACK (0x304B). Verified from AutoSortAndSomeTickets.pcapng.
-    /// ⚠️ The client blocks this while MOUNTED and the inventory is locked ~5s during the relayout, so
-    /// the caller should gate on !mounted and avoid other inventory ops until it settles. Frees bag
-    /// slots to keep pickups/hand-ins from blocking (see the BAG-FULL leveling bottleneck).</summary>
+    /// <summary>Fire the client's inventory "auto sort": NC_ITEM_AUTO_ARRANGE_INVEN_REQ (0x304A, empty payload)</summary>
     public Task<ActionResult> SortInventoryAsync(string id, CancellationToken ct = default)
         => ActAsync(id, "inventory auto-sort (0x304A)", s =>
             s.SendAsync(new PROTO_NC_ITEM_AUTO_ARRANGE_INVEN_REQ(), ct));
 
-    /// <summary>Drop (or destroy) a bag item onto the ground: NC_ITEM_DROP_REQ (0x3007)
-    /// <c>{slot ITEM_INVEN (box&lt;&lt;10|slot), lot u32, loc XY}</c>. Wire format verified from
-    /// QuestsNew.pcapng (operator demo, 2026-07-02): a NON-quest item lands on the ground and is
-    /// re-pickable (<see cref="PickupAsync"/>); a QUEST item is DESTROYED. Either way the server
-    /// first replies with a SERVERMENU confirm (0x3C01) that must be answered with
-    /// NC_MENU_SERVERMENU_ACK (0x3C02) — reply value not yet pinned (the capture's operator fumbled
-    /// the Yes/No), so the caller should drive the confirm via the existing server-menu answer path
-    /// once the confirm option is decoded. <paramref name="box"/> defaults to 9 (the main bag).
-    /// NOTE (2026-07-02): currently UNUSED — added for the P3 "destroy quest items of abandoned
-    /// quests" + a general drop primitive the operator asked to have on hand. Keep it dead until wired.</summary>
+    /// <summary>Drop (or destroy) a bag item onto the ground: NC_ITEM_DROP_REQ (0x3007) {slot ITEM_INVEN (box&amp;lt;&amp;lt;10|slot),…</summary>
     public Task<ActionResult> DropItemAsync(string id, int slot, uint lot = 1, int box = 9, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var h) || h.Position is not { } pos)
@@ -2824,11 +1971,7 @@ public sealed class BotManager : IAsyncDisposable
         return ActAsync(id, $"drop item box={box} slot={slot} lot={lot} (0x3007)", s => s.SendAsync(req, ct));
     }
 
-    /// <summary>Loot a ground drop: walk to it (pathfinding over the current map's grid),
-    /// then pick it up and wait for it to leave view (picked) or a short cap. With
-    /// <paramref name="itemHandle"/> 0 it loots the drop nearest the bot. Returns
-    /// <see cref="ActionResult.NotFound"/> when nothing is on the ground. The convenience
-    /// the combat loop calls after a kill to collect loot.</summary>
+    /// <summary>Loot a ground drop: walk to it (pathfinding over the current map's grid), then pick it up and wait for it to l…</summary>
     public async Task<ActionResult> LootAsync(string id, ushort itemHandle = 0, double unitsPerSec = 120.0, CancellationToken ct = default)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -2840,47 +1983,32 @@ public sealed class BotManager : IAsyncDisposable
             : view.NearestDrop(pos.X, pos.Y);
         if (drop is null) return ActionResult.NotFound;
 
-        // Walk onto the item, then pick. Pickup has a short range, so stop right on it.
+        // Walk onto the item, then pick
         await ApproachAsync(id, handle, drop.X, drop.Y, stopShort: 0, unitsPerSec, ct);
         view.MarkPickSent(); // same pick-ack pacing gate as PickupAsync
         await s.SendAsync(new PROTO_NC_ITEM_PICK_REQ { itemhandle = drop.Handle }, ct);
         handle.Log(BotLogLevel.Verbose, $"loot item {drop.ItemId} (h={drop.Handle}) @({drop.X},{drop.Y})");
 
-        // Success = the drop left view (picked/despawned). PICK_ACK arrives too but its
-        // error code was non-zero even on success, so the drop-gone signal is authoritative.
+        // Success = the drop left view (picked/despawned)
         var picked = await WaitUntilAsync(() => view.Drops.All(d => d.Handle != drop.Handle), 3000, ct);
         handle.Log(BotLogLevel.Info, picked ? $"looted h={drop.Handle}" : $"loot h={drop.Handle} unconfirmed (still on ground — inventory full / out of range / blocked?)");
         return ActionResult.Sent;
     }
 
-    // Move/run (ACT MoverunCmd, 0x2019): 16 bytes = fromX,fromY,toX,toY (u32 LE).
+    // Move/run (ACT MoverunCmd, 0x2019): 16 bytes = fromX,fromY,toX,toY (u32 LE)
     private static readonly ushort OpMoveRun =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.MoverunCmd);
 
-    /// <summary>Max distance (world units) of a single MoverunCmd. The server rejects
-    /// large jumps as teleport/anti-cheat — verified live (2026-06-11): a walk made of
-    /// ~64u steps moved the character, but ~560–2536u straight segments (from
-    /// path-simplification) did not move it server-side at all. So long segments are
-    /// re-chunked into steps no bigger than this, mirroring how the real client streams
-    /// movement. 250u matches the real client: MovementTypes.pcapng shows a single
-    /// far mouse-click expand into a stream of ~250u MoverunCmd segments (the client
-    /// pathfinds, the server does not), each accepted by the server.</summary>
+    /// <summary>Max distance (world units) of a single MoverunCmd</summary>
     private const double MaxMoveStep = 250.0;
 
-    /// <summary>Walk a precomputed path: stream MoverunCmd steps on a background task,
-    /// paced to the bot's current <see cref="BotHandle.WalkSpeed"/> (updated live from
-    /// MOVESPEED broadcasts) so the server accepts it as a normal walk at any speed.
-    /// <paramref name="unitsPerSec"/> is a fallback when the handle has no WalkSpeed
-    /// yet (shouldn't happen after zone entry). Long straight segments are sub-divided
-    /// into <see cref="MaxMoveStep"/>-sized steps. Returns immediately; the walk
-    /// continues until done or the bot is stopped.</summary>
+    /// <summary>Walk a precomputed path: stream MoverunCmd steps on a background task, paced to the bot's current (updated liv…</summary>
     public ActionResult WalkPath(string id, IReadOnlyList<(uint X, uint Y)> waypoints, double unitsPerSec = 120.0)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } session) return ActionResult.NotInZone;
         if (waypoints.Count < 2) return ActionResult.Sent;
-        // Per-walk cancellation (linked to the bot's lifetime) so a MOVEFAIL can abort
-        // just this walk. Replace/cancel any prior walk.
+        // Per-walk cancellation (linked to the bot's lifetime) so a MOVEFAIL can abort just this walk
         var walkCts = CancellationTokenSource.CreateLinkedTokenSource(handle.Cts.Token);
         handle.WalkCts?.Cancel();
         handle.WalkCts = walkCts;
@@ -2899,27 +2027,12 @@ public sealed class BotManager : IAsyncDisposable
                     double cx = fx, cy = fy;
                     for (int k = 1; k <= subSteps && !ct.IsCancellationRequested; k++)
                     {
-                        // Interpolate the next intermediate point along the segment.
+                        // Interpolate the next intermediate point along the segment
                         var sx = (uint)Math.Round(fx + (tx - (double)fx) * k / subSteps);
                         var sy = (uint)Math.Round(fy + (ty - (double)fy) * k / subSteps);
-                        // ⛔ HOLD STILL WHILE A CAST BAR IS OPEN — moving cancels the cast. This streamer sends
-                        // MOVERUN *directly* rather than through WalkAsync, so it needs its own gate: gating only
-                        // WalkAsync would have missed the exact packet that was cancelling our mount summon
-                        // (see ZoneView.CastBarActive for the trace). Wait it out rather than skipping the step,
-                        // so the path is still walked in full once the cast resolves. CastBarActive is bounded
-                        // (4.5s) so this can never block forever.
+                        // HOLD STILL WHILE A CAST BAR IS OPEN — moving cancels the cast
                         while (handle.ZoneView is { CastBarActive: true } && !ct.IsCancellationRequested)
                             await Task.Delay(100, ct);
-                        // ⛔ REPORT WHERE WE *ARE*, NOT WHERE WE ARE GOING (measured 2026-08-13).
-                        // BeginMove returns the INTERPOLATED point we occupy right now and starts the segment
-                        // in one atomic step, so `from` is always the true current position — including when a
-                        // re-path interrupts a walk half a step in (operator: "if we walk from A to B and we're
-                        // 0.5 sec into it, and change path to C, do we send a packet from 0.5*(A+B) towards C,
-                        // or from B? Because that WOULD movefail"). It does. Measured on real-client captures:
-                        // a real client's `from` equals the previous `to` on only 2% of frames
-                        // (Z:/LongCaptureNoDc.pcapng, n=20337) / 16% (Z:/JCQMany.pcapng, n=403); ours was 48%
-                        // (MageFresh) / 90% (JcqArcher), and the server rejected 44% of our moves vs 0.25-0.6%.
-                        // Pace using the bot's live MOVESPEED-tracked walk speed (fallback: the passed value).
                         var paceSpeed = handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec;
                         var from = handle.BeginMove(sx, sy, paceSpeed);
                         var p = new byte[16];
@@ -2931,8 +2044,6 @@ public sealed class BotManager : IAsyncDisposable
                         handle.LastMoveTarget = (sx, sy);  // the tile we're trying to enter (for MOVEFAIL learning)
                         var stepDist = Math.Sqrt(Math.Pow(sx - (double)from.X, 2) + Math.Pow(sy - (double)from.Y, 2));
                         steps++;
-                        // Sleep the travel time. Position needs no commit at the end — the segment reaches its
-                        // destination on the clock, and a MOVEFAIL during the delay snaps it and cancels us.
                         await Task.Delay((int)Math.Clamp(stepDist / paceSpeed * 1000, 40, 2000), ct);
                         cx = sx; cy = sy;
                     }
@@ -2950,17 +2061,11 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>Walk from one map coordinate to another (one MoverunCmd step).
-    /// <para>⛔ SUPPRESSED WHILE A CAST BAR IS OPEN. Moving cancels a server-side cast, and this is the single
-    /// choke point every MOVERUN goes through — so gating here covers the nav re-path, the travel driver and
-    /// the Lua tick at once. Proven cause of the mount never landing: the summon's own root arrived as a
-    /// MOVEFAIL, nav called it a desync and re-pathed 71ms later, and the server cancelled our summon
-    /// (see <see cref="ZoneView.CastBarActive"/> for the packet trace).</para></summary>
     public async Task<ActionResult> WalkAsync(string id, uint fromX, uint fromY, uint toX, uint toY, CancellationToken ct = default)
     {
         if (_bots.TryGetValue(id, out var casting) && casting.ZoneView is { CastBarActive: true } zvCast)
         {
-            // Throttled: a suppressed walk is a decision worth seeing, but the nav retries fast.
+            // Throttled: a suppressed walk is a decision worth seeing, but the nav retries fast
             if (DateTime.UtcNow - casting.LastCastBarWalkLogUtc > TimeSpan.FromMilliseconds(900))
             {
                 casting.LastCastBarWalkLogUtc = DateTime.UtcNow;
@@ -2969,11 +2074,7 @@ public sealed class BotManager : IAsyncDisposable
             }
             return ActionResult.Sent;   // treat as handled: the caller must not escalate/re-path on this
         }
-        // ⛔ THE CALLER'S `from` IS NOT TRUSTED (2026-08-13). Callers pass their own idea of where the bot
-        // is, which is stale the moment a walk is in flight — and this is the path the Lua tick and the nav
-        // re-path use, so a mid-walk re-path here was sending a `from` we had not reached. BeginMove returns
-        // the INTERPOLATED live position and starts the new segment atomically; fromX/fromY are kept only so
-        // the action log still shows what the caller believed (a mismatch is itself worth seeing).
+        // THE CALLER'S `from` IS NOT TRUSTED (2026-08-13)
         var live = _bots.TryGetValue(id, out var mh)
             ? mh.BeginMove(toX, toY, mh.WalkSpeed > 0 ? mh.WalkSpeed : 120.0)
             : (X: fromX, Y: fromY);
@@ -2992,15 +2093,10 @@ public sealed class BotManager : IAsyncDisposable
         });
     }
 
-    /// <summary>Issue a GM command (e.g. <c>&amp;levelup 46</c>, <c>&amp;makeitem SafeProtection01</c>).
-    /// GM commands are routed through the chat channel — the server processes the
-    /// <c>&amp;</c>/<c>$</c> prefix when the account has GM authority (nAuthID=9).</summary>
     public Task<ActionResult> GmAsync(string id, string command, CancellationToken ct = default)
         => ActAsync(id, $"gm: {command}", s => s.SendAsync(ChatCodec.BuildChatReq(command), ct));
 
-    /// <summary>Shared plumbing for a manual action on an in-zone bot: resolve →
-    /// guard phase → send → log. This is the seam the HTTP endpoints (and later an
-    /// LLM/Lua controller) drive.</summary>
+    /// <summary>Shared plumbing for a manual action on an in-zone bot: resolve → guard phase → send → log</summary>
     private async Task<ActionResult> ActAsync(string id, string logLine, Func<BotSession, Task> send)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -3011,9 +2107,7 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>Like <see cref="ActAsync"/> but sends on the bot's <b>WM</b> link
-    /// (party / friend traffic is WorldManager-side). Requires the bot in zone with a
-    /// live WM session.</summary>
+    /// <summary>Like but sends on the bot's WM link (party / friend traffic is WorldManager-side)</summary>
     private async Task<ActionResult> WmActAsync(string id, string logLine, Func<BotSession, Task> send)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
@@ -3023,8 +2117,7 @@ public sealed class BotManager : IAsyncDisposable
         return ActionResult.Sent;
     }
 
-    /// <summary>WM action variant that also passes the bot's own character name (the
-    /// <c>charid</c> Name5 the friend structs require).</summary>
+    /// <summary>WM action variant that also passes the bot's own character name (the charid Name5 the friend structs require)</summary>
     private Task<ActionResult> WmActAsync(string id, string logLine, Func<BotSession, string, Task> send)
         => WmActAsync(id, logLine, s =>
         {
@@ -3032,37 +2125,22 @@ public sealed class BotManager : IAsyncDisposable
             return send(s, self);
         });
 
-    /// <summary>Max single-MoverunCmd distance for a given walk speed. Anchored to the
-    /// real client's ~250u segments at the ~120u/s on-foot speed; scales up with speed
-    /// so a mount (higher move speed → larger client segments) gets proportionally
-    /// bigger steps and keeps the per-second packet rate roughly constant.</summary>
+    /// <summary>Max single-MoverunCmd distance for a given walk speed</summary>
     private static double MaxStepFor(double unitsPerSec) => Math.Max(MaxMoveStep, unitsPerSec * (MaxMoveStep / 120.0));
 
-    /// <summary>React to a gate / town-portal transition: advance the tracked
-    /// position to the new spawn coord and update the current map name. For an in-band
-    /// change that's all the bot needs (it's still on the same connection). A
-    /// cross-server handoff additionally needs a reconnect to the carried endpoint —
-    /// that lives in the travel orchestrator; here we just record it and log.</summary>
+    /// <summary>React to a gate / town-portal transition: advance the tracked position to the new spawn coord and update the c…</summary>
     private void OnMapChanged(BotHandle handle, MapHandoff h, Action<string> log)
     {
         handle.SetPosition(h.X, h.Y);
         handle.BumpMapChange(); // wake any travel loop waiting on a transition
-        // Resolve the destination map name. The handoff carries only the map id, so:
-        // prefer what the catalog already knows; else, if a travel hop told us the
-        // destination it's heading into (PendingDestMap), use that AND learn id↔name so
-        // future routing/grids resolve it; else fall back to a synthetic id label. Doing
-        // this here (not in the travel loop) makes the name deterministic before the
-        // cross-server reconnect re-reads it — no race over the synthetic label.
+        // Resolve the destination map name
         var name = Catalog.NameFor(h.MapId);
         if (name is null && handle.PendingDestMap is { } pending)
         {
             name = pending;
             Catalog.Learn(h.MapId, pending);
         }
-        // Resolve the real short-name from the client MapInfo table (the wire only carries
-        // the map id; the client looks the name up the same way). Fixes "map#<id>" labels
-        // for transitions with no gate-LinkMap (town portals) — and lets navigation load
-        // the right <name>.shbd grid.
+        // Resolve the real short-name from the client MapInfo table (the wire only carries the map id; the client looks…
         if (name is null && ClientData?.MapName(h.MapId) is { } clientName)
         {
             name = clientName;
@@ -3072,15 +2150,10 @@ public sealed class BotManager : IAsyncDisposable
         log($"[nav] now on {name} (mapId={h.MapId}) at ({h.X},{h.Y})" +
             (h.IsCrossServer ? $" — cross-server handoff to {h.Ip}:{h.Port}, reconnecting" : " (in-band)"));
 
-        // FIELD .sbi door learning is PER-VISIT — reset it on every map entry (operator 2026-07-22): the Eld
-        // "Puzzle God" door may have opened/closed while we were off the map, so a stale learned-closed would wall
-        // a now-open courtyard. Only touches maps with a .sbi (HasDoors); instance doors re-seed from BUILDDOOR.
+        // FIELD .sbi door learning is PER-VISIT — reset it on every map entry (operator 2026-07-22): the Eld "Puzzle God…
         if (name is { } nm && GridProvider?.Invoke(nm) is { HasDoors: true } doorGrid) doorGrid.ResetDoorLearning();
 
-        // In-band LINKSAME: re-send MAP_LOGINCOMPLETE so the server spawns us into the
-        // new map and starts broadcasting its entities (mobs/NPCs/players). Without it
-        // the bot sits in the destination invisible to the world (no mob packets). The
-        // cross-server path doesn't need this — it does a full re-login (which sends it).
+        // In-band LINKSAME: re-send MAP_LOGINCOMPLETE so the server spawns us into the new map and starts broadcasting i…
         if (!h.IsCrossServer && handle.ZoneSession is { } zs)
         {
             _ = zs.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), CancellationToken.None);
@@ -3088,38 +2161,8 @@ public sealed class BotManager : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Delay between confirming a cross-server zone handoff (NC_MAP_LINKOTHER) and opening the
-    /// connection to the new zone server. The WM tells the destination zone "expect this client"
-    /// as part of the switch; connecting BEFORE that notification lands races the WM and the zone
-    /// drops us (the intermittent "zone link breaks on a gate" under cluster load, operator
-    /// 2026-07-29).
-    /// <para><b>MEASURED AGAINST THE REAL CLIENT (Z:/GateTest.pcapng, 2026-08-04).</b> The operator
-    /// captured ~15 round trips across a cross-node zone boundary (zone0 9016 ⇄ zone1 9019) in four
-    /// conditions — cross-node mounted/unmounted and same-node mounted/unmounted — annotating
-    /// "Not a single dc", "No dc", "0 dcs. Leaving it here." The client's gap from the OLD
-    /// connection's last packet to the NEW connection's SYN, n=30:
-    /// <b>median 0.442 s, min 0.331 s, max 0.527 s</b> — a very tight distribution, and every one
-    /// of the 30 crossings succeeded.</para>
-    /// <para>So the WM→zone notification reliably lands well inside ~0.5 s, and the original
-    /// "a couple of seconds" was ~4x more conservative than anything the real client does. Waiting
-    /// longer is not free: it leaves a multi-second hole where neither zone owns the session, which
-    /// is a plausible source of the very drops it was meant to prevent (operator's hypothesis).
-    /// Set to 600 ms — just above the client's observed WORST case (527 ms), so we stay inside real
-    /// client behaviour with a small margin rather than inventing a value.</para>
-    /// <para>⚠️ If gate-break DCs return, do NOT simply raise this again — re-measure against a fresh
-    /// capture first. The client proves ~0.5 s is sufficient; a regression here means something else.</para>
-    /// </summary>
     private const int CrossServerHandoffSettleMs = 600;
 
-    /// <summary>Liveness watchdog cadence and the "this is definitely wrong" stillness threshold.
-    /// 45s is well beyond any legitimate pause (a hand-in dialogue, a cast, waiting out a stun) but far
-    /// short of the 15+ minutes the bot silently wasted before this existed. Bot-behaviour timing only.</summary>
-    // How long to wait after a CEASE_FIRE before deciding the swing stream is genuinely dead. The real client
-    // does not re-bash on a cease-fire at all (27 of 39 resumed by themselves — CombatPriest.pcapng), so this
-    // is a stall detector, not a cadence. Long enough to let the server's own resumption land.
-    /// <summary>Swing windup: BASHSTART -> first landed damage, MEASURED median 418ms on our own logs.
-    /// A cast or a re-bash inside this window destroys the swing that was about to land.</summary>
     private const int BashWindupMs = 450;
     private const int WatchdogPollMs = 5_000;
     private const int WatchdogStillSecs = 45;
@@ -3135,19 +2178,14 @@ public sealed class BotManager : IAsyncDisposable
         {
             var chain = new LoginChain(_xorTable, Log);
 
-            // If requested at spawn, start the packet dump NOW — before the first connect — so the
-            // login handshake AND the zone-enter char-info burst (current soul-stone counts, vitals,
-            // quest/skill seed) are captured, not just post-spawn traffic. The tap is threaded into
-            // each connect; the existing /packetlog endpoint reuses the same handle.PacketLog.
+            // If requested at spawn, start the packet dump NOW — before the first connect — so the login handshake AND the z…
             if (opt.PacketLog && handle.PacketLog is null)
             {
                 var dir = Environment.GetEnvironmentVariable("PACKETLOG_DIR") ?? Directory.GetCurrentDirectory();
                 handle.PacketLog = new Net.PacketLog(System.IO.Path.Combine(dir, $"packets-{handle.Id}.log"));
                 Log($"packet log ENABLED (from spawn) -> {handle.PacketLog.Path}");
             }
-            // ALWAYS tap: the always-on PacketRing needs every frame, and CombinedTap adds the file log
-            // only when one is enabled. Previously this was null unless PacketLog was on, so nothing was
-            // captured by default and a post-mortem had no wire to look at.
+            // ALWAYS tap: the always-on PacketRing needs every frame, and CombinedTap adds the file log only when one is ena…
             Action<bool, ushort, ReadOnlyMemory<byte>>? tap = handle.CombinedTap;
 
             handle.SetPhase(BotPhase.LoggingIn);
@@ -3157,21 +2195,7 @@ public sealed class BotManager : IAsyncDisposable
             var wmEp = new FiestaEndpoint(opt.Host, wmPort);
 
             handle.SetPhase(BotPhase.SelectingChar);
-            // Fill in a VALID appearance before creating a character. The spec's defaults are 0/0/0, and
-            // face id 0 is selectable by no class or gender at all (FaceInfo.shn) — which is why Archer
-            // creation was refused with err=132 while other classes happened through. ClientData reads the
-            // client's own HairInfo/FaceInfo/HairColorInfo creation tables; this is the layer that HAS a
-            // ClientData instance, so the fill happens here rather than inside the login chain.
-            // ⛔ APPEARANCE OVERRIDE REVERTED — it was a REGRESSION, kept here as the record of why.
-            // ClientData.PickAppearance reads HairInfo/FaceInfo correctly, but the MEANING of their 1/2
-            // values is not what I assumed. Feeding face=1 (a value the table marks selectable for every
-            // class and gender) produced AVATAR_CREATEFAIL err=387 on BOTH Archer and Fighter — and
-            // Fighter had always created cleanly with face=0, the value the table marks selectable by
-            // NOBODY. So the server accepts 0 and rejects 1: whatever those columns encode, it is not a
-            // straight "may pick this" flag, and acting on that reading broke a working path.
-            // Sending 0/0/0 is empirically correct for every class that has ever been created here.
-            // PickAppearance is retained (documented, unused) for when the 1/2 semantics are settled —
-            // see the ticket. Do not re-enable it on the strength of the column names alone.
+            // Fill in a VALID appearance before creating a character
             var createSpec = opt.CreateSpec;
             var (wmResult, wmConn) = await chain.RunWmAsync(
                 wmEp, opt.Credentials, login.Otp, opt.Slot, createSpec, ct, tap, opt.Character);
@@ -3186,54 +2210,27 @@ public sealed class BotManager : IAsyncDisposable
 
             var zoneEntry = ZoneEntry.FromDataDir(_xorTable, Log, opt.DataDir);
 
-            // The WM link stays open for the bot's whole in-zone life and across any
-            // cross-server handoffs (each zone validates against a live WM session),
-            // so its read loop runs once, in the background, for the duration.
+            // The WM link stays open for the bot's whole in-zone life and across any cross-server handoffs (each zone valida…
             var wmSession = new BotSession(wmConn, sel.Name, wmResult.WmHandle, wmEp, Log,
                 linkTag: "wm", logInbound: opt.LogInbound);
             handle.WmSession = wmSession;
-            // Same connection diagnostics on the WM link — a half-open WM socket is exactly the
-            // ghost-session shape, and it is equally invisible on the wire.
+            // Same connection diagnostics on the WM link — a half-open WM socket is exactly the ghost-session shape, and it…
             wmSession.ConnDiag = m => handle.Log(BotLogLevel.Note, m);
             if (handle.PacketLog is { } plw) wmSession.PacketTap = plw.Tap; // re-attach packet log if enabled
             TrackPartyInvites(handle, wmSession); // capture incoming party invites (the inviter)
-            // The WM read loop gets its OWN linked CTS so an UNEXPECTED zone-only drop (server kick / net blip,
-            // where the bot-wide ct is NOT cancelled) can cancel it during teardown — otherwise `await wmRun`
-            // below hangs forever on the still-open WM socket, wedging the whole lifecycle (GHOST-FIX P0,
-            // operator 2026-07-28; see the teardown block after the zone loop).
+            // The WM read loop gets its OWN linked CTS so an UNEXPECTED zone-only drop (server kick / net blip, where the bo…
             using var wmCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var wmRun = wmSession.RunAsync(wmCts.Token);
 
-            // Zone (re-)entry loop. A normal stop/kick breaks out; a cross-server
-            // handoff (NC_MAP_LINKOTHER) re-enters with the new endpoint + WM handle
-            // the handoff carried. In-band changes (NC_MAP_LINKSAME) never reach here —
-            // they're handled live on the same connection by OnMapChanged.
             var zoneEp = new FiestaEndpoint(opt.Host, zoneAdv.Port);
             var zoneWmHandle = wmResult.WmHandle;
-            // The zone login ack has no map name, but the WM avatar list does
-            // (PROTO_AVATARINFORMATION.loginmap) — that's the authoritative start map.
-            // StartMap is only a fallback (e.g. for a just-created character).
+            // The zone login ack has no map name, but the WM avatar list does (PROTO_AVATARINFORMATION.loginmap) — that's th…
             var currentMap = string.IsNullOrWhiteSpace(sel.LoginMap) ? opt.StartMap : sel.LoginMap;
             var firstEntry = true;
             int burstRetries = 0; const int MaxBurstRetries = 3;
             while (true)
             {
-                // ⛔ THE WM LINK IS CREATED ONCE, ABOVE THIS LOOP — SO A DEAD WM POISONS EVERY ITERATION.
-                // `wmRun` is a single Task started before `while (true)`, and a COMPLETED Task always wins
-                // Task.WhenAny. So from the instant the WM link dies, the `WhenAny(zoneRun, wmRun) == wmRun`
-                // check further down returns wmRun IMMEDIATELY on every subsequent pass and cancels the
-                // freshly-built zone session before it can enter — and the cross-server `continue` then
-                // rebuilds it, to be killed again the same way. An invisible infinite loop: the zone never
-                // stays up, the WM is never re-established (nothing in this loop reconnects it), and the only
-                // thing that ever notices is the Lua suspend watchdog, minutes later:
-                //   CRUTCH[CRIT] SUSPENDED for 120s (236 ticks) waiting on:
-                //   cross-server handoff -> fiesta-proxy:9016 — that never resumed.
-                // This is the operator's cascade (2026-08-11) with the mechanism filled in: switch map →
-                // old zone drops → WM dies with it → zone can no longer validate against a live WM → every
-                // reconnect is cancelled on arrival.
-                // A zone link without a live WM is not recoverable HERE, because re-establishing the WM
-                // means redoing the login chain. So stop pretending we can reconnect and fall through to the
-                // teardown + auto-relog path below, which does a full clean re-login (WM included).
+                // THE WM LINK IS CREATED ONCE, ABOVE THIS LOOP — SO A DEAD WM POISONS EVERY ITERATION
                 if (wmRun.IsCompleted && !ct.IsCancellationRequested)
                 {
                     Log($"WM link is already dead ({wmSession.State.DisconnectReason ?? "completed"}) — a zone " +
@@ -3245,10 +2242,7 @@ public sealed class BotManager : IAsyncDisposable
                 handle.SetPhase(BotPhase.EnteringZone);
                 handle.ZoneSession = null; // no live zone link during (re)connect
                 var entry = await zoneEntry.EnterAsync(zoneEp, zoneWmHandle, sel.Name, ct, tap);
-                // BURST login (no explicit [1802]): position/HP were NOT seeded → nav broken (can't find gates)
-                // → the freeze/stone-starve death-loop (operator 2026-07-18). A proper MAP_LOGIN_ACK reliably
-                // arrives on retry, so re-enter the zone (capped) rather than run blind. After the cap, accept it
-                // (degrades to the previous behaviour — never worse). Reset once a clean login lands.
+                // BURST login (no explicit [1802]): position/HP were NOT seeded → nav broken (can't find gates) → the freeze/sto…
                 if (entry.WasBurst && burstRetries < MaxBurstRetries)
                 {
                     burstRetries++;
@@ -3262,26 +2256,17 @@ public sealed class BotManager : IAsyncDisposable
                 if (entry.SpawnX is { } spx && entry.SpawnY is { } spy) handle.SetPosition(spx, spy);
                 if (entry.CharHandle is { } selfH) handle.SetSelfHandle(selfH);
 
-                // Tripped to break THIS zone session when a cross-server handoff lands,
-                // without disturbing the WM loop or the bot's overall cancellation.
+                // Tripped to break THIS zone session when a cross-server handoff lands, without disturbing the WM loop or the bo…
                 using var zoneCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 MapHandoff? handoff = null;
 
                 await using var zoneSession = new BotSession(zoneConn, sel.Name, zoneWmHandle, zoneEp, Log,
                     linkTag: "zone", logInbound: opt.LogInbound);
                 handle.ZoneSession = zoneSession;
-                // Surface connection-level anomalies (send-after-dispose, send-lock contention/timeout,
-                // half-open write timeout) into the bot log. A pcap cannot show ANY of these — they all
-                // happen before a byte reaches the socket — and they are the prime suspects for the bot
-                // freezing where the real client sails through (operator 2026-08-04).
+                // Surface connection-level anomalies (send-after-dispose, send-lock contention/timeout, half-open write timeout)…
                 zoneSession.ConnDiag = m => handle.Log(BotLogLevel.Note, m);
                 if (handle.PacketLog is { } plz) zoneSession.PacketTap = plz.Tap; // re-attach packet log across handoff
-                // Party MEMBER-STATE also flows ZONE-side for CO-LOCATED members: live HP (MEMBERINFORM 50) and
-                // positions (MEMBERLOCATION 73) broadcast on the field link to same-zone party members — the WM link
-                // only carries the roster (MEMBER_LIST 9) + formation (verified 2026-07-23: 50/73 never hit WM during
-                // play). Subscribe the zone link too so we capture them when partied with someone in the same zone.
-                // This runs per map handoff, so it re-subscribes automatically. 50/51/73 are raw-logged (ZONE RAW) to
-                // pin their real wire layouts from a co-located capture before parsing into PartyMember Hp/X/Y.
+                // Party MEMBER-STATE also flows ZONE-side for CO-LOCATED members: live HP (MEMBERINFORM 50) and positions (MEMBE…
                 zoneSession.PacketReceived += pkt =>
                 {
                     try
@@ -3292,32 +2277,18 @@ public sealed class BotManager : IAsyncDisposable
                     catch { /* ignore an unparseable zone party frame */ }
                 };
 
-                // Perception model (nearby players + chat) is always on — cheap, and the
-                // status/say surface and any behavior read from it. The buff behavior is
-                // opt-in via spawn options.
+                // Perception model (nearby players + chat) is always on — cheap, and the status/say surface and any behavior rea…
                 using var zoneView = new ZoneView(zoneSession, Log, handle.Log);
                 zoneView.QuestNameResolver = qid => ClientData?.QuestName(qid) ?? $"q{qid}";  // log quest NAMES, not bare ids
-                // Lets the 0x4804 learn-confirmation tell an ACTIVE learn from a PASSIVE one (overlapping
-                // id spaces) by looking up the book that was just used. See ZoneView.ScrollSkillResolver.
+                // Lets the 0x4804 learn-confirmation tell an ACTIVE learn from a PASSIVE one (overlapping id spaces) by looking…
                 zoneView.ScrollSkillResolver = itemId => ClientData?.ScrollSkill(itemId) ?? (-1, false);
                 handle.ZoneView = zoneView;
-                // DYNAMIC SCENARIO-DOOR COLLISION (2026-07-15): push live door states into the map's pathfinding
-                // grid so closed doors become walls in our collision — matching the server, killing the JCQ
-                // instance MOVEFAIL storm. Field maps have no .sbi (HasDoors false) → no-op. Single-instance
-                // assumption: the shared per-map grid carries one bot's door state; re-entry re-seeds it via
-                // BUILDDOOR. (Concurrent bots in separate instances of the SAME map would need per-session grids
-                // — filed P2; not a current scenario.)
+                // DYNAMIC SCENARIO-DOOR COLLISION (2026-07-15): push live door states into the map's pathfinding grid so closed…
                 zoneView.DoorStatesByNameChanged += states =>
                 {
                     if (handle.CurrentMap is { } dmap && GridProvider?.Invoke(dmap) is { HasDoors: true } dgrid)
                         dgrid.SetDoorStates(states);
                 };
-                // FIELD .sbi DOOR STATE FROM THE PUZZLE BOARD (operator 2026-08-18). A field door's closed-state is
-                // never sent to a late-joiner, so the bot used to learn it only by MOVEFAILing into the wall 6-12
-                // times — ~30-60s of thrash on every visit, and the wedge that produced FighterFresh's 22.7% reject
-                // rate. The puzzle BOARD is a positive signal available the instant it comes into view: it is
-                // spawned by the same script init that builds the door, so board-in-a-door-box ⇒ that door is shut.
-                // Runs on entity refresh; NotePuzzleEntities is a single id compare per entity and idempotent.
                 zoneView.EntityChanged += _ =>
                 {
                     if (handle.CurrentMap is not { } pmap || GridProvider?.Invoke(pmap) is not { HasDoors: true } pgrid) return;
@@ -3330,25 +2301,15 @@ public sealed class BotManager : IAsyncDisposable
                 if (entry.CharHandle is { } selfH2)
                 {
                     zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
-                    // Stamp it into the packet log too — see PacketLog.NoteSelfHandle for why analysis
-                    // must never infer this. Written per zone-enter because handles are PER MAP: a log
-                    // spanning a map change carries several, and the tool needs the one in force.
+                    // Stamp it into the packet log too — see PacketLog.NoteSelfHandle for why analysis must never infer this
                     handle.PacketLog?.NoteSelfHandle(selfH2, handle.CharName ?? handle.Options.Character);
                 }
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
                 RegisterMetrics(handle, zoneView);
-                // ⚔️ DURABLE THREAT TABLE: seed what we already know about how hard each mob hits, and push
-                // every new sample back out. ZoneView's table dies on each respawn/handoff and this bot
-                // respawns constantly, so without this a mob has to hurt us again in EVERY session before the
-                // lethality check can see it — mob4002 killed the bot twice and was absent from the table in
-                // the very next session. Learned once, remembered thereafter.
+                // DURABLE THREAT TABLE: seed what we already know about how hard each mob hits, and push every new sample back o…
                 zoneView.SeedMobHits(Knowledge.MobThreatsFor(handle.KnowledgeScope)
                     .Select(kv => (kv.Key, kv.Value.Max, kv.Value.Count, kv.Value.Sum)));
                 zoneView.MobHitSampled = (mobId, dmg) => Knowledge.RecordMobHit(handle.KnowledgeScope, mobId, dmg);
-                // 📊 Learned scalars (HP-stone cooldown + heal size). These need REPEATED observation — the
-                // cooldown is the min gap between two successful heals — so without persistence the
-                // survivability inequality is unavailable for most of every session (measured: 8 minutes in,
-                // still unlearned, SustainableHealDps still -1). Seed, then keep learning.
                 zoneView.ScalarLearned = (name, val) => Knowledge.RecordScalar(handle.KnowledgeScope, name, val);
                 var cdStat = Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarStoneCooldownMs);
                 var healStat = Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarStoneHeal);
@@ -3357,22 +2318,6 @@ public sealed class BotManager : IAsyncDisposable
                     healStat is { Count: > 0 } ? healStat.Sum / healStat.Count : -1,
                     healStat?.Count ?? 0,
                     healStat?.Max ?? -1);
-                // Attack range survives the handoff now. It reset to 0 on every cross-server transition,
-                // and since the bot closes to ~1u before swinging, the first hit after a reset pinned it at
-                // ~2u — after which the cast path judged nearly everything OUT OF RANGE. Max ⇒ seed the max.
-                // ⛔ SEED THE MEAN, NOT THE MAX. The max latches ONE position-desync outlier and, being
-                // persisted, makes it permanent: every character on this server had meleeRange pinned at
-                // 135-150u (ClericFresh 149.2, Elfyra 149.8, MageFresh 149.7) — just under the 150 seed
-                // guard, so it sailed through on every login and overwrote the in-session learner that was
-                // specifically fixed to resist exactly this.
-                // What it cost: `tooClose` is 0.40 x range, so a 149u range made the bot treat 60u as TOO
-                // CLOSE. ClericFresh — a near-unkillable physical melee — was logging "TOO CLOSE (17u) —
-                // stepping BACK to ~104u standoff" and retreating OUT of melee, unable to kill anything
-                // while the mobs kept hitting it.
-                // The mean over hundreds of connects is robust and, crucially, CORRECT: 50.3 (n=1010),
-                // 51.0 (n=427), 50.9 (n=349), 52.4 (n=171), 50.8 (n=87). That independently reproduces the
-                // real-client capture measured with tools/client_range.py — auto-attack median 49u, Range=0
-                // melee skills median 51u. Two unrelated sources, same answer; the max agrees with neither.
                 var mrStat = Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarMeleeRange);
                 var mrSeed = mrStat is { Count: > 0 } ms ? ms.Sum / ms.Count : -1;
                 zoneView.SeedMeleeRange(mrSeed);
@@ -3394,9 +2339,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SeedStones(entry.CurHpStone, entry.CurSpStone); // real reserve from zone-enter char-info
                 if (entry.Cen is { } cen0) zoneView.SeedMoney((long)cen0); // money from char-info — never leave it -1
                 if (entry.Exp is { } exp0) zoneView.SeedExp((long)exp0); // exp from char-info — track grind progress live
-                // Level from char-info (NC_CHAR_BASE Level@25) — authoritative on EVERY zone-enter, so
-                // bot.level() advances with real level-ups even if the live 0x1074 LEVELUP was missed
-                // (else it stays frozen at the login value and level-gated quest eligibility never grows).
+                // Level from char-info (NC_CHAR_BASE Level@25) — authoritative on EVERY zone-enter, so bot.level() advances with…
                 if (entry.Level is { } lvl0 && lvl0 > 0) handle.SetLevel(lvl0);
                 zoneView.SeedSkills(entry.Skills);
                 zoneView.SeedPassives(entry.Passives);
@@ -3407,8 +2350,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.MapChanged += h =>
                 {
                     handle.Emit(new BotEvent(BotEventKind.MapChanged, h));
-                    // A map change ends combat server-side: battle mode and any running swing stream
-                    // are gone, so re-assert them on the next action rather than assuming they persist.
+                    // A map change ends combat server-side: battle mode and any running swing stream are gone, so re-assert them on…
                     handle.InBattleMode = false;
                     handle.BashTarget = 0;
                     if (handle.ZoneView is { } zvm) zvm.BashActive = false;
@@ -3417,40 +2359,20 @@ public sealed class BotManager : IAsyncDisposable
                 };
                 zoneView.MoveFailed += pos =>
                 {
-                    // Server rejected a move into an off-grid obstacle: resync to its truth and abort
-                    // the current walk so we stop pushing into it. THEN LEARN it — mark the tile we were
-                    // trying to enter runtime-blocked so the pathfinder routes AROUND it next time,
-                    // instead of re-issuing the same rejected step forever (the MOVEFAIL freeze that
-                    // wedged bots on field maps + in the JCQ instance). Only learn a tile DIFFERENT from
-                    // where we got snapped back to (else we'd block the ground we're standing on).
+                    // Server rejected a move into an off-grid obstacle: resync to its truth and abort the current walk so we stop pu…
                     handle.SetPosition(pos.X, pos.Y);
                     handle.WalkCts?.Cancel();
-                    // DON'T LEARN A WALL WHILE ROOTED: if a movement-blocking abstate (stun/root/entangle) is
-                    // active, the server MOVEFAILs EVERY move regardless of the tile — that's the root, not an
-                    // obstacle. Learning it poisoned the nav grid with hundreds of false walls (the JCQ
-                    // instance thrash). Resync + abort, but skip the MarkBlocked until the root clears.
+                    // DON'T LEARN A WALL WHILE ROOTED: if a movement-blocking abstate (stun/root/entangle) is active, the server MOV…
                     if (zoneView.Rooted)
                     {
                         Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) while ROOTED (stun/entangle) — NOT learning a wall, waiting out the state");
                         handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                         return;
                     }
-                    // DON'T LEARN A WALL INSIDE A SCENARIO INSTANCE either: the block is almost always a dynamic
-                    // scenario DOOR (KQ_Gate4) that the script opens/closes per room — learning it as a permanent
-                    // runtime wall poisons the grid so the bot can NEVER path through once the door opens (the JCQ
-                    // stuck-at-Door3 grid-poison). The .shbd already has the real static walls; in an instance,
-                    // just resync + re-route (retry) and let the door open. (Rooted covers the stun case above.)
+                    // DON'T LEARN A WALL INSIDE A SCENARIO INSTANCE either: the block is almost always a dynamic scenario DOOR (KQ_G…
                     if (zoneView.InScenarioInstance)
                     {
-                        // Learn the rejected cell with a SHORT TTL (not permanent). The block is often a DYNAMIC
-                        // scenario door (KQ_Gate4) that opens later, so a permanent MarkBlocked would poison the
-                        // grid (the bot could never path through once it opens — the old JCQ grid-poison, which
-                        // is why this branch used to just resync+return and then STORM the same rejected step
-                        // ~15×/s forever, burning the 20-min timelimit). TTL-block the cell ~1.5 tiles AHEAD in
-                        // the move direction so the pathfinder routes AROUND it NOW, and it auto-expires (~5s) so
-                        // a reopened door / transient rejection becomes walkable again. If a corridor has no way
-                        // around, the pathfind simply yields no route → the bot WAITS (correct at a closed door)
-                        // until the TTL/door clears — instead of thrashing. Adapts to the server's truth, no poison.
+                        // Learn the rejected cell with a SHORT TTL (not permanent)
                         bool learnedTtl = false;
                         if (handle.LastMoveTarget is { } tgtI && handle.CurrentMap is { } mapI &&
                             GridProvider?.Invoke(mapI) is { } gridI)
@@ -3469,11 +2391,7 @@ public sealed class BotManager : IAsyncDisposable
                             }
                         }
                         if (!learnedTtl) Log($"[nav] MOVEFAIL @({pos.X},{pos.Y}) in a SCENARIO INSTANCE — no move target, resynced");
-                        // PERPENDICULAR-TO-WALL UNSTICK (operator 2026-07-13). When the bot is WEDGED — repeated
-                        // MOVEFAILs at ~the same spot (e.g. a combat approach walking STRAIGHT into a wall, which
-                        // bypasses the pathfinder) — nudge it ~200u PERPENDICULAR to the nearest wall so it slides
-                        // ALONG the wall and frees itself, instead of grinding into it. Gated on a streak so it
-                        // never fires on a normal one-off MOVEFAIL, and throttled so it can't itself become a storm.
+                        // PERPENDICULAR-TO-WALL UNSTICK (operator 2026-07-13)
                         bool near = handle.LastMoveFailPos is { } lp &&
                                     Math.Abs((double)lp.X - pos.X) < 60 && Math.Abs((double)lp.Y - pos.Y) < 60;
                         handle.MoveFailStreak = near ? handle.MoveFailStreak + 1 : 1;
@@ -3484,8 +2402,7 @@ public sealed class BotManager : IAsyncDisposable
                         {
                             handle.LastUnstickUtc = DateTime.UtcNow;
                             const double UNSTICK = 200.0;
-                            // The two directions ALONG the wall (± perpendicular to the wall normal). Pick the one
-                            // whose ~200u destination is walkable (server-side .shbd); prefer it, else try the other.
+                            // The two directions ALONG the wall (± perpendicular to the wall normal)
                             var opts = new (double dx, double dy)[] { (-wall.dy, wall.dx), (wall.dy, -wall.dx) };
                             foreach (var o in opts)
                             {
@@ -3499,13 +2416,7 @@ public sealed class BotManager : IAsyncDisposable
                                 break;
                             }
                         }
-                        // LAST-RESORT WEDGE RECOVERY (2026-07-16): if the ⊥-unstick can't free the bot (boxed in /
-                        // no walkable sidestep) the MOVEFAIL streak keeps climbing while MarkBlocked piles up poison
-                        // every step — the accumulated learned-blocks eventually SEVER every route → a hard wedge
-                        // that previously only a RELOG fixed (live: JcqFresh frozen ~10min on Eld, streak+poison to
-                        // 20). At a high streak, clear the runtime-blocked grid so the bot re-paths on the clean
-                        // .shbd (the in-code relog): it WALKED to this spot so the base geometry connects; genuine
-                        // obstacles simply re-learn as they're hit. Streak resets to 0 → self-throttling.
+                        // LAST-RESORT WEDGE RECOVERY (2026-07-16): if the ⊥-unstick can't free the bot (boxed in / no walkable sidestep)…
                         if (handle.MoveFailStreak >= 8 && handle.CurrentMap is { } wmap
                             && GridProvider?.Invoke(wmap) is { } wgrid && wgrid.RuntimeBlockedCount > 0)
                         {
@@ -3517,13 +2428,7 @@ public sealed class BotManager : IAsyncDisposable
                         handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                         return;
                     }
-                    // MEASURING STICK (2026-07-21): on a FIELD MOVEFAIL, compare our .shbd walkability against
-                    // the reverse-engineered .bdt (50-unit quadtree, a server-collision candidate) ALONG the
-                    // rejected ray. The server snapped us back to `pos` (last-good) and refused the move toward
-                    // `LastMoveTarget`, so the true blocked boundary lies between them. Log shbd/bdt at each step
-                    // (UPPER=walkable, lower=blocked; S/s=.shbd, B/b=.bdt, -=no .bdt) so we can read off which grid
-                    // transitions walkable→blocked where the server actually stopped us. Diagnostic only; no
-                    // behaviour change. Only maps WITH a .bdt (terrain) log this (flat maps: shbd==server, no mystery).
+                    // MEASURING STICK (2026-07-21): on a FIELD MOVEFAIL, compare our .shbd walkability against the reverse-engineere…
                     if (handle.LastMoveTarget is { } mt && handle.CurrentMap is { } cmap &&
                         GridProvider?.Invoke(cmap) is { } cg && cg.HasBdt)
                     {
@@ -3532,11 +2437,7 @@ public sealed class BotManager : IAsyncDisposable
                         if (mlen > 1)
                         {
                             var sb = new System.Text.StringBuilder();
-                            // Sample the rejected ray (and ~2 tiles PAST the target) every 3 units — fine enough to
-                            // catch a single-tile (6.25u) wall a straight-line MOVERUN could clip. STATIC shbd only
-                            // (bypass our runtime poison, which would masquerade as a real wall). S/s=.shbd
-                            // walkable/blocked, B/b=.bdt walkable/blocked, -=no .bdt. Compact: only print each
-                            // sample whose S or B state DIFFERS from the previous, plus the endpoints.
+                            // Sample the rejected ray (and ~2 tiles PAST the target) every 3 units — fine enough to catch a single-tile (6.2…
                             char ps = '?', pb = '?';
                             double end = mlen + BlockGrid.WorldPerTile * 2;
                             for (double t = 0; t <= end + 0.1; t += 3.0)
@@ -3552,20 +2453,7 @@ public sealed class BotManager : IAsyncDisposable
                             Log($"[measure] MOVEFAIL pos=({pos.X},{pos.Y}) tgt=({mt.X},{mt.Y}) len={mlen:F0} ray{sb}");
                         }
                     }
-                    // Learn the obstacle: block the tile ~1.5 tiles AHEAD of the snap-back position in the
-                    // DIRECTION we were trying to move — that's the cell the server refused. (Block by
-                    // direction, not the move endpoint: a smoothed straight run may end on a legit tile it
-                    // merely CLIPPED past, and small paced sub-steps often round to the snap-back tile.)
-                    // DATA-DRIVEN POISON GATE (2026-07-21): ONLY learn a wall when that ahead cell is a REAL
-                    // static .shbd obstacle (a corner the straight run clipped). If it's OPEN GROUND
-                    // (.shbd-walkable), the server refused a move the MAP says is fine → a TRANSIENT state, not
-                    // a wall: an unclassified stun/root (see the loud ABSTATE log), a combat attack-lock (the
-                    // server holds you mid-swing), or a move-spam desync. The measuring stick proved these
-                    // rejected moves sit in open ground, walkable in BOTH .shbd AND the reversed .bdt — so
-                    // MarkBlocking them is the false-wall grid-poison that severs routes → the hilly-map WEDGE.
-                    // Transient states clear on their own; resync + abort + re-path like the real client, which
-                    // never poisons its nav grid and never wedges. Genuine off-grid clips (static-blocked cell)
-                    // still learn, so real obstacle-avoidance is unchanged.
+                    // Learn the obstacle: block the tile ~1.5 tiles AHEAD of the snap-back position in the DIRECTION we were trying to move — that's the cell the server refused
                     bool handled = false;
                     if (handle.LastMoveTarget is { } tgt && handle.CurrentMap is { } map &&
                         GridProvider?.Invoke(map) is { } grid)
@@ -3579,9 +2467,7 @@ public sealed class BotManager : IAsyncDisposable
                             var ay = (uint)Math.Max(0, pos.Y + dy / len * ahead);
                             var (ttx, tty) = grid.WorldToTile(ax, ay);
                             handled = true;
-                            // FIELD .sbi DOOR (Eld "Puzzle God"): its closed-state is never on the wire, so learn it
-                            // from MOVEFAILs inside the door box — >N distinct failed tiles ⇒ the whole door is closed
-                            // (operator-confirmed 2026-07-22; the real client bounces the same way). Reset on re-entry.
+                            // FIELD .sbi DOOR (Eld "Puzzle God"): its closed-state is never on the wire, so learn it from MOVEFAILs inside t…
                             var sbi = grid.NoteMoveFailInSbiDoor(pos.X, pos.Y, tgt.X, tgt.Y);
                             if (sbi == BlockGrid.SbiMoveFail.DoorClosed)
                             {
@@ -3606,8 +2492,7 @@ public sealed class BotManager : IAsyncDisposable
                     handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                 };
                 zoneView.WalkSpeedChanged += speed => { handle.WalkSpeed = speed; };
-                // Forward the perception events onto the stable per-bot hub so a looping
-                // script keeps its subscriptions across a cross-server ZoneView swap.
+                // Forward the perception events onto the stable per-bot hub so a looping script keeps its subscriptions across a…
                 zoneView.ChatReceived += msg => handle.Emit(new BotEvent(BotEventKind.Chat, msg));
                 zoneView.PlayerAppeared += p => handle.Emit(new BotEvent(BotEventKind.PlayerAppeared, p));
                 zoneView.PlayerLeft += h => handle.Emit(new BotEvent(BotEventKind.PlayerLeft, h));
@@ -3617,30 +2502,8 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SpChanged += sp => handle.Emit(new BotEvent(BotEventKind.Sp, sp));
                 zoneView.Damaged += hit => handle.Emit(new BotEvent(BotEventKind.Hit, hit));
                 var botId = handle.Id; // capture for the lambda
-                // ⛔ NO AUTOMATIC RE-BASH. ONE BASH PER ENGAGEMENT (operator 2026-08-12: "I just want a
-                // singular initial bash on combat start").
-                //
-                // What used to live here: a CEASE_FIRE handler that waited 1200ms and re-issued the full
-                // target/mode/face+stop/BASHSTART sequence if no damage had landed. It was written to fix a
-                // real symptom and it made things worse every time it was tuned, because the premise was
-                // wrong: CEASE_FIRE is a transient combat-state notification, not "your attack stopped".
-                // In the operator's own priest capture the server resumed swinging on its own after 27 of
-                // 39 cease-fires with no client BASHSTART at all — the real client bashes FIVE times and
-                // collects EIGHTY-TWO swings.
-                //
-                // Measured cost of re-bashing anyway, on ClericFresh: 374 BASHSTART in 18.5 min for 92
-                // landed swings (0.25/bash), and when a second re-bash owner was briefly added, 1854 in
-                // 27.8 min for 71 swings (0.04/bash). Every re-issue restarts the 418ms windup from zero,
-                // so bashing harder produced strictly LESS damage. The real-player baseline is 5.96.
-                //
-                // The bash is now issued exactly once, by the driver, when it engages a target — and if the
-                // stream really does die, the fix belongs in whatever killed it (a cast's STOP, a walk),
-                // not in a restart that cancels the next swing too. CEASE_FIRE is still decoded and logged;
-                // that is observability, and it is how this was measured.
 
-                // The selection died / went away — drop the assertion so the next attack re-sends
-                // TARGETTING. Without this the bot bashes at a handle the server no longer holds, which
-                // is a silent no-op, and (handles being per-map) can even name a different entity.
+                // The selection died / went away — drop the assertion so the next attack re-sends TARGETTING
                 zoneView.TargetInvalidated += why =>
                 {
                     if (!handle.TargetAsserted) return;
@@ -3650,20 +2513,13 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.CastFailed += reason =>
                 {
                     handle.Emit(new BotEvent(BotEventKind.CastFail, reason));
-                    // 📐 PAIR THE FAILURE WITH THE GEOMETRY THAT CAUSED IT, on one line. [castgeom] logs the
-                    // inputs at send time and the fail arrives separately, so every correlation so far has
-                    // meant hand-pairing two log streams by timestamp — done three times by hand already,
-                    // and each time the pairing itself was a source of error. The open question this exists
-                    // to answer: 0x0FCA ("out of range") was observed at dist=29u, which would mean the real
-                    // melee cast range is well under the driver's 45u closing distance. One grep now.
+                    // PAIR THE FAILURE WITH THE GEOMETRY THAT CAUSED IT, on one line
                     var g = _lastCastGeom;
                     handle.Log(BotLogLevel.Info,
                         $"[castfail] 0x{reason:X4} ({ZoneView.CastFailReason.Describe(reason)}) " +
                         $"— dist={g.Dist:F0} reach={g.Range:F0} " +
                         $"offBy={(g.OffByDeg < 0 ? "n/a" : $"{g.OffByDeg:F0}°")} arc={g.ArcDeg}° ({g.Note})");
-                    // Reactive cast-fail handling — lightweight, fire-and-forget.
-                    // Runs on the session read loop so must not block; all actions
-                    // go through SendAsync which serializes on the connection.
+                    // Reactive cast-fail handling — lightweight, fire-and-forget
                     if (reason == ZoneView.CastFailReason.NotEnoughSp)
                     {
                         Log($"[combat] cast FAILED — not enough SP (0x{reason:X4}), recharging soul-stone");
@@ -3679,35 +2535,18 @@ public sealed class BotManager : IAsyncDisposable
                         var npcPos = tgt != 0 ? NpcPos(handle, tgt) : null;
                         if (npcPos is { } tp && handle.Position is { } pos)
                         {
-                            // Use doubles for direction math to avoid uint underflow
-                            // when tp.X < pos.X or tp.Y < pos.Y.
+                            // Use doubles for direction math to avoid uint underflow when tp.X < pos.X or tp.Y < pos.Y
                             double dx = (double)tp.X - pos.X;
                             double dy = (double)tp.Y - pos.Y;
                             var dist = Math.Sqrt(dx * dx + dy * dy);
-                            // Standoff thresholds derived from the LEARNED attack range (operator 2026-07-15): measured
-                            // from the wire (ZoneView.LearnedMeleeRange ≈ 48u for this fighter; an archer's is far larger),
-                            // so the standoff is correct for ANY class/weapon instead of the baked 30/20. Fall back to the
-                            // tuned consts until the first connecting hit teaches us the real range.
                             var learnedRange = zoneView.LearnedMeleeRange;
                             var meleeStop = learnedRange > 0 ? learnedRange * 0.70 : ScenarioMeleeStop;  // final standoff (stop this short of the target)
                             var holdRange = learnedRange > 0 ? learnedRange * 0.85 : ScenarioHoldRange;  // within this → hold + autoAttack
                             var tooClose = learnedRange > 0 ? learnedRange * 0.40 : ScenarioTooClose;    // closer than this → step back
-                            // In a SCENARIO INSTANCE, only client-approach a FAR target (a genuine traverse — e.g.
-                            // R1 walking ~1000u+ down the corridor to the fled clone / the Kebings). For a NEAR
-                            // target already in the fight (e.g. the R2 skeletons ~48u away), do NOT walk: the tight
-                            // instance geometry MOVEFAILs the last few tiles, so the bot wedges in a corner against
-                            // a wall/closed door and the ⊥-unstick ping-pongs forever, landing 0 hits (tick 30
-                            // corner-jam). Instead HOLD + autoAttack — the aggroing wave closes the small gap and
-                            // swings land (server-follow), like the real client (which never chases a mob into a
-                            // corner). Field combat (not in an instance) always approaches. ScenarioHoldRange is
-                            // pure behaviour tuning (a "close enough that aggro will reach me" gap), not a game fact.
+                            // In a SCENARIO INSTANCE, only client-approach a FAR target (a genuine traverse
                             if (zoneView.InScenarioInstance && dist < tooClose && dist > 0.5)
                             {
-                                // TOO CLOSE → STEP BACK (operator 2026-07-15): we're basically on top of the mob
-                                // (~1u), where the CAST fails 0x0FCA. Holding here loops forever. Back off along the
-                                // target→bot line to meleeStop so the cast (and swing) land like the real client
-                                // (which stops at weapon range, never overlaps). Walking cancels BASHSTART → the lua
-                                // re-issues autoAttack on arrival at the standoff.
+                                // TOO CLOSE → STEP BACK (operator 2026-07-15): we're basically on top of the mob (~1u), where the CAST fails 0x0…
                                 var backX = -dx / dist; var backY = -dy / dist;   // unit vector AWAY from the target
                                 var backDist = meleeStop - dist;                   // how far to retreat
                                 var nx = (uint)Math.Round(pos.X + backX * backDist);
@@ -3721,22 +2560,13 @@ public sealed class BotManager : IAsyncDisposable
                             }
                             else if (zoneView.InScenarioInstance && (dist < holdRange || handle.MoveFailStreak >= 2))
                             {
-                                // HOLD if EITHER we're already in melee (dist < holdRange) OR the approach is
-                                // WEDGED (MoveFailStreak ≥ 2 = we've MOVEFAILed repeatedly at this spot, e.g. chasing a
-                                // straggler skeleton standing AT a wall). Don't chase a mob into a wall — stop, hold,
-                                // autoAttack; the aggroing mob comes to us (tick 43: fixes the R2 last-straggler wedge).
+                                // HOLD if EITHER we're already in melee (dist < holdRange) OR the approach is WEDGED (MoveFailStreak ≥ 2 = we've…
                                 var why = dist < holdRange ? $"in melee ({dist:F0}u)" : $"WEDGED approaching (streak {handle.MoveFailStreak})";
                                 Log($"[combat] cast out of range (0x{reason:X4}) in instance, {why} — HOLDING + autoAttack, letting the aggroing mob come (not chasing into a wall)");
                             }
                             else
                             {
-                                // APPROACH but STOP at melee range (tick 41): walk to a point ~ScenarioMeleeStop
-                                // SHORT of the target along the bot→target line, NOT the target's exact cell. Two
-                                // bugs this fixes: (1) a skeleton standing AT a wall made pathing to its cell wedge
-                                // the bot in the wall (centering fixes the ROUTE but the GOAL was still at the edge);
-                                // (2) with the old 350 hold the bot never closed, so autoAttack produced 0 swings —
-                                // the bot appeared only as DEFENDER in SWING_START, never attacker → 0 skeleton kills.
-                                // Stopping melee-short closes into swing range without touching the wall.
+                                // APPROACH but STOP at melee range (tick 41): walk to a point ~ScenarioMeleeStop SHORT of the target along the b…
                                 Log($"[combat] cast out of range (0x{reason:X4}) — approaching to melee (dist {dist:F0}u, stop {meleeStop:F0}u, learnedRange {learnedRange:F0}u)");
                                 var goalDist = Math.Max(0.0, dist - meleeStop);
                                 var gx = (uint)Math.Round(pos.X + dx / dist * goalDist);
@@ -3750,9 +2580,7 @@ public sealed class BotManager : IAsyncDisposable
                                     {
                                         try
                                         {
-                                            // Route around obstacles via the .shbd grid (now corridor-centered);
-                                            // fall back to the straight step only if there's no grid/route. Goal is
-                                            // the melee-short point, so we never path onto the mob's (possibly wall) cell.
+                                            // Route around obstacles via the .shbd grid (now corridor-centered); fall back to the straight step only if ther…
                                             var routed = false;
                                             if (handle.CurrentMap is { } cmap && GridProvider?.Invoke(cmap) is { } cgrid)
                                             {
@@ -3775,26 +2603,16 @@ public sealed class BotManager : IAsyncDisposable
                 handle.SetPhase(BotPhase.InZone);
                 handle.ZoneEnteredUtc = DateTime.UtcNow;   // relog pacing measures session life from here
                 handle.NoteEvent("zone-enter", $"map={currentMap}");
-                // Entering a zone clears the server's selection AND renumbers handles — the retained one
-                // can name a different entity here. Re-assert before the next attack.
+                // Entering a zone clears the server's selection AND renumbers handles — the retained one can name a different en…
                 handle.InvalidateTarget("zone entry / map handoff");
                 Log(firstEntry
                     ? $"*** {sel.Name} IN ZONE ({zoneEp}) — running until stopped ***"
                     : $"*** {sel.Name} RE-ENTERED ZONE ({zoneEp}, {currentMap}) after cross-server handoff ***");
-                // The new zone link is live — let the leveler tick again (no-op unless we suspended it
-                // for a handoff above). Logs how many ticks were skipped, so a suspend that never
-                // resumed is obvious rather than looking like a silent freeze.
+                // The new zone link is live — let the leveler tick again (no-op unless we suspended it for a handoff above)
                 handle.ScriptRunner?.Resume($"zone live again ({zoneEp}, {currentMap})");
                 firstEntry = false;
 
-                // ===== LIVENESS WATCHDOG (operator 2026-08-05) =====
-                // "How do you need this elaborate diagnostic check to find out the bot is completely
-                // unmoving? We should have a routine that notices no movement > log error."
-                // A motionless bot must SHOUT, not require packet forensics. Found the hard way: an
-                // unexpected drop disposes the ScriptRunner, the auto-relog re-entered the zone fine, but
-                // the leveler was never restored — so the bot stood in a mob pack at full HP for 15+ min
-                // doing NOTHING, while every status field said "InZone, healthy". Nothing logged a word.
-                // This watchdog catches BOTH shapes: no script at all, and script-but-not-moving.
+                // ===== LIVENESS WATCHDOG (operator 2026-08-05) ===== "How do you need this elaborate diagnostic check to find o…
                 _ = Task.Run(async () =>
                 {
                     var lastPos = handle.Position; var stillSince = DateTime.UtcNow; var lastTicks = -1L;
@@ -3802,14 +2620,7 @@ public sealed class BotManager : IAsyncDisposable
                     {
                         await Task.Delay(WatchdogPollMs, zoneCts.Token);
 
-                        // (a) IN ZONE WITH NO SCRIPT — the exact failure above. Self-heal from the retained
-                        // source rather than just complaining; a bot with no driver can never recover alone.
-                        // Fall back to the PERSISTED copy when this process never saw an apply — i.e. the
-                        // bot was spawned after a pod restart. Without this the watchdog could only heal a
-                        // script lost WITHIN a session, and the far more common case (deploy → respawn)
-                        // needed a human.
-                        // Try the char-scoped key first, then the id-keyed copy — see SaveScript above for why
-                        // the char-scoped one can be written under a name a fresh spawn does not yet know.
+                        // (a) IN ZONE WITH NO SCRIPT — the exact failure above
                         if (handle.ScriptRunner is null && handle.LastScriptSource is null
                             && (Knowledge?.LoadScript(handle.KnowledgeScope)
                                 ?? Knowledge?.LoadScript(ScriptKeyForId(handle.Id))) is { } saved)
@@ -3832,8 +2643,7 @@ public sealed class BotManager : IAsyncDisposable
                             continue;
                         }
 
-                        // (b) NOT MOVING — position unchanged for too long. Report the script's tick counter
-                        // too, which separates "thread is dead/stuck" from "ticking but choosing to stand".
+                        // (b) NOT MOVING — position unchanged for too long
                         var pos = handle.Position;
                         var ticks = handle.ScriptRunner?.Status().Ticks ?? -1;
                         var moved = pos is null || lastPos is null
@@ -3849,16 +2659,7 @@ public sealed class BotManager : IAsyncDisposable
                                 $"script={(handle.ScriptRunner is null ? "NONE" : handle.ScriptRunner.Status().State)} " +
                                 $"ticks={ticks} ({(ticking ? "ticking — it is RUNNING but not acting" : "NOT TICKING — thread dead/stuck/suspended")}) " +
                                 $"hp={handle.ZoneView?.Hp} inCombat={handle.ZoneView?.InCombat} " +
-                                // ⛔ PRINT THE GATES, NOT JUST THE SYMPTOM. The driver's fight-through branch is
-                                // `not fleeing and not inInstance and not stonesLow() and aggressors() > 0`, and
-                                // the flee/kite paths key off the same aggressor set. So when a bot stands still
-                                // IN COMBAT (JcqFresh, RouTemDn01, 2026-08-11: motionless 45s, hp 829, soul-stone
-                                // USE every ~2s, no fighting and no fleeing) the whole question is WHICH of those
-                                // was false — and this line reported inCombat, which is "am I being hit", not the
-                                // value any of those gates actually read. aggressors is derived separately (from
-                                // SWING_DAMAGE where the defender is us), so damage that cannot be attributed to
-                                // an attacker leaves inCombat true while aggressors is 0, and every gate fails at
-                                // once. Without these numbers the next occurrence is just as undiagnosable.
+                                // PRINT THE GATES, NOT JUST THE SYMPTOM
                                 $"aggressors={handle.ZoneView?.Aggressors.Count} maybeAggressors={handle.ZoneView?.MaybeAggressors.Count} " +
                                 $"hpStones={handle.ZoneView?.HpStones}. A bot standing still is ALWAYS a bug.");
                             stillSince = DateTime.UtcNow;   // re-arm so it reports periodically, not once
@@ -3867,12 +2668,7 @@ public sealed class BotManager : IAsyncDisposable
                     }
                 }, zoneCts.Token);
 
-                // Run the zone read loop, but ALSO watch the WM read loop: if the WM link dies FIRST while the
-                // zone is still alive (GHOST-FIX P0 gap, operator 2026-07-28 "ensure the stuck condition can no
-                // longer happen"), `wmRun` completing would otherwise go unnoticed — the bot would limp on InZone
-                // with a dead WM link (the zone validates against a live WM → a lingering half-open WM = a ghost
-                // + the bot never reconnects). So when wmRun ends unexpectedly (not our teardown-cancel, not a
-                // bot-wide stop), cancel the zone session too → it flows into the same teardown + auto-relog below.
+                // Run the zone read loop, but ALSO watch the WM read loop: if the WM link dies FIRST while the zone is still ali…
                 var zoneRun = zoneSession.RunAsync(zoneCts.Token);
                 if (await Task.WhenAny(zoneRun, wmRun) == wmRun
                     && !ct.IsCancellationRequested && !wmCts.IsCancellationRequested)
@@ -3882,36 +2678,16 @@ public sealed class BotManager : IAsyncDisposable
                 }
                 await zoneRun; // let the zone loop finish (naturally, or via the cancel above)
 
-                // A captured cross-server handoff (and not a real stop) means reconnect
-                // to the carried endpoint with its WM handle and re-enter the zone.
+                // A captured cross-server handoff (and not a real stop) means reconnect to the carried endpoint with its WM hand…
                 if (handoff is { IsCrossServer: true } ho && ho.Ip is { } ip && !ct.IsCancellationRequested)
                 {
-                    // ⛔ TAKE ONLY THE PORT FROM THE HANDOFF, KEEP OUR CONFIGURED HOST. The handoff carries
-                    // the server's PUBLIC address (62.171.171.24), but we are configured to reach the game
-                    // through a specific host — in the cluster that is `fiesta-proxy`, which exposes every
-                    // zone port. Initial zone entry has always done exactly this (`new FiestaEndpoint(opt.Host,
-                    // zoneAdv.Port)` above); the handoff path did not, so from the FIRST map change onward the
-                    // bot silently left the configured path and hairpinned out to the public IP — skipping the
-                    // proxy the whole deployment is built around, for most of the session's life.
-                    // (Not claimed as the cause of the 2026-08-05 handoff `Connection refused`: both paths
-                    // tested OPEN from inside the pod afterwards, so that failure was transient, during a
-                    // node-pressure window. This is the consistency bug it exposed, not a proven fix for it.)
+                    // TAKE ONLY THE PORT FROM THE HANDOFF, KEEP OUR CONFIGURED HOST
                     if (!string.Equals(ip, opt.Host, StringComparison.OrdinalIgnoreCase))
                         Log($"[nav] handoff advertised {ip}:{ho.Port} — connecting via configured host {opt.Host}:{ho.Port} instead");
                     zoneEp = new FiestaEndpoint(opt.Host, ho.Port);
                     zoneWmHandle = ho.WmHandle;
                     currentMap = handle.CurrentMap ?? currentMap;
-                    // Let the WM→destination-zone handoff settle before we connect (see
-                    // CrossServerHandoffSettleMs): connecting too fast races the WM's "expect this
-                    // client" notification and the new zone drops us — the intermittent gate-break.
-                    // ⛔ SUSPEND THE LEVELER ACROSS THE TRANSITION. The script runner is its own thread
-                    // with its own CTS (linked to the BOT token, not this zone session), so it does NOT
-                    // notice the zone connection dying — it keeps issuing walkTo/attack/useItem into the
-                    // disposed socket for the whole teardown + settle + reconnect. The unexpected-drop
-                    // path below already had to deal with this ("the leveler kept ticking against the
-                    // DISPOSED zone conn, SemaphoreSlim ObjectDisposed spam"); the handoff path never
-                    // did. None of it shows on the wire, because a send that throws never reaches the
-                    // socket. Resumed after re-entry below.
+                    // Let the WM→destination-zone handoff settle before we connect (see CrossServerHandoffSettleMs): connecting too…
                     handle.ScriptRunner?.Suspend($"cross-server handoff -> {zoneEp}");
                     Log($"[nav] reconnecting to zone {zoneEp} (wm={zoneWmHandle}) for cross-server handoff — settling {CrossServerHandoffSettleMs}ms for WM");
                     await Task.Delay(CrossServerHandoffSettleMs, ct);
@@ -3922,18 +2698,7 @@ public sealed class BotManager : IAsyncDisposable
                 break;
             }
 
-            // The zone loop ended. Distinguish an INTENTIONAL stop (StopAsync set phase→Stopping, or the
-            // bot-wide ct was cancelled) from an UNEXPECTED drop (server kicked just the ZONE link while the
-            // WM link is still open and ct is NOT cancelled — phase is therefore still InZone).
-            //
-            // GHOST-FIX (P0, operator 2026-07-28): on an unexpected drop a bare `await wmRun` HUNG here forever
-            // (WM socket still open, ct not cancelled) → SetPhase(Stopped) never ran → phase stuck InZone (the
-            // status page lied "healthy") → the leveler kept ticking against the DISPOSED zone conn (`SemaphoreSlim`
-            // ObjectDisposed spam) → and the never-logged-out WM link left a stale ACCOUNT session on the
-            // server. (Operator 2026-08-11: "character level ghosts are not a thing" — the stale session
-            // belongs to the ACCOUNT, which is why a brand-new character on that account is kicked too.)
-            // Fix: stop the leveler, cleanly LOG OUT the still-open WM link (server drops the char → NO ghost),
-            // cancel its read loop so we don't hang, then auto-relog to resume leveling.
+            // The zone loop ended. Distinguish an INTENTIONAL stop (StopAsync set phase→Stopping, or the bot-wide ct was can…
             var unexpected = !ct.IsCancellationRequested && handle.Phase == BotPhase.InZone;
             if (unexpected)
             {
@@ -3949,10 +2714,7 @@ public sealed class BotManager : IAsyncDisposable
             Log($"sessions ended — wm: {wmSession.State.DisconnectReason}");
             if (unexpected)
             {
-                // How long did the session we just lost actually live? A session that died in seconds was
-                // almost certainly refused because the PREVIOUS one had not been released yet — relogging
-                // instantly just repeats the race. Back off progressively while that keeps happening, and
-                // reset the moment a session survives, so a genuine one-off drop still recovers fast.
+                // How long did the session we just lost actually live?
                 var lived = handle.ZoneEnteredUtc == DateTime.MinValue
                     ? TimeSpan.MaxValue
                     : DateTime.UtcNow - handle.ZoneEnteredUtc;
@@ -4010,8 +2772,7 @@ public sealed class BotManager : IAsyncDisposable
         _bots.Clear();
     }
 
-    /// <summary>Disposes the WM connection exactly once, even if it was never set
-    /// (failure before the WM phase). The zone connection is owned by its session.</summary>
+    /// <summary>Disposes the WM connection exactly once, even if it was never set (failure before the WM phase)</summary>
     private readonly struct FiestaClientConnectionScope(Net.FiestaClientConnection? conn) : IDisposable
     {
         public void Dispose() => conn?.Dispose();

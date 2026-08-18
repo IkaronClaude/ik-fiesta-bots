@@ -6,30 +6,12 @@ using MoonSharp.Interpreter;
 
 namespace Fiesta.Bot.Scripting;
 
-/// <summary>Debug view of a running script, returned by the status endpoint.
-/// <see cref="SmState"/> is the current state-machine state (null for a plain script
-/// that doesn't call <c>statemachine(...)</c>).</summary>
+/// <summary>Debug view of a running script, returned by the status endpoint</summary>
 public sealed record ScriptStatus(
     string Name, string State, long Ticks, long EventsHandled, string? LastError,
     double UptimeSeconds, IReadOnlyList<string> Globals, string? SmState);
 
-/// <summary>
-/// Runs ONE Lua behaviour script for ONE bot on a dedicated thread. The thread owns
-/// the MoonSharp VM (which isn't thread-safe), so ALL Lua runs on it: a
-/// <see cref="BlockingCollection{T}"/> marshals events off the session read loop, and
-/// a <c>tick</c> fires on an interval between events. This is the single-threaded
-/// message-pump pattern — no locking around the VM, no re-entrancy.
-///
-/// <para>The script defines any subset of <c>on_start / tick / on_chat / on_hit /
-/// on_cast_fail / on_hp / on_sp / on_player / on_player_left / on_map / on_move_fail /
-/// on_stop</c>; the runner calls the ones present. Injected globals: <c>bot</c> (a
-/// <see cref="BotApi"/>) and <c>log</c>. A callback that throws is logged and the loop
-/// continues — a bad script never kills the bot.</para>
-///
-/// <para>Subscribes to <see cref="BotHandle.Events"/> (the stable hub) rather than the
-/// live <see cref="ZoneView"/>, so the script keeps reacting across a cross-server
-/// ZoneView swap.</para>
-/// </summary>
+/// <summary>Runs ONE Lua behaviour script for ONE bot on a dedicated thread</summary>
 public sealed class BotScriptRunner : IDisposable
 {
     private static readonly object RegisterGate = new();
@@ -71,17 +53,17 @@ public sealed class BotScriptRunner : IDisposable
 
     public string Name => _name;
 
-    /// <summary>One-line status for the bot snapshot (<c>name [state] ticks=N</c>).</summary>
+    /// <summary>One-line status for the bot snapshot ( name [state] ticks=N )</summary>
     public string StatusLine => $"{_name} [{_state}] ticks={Interlocked.Read(ref _ticks)}";
 
-    /// <summary>Start the script thread and begin receiving events. Idempotent-safe.</summary>
+    /// <summary>Start the script thread and begin receiving events</summary>
     internal void Start()
     {
         _handle.Events += OnEvent;
         _thread.Start();
     }
 
-    // Published BY the script thread, read by everyone else. Never enumerate the live VM off-thread.
+    // Published BY the script thread, read by everyone else
     private IReadOnlyList<string>? _globalsSnapshot;
     private void RefreshGlobalsSnapshot()
     {
@@ -91,20 +73,7 @@ public sealed class BotScriptRunner : IDisposable
 
     public ScriptStatus Status()
     {
-        // ⛔ THIS USED TO ENUMERATE _lua.Globals.Keys FROM THE CALLER'S THREAD. The old comment said
-        // "touches the VM, which isn't thread-safe — but we only enumerate the keys, tolerating a race,
-        // and never call into Lua. Good enough for a debug surface." That risk assessment was wrong, and
-        // it is the prime suspect for the P0 tick-abort:
-        //   • Status() is called by EVERY /api/bots/{id} and /metrics request, so this ran constantly and
-        //     concurrently with the script thread executing bytecode.
-        //   • Enumerating a MoonSharp Table while the VM inserts/rehashes it is a real data race on the
-        //     interpreter's internal structures. "Only reading" does not make a race safe: the reader can
-        //     observe torn state, and the catch here hides the throw while leaving the damage.
-        //   • It fits BOTH symptoms exactly — NullReferenceException raised INSIDE Processing_Loop with no
-        //     method of ours on the stack, and a value that was provably a number at one line and a table
-        //     three lines later.
-        // The snapshot is now taken ON THE SCRIPT THREAD and published for readers, so no caller ever
-        // touches the VM. A slightly stale name list is a fine trade for not corrupting the interpreter.
+        // THIS USED TO ENUMERATE _lua.Globals.Keys FROM THE CALLER'S THREAD
         var globals = Volatile.Read(ref _globalsSnapshot) ?? [];
         return new ScriptStatus(
             _name, _state, Interlocked.Read(ref _ticks), Interlocked.Read(ref _eventsHandled),
@@ -113,8 +82,7 @@ public sealed class BotScriptRunner : IDisposable
 
     private void OnEvent(BotEvent e)
     {
-        // Runs on the session read loop — must not block. Enqueue and return; drop if
-        // the script falls badly behind so a slow script can't grow memory unbounded.
+        // Runs on the session read loop — must not block
         if (_cts.IsCancellationRequested || _events.IsAddingCompleted) return;
         if (_events.Count > 2000) return;
         try { _events.Add(e); } catch { /* completed/disposed mid-add */ }
@@ -124,17 +92,11 @@ public sealed class BotScriptRunner : IDisposable
     private int _ticksSuspended;         // how many ticks we skipped while suspended
     private long _suspendStartedAt;      // TickCount64 when the current suspension began
 
-    /// <summary>How long a zone-transition suspend may last before we treat it as a dead session and stop.
-    /// A normal cross-server handoff resumes in seconds; this is deliberately generous so cluster load never
-    /// trips it, while still bounding what was previously an INFINITE wait (observed: 840 skipped ticks on a
-    /// Failed bot whose handoff never returned, with the snapshot still reporting the script as running).</summary>
+    /// <summary>How long a zone-transition suspend may last before we treat it as a dead session and stop</summary>
     private const long SuspendMaxMs = 120_000;
     private string _suspendReason = "";
 
-    /// <summary>Stop ticking the script WITHOUT tearing it down, for the duration of a zone
-    /// transition. The runner has its own thread and its own CTS (linked to the BOT token, not the
-    /// zone session), so it does not otherwise notice that the zone connection has gone away — it
-    /// would keep issuing gameplay commands into a disposed socket. Pair with <see cref="Resume"/>.</summary>
+    /// <summary>Stop ticking the script WITHOUT tearing it down, for the duration of a zone transition</summary>
     public void Suspend(string reason)
     {
         _suspendReason = reason;
@@ -145,7 +107,7 @@ public sealed class BotScriptRunner : IDisposable
         }
     }
 
-    /// <summary>Resume ticking after a transition completes.</summary>
+    /// <summary>Resume ticking after a transition completes</summary>
     public void Resume(string reason)
     {
         if (Interlocked.Exchange(ref _suspended, 0) == 1)
@@ -154,16 +116,7 @@ public sealed class BotScriptRunner : IDisposable
 
     private void RunLoop()
     {
-        // ⛔ THIS WAS OUTSIDE THE try AND IT KILLED THE WHOLE HOST.
-        // `_cts.Token` THROWS ObjectDisposedException once the CTS is disposed, and Stop() disposes it.
-        // A relog stops the old runner while the new one's thread is still starting, so the two race: the
-        // thread wakes, reads a token that has just been disposed, and throws. This is a plain background
-        // THREAD, not a Task — an escaping exception is unhandled, so the .NET runtime tears the PROCESS
-        // down. That is the operator's "full pod restart, kicking all bots, every 5 minutes": one bot's
-        // relog race killed the other four, and no amount of per-bot recovery could have saved them.
-        // Reported live 2026-08-07 with the stack ending exactly here (RunLoop line 157), immediately
-        // after "[JcqMage] RELOG attempt 1/4 didn't reach zone".
-        // A disposed CTS means "already cancelled" — the correct response is to exit quietly, not to die.
+        // THIS WAS OUTSIDE THE try AND IT KILLED THE WHOLE HOST
         CancellationToken ct;
         try { ct = _cts.Token; }
         catch (ObjectDisposedException)
@@ -191,28 +144,13 @@ public sealed class BotScriptRunner : IDisposable
                 }
                 if (Environment.TickCount64 >= nextTick)
                 {
-                    // ⛔ SUSPENDED = a zone transition is in flight. The Lua thread is INDEPENDENT of the
-                    // zone connection lifecycle (its CTS is linked to the BOT-wide token), so without this
-                    // it keeps calling walkTo/attack/useItem against a disposed session for the whole
-                    // teardown + settle + reconnect — sends into a dead socket, ObjectDisposedException
-                    // spam, and a real chance of wedging the send lock. Invisible on the wire, because a
-                    // send that throws before the socket never produces a packet.
+                    // SUSPENDED = a zone transition is in flight
                     if (Volatile.Read(ref _suspended) != 0)
                     {
                         var n = Interlocked.Increment(ref _ticksSuspended);
                         if (n == 1) _suspendStartedAt = Environment.TickCount64;
                         if (n == 1 || n % 10 == 0)
                             _log($"[script] tick SUSPENDED ({n} skipped) — {_suspendReason}");
-                        // ⛔ BOUND THE SUSPENSION. It had no timeout at all: if Resume() never arrives —
-                        // e.g. the cross-server handoff FAILS with "peer closed" and the bot goes Failed —
-                        // the runner parks here forever while still reporting `running`. Observed live
-                        // 2026-08-05: 840 skipped ticks (~5.6 min) on a Failed bot, handoff -> :9019 that
-                        // was never coming back, and the snapshot still said the script was healthy.
-                        // A wait with no exit is not a safety measure, it is a silent stall - and one that
-                        // actively hides the failure, because "suspended" looks deliberate in the log.
-                        // STOP rather than auto-resume: resuming would drive walkTo/attack into the disposed
-                        // session this suspend exists to protect. A stopped script on a dead bot is the
-                        // honest state and is visible in the snapshot, so the respawn path can act on it.
                         if (Environment.TickCount64 - _suspendStartedAt > SuspendMaxMs)
                         {
                             _log($"[script:{_name}] CRUTCH[CRIT] SUSPENDED for {(Environment.TickCount64 - _suspendStartedAt) / 1000}s " +
@@ -226,7 +164,7 @@ public sealed class BotScriptRunner : IDisposable
                     }
                     Interlocked.Increment(ref _ticks);
                     SafeCall("tick");
-                    // Cheap, and on the ONLY thread allowed to touch the VM.
+                    // Cheap, and on the ONLY thread allowed to touch the VM
                     if (Interlocked.Read(ref _ticks) % 25 == 0) RefreshGlobalsSnapshot();
                     nextTick = Environment.TickCount64 + _tickMs;
                 }
@@ -249,7 +187,7 @@ public sealed class BotScriptRunner : IDisposable
 
     private void Setup()
     {
-        // SoftSandbox = string/table/math/os-time but NO file io / os.execute / require.
+        // SoftSandbox = string/table/math/os-time but NO file io / os.execute / require
         _lua = new Script(CoreModules.Preset_SoftSandbox);
         lock (RegisterGate)
         {
@@ -258,33 +196,20 @@ public sealed class BotScriptRunner : IDisposable
         _api.AttachScript(_lua);
         _api.StateReporter = s => _smState = s; // state-machine current state -> status
         _lua.Globals["bot"] = _api;
-        // Both an explicit log() and Lua's built-in print(...) reach the bot log (and
-        // thus the console + the live log-stream). DebugPrint catches print/io.write.
+        // Both an explicit log() and Lua's built-in print(...) reach the bot log (and thus the console + the live log-st…
         _lua.Globals["log"] = (Action<string>)(m => _log($"[script:{_name}] {m}"));
-        // Verbosity-leveled siblings: logi(...) = progress (kills/quest credit), logv(...) =
-        // per-tick firehose (move/cast/auto-attack). Both go straight to the ring buffer at
-        // their level so the tail/snapshot endpoints can filter; plain log() stays headline.
+        // Verbosity-leveled siblings: logi(...) = progress (kills/quest credit), logv(...) = per-tick firehose (move/cas…
         _lua.Globals["logi"] = (Action<string>)(m => _handle.Log(BotLogLevel.Info, $"[script:{_name}] {m}"));
         _lua.Globals["logv"] = (Action<string>)(m => _handle.Log(BotLogLevel.Verbose, $"[script:{_name}] {m}"));
         _lua.Options.DebugPrint = m => _log($"[script:{_name}] {m}");
-        // Layer 2: the state-machine harness. Defines a global statemachine(states,
-        // initial) that, when a script calls it, wires the top-level on_*/tick to
-        // dispatch to the current state + run next()-based transitions. A plain script
-        // that never calls it is unaffected (the harness only defines one function).
+        // Layer 2: the state-machine harness
         _lua.DoString(StateMachineHarness, codeFriendlyName: "sm-harness");
-        // Trace mode: wrap `bot` in a proxy that logs every call before forwarding, so
-        // the log stream shows each bot.* invocation (and its args). Opt-in — it's noisy.
+        // Trace mode: wrap `bot` in a proxy that logs every call before forwarding, so the log stream shows each bot.* i…
         if (_trace) _lua.DoString(TraceShim, codeFriendlyName: "trace-shim");
         _lua.DoString(_source, codeFriendlyName: _name);
     }
 
-    // A behaviour tree / state machine, in pure Lua on the existing runtime. A script
-    // calls statemachine({ stateName = { on_enter, tick, next, on_exit, on_chat, ... }, … },
-    // "initial"); this defines the top-level on_*/tick the runner calls and routes each to
-    // the CURRENT state, switching when a state's next() returns another state's name
-    // (running on_exit/on_enter). "Cross-tree transitions" and per-class trees fall out:
-    // compose several state tables into one and next() may target any state name. The
-    // current state is reported to C# via bot.__state for the debug endpoint.
+    // A behaviour tree / state machine, in pure Lua on the existing runtime
     private const string StateMachineHarness = @"
 function statemachine(states, initial)
   assert(type(states) == 'table', 'statemachine: states must be a table')
@@ -336,10 +261,7 @@ function statemachine(states, initial)
 end
 ";
 
-    // Replaces `bot` with a metatable proxy whose __index returns, for each function
-    // member, a closure that logs `call bot.<name>(<args>)` then tail-calls the real method
-    // (preserving all return values). Indexing the userdata returns a bound callback, so
-    // forwarding with the same args works without a self argument.
+    // Replaces `bot` with a metatable proxy whose __index returns, for each function member, a closure that logs `call bot
     private const string TraceShim = @"
 do
   local real = bot
@@ -387,8 +309,7 @@ end
         }
     }
 
-    /// <summary>Call a Lua global if it's defined as a function. A script error is
-    /// recorded + logged but does not stop the loop (the next tick/event still fires).</summary>
+    /// <summary>Call a Lua global if it's defined as a function</summary>
     private void SafeCall(string fn, params DynValue[] args)
     {
         if (_lua is null) return;
@@ -396,13 +317,7 @@ end
         if (f.Type != DataType.Function) return;
         try { _lua.Call(f, args); }
         catch (ScriptRuntimeException ex) { _lastError = ex.DecoratedMessage; _log($"[script:{_name}] {fn} error: {ex.DecoratedMessage}"); }
-        // ⚠️ A .NET exception thrown INSIDE a bot.* callback is NOT a ScriptRuntimeException, so it lands
-        // here — and this used to log ex.Message alone. For a NullReferenceException that means the entire
-        // report is "Object reference not set to an instance of an object.": no type, no Lua line, no clue
-        // which of ~200 bot.* methods threw. That single missing detail is why the recurring tick-abort
-        // (bursts of 5, 2026-08-06) survived several investigations — it is an OBSERVABILITY gap, not a
-        // hard bug, exactly the shape the silver rule says to fix by building the read path.
-        // So: name the exception TYPE, and include the top CLR frames, which identify the throwing method.
+        // A .NET exception thrown INSIDE a bot.* callback is NOT a ScriptRuntimeException, so it lands here — and this u…
         catch (Exception ex)
         {
             _lastError = ex.Message;
@@ -410,7 +325,7 @@ end
                 .Select(l => l.Trim())
                 .Where(l => l.StartsWith("at ", StringComparison.Ordinal))
                 .Take(4)
-                // Drop the noisy generic/async plumbing so the useful frame is visible at a glance.
+                // Drop the noisy generic/async plumbing so the useful frame is visible at a glance
                 .Select(l => l.Replace("Fiesta.Bot.Scripting.", "").Replace("Fiesta.Bot.", ""));
             var where = string.Join(" <- ", frames);
             _log($"[script:{_name}] {fn} error: {ex.GetType().Name}: {ex.Message}" +
@@ -448,8 +363,7 @@ end
         _handle.Events -= OnEvent;
         try { _cts.Cancel(); } catch { }
         _events.CompleteAdding();
-        // Don't block the caller (an HTTP thread) for long: the loop is cancellable and
-        // its only blocking point is the event take, which the token aborts immediately.
+        // Don't block the caller (an HTTP thread) for long: the loop is cancellable and its only blocking point is the e…
         if (_thread.IsAlive) _thread.Join(TimeSpan.FromSeconds(3));
         _cts.Dispose();
         _events.Dispose();

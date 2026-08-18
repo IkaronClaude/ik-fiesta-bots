@@ -5,27 +5,16 @@ using FiestaLibReloaded.Networking.Structs;
 
 namespace Fiesta.Bot.Login;
 
-/// <summary>
-/// Drives the real client login handshake from typed packets (no capture
-/// replay): Login → WorldManager → (zone endpoint), with optional in-band
-/// character creation. Every step is built from FiestaLib structs and every
-/// inbound frame is logged by opcode so the exact server ordering can be
-/// confirmed live (REQ→ACK), the same way the OPTool endpoints were verified.
-///
-/// All opcodes are resolved through <see cref="PacketRegistry.GetOpcode{T}"/> —
-/// i.e. derived from each struct's [FiestaOpcode(department, command)] (the
-/// 6-bit dept | 10-bit cmd encoding) — never hand-written hex.
-/// </summary>
+/// <summary>Drives the real client login handshake from typed packets (no capture replay): Login → WorldManager → (zone en…</summary>
 public sealed class LoginChain
 {
-    // Opcodes we react to, resolved from FiestaLib's struct registry.
+    // Opcodes we react to, resolved from FiestaLib's struct registry
     private static readonly ushort OpLoginFailAck        = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGINFAIL_ACK>();
     private static readonly ushort OpLoginAck            = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGIN_ACK>();
     private static readonly ushort OpWorldSelectAck      = PacketRegistry.GetOpcode<PROTO_NC_USER_WORLDSELECT_ACK>();
     private static readonly ushort OpLoginWorldAck       = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGINWORLD_ACK>();
     private static readonly ushort OpLoginWorldFail      = PacketRegistry.GetOpcode<PROTO_NC_USER_LOGINWORLDFAIL_ACK>();
-    // NC_MISC_GAMETIME_REQ (0x080D) — zero payload; server answers NC_MISC_GAMETIME_ACK (0x080E)
-    // {hour u8, minute u8, second u8}. The real client sends it right after LOGINWORLD_ACK.
+    // NC_MISC_GAMETIME_REQ (0x080D) — zero payload; server answers NC_MISC_GAMETIME_ACK (0x080E) {hour u8, minute u8…
     private const ushort OpGameTimeReq = 0x080D;
     private static readonly ushort OpCharLoginAck        = PacketRegistry.GetOpcode<PROTO_NC_CHAR_LOGIN_ACK>();
     private static readonly ushort OpCharLoginFail       = PacketRegistry.GetOpcode<PROTO_NC_CHAR_LOGINFAIL_ACK>();
@@ -45,10 +34,7 @@ public sealed class LoginChain
         _profile = profile ?? ClientProfile.ClientProd2;
     }
 
-    /// <summary>
-    /// Login phase: connect, handshake, version check + US_LOGIN_REQ, select
-    /// world, return the OTP + advertised WM endpoint. Socket closed on return.
-    /// </summary>
+    /// <summary>Login phase: connect, handshake, version check + US_LOGIN_REQ, select world, return the OTP + advertised WM en…</summary>
     public async Task<LoginPhaseResult> RunLoginAsync(
         FiestaEndpoint loginEp, BotCredentials creds, byte worldNo, CancellationToken ct,
         Action<bool, ushort, ReadOnlyMemory<byte>>? packetTap = null)
@@ -58,16 +44,13 @@ public sealed class LoginChain
         await conn.WaitForHandshakeAsync(ct: ct);
         _log($"[Login] connected {loginEp}, handshake seed=0x{conn.Seed:X4}");
 
-        // 1) Version check FIRST — the server version-gates before login and
-        //    drops the socket if it's missing. The 64-byte key is the build
-        //    version string (the client leaves the tail as uninitialised stack,
-        //    so the server only checks the prefix).
+        // 1) Version check FIRST — the server version-gates before login and drops the socket if it's missing
         var ver = new PROTO_NC_USER_CLIENT_VERSION_CHECK_REQ();
         FillSBytes(ver.sVersionKey, _profile.VersionKey);
         await conn.SendAsync(ver, ct);
         _log($"[Login] >> VERSION_CHECK_REQ ver='{_profile.VersionKey}'");
 
-        // 2) Login: user + MD5 password + spawnapps build tag.
+        // 2) Login: user + MD5 password + spawnapps build tag
         var req = new PROTO_NC_USER_US_LOGIN_REQ();
         FillSBytes(req.sUserName, creds.Username);
         FillSBytes(req.sPassword, creds.PasswordMd5);
@@ -75,8 +58,7 @@ public sealed class LoginChain
         await conn.SendAsync(req, ct);
         _log($"[Login] >> US_LOGIN_REQ user='{creds.Username}' spawnapps='{_profile.SpawnAppsTag}'");
 
-        // 3) XTrap anti-cheat key + world-status probe (the real client sends
-        //    both here; harmless if the server stubs them).
+        // 3) XTrap anti-cheat key + world-status probe (the real client sends both here; harmless if the server stubs th…
         await conn.SendAsync(new PROTO_NC_USER_XTRAP_REQ
         {
             XTrapClientKeyLength = (byte)_profile.XtrapKey.Length,
@@ -112,19 +94,12 @@ public sealed class LoginChain
                 _log($"[Login] << WORLDSELECT_ACK status={ack.worldstatus} wm={wm} otp={Convert.ToHexString(otp.AsSpan(0, 8))}…");
                 return new LoginPhaseResult(otp, wm, ack.worldstatus);
             }
-            // Other inbound frames (version ack, xtrap ack, world status) are
-            // just logged; add a reply here if one turns out to gate login.
+            // Other inbound frames (version ack, xtrap ack, world status) are just logged; add a reply here if one turns out…
         }
         throw new LoginChainException("Login phase timed out before WORLDSELECT_ACK");
     }
 
-    /// <summary>
-    /// WM phase: connect, LOGINWORLD_REQ (OTP echoed), read the avatar list,
-    /// optionally create a character, decline the newbie tutorial, CHAR_LOGIN a
-    /// slot, and return the zone endpoint + live WM handle. The WM connection is
-    /// returned OPEN — the zone validates the incoming player against a live WM
-    /// session, so the caller must keep it open until in-zone, then dispose it.
-    /// </summary>
+    /// <summary>WM phase: connect, LOGINWORLD_REQ (OTP echoed), read the avatar list, optionally create a character, decline t…</summary>
     public async Task<(WmPhaseResult Result, FiestaClientConnection WmConn)> RunWmAsync(
         FiestaEndpoint wmEp, BotCredentials creds, byte[] otp, byte? selectSlot,
         CharacterSpec? createIfMissing, CancellationToken ct,
@@ -174,24 +149,11 @@ public sealed class LoginChain
                     _log($"[WM] << LOGINWORLD_ACK handle={wmHandle} numavatars={avatars.Count}: " +
                          string.Join(", ", avatars.Select(a => $"'{a.Name}'(slot {a.Slot}, {a.LoginMap})")));
 
-                    // MATCH THE REAL CLIENT: it asks for the game time here, immediately after
-                    // LOGINWORLD_ACK and before char select. Zero-payload request; the server answers
-                    // NC_MISC_GAMETIME_ACK (0x080E) {hour, minute, second}.
-                    // Found by diffing Z:/LongCaptureNoDc.pcapng — an hour of levelling 1→13 across 21
-                    // zone entries with ZERO disconnects — against everything our bot sends: of the 68
-                    // C→S opcodes the real client uses, this was one of only FIVE we never sent.
-                    // ⚠️ HONEST STATUS: this is NOT proven to be the DC cause. It is the cheapest of the
-                    // five gaps and part of the client's normal login sequence, so we close it and
-                    // re-measure. If DCs persist, the next step is the S→C side (a packet the client acks
-                    // and we silently drop) — see the P[-1] ticket. Do not record this as "the fix" until
-                    // a run actually survives.
+                    // MATCH THE REAL CLIENT: it asks for the game time here, immediately after LOGINWORLD_ACK and before char select…
                     await conn.SendAsync(new FiestaPacket(OpGameTimeReq, ReadOnlyMemory<byte>.Empty), ct);
                     _log("[WM] >> GAMETIME_REQ (matching the real client's post-LOGINWORLD sequence)");
 
-                    // Select BY NAME first (stable across slot reordering when chars are
-                    // added/retired), then by explicit slot, then fall back to the first
-                    // avatar. Picking the first/slot-0 avatar blindly logs into the wrong
-                    // character (e.g. a retired char still occupying slot 0).
+                    // Select BY NAME first (stable across slot reordering when chars are added/retired), then by explicit slot, then…
                     selected = selectName is { Length: > 0 } name
                         ? avatars.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase))
                         : selectSlot is { } s
@@ -201,12 +163,7 @@ public sealed class LoginChain
                         _log($"[WM] ⚠ requested character '{wantName}' not in avatar list " +
                              $"[{string.Join(", ", avatars.Select(a => a.Name))}] — cannot enter");
 
-                    // First-class character creation: if there's nothing to enter
-                    // with and a spec was given, create one in-band. Pick the
-                    // lowest free slot if the requested one is taken — the real
-                    // client creates into an empty slot (capture: existing char on
-                    // slot 0, new char created on slot 1), and CHAR_LOGIN then uses
-                    // the server-reported slot, not the requested one.
+                    // First-class character creation: if there's nothing to enter with and a spec was given, create one in-band
                     if (selected is null && createIfMissing is not null)
                     {
                         var spec = createIfMissing;
@@ -230,10 +187,7 @@ public sealed class LoginChain
                 }
                 else if (pkt.Opcode == OpTutorialPopup)
                 {
-                    // Brand-new char drops into the newbie tutorial. Decline it so
-                    // the char proceeds to the normal zone handoff. (The decline
-                    // takes effect server-side on the NEXT login; the declining
-                    // login itself may CHAR_LOGINFAIL — reconnect to enter.)
+                    // Brand-new char drops into the newbie tutorial
                     await conn.SendAsync(new PROTO_NC_CHAR_TUTORIAL_POPUP_ACK { bIsSkip = 1 }, ct);
                     _log("[WM] >> TUTORIAL_POPUP_ACK bIsSkip=1 (declined)");
                 }
@@ -255,35 +209,23 @@ public sealed class LoginChain
         }
     }
 
-    /// <summary>
-    /// Create a character in-band on an open WM connection (char-select screen):
-    /// AVATAR_CREATE_REQ → CREATESUCC_ACK / CREATEFAIL.
-    /// </summary>
+    /// <summary>Create a character in-band on an open WM connection (char-select screen): AVATAR_CREATE_REQ → CREATESUCC_ACK /…</summary>
     public async Task<AvatarSummary> CreateAvatarAsync(
         FiestaClientConnection conn, CharacterSpec spec, CancellationToken ct)
     {
         var req = new PROTO_NC_AVATAR_CREATE_REQ { slotnum = spec.Slot };
         FillBytes(req.name.n5_name, spec.Name);
-        // RACE MUST MATCH THE CLASS. `spec.Race` defaults to 0, which is the BLANK row of
-        // RaceNameInfo.shn, not a race — and sending it is why every Archer create was refused with
-        // AVATAR_CREATEFAIL err=132 (see ClientData.RaceForClass for the three sources that pin this).
-        // An explicit non-zero Race from the caller still wins; 0 means "you didn't say", so derive it.
+        // RACE MUST MATCH THE CLASS
         var race = spec.Race ?? (byte)GameData.ClientData.RaceForClass((int)spec.Class);
         req.char_shape.race = race;
         req.char_shape.chrclass = (uint)spec.Class;
         req.char_shape.gender = spec.Gender;
-        // APPEARANCE FROM THE CLIENT'S OWN CREATION TABLES, not zeros. HairInfo/FaceInfo declare which
-        // hair and face each class+gender may pick, and face id 0 is selectable by NOBODY — yet 0/0/0 is
-        // what we sent on every create. See ClientData.PickAppearance. Explicit spec values still win.
-        // (BotManager fills these from ClientData's HairInfo/FaceInfo before we get here — it is the layer
-        // that holds a ClientData instance. Face id 0 is selectable by nobody, so 0 here means the tables
-        // could not be read, which is worth seeing in the log rather than silently sending an invalid one.)
+        // APPEARANCE FROM THE CLIENT'S OWN CREATION TABLES, not zeros
         req.char_shape.hairtype = spec.HairType ?? 0;
         req.char_shape.haircolor = spec.HairColor ?? 0;
         req.char_shape.faceshape = spec.FaceShape ?? 0;
         await conn.SendAsync(req, ct);
-        // Log the RACE too — it is the field that silently sank every Archer create, and a create that
-        // fails without showing what it sent is a guessing game (it cost three blind retries).
+        // Log the RACE too — it is the field that silently sank every Archer create, and a create that fails without sho…
         _log($"[WM] >> AVATAR_CREATE_REQ slot={spec.Slot} name='{spec.Name}' " +
              $"class={spec.Class}({(byte)spec.Class}) race={race}{(spec.Race is null ? " (derived)" : " (explicit)")} " +
              $"gender={spec.Gender} hair={spec.HairType ?? 0} colour={spec.HairColor ?? 0} face={spec.FaceShape ?? 0}");
@@ -297,13 +239,7 @@ public sealed class LoginChain
             {
                 var ok = pkt.ReadBody<PROTO_NC_AVATAR_CREATESUCC_ACK>();
                 var a = ok.avatar;
-                // Thread the created char's CLASS through so the zone driver's class-gated logic works
-                // up-front (quest-accept class filter, class-appropriate reward selection). The
-                // CREATESUCC avatar carries no reliable shape byte, so use the spec we just created it
-                // with — it's authoritative. Without this, AvatarSummary.Class defaulted to 0 and a fresh
-                // Fighter reported classId=0, defeating eligibleQuests' class gate (the other-class "Baby
-                // Steps" leaked into the accept candidates). QuestData.Class uses the same ClassName-ID
-                // enum (Fighter=1/Cleric=6/Archer=11/Mage=16/Joker=21), so no mapping is needed.
+                // Thread the created char's CLASS through so the zone driver's class-gated logic works up-front (quest-accept cl…
                 var sum = new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level, Class: (byte)spec.Class);
                 _log($"[WM] << AVATAR_CREATESUCC_ACK name='{sum.Name}' slot={sum.Slot} level={sum.Level} class={spec.Class}({(byte)spec.Class})");
                 return sum;
@@ -322,9 +258,9 @@ public sealed class LoginChain
         throw new LoginChainException("AVATAR_CREATE timed out before an ACK");
     }
 
-    // ---- helpers ----
+    // ---- helpers
 
-    /// <summary>Lowest avatar slot (0..255) not already occupied.</summary>
+    /// <summary>Lowest avatar slot (0..255) not already occupied</summary>
     private static byte FirstFreeSlot(IReadOnlyList<AvatarSummary> avatars)
     {
         for (var s = 0; s < 256; s++)

@@ -2,14 +2,7 @@ using Fiesta.Bot.Accounts;
 
 namespace Fiesta.Bot.Host;
 
-/// <summary>
-/// Optional account-provisioning surface: <c>POST /api/accounts</c> mints a game
-/// account through ik-fiesta-api's master-key path (<see cref="ApiAccountProvisioner"/>)
-/// and returns ready-to-use bot credentials. Enabled only when the API base URL +
-/// key are configured (<c>FIESTA_API_BASE_URL</c> / <c>FIESTA_API_KEY</c>); otherwise
-/// every call returns 503, since this whole feature is optional (bots also take
-/// credentials fed directly to spawn).
-/// </summary>
+/// <summary>Optional account-provisioning surface: POST /api/accounts mints a game account through ik-fiesta-api's master-…</summary>
 public static class AccountEndpoints
 {
     public static void MapAccountEndpoints(this WebApplication app, ApiAccountProvisioner? provisioner, string? unavailableReason)
@@ -51,8 +44,7 @@ public static class AccountEndpoints
     }
 }
 
-/// <summary>Provision request. The in-game password is what the bot logs in with;
-/// the web password defaults to it (the bot never uses the web login).</summary>
+/// <summary>Provision request. The in-game password is what the bot logs in with; the web password defaults to it (the bot…</summary>
 public sealed record ProvisionAccountRequest
 {
     public string? Username { get; init; }
@@ -60,10 +52,9 @@ public sealed record ProvisionAccountRequest
     public string? WebPassword { get; init; }
     public string? Email { get; init; }
 
-    /// <summary>In-game GM/auth level (tUser.nAuthID) to provision with: null =
-    /// normal player, 9 = GM/admin (see <see cref="ApiAccountProvisioner.GmAuthLevel"/>).</summary>
+    /// <summary>In-game GM/auth level (tUser.nAuthID) to provision with: null = normal player, 9 = GM/admin (see )</summary>
     public int? IngameGmLevel { get; init; }
 }
 
-/// <summary>The new account plus credentials to feed straight into <c>POST /api/bots</c>.</summary>
+/// <summary>The new account plus credentials to feed straight into POST /api/bots</summary>
 public sealed record ProvisionAccountResponse(int UserNo, string Username, string LoginUsername, string PasswordMd5);

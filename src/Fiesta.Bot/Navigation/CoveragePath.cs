@@ -2,31 +2,14 @@ using Fiesta.Bot.Pathfinding;
 
 namespace Fiesta.Bot.Navigation;
 
-/// <summary>
-/// Generic "roomba" coverage-path generator over a map's <see cref="BlockGrid"/> walkability.
-/// Produces an ORDERED list of world waypoints (a boustrophedon / lawn-mower serpentine snapped to
-/// walkable ground) laid on a lattice of spacing <c>stepWorld</c>, so that a bot walking the
-/// waypoints in order sweeps its whole walkable area — every walkable tile ends up within
-/// <c>~stepWorld</c> of some waypoint. As the bot arrives at each point, any mob within the server's
-/// AoI enters <c>nearbyMobs()</c> ⇒ the instance/KQ hoover picks it up.
-///
-/// <para>Pure geometry from BYO nav data (the <c>.shbd</c>) — no hardcoded ids/coords. Reusable for
-/// the JCQ promotion instance (Job1_Dn01), KQs, and any other map where "clear everything" beats
-/// "walk to a marker". The lattice step is a pure bot-behaviour knob (sweep density), like melee
-/// range or tick cadence: smaller = slower but never misses; it only needs to be ≤ the server AoI.</para>
-/// </summary>
+/// <summary>Generic "roomba" coverage-path generator over a map's walkability</summary>
 public static class CoveragePath
 {
-    /// <param name="stepWorld">Lattice spacing in WORLD units (a walkable tile is
-    /// <see cref="BlockGrid.WorldPerTile"/>=6.25 world). Must be ≤ the server's mob AoI radius for full
-    /// coverage; a smaller value is always safe (just more waypoints).</param>
-    /// <param name="margin">Keep waypoints this many tiles off walls (so the pathfinder can actually
-    /// reach the point instead of stranding on an obstacle edge). 1 tile ≈ 6.25 world.</param>
+    /// <summary>Lattice spacing in WORLD units (a walkable tile is =6.25 world)</summary>
     public static IReadOnlyList<(uint X, uint Y)> Compute(BlockGrid grid, double stepWorld, int margin = 1)
     {
         int W = grid.WidthTiles, H = grid.HeightTiles;
-        // 1. Walkable bounding box — the playable region is a tiny island inside a large void, so
-        //    restrict the lattice to it (a full-grid scan would place thousands of void waypoints).
+        // 1. Walkable bounding box — the playable region is a tiny island inside a large void, so restrict the lattice t…
         int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
         for (int ty = 0; ty < H; ty++)
             for (int tx = 0; tx < W; tx++)
@@ -41,8 +24,7 @@ public static class CoveragePath
         var pts = new List<(uint X, uint Y)>();
         var seen = new HashSet<long>();
 
-        // 2. Serpentine over the lattice: rows top→bottom, alternating column direction each row so
-        //    consecutive waypoints are adjacent ⇒ the A* leg between them is short (cheap + reliable).
+        // 2. Serpentine over the lattice: rows top→bottom, alternating column direction each row so consecutive waypoint…
         bool leftToRight = true;
         for (int ty = minY + step / 2; ty <= maxY; ty += step)
         {
@@ -51,8 +33,7 @@ public static class CoveragePath
             if (!leftToRight) cols.Reverse();
             foreach (int tx in cols)
             {
-                // Snap the lattice point to the nearest walkable+clear tile within a step (so a cell
-                // whose centre is void but which contains walkable ground still gets a waypoint).
+                // Snap the lattice point to the nearest walkable+clear tile within a step (so a cell whose centre is void but wh…
                 if (NearestPathable(grid, tx, ty, step, margin) is { } c)
                 {
                     long id = (long)c.y * W + c.x;
@@ -64,9 +45,7 @@ public static class CoveragePath
         return pts;
     }
 
-    /// <summary>Spiral out from a tile to the nearest tile satisfying the inflation margin (falling
-    /// back to plain walkable), up to <paramref name="maxRadius"/> tiles. Null if none — that lattice
-    /// cell is all void.</summary>
+    /// <summary>Spiral out from a tile to the nearest tile satisfying the inflation margin (falling back to plain walkable), u…</summary>
     private static (int x, int y)? NearestPathable(BlockGrid grid, int tx, int ty, int maxRadius, int margin)
     {
         if (grid.IsPathable(tx, ty, margin)) return (tx, ty);

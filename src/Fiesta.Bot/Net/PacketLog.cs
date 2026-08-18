@@ -3,15 +3,7 @@ using FiestaLibReloaded.Networking;
 
 namespace Fiesta.Bot.Net;
 
-/// <summary>
-/// A runtime-toggleable packet tap that writes both directions of a bot's traffic to a
-/// tailable text file, interleaved in arrival order, as <b>plaintext</b> (XOR-decoded)
-/// opcode + canonical name + a classic hex/ASCII dump. Wire it to one or more
-/// <see cref="FiestaClientConnection.PacketTap"/> / <see cref="Session.BotSession.PacketTap"/>.
-///
-/// This exists so we read what the server actually sent instead of guessing protocol rules —
-/// e.g. exactly which packet (and bytes) a revive / HP change carries.
-/// </summary>
+/// <summary>A runtime-toggleable packet tap that writes both directions of a bot's traffic to a tailable text file, interl…</summary>
 public sealed class PacketLog : IDisposable
 {
     private readonly StreamWriter _writer;
@@ -25,7 +17,7 @@ public sealed class PacketLog : IDisposable
         Path = path;
         var dir = System.IO.Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        // Append so re-enabling keeps history; AutoFlush so `tail -f` sees it live.
+        // Append so re-enabling keeps history; AutoFlush so `tail -f` sees it live
         _writer = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
         {
             AutoFlush = true
@@ -33,15 +25,6 @@ public sealed class PacketLog : IDisposable
         _writer.WriteLine($"==== packet log opened {DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} ====");
     }
 
-    /// <summary>Record OUR OWN entity handle in the log, so analysis never has to infer it.
-    ///
-    /// <para>⛔ WHY THIS EXISTS: SWING_START/SWING_DAMAGE are BROADCASTS about every nearby entity, and
-    /// this server runs five bots plus real players on the same maps, so several handles legitimately
-    /// attack the same mobs. Tools were guessing which one was us ("attacker of the first swing after our
-    /// bash", "whoever damages what we targeted") and getting it WRONG — a log where we are plainly h8300
-    /// resolved to h8303. With the wrong handle our own swings are invisible and every bash scores as
-    /// DEAD, which is exactly how a "90% dead bash" statistic was produced for a bot that was swinging
-    /// normally. The bot has known its own handle since login; nothing should be inferring it.</para></summary>
     public void NoteSelfHandle(ushort handle, string? character = null)
     {
         try
@@ -55,17 +38,17 @@ public sealed class PacketLog : IDisposable
         catch { /* swallow — observability must not break traffic */ }
     }
 
-    /// <summary>The delegate to assign to a connection/session PacketTap.</summary>
+    /// <summary>The delegate to assign to a connection/session PacketTap</summary>
     public void Tap(bool outbound, ushort opcode, ReadOnlyMemory<byte> payload)
     {
-        // Never let logging take down the read/send path.
+        // Never let logging take down the read/send path
         try { Write(outbound, opcode, payload.Span); }
         catch { /* swallow — observability must not break traffic */ }
     }
 
     private void Write(bool outbound, ushort opcode, ReadOnlySpan<byte> payload)
     {
-        // Opcode = (dept << 10) | cmd. Resolve the canonical struct name when known.
+        // Opcode = (dept << 10) | cmd
         int dept = opcode >> 10;
         int cmd = opcode & 0x3FF;
         string name = PacketRegistry.GetType(opcode)?.Name ?? "?";
@@ -83,7 +66,7 @@ public sealed class PacketLog : IDisposable
         }
     }
 
-    // Classic 16-byte hex/ASCII rows: "  0000  AA BB CC ...   |ascii|"
+    // Classic 16-byte hex/ASCII rows: " 0000 AA BB CC
     private static void AppendHexDump(StringBuilder sb, ReadOnlySpan<byte> data)
     {
         if (data.Length == 0) return;

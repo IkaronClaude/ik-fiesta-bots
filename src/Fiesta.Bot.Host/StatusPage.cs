@@ -1,8 +1,6 @@
 namespace Fiesta.Bot.Host;
 
-/// <summary>The super-simple public status page for bots.ikaron.uk — a live list of running bots
-/// (level + map + class). Served at "/" (no auth); polls "/status.json" every few seconds.
-/// Deliberately dependency-free (vanilla JS, no CDN) so it works under any CSP and offline.</summary>
+/// <summary>The super-simple public status page for bots.ikaron.uk — a live list of running bots (level + map + class)</summary>
 internal static class StatusPage
 {
     public const string Html = """

@@ -4,20 +4,7 @@ using MoonSharp.Interpreter;
 
 namespace Fiesta.Bot.Scripting;
 
-/// <summary>
-/// The Lua-facing facade for ONE bot — the <c>bot</c> global a behaviour script
-/// drives. Every action method forwards to <see cref="BotManager"/> (the same seam
-/// the HTTP endpoints use); every getter reads the bot's live <see cref="Session.ZoneView"/>
-/// / <see cref="BotHandle"/> perception. Actions are synchronous from Lua's view: the
-/// underlying sends are quick and the runner gives each bot its own dedicated script
-/// thread, so blocking on them is fine and keeps scripts deterministic.
-///
-/// <para>Method names are intentionally camelCase (not PascalCase) so scripts read
-/// idiomatically — <c>bot.cast(1500, h)</c>, <c>bot.hp()</c>. Registered as a MoonSharp
-/// userdata; table-returning getters build Lua tables via the attached <see cref="Script"/>
-/// (always called on the script thread, so the non-thread-safe VM is never touched
-/// concurrently).</para>
-/// </summary>
+/// <summary>The Lua-facing facade for ONE bot — the bot global a behaviour script drives</summary>
 [MoonSharpUserData]
 public sealed class BotApi
 {
@@ -31,28 +18,16 @@ public sealed class BotApi
         _handle = handle;
     }
 
-    /// <summary>Attach the owning VM (so getters can build Lua tables). Called once by
-    /// the runner on the script thread before any script code runs.</summary>
+    /// <summary>Attach the owning VM (so getters can build Lua tables)</summary>
     internal void AttachScript(Script lua) => _lua = lua;
 
-    /// <summary>Set by the runner to receive the current state-machine state name as the
-    /// Lua harness transitions, so the runner/debug endpoint can report it.</summary>
+    /// <summary>Set by the runner to receive the current state-machine state name as the Lua harness transitions, so the runne…</summary>
     internal Action<string>? StateReporter;
 
-    /// <summary>Called by the state-machine harness on each transition to report the new
-    /// state to C# (surfaced in the script status). Not normally called by hand.</summary>
+    /// <summary>Called by the state-machine harness on each transition to report the new state to C# (surfaced in the script s…</summary>
     public void __state(string name) => StateReporter?.Invoke(name);
 
-    /// <summary>Can THIS character use an item/scroll whose ItemInfo <c>UseClass</c> is
-    /// <paramref name="useClass"/>? Answered from the client's own UseClassTypeInfo matrix
-    /// (<see cref="GameData.ClientData.UseClassAllows"/>) — note the all-class value is <b>1</b>, not 0.
-    /// <para>⛔ EXISTS BECAUSE THE DRIVER HARDCODED THE FIGHTER LINE. `level_quest.lua` tested scroll
-    /// eligibility with a baked `FIGHTER = {0,2..7}` table, so on any other class it did BOTH wrong things
-    /// at once: it bought Fighter books the character can never use, and it skipped the books for its own
-    /// class sitting in the same shop. Live 2026-08-06, JcqMage bought "Slice and Dice" (Fighter) and
-    /// learned nothing of its own; the Cleric ended up with no skills and "can only auto attack".</para>
-    /// <para>The class→UseClass band ladder is GAME DATA and belongs here with the rest of it, not baked
-    /// into the driver — same reasoning as the quest-reward picker, which already uses this ladder.</para></summary>
+    /// <summary>Can THIS character use an item/scroll whose ItemInfo UseClass is ?</summary>
     public bool canUseClass(int useClass)
     {
         var cd = _mgr.ClientData;
@@ -60,60 +35,24 @@ public sealed class BotApi
         return cd.UseClassAllows(_handle.Class, useClass);
     }
 
-    /// <summary>Publish what the driver is working on RIGHT NOW: the focused quest (0 for none), its own
-    /// phase name, where it is travelling to and why. Surfaced on the live panel so the watch page can mark
-    /// the focused quest and say where the bot is going.
-    /// <para>The host deliberately does NOT derive any of this. Its quest board is ordered by a rule that
-    /// only <i>mirrors</i> the driver's sort — documented in QuestPanel as "roughly what it will pick next" —
-    /// so it can show a plausible order while the driver is actually on something else entirely. Only the
-    /// driver knows which quest it picked, so only the driver reports it. Cheap enough to call every tick
-    /// (it writes one record); call it whenever the intent changes, not just on travel.</para></summary>
+    /// <summary>Publish what the driver is working on RIGHT NOW: the focused quest (0 for none), its own phase name, where it…</summary>
     public void setFocus(int questId, string phase, string dest, string reason) =>
         _handle.Focus = new Manager.BotFocus(questId, phase ?? "", dest ?? "", reason ?? "",
             DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
-    /// <summary>Set by the behaviour-graph runner so a state script can request a graph
-    /// transition (<c>bot.requestState("stay_alive")</c>).</summary>
+    /// <summary>Set by the behaviour-graph runner so a state script can request a graph transition ( bot.requestState("stay_al…</summary>
     internal Action<string>? RequestStateHandler;
 
-    /// <summary>Request a behaviour-graph transition to <paramref name="state"/> next tick.
-    /// Returns false if not running under a graph (no handler).</summary>
+    /// <summary>Request a behaviour-graph transition to next tick</summary>
     public bool requestState(string state)
     {
         if (RequestStateHandler is null) return false;
         RequestStateHandler(state); return true;
     }
 
-    /// <summary>Milliseconds until this skill can be cast again — 0 means READY. Cooldown and cast time
-    /// come from client data, so the caller passes nothing but the id.
-    ///
-    /// <para>⭐ THIS IS THE SERVER'S CLOCK, NOT OURS. It runs from the CONFIRMED start (0x244E /
-    /// CAST_SUC_ACK), which is the only moment a cooldown actually begins. A driver timing from its own
-    /// SEND cannot work: the confirmation is a round trip away, so at the instant of sending it has not
-    /// arrived and the driver must either bank a cooldown for a cast that may never have happened, or
-    /// bank nothing and re-press.</para>
-    ///
-    /// <para>MEASURED COST OF NOT HAVING THIS (MageFresh, 2026-08-13): the leveler banked its cooldown
-    /// only when <c>castConfirmed()</c> was already true at the send — essentially never — so every cast
-    /// entered a re-press window that blocked the WHOLE rotation for several passes. Result: 15 casts in a
-    /// 75-minute buffer, only 3 distinct skills ever used, and a median 1.8s between casts for a class
-    /// that should empty its bar in 1-2s. Ask this instead and a skill that has started is simply not
-    /// ready, so the next pass picks a different one.</para></summary>
-    /// <summary>Mean FINAL damage this skill has actually landed, or -1 with no samples.
-    ///
-    /// <para>⭐ RANK BY THIS, NOT BY THE CLIENT'S `damage` COLUMN. That column is a CONTRIBUTION over a
-    /// shared weapon/magic base (operator: "skill damage is weapon damage — or mdmg depending on skill —
-    /// plus the skill damage"), so it exaggerates the gap between ranks enormously. MEASURED on MageFresh:
-    /// skill 6003 carries `damage` 176 and lands ~104-130; 6002 carries 112 and lands ~110. The table says
-    /// 57% apart; the wire says under 15%.</para>
-    ///
-    /// <para>That difference decides the open question of whether Magic Missile rank 1 (1.8s cooldown)
-    /// out-damages rank 4 (4s) on THROUGHPUT — the operator's rule being that a shorter shared cooldown
-    /// wins whenever the final damage is above ~50%. Pair with <see cref="skillDamageSamples"/>: -1 means
-    /// UNKNOWN and must be EXPLORED, never treated as weak.</para></summary>
     public double skillDamageAvg(int id) => View?.SkillDamageAvg((ushort)id) ?? -1;
 
-    /// <summary>How many landed hits have been sampled for this skill. 0 = no evidence.</summary>
+    /// <summary>How many landed hits have been sampled for this skill</summary>
     public int skillDamageSamples(int id) => View?.SkillDamageSamples((ushort)id) ?? 0;
 
     public double skillReadyInMs(int id)
@@ -123,8 +62,7 @@ public sealed class BotApi
         return View.SkillReadyInMs((ushort)id, si.DelayTimeMs, si.CastTimeMs);
     }
 
-    /// <summary>Skill info from client <c>ActiveSkill</c> (cooldown ms, SP cost, range, facing
-    /// arc) so scripts can track cooldowns / costs without hardcoding. nil if unknown.</summary>
+    /// <summary>Skill info from client ActiveSkill (cooldown ms, SP cost, range, facing arc) so scripts can track cooldowns /…</summary>
     public DynValue skillInfo(int id)
     {
         var si = _mgr.ClientData?.Skill(id);
@@ -132,47 +70,25 @@ public sealed class BotApi
         var t = NewTable();
         t["id"] = id; t["name"] = _mgr.ClientData?.SkillName(id) ?? "";
         t["cooldownMs"] = si.DelayTimeMs; t["sp"] = si.Sp; t["range"] = si.Range;
-        // castTimeMs = the CAST ANIMATION length. The character is locked for its duration, so a driver
-        // must not start another cast while it runs (operator 2026-08-04: "only cast when not on cooldown
-        // AND not in cast animation already").
+        // castTimeMs = the CAST ANIMATION length
         t["castTimeMs"] = si.CastTimeMs;
         t["usableDegree"] = si.UsableDegree; t["moving"] = si.IsMovingSkill;
-        // UseClass: real class combat skills are >=2 (Fighter line 2-7, Cleric 8-13, Archer 14-19,
-        // Mage 20-25, Joker 27+); ==1 is the Trainee/alchemy/event bucket (Mining, Ride Mover, the
-        // event water-balloons) — the cast rotation must skip those. Passives aren't in ActiveSkill.
+        // UseClass: real class combat skills are >=2 (Fighter line 2-7, Cleric 8-13, Archer 14-19, Mage 20-25, Joker 27+…
         t["useClass"] = si.UseClass;
-        // ⛔ ASK `damage`, NOT `maxWc`. maxWc is only the WEAPON coefficient (ActiveSkill.MaxWC); a
-        // spell's damage lives in maxMa and its maxWc is 0 — true of every Magic Missile, Ice Bolt and
-        // Fire Bolt (255 such skills in ActiveSkill.shn). The driver tested maxWc alone in four places,
-        // so a Mage read as having NO damage skills: it never stopped auto-attacking, engageRange found
-        // no ranged nuke and fell back to melee, the kite-chip cast nothing, and the rotation's
-        // "pick the biggest hit" compared 0 to 0 and took whatever came first — which is how a Cleric
-        // ended up spamming Protect and Resist and burning its SP stones on buffs mid-fight.
-        // `damage` = max(maxWc, maxMa): "how hard does this hit", whichever school it uses. 0 = a buff,
-        // a stun or a heal, i.e. NOT part of a damage rotation.
+        // ASK `damage`, NOT `maxWc`
         t["maxWc"] = si.MaxWc; t["maxMa"] = si.MaxMa; t["damage"] = si.Damage;
-        // stun = the skill applies a STUN abnormal-state (ActiveSkill StaName*, e.g. Concussive Charge =
-        // StaBattleBlowStun). The leveler casts a stun on the target when it kites to heal on low HP, so the
-        // frozen mob can't chase/hit while the bot creates space (operator "stun and kite on low hp").
+        // stun = the skill applies a STUN abnormal-state (ActiveSkill StaName*
         t["stun"] = si.Stun;
-        // heal = EffectType==5 (client "heal applied") → the DATA-DRIVEN heal categorization (no name-match).
-        // healOverTime = applies a healing abstate (StaName* "Heal", not "CantHeal"). A cleric derives its
-        // ally-heal skill from these two flags over its OWN learned skills (operator 2026-07-23).
+        // heal = EffectType==5 (client "heal applied") → the DATA-DRIVEN heal categorization (no name-match)
         t["heal"] = si.Heal; t["healOverTime"] = si.HealOverTime;
-        // abstates = the abnormal-state INDICES this skill applies (ActiveSkill StaNameA..D resolved
-        // through AbState → AbStataIndex, which is the value the wire uses in ABSTATESET/RESET). Compare
-        // against bot.selfAbstates() to answer "do I already have this buff": a buff is worth casting
-        // ONCE, not every time its cooldown expires (operator 2026-08-12 — ClericFresh was re-casting
-        // Protect [01] and Resist [01] at 30 and 46 SP a press and draining its SP stones mid-fight).
+        // abstates = the abnormal-state INDICES this skill applies (ActiveSkill StaNameA..D resolved through AbState → A…
         var abs = NewTable(); var ai = 1;
         foreach (var a in _mgr.ClientData?.SkillAbstates(id) ?? []) abs[ai++] = (double)a;
         t["abstates"] = DynValue.NewTable(abs);
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Item fields from client ItemInfo for shop eval: {id, name, useClass, demandLv, grade,
-    /// equipSlot, isScroll}. isScroll = a skill scroll (USE it to learn the skill named the same as
-    /// the item). useClass = class line (Fighter 2–7, 0 = all). nil if unknown.</summary>
+    /// <summary>Item fields from client ItemInfo for shop eval: {id, name, useClass, demandLv, grade, equipSlot, isScroll}</summary>
     public DynValue itemInfo(int id)
     {
         var it = _mgr.ClientData?.Item(id);
@@ -180,61 +96,33 @@ public sealed class BotApi
         var t = NewTable();
         t["id"] = id; t["name"] = it.Name; t["useClass"] = it.UseClass; t["demandLv"] = it.DemandLv;
         t["grade"] = it.Grade; t["equipSlot"] = it.EquipSlot; t["isScroll"] = it.IsScroll; t["type"] = it.Type;
-        // itemClass = the ItemInfo `Class` sub-type WITHIN a Type (e.g. Type 2 material: Class 0 =
-        // plain material/dust [sellable junk], 14 = Elrue enchant stone, 34 = enchant "rune", 19/20/25
-        // = Red Eye/Blue Mile/Gold Nine safety gems, 16 = license, 17 = key — all KEEP; Type 1 usable:
-        // Class 0 = potion/buff, 11 = skill scroll, 12 = recall/port scroll, 30 = unopened card).
-        // sellPrice 0 = the server will NOT vendor it (quest items, Ex Elreu, keys) — never attempt.
-        // maxLot 1 = non-stacking (enchant runes fill the bag; operator 2026-07-02). Used by the
-        // sell/keep classifier (classifyItem in level_quest.lua). See QuestsNew.pcapng sell demo.
+        // itemClass = the ItemInfo `Class` sub-type WITHIN a Type
         t["itemClass"] = it.ItemClass; t["maxLot"] = it.MaxLot; t["sellPrice"] = it.SellPrice;
-        // What the vendor charges. The driver MUST check this against money() before a buy — the server
-        // rejects an unaffordable buy with 0x020B and the driver used to just retry it forever.
         t["buyPrice"] = it.BuyPrice;
-        // 2 bow / 10 crossbow / 3 staff / 11 wand = RANGED auto-attack; the melee types are
-        // 1/4/5/13/17/18/19/21. Lets the driver decide whether to close or stand off.
+        // 2 bow / 10 crossbow / 3 staff / 11 wand = RANGED auto-attack; the melee types are 1/4/5/13/17/18/19/21
         t["weaponType"] = it.WeaponType;
-        // gradeType 0 = ordinary/replaceable gear (every plain smith-bought item — Leather/Chain Boots,
-        // Chain Helmet/Pants, Buckler — verified ItemGradeType=0); >=1 = a named/special drop (e.g. "Solar
-        // Eclipse Leather Boots") worth keeping. The vendor-trash signal for grey-gear selling.
+        // gradeType 0 = ordinary/replaceable gear (every plain smith-bought item — Leather/Chain Boots, Chain Helmet/Pan…
         t["gradeType"] = it.GradeType;
-        // twoHand = a 2-handed weapon (occupies BOTH hand slots — Equip 10 left + 12 right). Verified in
-        // ItemInfo: 2H axes/greatswords sit in slot 12, bows in slot 10, all with TwoHand=1. shieldAc = an
-        // off-hand shield (Equip 10, ShieldAC>0). The driver uses twoHand to avoid the infinite "equip a
-        // second hand item → server rejects (2H uses both hands) → re-equip" loop. (operator 2026-07-07)
+        // twoHand = a 2-handed weapon (occupies BOTH hand slots — Equip 10 left + 12 right)
         t["twoHand"] = it.TwoHand; t["shieldAc"] = it.ShieldAc;
-        // For a skill book, the skill id it teaches (InxName join), else -1 — PLUS which table that id
-        // lives in. ActiveSkill and PassiveSkill are separate tables with OVERLAPPING id spaces (active
-        // 0 = "Slice and Dice [01]", passive 0 = "Bravery Mastery [01]"), so `scrollSkillId` alone is
-        // ambiguous: ALWAYS pass scrollSkillPassive through to hasSkill(id, passive).
+        // For a skill book, the skill id it teaches (InxName join), else -1 — PLUS which table that id lives in
         var (scrollSid, scrollPassive) = it.IsScroll
             ? (_mgr.ClientData?.ScrollSkill(id) ?? (-1, false))
             : (-1, false);
         t["scrollSkillId"] = scrollSid;
         t["scrollSkillPassive"] = scrollPassive;
-        // The PREREQUISITE skill id the taught skill needs first (DemandSk, same table as the skill),
-        // or -1 if none. Gate learn-from-bag on hasSkill(prereq, passive) so a rank-[02] book isn't USE'd
-        // (and looped forever) before rank-[01] is learned — the server refuses the out-of-order learn.
-        // -1, NOT 0, means "no prereq": 0 is a real id in BOTH tables (Slice and Dice [02]'s genuine
-        // prereq is active id 0; One Handed Sword Mastery [02]'s is passive id 9).
+        // The PREREQUISITE skill id the taught skill needs first (DemandSk, same table as the skill), or -1 if none
         t["scrollSkillPrereq"] = scrollSid >= 0 ? (_mgr.ClientData?.SkillPrereqId(scrollSid, scrollPassive) ?? -1) : -1;
         return DynValue.NewTable(t);
     }
 
-    /// <summary>The skill id a skill book teaches (ItemInfo↔ActiveSkill/PassiveSkill InxName join), or
-    /// -1 if the item isn't a skill book. ⚠️ AMBIGUOUS ALONE — the two tables' id spaces overlap; use
-    /// <see cref="scrollSkillPassive"/> (or <c>itemInfo(id).scrollSkillPassive</c>) to know which, and
-    /// pass it to <see cref="hasSkill"/>. Avoids over-buying a book for a skill already learned.</summary>
+    /// <summary>The skill id a skill book teaches (ItemInfo↔ActiveSkill/PassiveSkill InxName join), or -1 if the item isn't a…</summary>
     public int scrollSkillId(int itemId) => _mgr.ClientData?.ScrollSkill(itemId).Id ?? -1;
 
-    /// <summary>True if the skill taught by this book is a PASSIVE (mastery — in <c>PassiveSkill</c>),
-    /// false if an active (<c>ActiveSkill</c>) or not a book. Selects the id space for
-    /// <see cref="scrollSkillId"/> / <see cref="hasSkill"/>.</summary>
+    /// <summary>True if the skill taught by this book is a PASSIVE (mastery — in PassiveSkill ), false if an active ( ActiveSk…</summary>
     public bool scrollSkillPassive(int itemId) => _mgr.ClientData?.ScrollSkill(itemId).Passive ?? false;
 
-    /// <summary>The PERSISTED learnt shop kind of an NPC on the current server+map ("weapon"|"skill"|
-    /// "item"|"soulstone"|"notshop"), or "" if never encountered. Lets discovery skip re-probing an NPC
-    /// it (or another bot, on a prior run) already classified — a town is classified ONCE EVER.</summary>
+    /// <summary>The PERSISTED learnt shop kind of an NPC on the current server+map ("weapon"|"skill"| "item"|"soulstone"|"nots…</summary>
     public string knownShopKind(int npcId)
     {
         var map = _handle.CurrentMap;
@@ -242,15 +130,9 @@ public sealed class BotApi
         return _mgr.Knowledge.ShopKind(_handle.Options.Host, map!, npcId) ?? "";
     }
 
-    /// <summary>Record a metric sample from the driver (the operator's <c>LogMetric("HP", v)</c>). Counters
-    /// sum within the batch window, gauges average — an unknown name auto-registers rather than dropping the
-    /// data. This is how QUEST-LEVEL facts get measured at all: whether a quest was given up, deprioritized
-    /// or completed is a decision only the Lua makes, so without this the epic's quest metrics were
-    /// unreachable from C#.</summary>
     public void metric(string name, double value = 1) => _handle.Metrics.LogMetric(name, value);
 
-    /// <summary>Declare a metric up front (direction + kind), so it appears on <c>/metrics</c> with the right
-    /// percentile tail even before anything is logged to it. Optional — <see cref="metric"/> auto-registers.</summary>
+    /// <summary>Declare a metric up front (direction + kind), so it appears on /metrics with the right percentile tail even be…</summary>
     public void initMetric(string name, string direction = "higher", string kind = "counter")
         => _handle.Metrics.InitMetric(name,
             direction.StartsWith("lower", StringComparison.OrdinalIgnoreCase)
@@ -258,11 +140,7 @@ public sealed class BotApi
             kind.StartsWith("gauge", StringComparison.OrdinalIgnoreCase)
                 ? Metrics.MetricKind.Gauge : Metrics.MetricKind.Counter);
 
-    /// <summary>Every KNOWN shop of a kind across ALL maps, as <c>{map=..., npc=...}</c> — PERSISTED, so it
-    /// answers "where is there a storage keeper / smith?" even for a town the bot is not standing in.
-    /// <para><see cref="knownShopKind"/> can only answer for the CURRENT map, which meant the driver could
-    /// not travel to a service it already knew about: the storage trip only ran if the bot happened to be
-    /// in the right town already, so a bag-full deadlock one map away from the keeper never resolved.</para></summary>
+    /// <summary>Every KNOWN shop of a kind across ALL maps, as {map=..., npc=...} — PERSISTED, so it answers "where is there a storage keeper / smith?" even for a town the bot is not standing in</summary>
     public DynValue knownShopsOfKind(string kind)
     {
         var t = NewTable(); var i = 1;
@@ -274,62 +152,37 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Record + PERSIST what an NPC's shop turned out to be (current server+map). Call after a
-    /// shop-open classifies it so the knowledge survives relog/restart.</summary>
+    /// <summary>Record + PERSIST what an NPC's shop turned out to be (current server+map)</summary>
     public void recordShop(int npcId, string kind)
     {
         var map = _handle.CurrentMap;
         if (!string.IsNullOrEmpty(map)) _mgr.Knowledge.RecordShop(_handle.Options.Host, map!, npcId, kind);
     }
 
-    /// <summary>The character level at which quest <paramref name="questId"/> was last deprioritized
-    /// (a flee happened pursuing its objective mob), or -1 if never. PERSISTED (survives relog/restart)
-    /// so a rebuild-cycle doesn't forget it and immediately re-trigger the same overwhelming fight.
-    /// Compare against <see cref="level"/> — once you've gained a level since, treat it as expired
-    /// (operator 2026-07-01: "after 1 level up, reset this").</summary>
+    /// <summary>The character level at which quest was last deprioritized (a flee happened pursuing its objective mob), or -1…</summary>
     public int questDeprioritizedAtLevel(int questId) => _mgr.Knowledge.QuestDeprioritizedAtLevel(_handle.KnowledgeScope, questId);
 
-    /// <summary>Record + PERSIST that a flee happened while pursuing this quest's objective mob, at the
-    /// current character level — deprioritizes it to "last resort" until a level-up.</summary>
+    /// <summary>Record + PERSIST that a flee happened while pursuing this quest's objective mob, at the current character leve…</summary>
     public void recordQuestDeprioritized(int questId, int atLevel) => _mgr.Knowledge.RecordQuestDeprioritized(_handle.KnowledgeScope, questId, atLevel);
 
-    /// <summary>Has the server already refused to STORE this item? Persisted, so a timed/bound item like
-    /// "Angel Wings (7 Days)" is never re-attempted on a later trip. Check it before offering an item to
-    /// storage.</summary>
+    /// <summary>Has the server already refused to STORE this item?</summary>
     public bool isUnstorable(int itemId) => _mgr.Knowledge.IsUnstorable(_handle.Options.Host, itemId);
 
-    /// <summary>Record + PERSIST that the server refuses to store this item id. ⚠️ Call this ONLY for the
-    /// item-level refusal, never for a "cell occupied" refusal — that one is transient and slot-level, and
-    /// marking on it would blacklist a perfectly storable item forever.</summary>
+    /// <summary>Record + PERSIST that the server refuses to store this item id</summary>
     public void noteUnstorable(int itemId) => _mgr.Knowledge.RecordUnstorable(_handle.Options.Host, itemId);
 
-    /// <summary>The reason code from the last NC_ITEM_RELOC_ACK (0x300C), or -1 if none seen. Lets the
-    /// driver tell an ITEM-level refusal (this item can never be stored) from a SLOT-level one (that cell
-    /// is occupied) — they need opposite handling and were previously indistinguishable to the script.</summary>
+    /// <summary>The reason code from the last NC_ITEM_RELOC_ACK (0x300C), or -1 if none seen</summary>
     public int lastRelocAck() => View?.LastRelocAckCode ?? -1;
 
-    /// <summary>Clear this quest's flee-deprioritization; true if a mark was removed. Call it on EVIDENCE
-    /// that the fight is winnable now — a credited kill on its objective mob — because level-up alone is
-    /// not enough of an expiry: marks are written at the level we fled at, so a handful at the CURRENT
-    /// level flattens the whole board into the last-resort grind, which is the slowest route to the
-    /// level-up that would clear them.</summary>
+    /// <summary>Clear this quest's flee-deprioritization; true if a mark was removed</summary>
     public bool clearQuestDeprioritized(int questId) => _mgr.Knowledge.ClearQuestDeprioritized(_handle.KnowledgeScope, questId);
 
-    /// <summary>How many times we have DIED pursuing this quest, across ALL sessions. PERSISTED —
-    /// use this to rank a repeatedly-lethal quest last, NOT a script-local counter: script locals are
-    /// wiped on every re-apply and this bot respawns constantly, so a local count never survives long
-    /// enough to influence the choice it was written for (measured 2026-08-05).</summary>
     public int questDeaths(int questId) => _mgr.Knowledge.QuestDeaths(_handle.KnowledgeScope, questId);
 
-    /// <summary>Record + PERSIST a death while pursuing this quest. Returns the new lifetime total.</summary>
-    /// <summary>Record a death on this quest. Returns the count AT THE CURRENT LEVEL (not lifetime) when a
-    /// level is supplied — that is what a deprioritize threshold must use, because the mark it produces is
-    /// itself level-scoped. Passing no level keeps the old lifetime semantics for ranking.</summary>
+    /// <summary>Record + PERSIST a death while pursuing this quest</summary>
     public int recordQuestDeath(int questId, int level = -1) => _mgr.Knowledge.RecordQuestDeath(_handle.KnowledgeScope, questId, level);
 
-    /// <summary>Contents of personal storage as of the last open: a table of
-    /// <c>{slot=..., id=...}</c>. Empty until storage has been opened. Read with
-    /// <see cref="storageBox"/> / <see cref="storageOpen"/> before depositing.</summary>
+    /// <summary>Contents of personal storage as of the last open: a table of {slot=..., id=...}</summary>
     public DynValue storageItems()
     {
         var t = NewTable(); var v = View;
@@ -343,25 +196,18 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>True if a storage session is currently open (the last open SUCCEEDED). A failed open
-    /// (0x3C07) leaves this false — never assume storage is open, a deposit into a closed storage is
-    /// exactly the silent no-op the operator wants to make impossible.</summary>
+    /// <summary>True if a storage session is currently open (the last open SUCCEEDED)</summary>
     public bool storageOpen() => View?.StorageOpen ?? false;
 
-    /// <summary>The inventory box id storage lives in, LEARNED from the wire, or <b>-1 if not yet
-    /// known</b> (storage was empty the only time we opened it, so no item location revealed it).
-    /// A deposit must refuse loudly at -1 rather than guess.</summary>
+    /// <summary>The inventory box id storage lives in, LEARNED from the wire, or -1 if not yet known (storage was empty the on…</summary>
     public int storageBox() => View?.StorageBox ?? -1;
 
-    /// <summary>Money held in storage, and the current/max storage page from the last open.</summary>
+    /// <summary>Money held in storage, and the current/max storage page from the last open</summary>
     public double storageCen() => View?.StorageCen ?? 0;
-    /// <inheritdoc cref="storageCen"/>
     public int storagePage() => View?.StoragePage ?? 0;
-    /// <inheritdoc cref="storageCen"/>
     public int storageMaxPage() => View?.StorageMaxPage ?? 0;
 
-    /// <summary>The item ids the last-opened merchant sells (from SHOPOPEN/SHOPOPENTABLE). Empty
-    /// until a shop is opened. The driver reads this + <see cref="itemInfo"/> to decide what to buy.</summary>
+    /// <summary>The item ids the last-opened merchant sells (from SHOPOPEN/SHOPOPENTABLE)</summary>
     public DynValue shopItems()
     {
         var t = NewTable(); var v = View;
@@ -370,25 +216,13 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>True if the bot has already learned this skill id (from the login skill/passive lists +
-    /// anything learned this session). Lets the driver skip re-buying/re-using a book it already knows.
-    /// <para>⚠️ <paramref name="passive"/> SELECTS THE ID SPACE — <c>ActiveSkill</c> and
-    /// <c>PassiveSkill</c> ids overlap (active 0 = "Slice and Dice [01]", passive 0 = "Bravery
-    /// Mastery [01]"). Pass <c>itemInfo(id).scrollSkillPassive</c>. Defaults to false (active) for the
-    /// existing combat callers, which only ever deal in active ids.</para></summary>
+    /// <summary>True if the bot has already learned this skill id (from the login skill/passive lists + anything learned this…</summary>
     public bool hasSkill(int id, bool passive = false) => View?.HasSkill((ushort)id, passive) ?? false;
 
-    /// <summary>How many times IN A ROW the server has refused to USE this item id (non-0x700
-    /// NC_ITEM_USE_ACK); 0 if never refused or if the last use succeeded. The driver must consult this
-    /// before re-issuing a USE, or a permanently-refused item is retried forever — see
-    /// <see cref="Session.ZoneView.ItemUseFailCount"/> for the live case that made this necessary
-    /// (a crafting recipe book retried every ~6s for a 45-minute window, 0 exp gained).</summary>
+    /// <summary>How many times IN A ROW the server has refused to USE this item id (non-0x700 NC_ITEM_USE_ACK); 0 if never ref…</summary>
     public int itemUseFails(int itemId) => View?.ItemUseFailCount(itemId) ?? 0;
 
-    /// <summary>If this id is a CRAFTING RECIPE, a table {masteryType, neededPoints, masteryName} — the job
-    /// it requires and the job points needed in it (client <c>Produce.shn</c>). nil for an ordinary skill
-    /// book. A character with no matching job can NEVER learn it, so the driver must skip it rather than
-    /// re-issue a USE the server will always refuse.</summary>
+    /// <summary>If this id is a CRAFTING RECIPE, a table {masteryType, neededPoints, masteryName} — the job it requires and th…</summary>
     public DynValue recipeRequirement(int id)
     {
         var cd = _mgr.ClientData;
@@ -400,8 +234,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>The PASSIVE skill ids the character has learned (login 0x103E list). Separate id space
-    /// from <see cref="learnedSkills"/> — see <see cref="hasSkill"/>.</summary>
+    /// <summary>The PASSIVE skill ids the character has learned (login 0x103E list)</summary>
     public DynValue learnedPassives()
     {
         var t = NewTable(); var v = View;
@@ -410,8 +243,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>The inventory bag slot currently holding <paramref name="itemId"/> (e.g. a scroll
-    /// just bought), or -1 if not in the bag. Use with <see cref="useItem"/> to consume it.</summary>
+    /// <summary>The inventory bag slot currently holding</summary>
     public int invenSlotOf(int itemId)
     {
         var v = View; if (v is null) return -1;
@@ -419,14 +251,10 @@ public sealed class BotApi
         return -1;
     }
 
-    /// <summary>The stack count in main-bag <paramref name="slot"/> (from the wire lot field), 0 if
-    /// empty. NOTE: SELL's lot is a 0/1 toggle (1 = sell the WHOLE stack), not a count — so to sell
-    /// a slot use <c>bot.sell(slot, 1)</c>, not this count. Kept for inventory-fullness checks.</summary>
+    /// <summary>The stack count in main-bag (from the wire lot field), 0 if empty</summary>
     public int invenCount(int slot) => View?.ItemCount((byte)slot) ?? 0;
 
-    /// <summary>Total quantity of an item id carried across ALL bag slots (sums stacks). Used by collect
-    /// quests to know how many of the drop item the bot is holding vs the required count — the hand-in
-    /// gate is "carried >= required", not the kill-objective progress counter.</summary>
+    /// <summary>Total quantity of an item id carried across ALL bag slots (sums stacks)</summary>
     public int invenCountOf(int itemId)
     {
         var v = View; if (v is null) return 0;
@@ -436,46 +264,28 @@ public sealed class BotApi
         return total;
     }
 
-    /// <summary>True when the bag is FULL (a pickup failed with the inventory-full ack 0x346). The leveler
-    /// uses this to break the death spiral: when full it travels to town and sells/declutters instead of
-    /// pacing over a drop it can't carry. Cleared on a successful sell or pick.</summary>
+    /// <summary>True when the bag is FULL (a pickup failed with the inventory-full ack 0x346)</summary>
     public bool bagFull() => View?.BagFull ?? false;
 
-    /// <summary>Empty bag slots, computed from the (now-complete, item-0-inclusive) inventory model:
-    /// default 48-slot bag (operator 2026-07-07) + 24 if the Old Bag expansion is active (detected by any
-    /// item in slots &gt;=48) minus occupied slots. Unlike <see cref="bagFull"/> (the stale 0x346 pick-fail
-    /// flag) this is an accurate free-slot count — lets a GET_PLAYER_EMPTY_INVENTORY hand-in free space
-    /// FIRST instead of driving a doomed hand-in. TODO: replace the 48 base with the server-seeded bag size
-    /// once that field is decoded (see the P1 inventory ticket).</summary>
+    /// <summary>Empty bag slots, computed from the (now-complete, item-0-inclusive) inventory model: default 48-slot bag (oper…</summary>
     public int bagFreeSlots() => View?.BagFreeSlots ?? 48;   // delegates: ZoneView owns the capacity rule
 
-    /// <summary>Current money ("cen"), or -1 if no money packet seen yet. Use to gate buys and to
-    /// confirm a sell paid out (money rises after a successful sell).</summary>
+    /// <summary>Current money ("cen"), or -1 if no money packet seen yet</summary>
     public double money() => View?.Money ?? -1;
-    /// <summary>Current total experience (seeded at zone-enter, updated by per-kill EXPGAIN), or -1
-    /// if not yet seeded. Lets the leveler see grind progress toward the next level.</summary>
+    /// <summary>Current total experience (seeded at zone-enter, updated by per-kill EXPGAIN), or -1 if not yet seeded</summary>
     public double exp() => View?.Exp ?? -1;
 
-    /// <summary>Learned average exp-per-kill for a mob id (from EXPGAIN packets), or 0 if we've never killed
-    /// one. Lets the leveler value a quest by the exp of the mobs it makes you kill (mob exp isn't in
-    /// MobInfo.shn and must not be hardcoded) — e.g. rank the Silver Slime repeatable by ~1179/kill, not its
-    /// 112 turn-in reward.</summary>
+    /// <summary>Learned average exp-per-kill for a mob id (from EXPGAIN packets), or 0 if we've never killed one</summary>
     public long mobExp(int mobId) => View?.MobExpAvg(mobId) ?? 0;
 
-    /// <summary>The current character class id. Reflects a live JOB CHANGE (PROMOTE_ACK 0x1059) — the
-    /// leveler reads this to confirm the JCQ succeeded (class changed) and to pick class-appropriate rewards.</summary>
+    /// <summary>The current character class id</summary>
     public int charClass() => _handle.Class;
-    /// <summary>The class id from the most recent PROMOTE_ACK this session, or -1 if no promotion yet.
-    /// Use to DETECT that a job change just happened (was -1 / old class → new class).</summary>
+    /// <summary>The class id from the most recent PROMOTE_ACK this session, or -1 if no promotion yet</summary>
     public int promotedClass() => View?.PromotedClass ?? -1;
-    /// <summary>The scenario/instance trigger-area last entered+armed (e.g. "Zone_Mob01"), or "" if not in
-    /// a scenario. The clear-room driver uses this to know it's inside the instance and which room armed.</summary>
+    /// <summary>The scenario/instance trigger-area last entered+armed</summary>
     public string scenarioArea() => View?.LastScenarioArea ?? "";
 
-    /// <summary>The scenario areas we've ARRIVED-IN and ACKED this instance run — the authoritative "area done"
-    /// set (a landed ack only happens from a shove-free position INSIDE the trigger). The instance driver's
-    /// visited-set reads THIS to advance rooms, instead of the flaky proximity / LastScenarioArea-flip
-    /// heuristic that mis-marked co-armed areas (Zone_Mob03+Zone_Mob04). Returns a { name = true } table.</summary>
+    /// <summary>The scenario areas we've ARRIVED-IN and ACKED this instance run — the authoritative "area done" set (a landed…</summary>
     public DynValue scenarioAckedAreas()
     {
         var t = NewTable();
@@ -483,16 +293,10 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>True while a movement-blocking abnormal state (stun/root/entangle, e.g. the JCQ clone's
-    /// StaQuestEntangle) is active on the bot — the server MOVEFAILs every move until it clears. The
-    /// instance/combat lua should WAIT (don't cast/approach/walk into it) while this is true.</summary>
+    /// <summary>True while a movement-blocking abnormal state (stun/root/entangle</summary>
     public bool rooted() => View?.Rooted ?? false;
 
-    /// <summary>The abnormal-state indices currently active on US (unexpired), as a Lua array. This is
-    /// how the driver answers "do I already have this buff" before spending 30-46 SP re-applying it —
-    /// compare against skillInfo(id).abstates. ZoneView has tracked these since the self-abstate channel
-    /// was decoded; nothing had ever read them, which is the read-path-not-built shape the silver rule
-    /// is about. An empty array means no active states, NOT "unknown".</summary>
+    /// <summary>The abnormal-state indices currently active on US (unexpired), as a Lua array</summary>
     public DynValue selfAbstates()
     {
         var t = NewTable();
@@ -501,9 +305,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>The current map's instance DOORS (room connectors) from its <c>.sbi</c>, each { name, x, y }
-    /// with a WORLD-coord centre. The instance/JCQ clear driver walks door-to-door to traverse the rooms
-    /// when no mob is in view (the blind patrol never found them). Empty if not an instance / no .sbi.</summary>
+    /// <summary>The current map's instance DOORS (room connectors) from its .sbi , each { name, x, y } with a WORLD-coord cent…</summary>
     public DynValue instanceDoors()
     {
         var t = NewTable();
@@ -516,10 +318,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Live scenario corridor DOOR states from <c>NC_SCENARIO_DOORSTATE_CMD</c> (0x6C09), each
-    /// { handle, state (raw byte), x, y (last-known door pos or nil) }. The instance driver correlates these
-    /// to the static <c>instanceDoors()</c> centres (nearest) to know which corridor door is open/closed RIGHT
-    /// NOW → wait at a closed door instead of thrashing into it. Empty until the server sends door states.</summary>
+    /// <summary>Live scenario corridor DOOR states from NC_SCENARIO_DOORSTATE_CMD (0x6C09), each { handle, state (raw byte), x…</summary>
     public DynValue doorStates()
     {
         var t = NewTable();
@@ -536,9 +335,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>The current map's scenario trigger AREAS from its <c>.aid</c>, each { name, x, y (centre),
-    /// rx, ry (half-extents) } in world coords, in file order (= the scenario's room sequence). Empty if not
-    /// a scenario map / no .aid.</summary>
+    /// <summary>The current map's scenario trigger AREAS from its .aid , each { name, x, y (centre), rx, ry (half-extents) } i…</summary>
     public DynValue scenarioAreas()
     {
         var t = NewTable();
@@ -557,10 +354,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Centre { x, y, rx, ry, name } of the CURRENTLY ARMED scenario area (its name = the server's
-    /// <c>LastScenarioArea</c>, looked up in the map's <c>.aid</c>), or nil if not in an armed area / no .aid.
-    /// The instance driver walks HERE to trigger the current room's wave — in order, without wandering ahead
-    /// into future rooms and consuming their one-shot <c>AreaEntry</c> interrupts early.</summary>
+    /// <summary>Centre { x, y, rx, ry, name } of the CURRENTLY ARMED scenario area (its name = the server's LastScenarioArea ,…</summary>
     public DynValue scenarioAreaCenter()
     {
         var name = View?.LastScenarioArea;
@@ -578,24 +372,6 @@ public sealed class BotApi
         return DynValue.Nil;
     }
 
-    /// <summary>A generic "roomba" COVERAGE PATH over the current map's walkability (<c>.shbd</c>): an
-    /// ordered list of world waypoints ({ x, y }) laid on a serpentine lattice of spacing
-    /// <paramref name="stepWorld"/>, snapped to walkable ground. Walk them in order and the bot sweeps
-    /// the whole walkable area — every mob comes into AoI (<c>nearbyMobs()</c>) so the instance/KQ
-    /// hoover can clear it. <paramref name="stepWorld"/> is the sweep spacing (bot-behaviour tuning);
-    /// keep it ≤ the server mob AoI for full coverage (smaller = safe, just more points). Empty if no
-    /// grid for this map. Pure BYO nav geometry — no baked ids/coords.</summary>
-    /// <summary>Fit the largest WALKABLE circle to kite around, from the map's <c>.shbd</c>:
-    /// <c>{cx, cy, r}</c>, or nil when the ground will not hold one (caller falls back to a straight kite).
-    /// Cached per map+area because the fit scans the grid and the terrain does not move.</summary>
-    /// <summary>The WALL-HUGGING kite loop for the room we are in: an ordered ring of {x,y} world
-    /// waypoints with narrow corridors excluded, or an empty table when the room will not yield one.
-    /// Cached per map + coarse position, because the terrain does not move.
-    ///
-    /// <para>Replaces the inscribed-circle fit, which was capped by the room's short axis and degenerate
-    /// when its radius approached the chaser's range (the chaser parks in the middle and never moves).
-    /// Measured in the JCQ clone room: the best circle was r=524u / 3293u circumference, while the wall
-    /// loop spans 1425x1181u with a ~5414u perimeter.</para></summary>
     public DynValue kiteLoop(double corridorMinWidth)
     {
         var grid = _handle.CurrentMap is { } map ? _mgr.GridProvider?.Invoke(map) : null;
@@ -635,32 +411,23 @@ public sealed class BotApi
     }
     private readonly Dictionary<string, (double Cx, double Cy, double R)?> _kiteCircles = new();
 
-    /// <summary>The next kite step: a point to walk to that flees the enemy AND blends smoothly onto the
-    /// kite circle. Returns <c>{x, y, mode}</c> where mode is "flee" | "blend" | "ride".
-    ///
-    /// <para>⛔ THE HAND-OFF IS THE WHOLE POINT (operator 2026-08-13). Running straight and then turning 90°
-    /// onto the circle is a hard turn, and "during this turn you will be in enemy range for like 10 secs
-    /// which is often deadly". So the heading is a WEIGHTED BLEND of straight-away and the circle's
-    /// tangent, weighted by how close to the rim we are: dead centre it is a pure flee, at the rim it is
-    /// pure tangent, and in between it curves — "if we make our angle shallower the closer we get to the
-    /// edge of the circle, we will have a soft handoff from approach to circle". Outside the rim it also
-    /// pulls gently inward so we settle back onto the edge rather than drifting off it.</para></summary>
+    /// <summary>The next kite step: a point to walk to that flees the enemy AND blends smoothly onto the kite circle</summary>
     public DynValue kiteStepPoint(double ex, double ey, double cx, double cy, double r, double step, int dir)
     {
         if (_handle.Position is not { } p || r <= 1) return DynValue.Nil;
         double px = p.X, py = p.Y;
-        // Straight away from the enemy — what a naive kite does, and correct while we are well inside.
+        // Straight away from the enemy — what a naive kite does, and correct while we are well inside
         double ax = px - ex, ay = py - ey;
         var alen = Math.Max(1e-6, Math.Sqrt(ax * ax + ay * ay));
         ax /= alen; ay /= alen;
-        // Tangent to the circle at our bearing, taken in the requested orbit direction.
+        // Tangent to the circle at our bearing, taken in the requested orbit direction
         double rx = px - cx, ry = py - cy;
         var rlen = Math.Max(1e-6, Math.Sqrt(rx * rx + ry * ry));
         double ux = rx / rlen, uy = ry / rlen;
         double tx = -uy * Math.Sign(dir == 0 ? 1 : dir), ty = ux * Math.Sign(dir == 0 ? 1 : dir);
-        // Blend weight: 0 at the centre (pure flee) -> 1 at the rim (pure tangent).
+        // Blend weight: 0 at the centre (pure flee) -> 1 at the rim (pure tangent)
         var w = Math.Clamp(rlen / r, 0, 1);
-        // Past the rim, steer back toward it instead of running off into unfitted ground.
+        // Past the rim, steer back toward it instead of running off into unfitted ground
         double ix = 0, iy = 0;
         if (rlen > r) { ix = -ux; iy = -uy; }
         var hx = ax * (1 - w) + tx * w + ix * Math.Min(1, (rlen - r) / Math.Max(1, r * 0.15));
@@ -689,28 +456,20 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>The raw code from the last SELL_ACK (0x3005): 0x0381 = success, else rejected;
-    /// -1 if no sell acked yet this session. Lets the driver verify a sell took.</summary>
+    /// <summary>The raw code from the last SELL_ACK (0x3005): 0x0381 = success, else rejected; -1 if no sell acked yet this se…</summary>
     public int lastSellAck() => View?.LastSellAck ?? -1;
 
-    /// <summary>The raw code from the last BUY_ACK (0x3004): 0x0201 = success (item added), else rejected
-    /// (e.g. 0x0204); -1 if no buy acked yet. Lets buyGear/learnSkills confirm a buy took before marking
-    /// it bought/learned — and pace buys one-per-ACK to dodge the rapid-fire rejection.</summary>
+    /// <summary>The raw code from the last BUY_ACK (0x3004): 0x0201 = success (item added), else rejected</summary>
     public int lastBuyAck() => View?.LastBuyAck ?? -1;
-    /// <summary>True if the last buy succeeded (0x0201).</summary>
+    /// <summary>True if the last buy succeeded (0x0201)</summary>
     public bool lastBuyOk() => (View?.LastBuyAck ?? -1) == 0x0201;
-    /// <summary>Monotonic count of BUY_ACKs seen this session. Record it just before firing a buy;
-    /// when it increases, THIS buy's result has landed in <see cref="lastBuyOk"/> — so buyGear/learnSkills
-    /// can gate "bought/learned" on the actual ack (and detect a buy that got NO ack = shop closed).</summary>
+    /// <summary>Monotonic count of BUY_ACKs seen this session</summary>
     public int buyAckCount() => View?.BuyAckCount ?? 0;
 
-    /// <summary>True if a shop is genuinely open right now (item or soul-stone) — a SELL/BUY will be
-    /// accepted. openShop() confirms this before returning; check it before selling.</summary>
+    /// <summary>True if a shop is genuinely open right now (item or soul-stone) — a SELL/BUY will be accepted</summary>
     public bool shopOpen() => View?.ShopOpen ?? false;
 
-    /// <summary>The KIND of the last-opened shop: "skill" | "weapon" | "item" | "soulstone" |
-    /// "unknown". Lets the driver classify an NPC by what shop it opens (find the skill master /
-    /// smith / item merchant / healer dynamically — no hardcoded ids). Read right after openShop().</summary>
+    /// <summary>The KIND of the last-opened shop: "skill" | "weapon" | "item" | "soulstone" | "unknown"</summary>
     public string shopKind() => (View?.LastShopKind ?? Session.ShopKind.Unknown) switch
     {
         Session.ShopKind.Skill => "skill",
@@ -721,10 +480,7 @@ public sealed class BotApi
         _ => "unknown",
     };
 
-    /// <summary>The learned skill id of the highest rank whose name starts with
-    /// <paramref name="prefix"/> (e.g. <c>"Heal"</c> → the best heal you've learned), or 0 if
-    /// none. Rank parsed from the <c>"[NN]"</c> in the skill name. Lets a script pick a skill
-    /// by role without hardcoding the id/rank.</summary>
+    /// <summary>The learned skill id of the highest rank whose name starts with</summary>
     public int highestSkill(string prefix)
     {
         var v = View; var cd = _mgr.ClientData;
@@ -740,9 +496,7 @@ public sealed class BotApi
         return best;
     }
 
-    /// <summary>All learned skill ids (from the zone-login skill list + any learned this session).
-    /// The combat rotation reads this and casts each offensive skill by its own cooldown
-    /// (<see cref="skillInfo"/>) — class-agnostic, no hardcoded skill names.</summary>
+    /// <summary>All learned skill ids (from the zone-login skill list + any learned this session)</summary>
     public DynValue learnedSkills()
     {
         var t = NewTable(); var v = View;
@@ -771,81 +525,52 @@ public sealed class BotApi
     public bool attack(int skill, int target = 0) => Ok(Wait(_mgr.AttackAsync(Id, (ushort)skill, (ushort)target)));
     public bool autoAttack(int target = 0) => Ok(Wait(_mgr.AutoAttackAsync(Id, (ushort)target)));
     public bool stopAttack() => Ok(Wait(_mgr.StopAttackAsync(Id)));
-    /// <summary>Clean logout + re-login in place, re-applying this same script once back in zone (recovery
-    /// for a stuck bot, e.g. a scenario instance whose wave never fired). Fire-and-forget: returns
-    /// immediately; the relog happens after this tick. Call at most once per stuck episode (cooldown).</summary>
+    /// <summary>Clean logout + re-login in place, re-applying this same script once back in zone (recovery for a stuck bot, e.…</summary>
     public bool relog() => _mgr.Relog(Id);
     public bool heal(int skill) => Ok(Wait(_mgr.HealSelfAsync(Id, (ushort)skill)));
     public bool useItem(int slot, int invenType = 9) => Ok(Wait(_mgr.UseItemAsync(Id, (byte)slot, (byte)invenType)));
 
-    /// <summary>Unspent stat points the server told us about (NC_CHAR_STAT_REMAINPOINT_CMD). -1 = not yet known.
-    /// Sent on login + after each spend, so a levels-1..N backlog shows up at zone-enter.</summary>
+    /// <summary>Unspent stat points the server told us about (NC_CHAR_STAT_REMAINPOINT_CMD)</summary>
     public int freeStatPoints() => View?.FreeStatPoints ?? -1;
 
-    /// <summary>Spend ONE stat point on <paramref name="stat"/> (0=STR,1=END,2=DEX,3=INT,4=MP). The driver
-    /// allocates the fighter's points to END (byte 1) for tankiness.</summary>
+    /// <summary>Spend ONE stat point on (0=STR,1=END,2=DEX,3=INT,4=MP)</summary>
     public bool incStat(int stat) => Ok(Wait(_mgr.IncStatAsync(Id, (byte)stat)));
     public bool equip(int slot) => Ok(Wait(_mgr.EquipAsync(Id, (byte)slot)));
     public bool pickup(int itemHandle) => Ok(Wait(_mgr.PickupAsync(Id, (ushort)itemHandle)));
     public bool loot(int itemHandle = 0) => Ok(Wait(_mgr.LootAsync(Id, (ushort)itemHandle)));
-    /// <summary>Fire the client's inventory auto-sort (compact + STACK the bag — e.g. merge the
-    /// single quest-reward port scrolls that don't stack by default). Frees slots so pickups/hand-ins
-    /// don't block on a full bag. ⚠️ Blocked while MOUNTED and the bag is locked ~5s during the
-    /// relayout — gate on <c>not bot.mounted()</c> and don't fire other inventory ops right after.</summary>
+    /// <summary>Fire the client's inventory auto-sort (compact + STACK the bag</summary>
     public bool sortInventory() => Ok(Wait(_mgr.SortInventoryAsync(Id)));
-    /// <summary>Pick-pacing poll gate (operator 2026-07-02): the server processes ONE item-cell
-    /// pick at a time — the driver polls this and fires ONE <see cref="pickup"/> when true
-    /// (pick→ack→pick→ack, never a burst). Cleared by firing a pick; set again by its PICK_ACK
-    /// (with a 2s staleness escape for a lost ack).</summary>
+    /// <summary>Pick-pacing poll gate (operator 2026-07-02): the server processes ONE item-cell pick at a time — the driver po…</summary>
     public bool canPick() => View?.CanPick ?? false;
     public bool clickNpc(int handle) => Ok(Wait(_mgr.ClickNpcAsync(Id, (ushort)handle)));
     public bool answerQuest(int result = 1) => Ok(Wait(_mgr.ProceedQuestAsync(Id, (uint)result)));
-    /// <summary>Drive a whole quest dialogue with one NPC (accept or turn-in): click it and
-    /// ACK every server-pushed script page until the dialogue ends. <c>result</c>=1 accepts.</summary>
-    /// <summary>Drive a quest dialogue. <paramref name="npcHandle"/> <b>&lt; 0 = REMOTE</b> (no NPC to
-    /// click — the pages are already being served after a START_REQ); <paramref name="questId"/>
-    /// <b>&lt; 0 = unspecified</b>.
-    /// <para>⚠️ NEITHER uses 0 as "none" (operator, 2026-08-05): <b>0 is a legitimate id in this game</b> —
-    /// ActiveSkill 0 and PassiveSkill 0 are real skills, item 0 is "Leather Boots", and an entity handle
-    /// of 0 cannot be assumed invalid either. Every time 0 has been used as a sentinel here it has
-    /// eventually hidden a real value. Use -1 across the Lua boundary and null inside C#.</para></summary>
+    /// <summary>Drive a whole quest dialogue with one NPC (accept or turn-in): click it and ACK every server-pushed script pag…</summary>
     public bool doQuest(int npcHandle, int result = 1, int rewardIndex = -1, int questId = -1)
         => Ok(Wait(_mgr.DriveQuestDialogueAsync(Id,
             npcHandle < 0 ? null : (ushort)npcHandle, (uint)result, rewardIndex,
             questId: questId < 0 ? null : (ushort)questId)));
-    /// <summary>True if the LAST doQuest drive CONCLUDED (reached the Qsc 0x06/0x0A terminal for our quest) — i.e.
-    /// the accept/hand-in actually completed on the wire. Use after a hand-in to detect success even when a
-    /// REPEATABLE re-accepted (leaving bot.questProgress stale at N/N so questReadyToHandin would loop).</summary>
+    /// <summary>True if the LAST doQuest drive CONCLUDED (reached the Qsc 0x06/0x0A terminal for our quest)</summary>
     public bool dialogConcluded() => _handle.LastDialogConcluded;
-    /// <summary>Reset a quest's credited-kill progress to 0 (the 0x440D counter only counts up + only reset on
-    /// GIVE_UP). Call on a CONCLUDED repeatable hand-in so the re-accepted quest is grindable again instead of
-    /// staying stale at N/N (which stranded the quest — see ResetQuestProgress).</summary>
+    /// <summary>Reset a quest's credited-kill progress to 0 (the 0x440D counter only counts up + only reset on GIVE_UP)</summary>
     public void resetQuestProgress(int id) => View?.ResetQuestProgress(id);
     public bool selectReward(int questId, int index) => Ok(Wait(_mgr.SelectQuestRewardAsync(Id, (ushort)questId, (uint)index)));
 
-    /// <summary>The character's ClassName ClassID (1=Fighter, 6=Cleric, …). 0 until selected.</summary>
+    /// <summary>The character's ClassName ClassID (1=Fighter, 6=Cleric, …)</summary>
     public int classId() => _handle.Class;
 
-    /// <summary>The choice-reward index (0-based among a quest's method-2 "choose one" rewards) to
-    /// pick for THIS character's class, cross-referencing each reward item's UseClass against the
-    /// char's class line. Returns -1 if the quest has no choice rewards (nothing to select). When
-    /// the choices are explicitly other-class gear and the char's own slot carries a placeholder
-    /// item id 0 (a data quirk seen on the Roumen starter quests), that placeholder index is
-    /// chosen. Falls back to index 0. Lets the turn-in grab the right class's reward.</summary>
+    /// <summary>The choice-reward index (0-based among a quest's method-2 "choose one" rewards) to pick for THIS character's c…</summary>
     public int bestRewardIndex(int questId)
     {
         var q = _mgr.ClientData?.Quest(questId); var cd = _mgr.ClientData;
         if (q is null || cd is null) return -1;
         var choices = q.Rewards.Where(r => r.Method == 2 && r.Type == 2).ToList();
         if (choices.Count == 0) return -1;
-        // Return the RAW reward-block slot (RawIndex) — that's what the server's reward-select
-        // packet expects, not the compacted position.
+        // Return the RAW reward-block slot (RawIndex) — that's what the server's reward-select packet expects, not the c…
         int placeholder = -1;
         for (int i = 0; i < choices.Count; i++)
         {
             var uc = cd.ItemUseClass(choices[i].ItemId);
-            // The client's own UseClass matrix (was: `uc == 1 || approximate-ladder.Contains(uc)`; the
-            // hand-rolled `uc == 1` was right about the all-class value and the ladder around it was not).
+            // The client's own UseClass matrix (was: `uc == 1 || approximate-ladder.Contains(uc)`; the hand-rolled `uc == 1`…
             if (cd.UseClassAllows(_handle.Class, uc)) return choices[i].RawIndex;
             if (choices[i].ItemId == 0 && placeholder < 0) placeholder = choices[i].RawIndex; // our-class placeholder
         }
@@ -859,9 +584,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Quest definition from QuestData.shn (nil if unknown): startNpc, turnInNpc,
-    /// minLevel/maxLevel, class, linkedQuest (LINK chain), plus mobs/items/rewards arrays and
-    /// the start/action/finish scripts. Lets a quest script drive the chain data-driven.</summary>
+    /// <summary>Quest definition from QuestData.shn (nil if unknown): startNpc, turnInNpc, minLevel/maxLevel, class, linkedQue…</summary>
     public DynValue quest(int id)
     {
         var q = _mgr.ClientData?.Quest(id);
@@ -869,8 +592,7 @@ public sealed class BotApi
         var t = NewTable();
         t["id"] = q.Id; t["name"] = _mgr.ClientData?.QuestDialog(q.Title) ?? ""; t["startNpc"] = q.StartNpc; t["turnInNpc"] = q.TurnInNpc;
         t["minLevel"] = q.MinLevel; t["maxLevel"] = q.MaxLevel; t["isNeedLevel"] = q.IsNeedLevel;
-        // EndCondition "reach Level N to COMPLETE" gate (distinct from the accept-level window above) —
-        // e.g. q20001 reach-20: endNeedsLevel=true, endLevel=20. Gate hand-in on bot.level() >= endLevel.
+        // EndCondition "reach Level N to COMPLETE" gate (distinct from the accept-level window above)
         t["endNeedsLevel"] = q.EndNeedsLevel; t["endLevel"] = q.EndLevel;
         t["class"] = q.Class; t["linkedQuest"] = q.LinkedQuest;
         t["needsNpc"] = q.NeedsNpc; t["needsItem"] = q.NeedsItem; t["needsItemId"] = q.NeedsItemId;
@@ -883,18 +605,7 @@ public sealed class BotApi
         var npcs = NewTable(); int ni = 1;
         foreach (var n in q.Npcs) { npcs[ni++] = n.Id; }
         t["npcs"] = DynValue.NewTable(npcs);
-        // Each objective is an INDIVIDUAL GOAL carrying its OWN progress (operator 2026-08-11: "expose to
-        // lua as individual goals"). `idx` is the 0-based wire objIdx the server uses in MobOfQuest, `prog`
-        // the kills it has credited to THAT goal, and `done` whether it is finished.
-        //
-        // ⛔ Until this existed the driver had only the AGGREGATE questProgress, so a multi-goal quest was
-        // unreadable: "Mother's Symbol" needs mob 11 x3, mob 12 x3, mob 13 x3, and at 3/9 every goal looked
-        // equally unfinished — so MageFresh re-killed the finished mob 11 forever for ZERO credit. The
-        // per-goal counts were decoded in C# the whole time (seeded from End_NPCMobCount[5], incremented
-        // from 0x440D's objIdx); they were simply never bound into Lua.
-        //
-        // 0 is valid throughout: goal index 0 is the first goal and prog 0 is a real state, so `done` is
-        // computed as `count > 0 && prog >= count` rather than any truthiness test.
+        // Each objective is an INDIVIDUAL GOAL carrying its OWN progress (operator 2026-08-11: "expose to lua as individ…
         var objs = NewTable(); int oi = 1;
         foreach (var o in q.Objectives)
         {
@@ -911,21 +622,18 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Resolve a quest dialog/title id to its text (QuestDialog.shn). Empty if unknown.</summary>
+    /// <summary>Resolve a quest dialog/title id to its text (QuestDialog.shn)</summary>
     public string questDialog(int id) => _mgr.ClientData?.QuestDialog(id) ?? "";
 
-    /// <summary>The human NAME of a quest for LOGGING (QuestData title id → QuestDialog.shn text), formatted
-    /// "Name(q{id})" so the name leads but the id stays greppable. "q{id}" if the name is unknown. Operator
-    /// 2026-07-18: NEVER log a bare quest id — use this in every quest log line.</summary>
+    /// <summary>The human NAME of a quest for LOGGING (QuestData title id → QuestDialog.shn text), formatted "Name(q{id})" so…</summary>
     public string questName(int id) => _mgr.ClientData?.QuestName(id) ?? $"q{id}";
 
-    /// <summary>True if the character has completed this quest (from the login QUEST_DONE state).</summary>
+    /// <summary>True if the character has completed this quest (from the login QUEST_DONE state)</summary>
     public bool questDone(int id) => View?.IsQuestDone(id) ?? false;
-    /// <summary>True if the quest is currently in progress (accepted, not yet turned in).</summary>
+    /// <summary>True if the quest is currently in progress (accepted, not yet turned in)</summary>
     public bool questActive(int id) => View?.IsQuestActive(id) ?? false;
 
-    /// <summary>Ids of quests currently in progress (accepted, awaiting objective/turn-in) —
-    /// the driver resumes these before accepting new ones.</summary>
+    /// <summary>Ids of quests currently in progress (accepted, awaiting objective/turn-in) — the driver resumes these before a…</summary>
     public DynValue activeQuests()
     {
         var t = NewTable(); var v = View;
@@ -934,72 +642,38 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>The PLAYER_QUEST_INFO status byte of an active quest (0 if not active). From the
-    /// login QUEST_DOING snapshot — NOT live (it lied: read 8 while the quest was 0/5). Treat
-    /// <b>8</b> as the glitched/stuck state and <b>6</b> as healthy in-progress; for live progress
-    /// use <see cref="questProgress"/>, not this.</summary>
+    /// <summary>The PLAYER_QUEST_INFO status byte of an active quest (0 if not active)</summary>
     public int questStatus(int id) => View is { } v && v.ActiveQuests.TryGetValue(id, out var s) ? s : 0;
 
-    /// <summary>Kills the SERVER has credited to this quest this session (from 0x440D). The
-    /// authoritative objective-progress count — when it reaches the objective count, turn in.
-    /// If the bot lands kills (killsByMe rises) but this stays 0, the quest is stuck → abandon it.</summary>
+    /// <summary>Kills the SERVER has credited to this quest this session (from 0x440D)</summary>
     public int questProgress(int id) => View?.QuestProgress(id) ?? 0;
 
-    /// <summary>Kills credited to ONE objective of a quest — <paramref name="objIdx"/> is the 0-based
-    /// position in the quest's objective list, exactly as the server sends it in <c>MobOfQuest</c>.
-    ///
-    /// <para>⛔ WITHOUT THIS THE DRIVER CANNOT TELL WHICH OBJECTIVE IS DONE, and grinds a finished mob
-    /// forever. Operator 2026-08-11: MageFresh kept killing Mara Pirates (mob 11) for "Mother's Symbol",
-    /// already 3/3. That quest has THREE kill objectives — mob 11 ×3, mob 12 ×3, mob 13 ×3 — and the driver
-    /// only had the AGGREGATE <see cref="questProgress"/> (3 of 9), so every objective mob looked equally
-    /// unfinished and it kept picking the same one for zero credit.</para>
-    /// <para>The per-objective counters were already decoded, seeded at login from <c>End_NPCMobCount[5]</c>
-    /// and incremented live from 0x440D's <c>objIdx</c> — they were simply never bound into Lua, so the one
-    /// consumer that needed them could not see them. Classic missing read path (the SILVER RULE).</para>
-    /// <para>0 is a legitimate value for both the index and the count: objective 0 is the first objective,
-    /// and 0 kills is a real state. Do not treat either as "unset".</para></summary>
+    /// <summary>Kills credited to ONE objective of a quest — is the 0-based position in the quest's objective list, exactly as…</summary>
     public int questObjProgress(int id, int objIdx) => View?.QuestObjProgress(id, objIdx) ?? 0;
 
-    /// <summary>Report the driver's current phase so the host can account time to it. Safe to call every
-    /// tick — re-reporting the same phase keeps its running total current rather than being ignored.
-    /// <para>Exists because the driver's own phase tally is script-local: it resets on every re-apply and
-    /// only ever reaches a log line, so "where did the night go?" was unanswerable.</para></summary>
+    /// <summary>Report the driver's current phase so the host can account time to it</summary>
     public void notePhase(string phase) { if (_mgr.Get(Id) is { } h) h.NotePhase(phase); }
 
-    /// <summary>Abandon a quest (NC_QUEST_GIVE_UP_REQ). Used to clear a persistence-glitched
-    /// quest (active but stuck at 0 progress) so it can be re-accepted fresh.</summary>
+    /// <summary>Abandon a quest (NC_QUEST_GIVE_UP_REQ)</summary>
     public bool giveUpQuest(int id) => Ok(Wait(_mgr.GiveUpQuestAsync(Id, (ushort)id)));
 
-    /// <summary>Start a quest by id (NC_QUEST_START_REQ) — the accept for menu/remote quests
-    /// where clicking the NPC opens a selection menu instead of a direct dialogue.</summary>
+    /// <summary>Start a quest by id (NC_QUEST_START_REQ) — the accept for menu/remote quests where clicking the NPC opens a se…</summary>
     public bool startQuest(int id) => Ok(Wait(_mgr.StartQuestAsync(Id, (ushort)id)));
 
-    /// <summary>ACCEPT A QUEST REMOTELY from the quest log — no travel to the giver, no NPC click.
-    /// Returns true only if the quest actually went ACTIVE (verified, never assumed). Gate on
-    /// <c>quest(id).remoteAcceptable</c> (@25) plus the client-side level floor; fall back to
-    /// travelling when it returns false. Sequence proven in Z:/QuestsRemoteAndMulti.pcapng.</summary>
+    /// <summary>ACCEPT A QUEST REMOTELY from the quest log — no travel to the giver, no NPC click</summary>
     public bool remoteAcceptQuest(int id) => Ok(Wait(_mgr.RemoteAcceptQuestAsync(Id, (ushort)id)));
 
-    /// <summary>The server's last accept/start result for a quest: <b>0</b> = accepted, <b>&gt;0</b> =
-    /// a refusal reason code (from NC_QUEST_START_ACK.err / SELECT_START_ACK.ErrorType / QUEST_ERR),
-    /// <b>-1</b> = never attempted. Lets the driver react to WHY an accept failed (level / prereq /
-    /// quest-log full / wrong dialogue) and stop churning, instead of inferring from questActive not
-    /// flipping. Codes are mapped to meanings from the live churn — see PROJECT_PLAN.md.</summary>
+    /// <summary>The server's last accept/start result for a quest: 0 = accepted, &amp;gt;0 = a refusal reason code (from NC_QUEST_…</summary>
     public int questAcceptErr(int id) => View?.QuestAcceptErr(id) ?? -1;
 
-    /// <summary>Quests the character can accept right now — the server's authoritative
-    /// available list from the login QUEST_READ burst (the orange-! set), joined with QuestData
-    /// for startNpc/turnIn details. Each: {id, startNpc, turnInNpc, title, inView} where inView
-    /// = the start NPC is currently spawned near the bot (event quests' NPCs often aren't).
-    /// Refreshed on relog (the server doesn't push READ mid-session).</summary>
+    /// <summary>Quests the character can accept right now — the server's authoritative available list from the login QUEST_REA…</summary>
     public DynValue availableQuests()
     {
         var t = NewTable();
         var v = View; var cd = _mgr.ClientData;
         if (v is null) return DynValue.NewTable(t);
         var npcsInView = new HashSet<int>();
-        // Skip scenario clones: they have no mob id, so counting their placeholder would put NPC id 0
-        // "in view" and make a quest whose giver is npc 0 look reachable from inside an instance.
+        // Skip scenario clones: they have no mob id, so counting their placeholder would put NPC id 0 "in view" and make…
         foreach (var n in v.NearbyNpcs) if (!n.IsScenarioClone) npcsInView.Add(n.MobId);
         int i = 1;
         foreach (var id in v.AvailableQuests)
@@ -1015,17 +689,6 @@ public sealed class BotApi
         }
         return DynValue.NewTable(t);
     }
-    /// <summary>Quests the bot should consider accepting, driven from QuestData.shn directly
-    /// (NOT the server's QUEST_READ list — in these data files the low-level quests are buggily
-    /// absent from it). A quest is eligible when: not already done, not already active, it has at
-    /// least one kill objective (type==1), and it has a real start NPC. Class is not filtered
-    /// (≈99% of quests are unrestricted). Level isn't hard-gated either — the server rejects an
-    /// out-of-level accept, which the driver detects via <c>questActive</c> not flipping. Each
-    /// row: {id, startNpc, turnInNpc, minLevel, repeatable, title, objectives[{mob,count}]}.
-    /// The driver bulk-accepts these at their start NPCs in town.</summary>
-    /// <summary>Maps a Fiesta class id to its base/first-job class (the LINE leader): Fighter(1-5)→1,
-    /// Cleric(6-10)→6, Archer(11-15)→11, Mage(16-20)→16, Joker(21+)→21. Quest Class@63 is a base id;
-    /// matching by line lets an advanced char (e.g. Warrior 3) still take its line's base quests.</summary>
     private static int ClassLine(int c) => c > 0 ? ((c - 1) / 5) * 5 + 1 : 0;
 
     public DynValue eligibleQuests()
@@ -1036,24 +699,12 @@ public sealed class BotApi
         int i = 1;
         foreach (var q in cd.Quests.Values)
         {
-            // ACCEPT GATE = the StartCondition Needs* flags, NOT a bare StartNpc. A quest is
-            // NPC-startable only when NeedsNpc && NPCID set; quests with NeedsNpc=0 (e.g. RouN's
-            // "Cursed Doll" from Pey) are NOT acceptable by clicking — the server rejects them
-            // (SELECT_START err 2887). NeedsItem=1 = a "hidden"/trigger-item quest, also not
-            // plain-NPC-startable. (Validated against QuestData.shn + live wire, 2026-06-24.)
+            // ACCEPT GATE = the StartCondition Needs* flags, NOT a bare StartNpc
             if (!q.NeedsNpc || q.StartNpc == 0 || q.NeedsItem) continue;
-            // CLASS GATE (@62 NeedsClass / @63 Class): the starter quests come in one copy PER CLASS
-            // (q1 "Baby Steps" Fighter / q944 Cleric / q945 Archer / q946 Mage) — a Fighter must only
-            // see the Fighter copy, else it loops clicking the giver for a quest it can't get. Match by
-            // class LINE (Fighter 1-5, Cleric 6-10, Archer 11-15, Mage 16-20, Joker 21+) so advanced
-            // classes still match their base quest. q.Class 0 = any class.
+            // CLASS GATE (@62 NeedsClass / @63 Class): the starter quests come in one copy PER CLASS (q1 "Baby Steps" Fighte…
             if (q.NeedsClass && q.Class != 0 && _handle.Class != 0 && ClassLine(q.Class) != ClassLine(_handle.Class)) continue;
             if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
-            // Accept ALL NPC-startable, level-appropriate quests: kill (Type 1), item-collect (Type 2),
-            // find/visit (Type 3) AND 0-objective story quests (the Roumen newbie chain q1→q2→q3, which
-            // instant-complete at the turn-in NPC). Earlier this required a kill objective, so the
-            // leveler skipped the newbie chain + item-pickup quests and went straight to grind.
-            // LEVEL WINDOW only when the quest is level-gated (NeedsLevel@26).
+            // Accept ALL NPC-startable, level-appropriate quests: kill (Type 1), item-collect (Type 2), find/visit (Type 3)…
             if (!q.IsNeedLevel) continue;
             if (q.MinLevel > _handle.Level || _handle.Level > q.MaxLevel) continue;
             if (q.PrereqQuest != 0 && !v.IsQuestDone(q.PrereqQuest)) continue; // prerequisite quest not done (@58)
@@ -1064,8 +715,7 @@ public sealed class BotApi
             int kills = q.Objectives.Count(o => o.Type == 1);
             e["hasKill"] = kills > 0; e["hasItem"] = q.Objectives.Any(o => o.Type == 2);
             e["noObjective"] = q.Objectives.Count == 0;  // 0-objective: accept + instant turn-in
-            // remoteAcceptable = can be accepted from the quest log without walking (0x4414 START_REQ).
-            // A separate client-side level-floor (~lvl 10–20) also applies — the driver ANDs that in.
+            // remoteAcceptable = can be accepted from the quest log without walking (0x4414 START_REQ)
             e["remoteAcceptable"] = q.RemoteAcceptable; e["questListVisible"] = q.IsWaitListView; e["remoteHandIn"] = q.RemoteHandIn;
             var objs = NewTable(); int oi = 1;
             foreach (var o in q.Objectives)
@@ -1076,22 +726,13 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c> (the table the
-    /// real client uses for the quest-log marker): {map, x, y, width, height}, or nil if unknown.
-    /// Lets the driver travel to the right field for a kill objective with no server data.</summary>
-    /// <summary>The mob's level from client MobInfo.shn, or -1 if unknown. Used by the leveler to pick a
-    /// SURVIVABLE grind target (avoid mobs at/above the char's level whose dense spawns swarm-kill it) and to
-    /// prefer the highest-value mob it can safely handle.</summary>
+    /// <summary>Where a mob type spawns, from client MobCoordinate.shn (the table the real client uses for the quest-log marke…</summary>
     public int mobLevel(int mobId) => _mgr.ClientData?.Mob(mobId)?.Level ?? -1;
 
-    /// <summary>The mob's max HP from client MobInfo.shn, or -1 if unknown. Named bosses have HP far above their
-    /// level-peers (Mara L19 = 5458 HP vs ~500-800 normal) — used with <see cref="mobGrade"/> to flag "too hard".</summary>
+    /// <summary>The mob's max HP from client MobInfo.shn, or -1 if unknown</summary>
     public int mobMaxHp(int mobId) => _mgr.ClientData?.Mob(mobId)?.MaxHp ?? -1;
 
-    /// <summary>The mob's MobInfo.shn GradeType: 0 = normal grindable mob, >=1 = a NAMED BOSS/ELITE (e.g. Mara =
-    /// GradeType 1, a lvl-19 5458-HP mini-boss that needs ~lvl-25 + gear/buffs/party to solo). The leveler
-    /// deprioritizes quests whose kill-target is a boss so it never burns the session soloing an unwinnable mob.
-    /// -1 if unknown.</summary>
+    /// <summary>The mob's MobInfo.shn GradeType: 0 = normal grindable mob, &gt;=1 = a NAMED BOSS/ELITE</summary>
     public int mobGrade(int mobId) => _mgr.ClientData?.Mob(mobId)?.GradeType ?? -1;
 
     public DynValue mobLocation(int mobId)
@@ -1099,17 +740,11 @@ public sealed class BotApi
         var cd = _mgr.ClientData;
         if (cd is null) return DynValue.Nil;
         var all = cd.MobCoordinatesAll(mobId);
-        // Drop zero-area rows: those are quest-log MARKERS (e.g. the gate to go through), not real
-        // spawn fields. Keeping them made "prefer current map" pick the RouN gate-marker and freeze.
+        // Drop zero-area rows: those are quest-log MARKERS
         var nonZero = all.Where(l => (long)l.Width * l.Height > 0).ToList();
         if (nonZero.Count > 0) all = nonZero;
         if (all.Count == 0) return DynValue.Nil;
-        // Prefer (1) the current map (hunt here if the mob spawns here), else (2) the LARGEST patch
-        // overall — deterministic / position-INDEPENDENT. The old middle tier ("a map reachable via an
-        // IN-VIEW gate") flipped as the bot moved (different gates in view on each map), so a mob with
-        // spawns on two maps had its target map ping-pong every tick → the RouCos01↔RouN↔RouVal01
-        // map-thrash (exp frozen). A stable pick (+ the Lua travel commitment) fixes that; the largest
-        // patch is the real spawn field (quest-log markers are tiny and already dropped above).
+        // Prefer (1) the current map (hunt here if the mob spawns here), else (2) the LARGEST patch overall — determinis…
         var cur = _handle.CurrentMap;
         GameData.MobLocation? pick = cur is null ? null : all.FirstOrDefault(l => string.Equals(l.Map, cur, StringComparison.OrdinalIgnoreCase));
         pick ??= all.OrderByDescending(l => (long)l.Width * l.Height)
@@ -1122,72 +757,42 @@ public sealed class BotApi
 
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
-    /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate
-    /// <see cref="soulstoneHp"/> on <c>not bot.hpStoneDepleted()</c> so the bot stops spamming
-    /// the use on an empty reserve and goes to a healer to restock instead. Cleared by a
-    /// successful use or an HP-stone buy.</summary>
+    /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate on not bot.hpStoneDepleted() so the…</summary>
     public bool hpStoneDepleted() => View?.HpStoneDepleted ?? false;
 
-    /// <summary>Hardest hit ever observed from this mob id, or -1 if we have NEVER been hit by it.
-    /// <para>⚠️ -1 means NO EVIDENCE, which is NOT the same as "safe" — do not treat an unknown mob as
-    /// harmless. Check <see cref="mobHitSamples"/> before trusting a comparison.</para>
-    /// <para>Learned from the wire (client MobInfo carries no attack stats, so observation is the only
-    /// source). Motivating case 2026-08-05: mob4002 hits for 208-246 against 881 maxHp — four hits kill —
-    /// and the bot travelled five hops to fight it, dying twice in 90s for -528 exp, because nothing in
-    /// quest selection could ask this question.</para></summary>
+    /// <summary>Hardest hit ever observed from this mob id, or -1 if we have NEVER been hit by it</summary>
     public int mobHitMax(int mobId) => View?.MobHitMax(mobId) ?? -1;
 
-    /// <summary>Observed attack RANGE of a mob (world units), or -1 if it has never hit us. Learned from
-    /// the wire because the client ships no attack-range column (MobWeapon.Range is server-side).</summary>
+    /// <summary>Observed attack RANGE of a mob (world units), or -1 if it has never hit us</summary>
     public double mobAttackRange(int mobId) => View?.MobAttackRange(mobId) ?? -1;
 
-    /// <summary>Observed attack range of a specific ENTITY by handle, or -1. Use for anything the mob-id
-    /// table cannot describe — notably a scenario clone, whose MobId is 0.</summary>
+    /// <summary>Observed attack range of a specific ENTITY by handle, or -1</summary>
     public double handleAttackRange(int handle) => View?.HandleAttackRange((ushort)handle) ?? -1;
 
-    /// <summary>Hardest hit taken from a specific ENTITY by handle, or -1 if it has never hit us. The
-    /// per-handle twin of <see cref="mobHitMax"/>, for attackers the mob-id table cannot describe (a
-    /// scenario clone reads MobId 0, so every damage sample from it used to be discarded).
-    /// <para>⚠️ -1 means NO EVIDENCE, not "harmless" — check <see cref="handleHitSamples"/> first.</para></summary>
+    /// <summary>Hardest hit taken from a specific ENTITY by handle, or -1 if it has never hit us</summary>
     public int handleHitMax(int handle) => View?.HandleHitMax((ushort)handle) ?? -1;
 
-    /// <summary>Mean damage per connecting hit from this ENTITY, or -1 if never observed.</summary>
+    /// <summary>Mean damage per connecting hit from this ENTITY, or -1 if never observed</summary>
     public double handleHitAvg(int handle) => View?.HandleHitAvg((ushort)handle) ?? -1;
 
-    /// <summary>How many hits from this ENTITY have been sampled. 0 = no evidence.</summary>
+    /// <summary>How many hits from this ENTITY have been sampled</summary>
     public int handleHitSamples(int handle) => View?.HandleHitSamples((ushort)handle) ?? 0;
 
-    /// <summary>Mean damage per connecting hit from this mob id, -1 if never observed.</summary>
+    /// <summary>Mean damage per connecting hit from this mob id, -1 if never observed</summary>
     public double mobHitAvg(int mobId) => View?.MobHitAvg(mobId) ?? -1;
 
-    /// <summary>How many hits from this mob we have sampled. 0 = no evidence.</summary>
+    /// <summary>How many hits from this mob we have sampled</summary>
     public int mobHitSamples(int mobId) => View?.MobHitSamples(mobId) ?? 0;
 
-    /// <summary>How many of this mob's hardest hits it would take to kill us from full, or -1 if unknown.
-    /// The direct survivability question: &lt;=3 means a single mob can burst us down, and quest targets
-    /// like that need a different plan (or to be skipped) rather than a straight melee trade.</summary>
-    /// <summary>HP restored by ONE soul-stone charge as the SERVER advertises it in the soul-stone
-    /// shop packet (0x3C05); 0 until a healer's shop has been opened. Use this for the sustain model in
-    /// preference to any measured figure — it is exact, needs no samples, and cannot be polluted by
-    /// regen / potions / an ally's heal. Live example: 270 per charge on a level-16 character.</summary>
     public int hpStoneRestore() => (int)(View?.HpStoneRestore ?? 0);
-    /// <summary>SP restored by one soul-stone charge (same packet); 0 until known.</summary>
+    /// <summary>SP restored by one soul-stone charge (same packet); 0 until known</summary>
     public int spStoneRestore() => (int)(View?.SpStoneRestore ?? 0);
 
-    /// <summary>Mean HP restored by one soul stone, -1 if never measured.</summary>
     public double hpStoneHealAvg() => View?.HpStoneHealAvg ?? -1;
 
-    /// <summary>Sustainable healing in HP/sec from the stone (mean heal ÷ learned cooldown), -1 if unknown.
-    /// <para>⭐ THE SURVIVABILITY INEQUALITY. Compare against incoming DPS: if the pack deals more than this,
-    /// the fight CANNOT be out-healed and no rotation tuning changes that. This is the term that was missing
-    /// while the per-mob "hits to kill" check looked at the wrong statistic — measured over 75 minutes, the
-    /// dominant death mode was PACK ATTRITION (one death was mob19 landing 58 hits of ≤13 damage, which
-    /// "hits to kill = 68" calls perfectly safe), and deaths consumed 102% of all exp earned.</para></summary>
     public double sustainableHealDps() => View?.SustainableHealDps ?? -1;
 
-    /// <summary>Observed incoming damage per second over the last <paramref name="windowMs"/>, using the
-    /// real hits we took (not an estimate). Pair with <see cref="sustainableHealDps"/>: exceeding it means
-    /// we are losing HP faster than we can restore it, whatever the individual mobs look like.</summary>
+    /// <summary>Observed incoming damage per second over the last , using the real hits we took (not an estimate)</summary>
     public double incomingDps(double windowMs = 5000)
     {
         var v = View;
@@ -1203,98 +808,50 @@ public sealed class BotApi
         return (int)Math.Ceiling((double)maxHp / max);
     }
 
-    /// <summary>Milliseconds until the HP soul stone can heal again — <b>0 = ready now</b>, -1 = the cooldown
-    /// has not been learned yet. This is the difference between "I asked to heal" and "I healed".
-    /// <para>The stone has a server-side cooldown (~6.9s, LEARNED from the min gap between successful uses,
-    /// never hardcoded). Firing inside it returns USEFAIL and heals nothing. In the 15:30:41 death all five
-    /// uses were refused and HP fell 628→0 while the log claimed a recharge each time.</para>
-    /// <para>USE THIS AS A COMBAT INPUT: sustained survivability is not maxHp, it is
-    /// <c>maxHp + one heal per cooldown</c>. If <c>hpStoneReadyIn() &gt; 0</c> the bot has NO heal available
-    /// and must decide on that basis (reposition, stun, break line of sight) rather than trading blows in the
-    /// belief that a heal is coming.</para></summary>
+    /// <summary>Milliseconds until the HP soul stone can heal again — 0 = ready now , -1 = the cooldown has not been learned y…</summary>
     public double hpStoneReadyIn() => View?.HpStoneReadyInMs ?? -1;
 
-    /// <summary>The learned HP soul-stone cooldown in ms (-1 until two successful uses have been observed).
-    /// Derived from the wire, so it stays correct if the server's value differs from the ~6.9s measured.</summary>
     public double hpStoneCooldownMs() => View?.HpStoneCooldownMs ?? -1;
 
-    /// <summary>Milliseconds until the SP soul stone can fire again (0 = ready, -1 = never used yet).
-    /// The twin of <see cref="hpStoneReadyIn"/>, and the same combat input for a caster: an SP stone on
-    /// cooldown means the mana is not coming, so a rotation that assumes a top-up is about to land is
-    /// planning on something that cannot happen. ⭐ Both stones share a 7s cooldown (operator-stated
-    /// 2026-08-13); only the HP side had ever been timed.</summary>
+    /// <summary>Milliseconds until the SP soul stone can fire again (0 = ready, -1 = never used yet)</summary>
     public double spStoneReadyIn() => View?.SpStoneReadyInMs ?? -1;
 
-    /// <summary>The SP soul-stone cooldown in ms. Same length as the HP stone's.</summary>
+    /// <summary>The SP soul-stone cooldown in ms</summary>
     public double spStoneCooldownMs() => View?.SpStoneCooldownMs ?? -1;
 
-    /// <summary>Consecutive HP-stone USEFAILs since the last real heal. <b>Non-zero means the bot is asking to
-    /// heal and NOT healing</b> — the exact condition that killed it while the log looked healthy.</summary>
+    /// <summary>Consecutive HP-stone USEFAILs since the last real heal</summary>
     public int hpStoneFailsInARow() => View?.HpStoneFailsSinceSuccess ?? 0;
 
-    /// <summary>True while a skill cast is animating — the character is LOCKED, so starting another
-    /// cast now is wasted. Gate the rotation on <c>not bot.casting()</c> (operator 2026-08-04:
-    /// "only cast when not on cooldown AND not in cast animation already").
-    /// <para>SERVER-AUTHORITATIVE: driven by the server's CAST_SUC_ACK / HIT_DAMAGE / CAST_FAIL /
-    /// CASTABORT / CASTCUT. It is however opened SPECULATIVELY the instant we send a cast, so the
-    /// round trip can't be spammed through, and it auto-releases on a predicted deadline if a
-    /// resolution packet is ever lost — casts stay speculative under lag instead of stalling.</para></summary>
+    /// <summary>True while a skill cast is animating — the character is LOCKED, so starting another cast now is wasted</summary>
     public bool casting() => View?.IsCasting ?? false;
 
-    /// <summary>Whether the server has CONFIRMED the in-flight cast (CAST_SUC_ACK seen), as opposed to
-    /// it still being our speculative local guess. Diagnostic — lets a driver/log tell the two apart.</summary>
+    /// <summary>Whether the server has CONFIRMED the in-flight cast (CAST_SUC_ACK seen), as opposed to it still being our spec…</summary>
     public bool castConfirmed() => View?.CastServerConfirmed ?? false;
-    /// <summary>Current HP soul-stone reserve count, or -1 if unknown (no buy/use seen yet).
-    /// Decrements on a successful use, refilled on a buy ack.</summary>
+    /// <summary>Current HP soul-stone reserve count, or -1 if unknown (no buy/use seen yet)</summary>
     public int hpStones() => View?.HpStones ?? -1;
-    /// <summary>Max HP soul-stone reserve capacity (from the [1802] param block), or 0 if not
-    /// seeded. Lets a script restock at a percentage of capacity (e.g. &lt;10%).</summary>
     public int maxHpStones() => (int)(View?.MaxHpStones ?? 0);
-    /// <summary>Unit price (cen) of one HP soul-stone charge, from the healer's soul-stone
-    /// shop-open (0x3C05). 0 until a soul-stone shop has been opened this session. Buy the MAX
-    /// AFFORDABLE: <c>min(deficit, money/hpStonePrice)</c> — never ask for more than you can pay
-    /// (the server silently rejects an unaffordable buy with no ack).</summary>
+    /// <summary>Unit price (cen) of one HP soul-stone charge, from the healer's soul-stone shop-open (0x3C05)</summary>
     public int hpStonePrice() => (int)(View?.HpStonePrice ?? 0);
-    /// <summary>Unit price (cen) of one SP soul-stone charge (0x3C05 shop-open). 0 until opened.</summary>
+    /// <summary>Unit price (cen) of one SP soul-stone charge (0x3C05 shop-open)</summary>
     public int spStonePrice() => (int)(View?.SpStonePrice ?? 0);
-    /// <summary>SP analogue of <see cref="hpStoneDepleted"/> — gate <see cref="soulstoneSp"/> on
-    /// <c>not bot.spStoneDepleted()</c>. USEFAIL (0x5006) is attributed HP vs SP by correlating to
-    /// the USE the bot actually fired (it carries no marker on the wire).</summary>
+    /// <summary>SP analogue of — gate on not bot.spStoneDepleted()</summary>
     public bool spStoneDepleted() => View?.SpStoneDepleted ?? false;
-    /// <summary>Current SP soul-stone reserve count, or -1 if unknown. Seeded at zone-enter
-    /// (NC_CHAR_BASE CurSPStone@40), refilled by SP BUY ack (0x5004), decrements on SP USESUC.</summary>
+    /// <summary>Current SP soul-stone reserve count, or -1 if unknown</summary>
     public int spStones() => View?.SpStones ?? -1;
-    /// <summary>Max SP soul-stone reserve capacity, or 0 if not seeded.</summary>
+    /// <summary>Max SP soul-stone reserve capacity, or 0 if not seeded</summary>
     public int maxSpStones() => (int)(View?.MaxSpStones ?? 0);
-    /// <summary>Monotonic count of soul-stone BUY failures (0x5005 NC_SOULSTONE_BUYFAIL_ACK). Record
-    /// it before firing a buy — if it increased while the BUY_ACK never came, THAT buy was refused
-    /// (e.g. err 0x0742 = count would exceed the max reserve); recompute instead of re-firing.</summary>
+    /// <summary>Monotonic count of soul-stone BUY failures (0x5005 NC_SOULSTONE_BUYFAIL_ACK)</summary>
     public int stoneBuyFailCount() => View?.StoneBuyFailCount ?? 0;
-    /// <summary>Error code of the last soul-stone BUY failure (0x5005), 0 if none seen.</summary>
+    /// <summary>Error code of the last soul-stone BUY failure (0x5005), 0 if none seen</summary>
     public int lastStoneBuyFailErr() => View?.LastStoneBuyFailErr ?? 0;
     public bool dead() => View?.Dead ?? false;
-    /// <summary>True if WE were hit in roughly the last 8s. ⚠️ This is "am I being attacked", NOT
-    /// "am I attacking" — do not use it to decide whether to (re)start an auto-attack. Doing exactly
-    /// that was the bug that made the bot stop fighting back precisely when mobs were hitting it: the
-    /// grind loop only re-issued <c>autoAttack</c> when <c>not inCombat()</c>, which is never true while
-    /// a pack is beating on us. Use <see cref="bashing"/> for "is my swing stream running".</summary>
+    /// <summary>True if WE were hit in roughly the last 8s</summary>
     public bool inCombat() => View?.InCombat ?? false;
 
-    /// <summary>True while OUR melee auto-attack (BASHSTART) swing stream is actually running — set when
-    /// the server starts our bash, cleared when it sends CEASE_FIRE on our own handle. This is the
-    /// correct "am I attacking right now" signal, and the one to gate a re-issue of
-    /// <see cref="autoAttack"/> on: a bash lapses for reasons that have nothing to do with whether we
-    /// are being hit (a cast's stop/face, the target moving, a cancelled walk-over), and when it does,
-    /// the bot must start swinging again or it deals literally zero damage.</summary>
+    /// <summary>True while OUR melee auto-attack (BASHSTART) swing stream is actually running — set when the server starts our…</summary>
     public bool bashing() => View?.BashActive ?? false;
-    /// <summary>Learned effective attack range (max distance a swing of ours has connected at) — 0 until the
-    /// first connecting hit. Measured from the wire since no client file / PDB carries it (operator 2026-07-15).</summary>
     public double learnedRange() => View?.LearnedMeleeRange ?? 0;
-    /// <summary>True if EITHER we were hit OR we landed a hit within the last <paramref name="withinMs"/>
-    /// ms (default 15000) — unlike <see cref="inCombat"/> (us being hit only), this also covers a mob
-    /// that's genuinely taking damage from us but never retaliates (weak/passive, or a facing bug false
-    /// negative). Operator 2026-07-01: the "give up, this mob is un-killable" guard must check damage
-    /// dealt OR received, not just received — a target we're actually damaging is never un-killable.</summary>
+    /// <summary>True if EITHER we were hit OR we landed a hit within the last ms (default 15000) — unlike (us being hit only),…</summary>
     public bool recentDamage(int withinMs = 15000)
     {
         var v = View; if (v is null) return false;
@@ -1302,27 +859,19 @@ public sealed class BotApi
         return (now - v.LastHitAtUtc).TotalMilliseconds < withinMs
             || (now - v.LastDamageDealtAtUtc).TotalMilliseconds < withinMs;
     }
-    /// <summary>True if WE landed a CONNECTING hit (Damage&gt;0, not a whiff/out-of-range) within the last
-    /// <paramref name="withinMs"/> ms. Lets the kite-chip logic confirm a damage skill actually connected
-    /// (operator 2026-07-07: "check it didn't miss via packets") — a miss/out-of-range leaves this false.</summary>
+    /// <summary>True if WE landed a CONNECTING hit (Damage&amp;gt;0, not a whiff/out-of-range) within the last ms</summary>
     public bool damageDealt(int withinMs = 3000)
     {
         var v = View; if (v is null) return false;
         return v.LastRealDamageDealtAtUtc > DateTime.MinValue
             && (DateTime.UtcNow - v.LastRealDamageDealtAtUtc).TotalMilliseconds < withinMs;
     }
-    /// <summary>Count of mobs the bot itself landed the killing blow on (REALLYKILL attacker==self).
-    /// The real kill signal for quest/XP credit — a mob merely vanishing (despawn / another
-    /// player's kill) does NOT count. A grind loop credits a kill when this increments.</summary>
+    /// <summary>Count of mobs the bot itself landed the killing blow on (REALLYKILL attacker==self)</summary>
     public int killsByMe() => View?.KillsByMe ?? 0;
     public bool respawn() => Ok(Wait(_mgr.RespawnAsync(Id)));
     public bool buyHpStone(int number = 1) => Ok(Wait(_mgr.BuyHpStoneAsync(Id, (ushort)number)));
     public bool buySpStone(int number = 1) => Ok(Wait(_mgr.BuySpStoneAsync(Id, (ushort)number)));
-    /// <summary>Open an NPC's shop SYNCHRONOUSLY and return the OUTCOME (operator 2026-06-30: no recency
-    /// window). Blocks a few seconds for a definitive reply, then returns: "weapon"/"skill"/"item"/
-    /// "soulstone" if a real shop opened, "randomoption" if the NPC is a non-shop RandomOption menu (the
-    /// Anvil — closed for you), or "none" on timeout/untracked. The driver classifies the NPC from THIS
-    /// return, not a time window. (bot.shopOpen()/shopKind() also reflect the result.)</summary>
+    /// <summary>Open an NPC's shop SYNCHRONOUSLY and return the OUTCOME (operator 2026-06-30: no recency window)</summary>
     public string openShop(int npcHandle, int menuOption = 1)
     {
         Wait(_mgr.OpenShopAsync(Id, (ushort)npcHandle, (byte)menuOption));
@@ -1333,17 +882,12 @@ public sealed class BotApi
         return "none";
     }
 
-    /// <summary>True if the last openShop() got a RandomOption menu (0x3C0E, e.g. the Anvil) rather than a
-    /// shop — i.e. the NPC is definitively NOT a merchant. Lets noteShop reclassify it as notshop.</summary>
+    /// <summary>True if the last openShop() got a RandomOption menu (0x3C0E</summary>
     public bool lastOpenWasRandomOption() => (View?.RandomOptionUtc ?? DateTime.MinValue) > DateTime.MinValue;
     public bool buy(int itemId, int lot = 1) => Ok(Wait(_mgr.BuyAsync(Id, (ushort)itemId, (uint)lot)));
     public bool sell(int slot, int lot = 1) => Ok(Wait(_mgr.SellAsync(Id, (byte)slot, (uint)lot)));
 
-    /// <summary>Move ONE item between the bag and personal storage and return whether it was CONFIRMED.
-    /// <c>deposit=true</c> is bag→storage, false is storage→bag (the same NC_ITEM_RELOC_REQ both ways).
-    /// <para>Returns <b>false</b> when no storage session is open, or when no CELLCHANGE confirmed the
-    /// move within 3s — a missing ack is a FAILURE, never assumed success, and it logs CRUTCH[CRIT].
-    /// Check the return value: that is the whole point of the operator's fail-loudly requirement.</para></summary>
+    /// <summary>Move ONE item between the bag and personal storage and return whether it was CONFIRMED</summary>
     public bool storageMove(int fromSlot, int toSlot, bool deposit = true)
         => Ok(Wait(_mgr.StorageMoveAsync(Id, (byte)fromSlot, (byte)toSlot, deposit)));
     public bool enchant(int equip, int raw, int rawLeft = 255, int rawMiddle = 255, int rawRight = 255, int money = 0)
@@ -1353,23 +897,12 @@ public sealed class BotApi
     public bool walk(double fx, double fy, double tx, double ty) => Ok(Wait(_mgr.WalkAsync(Id, (uint)fx, (uint)fy, (uint)tx, (uint)ty)));
     public bool travelTo(string map) => _mgr.TravelTo(Id, map).Result == BotManager.TravelResult.Started;
     public bool stopTravel() => Ok(_mgr.StopTravel(Id));
-    /// <summary>True while a multi-hop cross-map <see cref="BotManager.TravelAsync"/> is in flight.
-    /// The lua must gate re-issuing travelTo on THIS, not on moving(): at each gate the bot is
-    /// momentarily STOPPED (not moving) while the travel loop waits for the map transition, and a
-    /// moving()-based guard would re-issue travelTo there — cancelling the in-flight gate-use.</summary>
+    /// <summary>True while a multi-hop cross-map is in flight</summary>
     public bool traveling() => _handle.TravelCts is { IsCancellationRequested: false };
 
-    /// <summary>True while a LOCAL walk (<see cref="BotManager.WalkPath"/>) is streaming move steps —
-    /// the same-map counterpart to <see cref="traveling"/>, which only covers multi-hop CROSS-MAP routes.
-    /// <para>⛔ Exposed 2026-08-13 because the driver's "arrived, so dismount" rule tested only
-    /// <c>traveling()</c>. A same-map walk leaves that false, so the bot read a 1400u walk to an NPC as
-    /// "arrived", dismounted 1.5s in, and covered the rest on foot at ~50% speed — then the mount toggle
-    /// cooldown refused the re-mount (operator: "the mage is not mounting on town trip, just walking
-    /// slowly along"). "Arrived" means no route AND no walk in flight.</para></summary>
     public bool walking() => _handle.WalkCts is { IsCancellationRequested: false };
 
-    /// <summary>Non-moving route query (diagnostic / decision helper): can the bot route to <paramref name="map"/>
-    /// from where it is? Returns { result=&lt;TravelResult&gt;, ok=bool, hops, portals, maps={..} }.</summary>
+    /// <summary>Non-moving route query (diagnostic / decision helper): can the bot route to from where it is?</summary>
     public DynValue routeTo(string map)
     {
         var (res, route) = _mgr.RouteInfo(Id, map);
@@ -1387,7 +920,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>All map nodes currently in the routing graph (seeded client nav + live-observed gates).</summary>
+    /// <summary>All map nodes currently in the routing graph (seeded client nav + live-observed gates)</summary>
     public DynValue knownMaps()
     {
         var t = NewTable(); int i = 1;
@@ -1395,8 +928,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Outgoing edges from <paramref name="map"/> in the routing graph — field gates AND town
-    /// portals — as { to=&lt;map&gt;, portal=bool } rows. For diagnosing why a route is/ isn't found.</summary>
+    /// <summary>Outgoing edges from in the routing graph — field gates AND town portals — as { to=&amp;lt;map&amp;gt;, portal=bool } r…</summary>
     public DynValue mapEdges(string map)
     {
         var t = NewTable(); int i = 1;
@@ -1409,7 +941,7 @@ public sealed class BotApi
     public bool useGate(int handle) => Ok(Wait(_mgr.UseGateAsync(Id, (ushort)handle)));
     public bool townPortal(int npcHandle, int dest) => Ok(Wait(_mgr.TownPortalAsync(Id, (ushort)npcHandle, (byte)dest)));
 
-    /// <summary>Issue a GM command (prepends '&amp;' if no prefix), e.g. <c>bot.gm("levelup 1")</c>.</summary>
+    /// <summary>Issue a GM command (prepends '&amp;amp;' if no prefix)</summary>
     public bool gm(string command)
     {
         var c = command.Trim();
@@ -1417,9 +949,7 @@ public sealed class BotApi
         return Ok(Wait(_mgr.GmAsync(Id, c)));
     }
 
-    /// <summary>Pathfind over the current map's block grid and walk to (x,y). Returns
-    /// false if no grid / position / path. Uses the bot's tracked position as the start
-    /// and its current map — same machinery as the <c>/walkto</c> endpoint.</summary>
+    /// <summary>Pathfind over the current map's block grid and walk to (x,y)</summary>
     public bool walkTo(double x, double y)
     {
         if (_handle.CurrentMap is not { } map) return false;
@@ -1428,11 +958,7 @@ public sealed class BotApi
         var path = PathFinder.FindPath(grid, pos.X, pos.Y, (uint)x, (uint)y);
         if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
         {
-            // UNREACHABLE on the runtime-augmented grid, but learned MOVEFAIL blocks may have wrongly SEVERED a
-            // route the raw .shbd CONNECTS (grid-poison — the same failure ApproachAsync clears; it bricked the
-            // hand-in walk to an off-view NPC on EldGbl02 where 184 learned blocks accumulated). Everything IS
-            // walkable, so an empty path here is almost always self-poison, not real geometry: forget the learned
-            // blocks and retry once so we re-path the true static geometry.
+            // UNREACHABLE on the runtime-augmented grid, but learned MOVEFAIL blocks may have wrongly SEVERED a route the ra…
             var poisoned = grid.RuntimeBlockedCount;
             grid.ClearRuntimeBlocked();
             path = PathFinder.FindPath(grid, pos.X, pos.Y, (uint)x, (uint)y);
@@ -1441,30 +967,17 @@ public sealed class BotApi
         }
         if (path.Count == 0)
         {
-            // Truly no route even on the clean grid (FindPath snaps a blocked start/goal to nearest walkable, so
-            // empty = genuinely disconnected). Log the walkability of both ends so a real .shbd/geometry gap is
-            // visible as a BUG to fix (operator: everything is navvable) — never silently skip.
+            // Truly no route even on the clean grid (FindPath snaps a blocked start/goal to nearest walkable, so empty = gen…
             var (stx, sty) = grid.WorldToTile(pos.X, pos.Y);
             var (gtx, gty) = grid.WorldToTile((uint)x, (uint)y);
             bool startUnwalkable = !grid.IsWalkableTile(stx, sty);
             _handle.Log($"[nav] walkTo ({(uint)x},{(uint)y}) UNREACHABLE on {map} — " +
                 $"start=({stx},{sty})walk={startUnwalkable} goal=({gtx},{gty})walk={grid.IsWalkableTile(gtx, gty)} " +
                 $"grid={grid.WidthTiles}x{grid.HeightTiles}");
-            // BLIND-MOVE ESCAPE (2026-07-17): the .shbd marks the bot's OWN tile unwalkable, but the SERVER has it
-            // standing here and lets it move — a client-grid accuracy gap FindPath can't route out of (it snaps to
-            // a nearest-walkable tile on a DISCONNECTED .shbd island). Issue a SHORT CAPPED MOVERUN toward the
-            // target: the SERVER governs walkability, so it either MOVES the bot onto real walkable ground (escaping
-            // the wedge that otherwise only a RELOG fixed — variant 3 of the nav-wedge P0) or MOVEFAILs harmlessly
-            // (a real obstacle → the MOVEFAIL handler learns it). Gated on startUnwalkable so it never fires in
-            // normal nav (where the start IS walkable), keeping the blast radius tiny.
+            // BLIND-MOVE ESCAPE (2026-07-17): the .shbd marks the bot's OWN tile unwalkable, but the SERVER has it standing…
             if (startUnwalkable)
             {
-                // Escape toward the NEAREST WALKABLE .shbd tile — NOT blindly toward the target. A gate can land us
-                // in a .shbd-gap pocket whose only walkable opening faces AWAY from the target; the old toward-target
-                // MOVERUN then MOVEFAILs forever and we WEDGE (live 2026-07-23: RouVal02 gate-arrival @(11278,11270),
-                // 4+ min frozen, exp stalled — blind-move toward the quest mob was walled). Ring-search outward for
-                // the closest walkable ground and MOVERUN toward it — the SERVER governs walkability, so a move onto
-                // real ground pops us out of the gap. Falls back to the old toward-target hop if none found nearby.
+                // Escape toward the NEAREST WALKABLE .shbd tile — NOT blindly toward the target
                 (uint X, uint Y)? esc = null;
                 for (int r = 1; r <= 16 && esc is null; r++)
                     for (int ddx = -r; ddx <= r && esc is null; ddx++)
@@ -1498,9 +1011,7 @@ public sealed class BotApi
         return Ok(_mgr.WalkPath(Id, PathFinder.Simplify(path)));
     }
 
-    /// <summary>Face (x,y) and STOP, committing the bot's position to the server (MOVERUN+STOP, exactly what
-    /// the real client sends on arrival). Use to force the server to register a scenario AreaEntry cross when
-    /// the bot is inside a trigger box but no AREAENTRY_REQ has arrived (the Zone_Mob05 finale).</summary>
+    /// <summary>Face (x,y) and STOP, committing the bot's position to the server (MOVERUN+STOP, exactly what the real client s…</summary>
     public bool commitStop(double x, double y) => Ok(Wait(_mgr.CommitStopAsync(Id, (uint)x, (uint)y)));
 
     public bool partyInvite(string name) => Ok(Wait(_mgr.PartyInviteAsync(Id, name)));
@@ -1509,10 +1020,7 @@ public sealed class BotApi
     public string pendingInvite() => _handle.PendingPartyInviter ?? "";
     public bool partyChat(string text) => Ok(Wait(_mgr.PartyChatAsync(Id, text)));
 
-    /// <summary>The live party roster (from the WM party member-state packets) — an array of tables
-    /// { name, class, level, hp, maxhp, sp, maxsp, x, y }. The TEAMWORK foundation: a cleric heals the
-    /// lowest hp/maxhp member, composition picks by class/level, regroup/shared-kill use x/y (x/y are 0
-    /// until MEMBERLOCATION(73)'s layout is pinned). Empty table if not in a party.</summary>
+    /// <summary>The live party roster (from the WM party member-state packets) — an array of tables { name, class, level, hp,…</summary>
     public DynValue partyMembers()
     {
         var t = NewTable(); int i = 1;
@@ -1530,10 +1038,9 @@ public sealed class BotApi
     public bool friendAdd(string name) => Ok(Wait(_mgr.FriendAddAsync(Id, name)));
     public bool friendConfirm(string name, bool accept) => Ok(Wait(_mgr.FriendConfirmAsync(Id, name, accept)));
     public bool friendDelete(string name) => Ok(Wait(_mgr.FriendDeleteAsync(Id, name)));
-    /// <summary>Name of a pending incoming friend request (someone added the bot), or "" if none.</summary>
+    /// <summary>Name of a pending incoming friend request (someone added the bot), or "" if none</summary>
     public string pendingFriend() => _handle.PendingFriendRequester ?? "";
-    /// <summary>Accept the pending incoming friend request (no-op if none). Lets a social
-    /// script auto-confirm so an operator can friend the bot and watch it.</summary>
+    /// <summary>Accept the pending incoming friend request (no-op if none)</summary>
     public bool friendAccept()
     {
         var who = _handle.PendingFriendRequester;
@@ -1546,8 +1053,7 @@ public sealed class BotApi
     public double maxHp() => View?.MaxHp ?? 0;
     public double maxSp() => View?.MaxSp ?? 0;
 
-    /// <summary>Current HP as a 0–100 percentage of max, or -1 if HP/max isn't known yet.
-    /// The usual "heal / HP-stone when low" gate: <c>if bot.hpPct() &lt; 40 then ...</c>.</summary>
+    /// <summary>Current HP as a 0–100 percentage of max, or -1 if HP/max isn't known yet</summary>
     public double hpPct()
     {
         var v = View;
@@ -1562,17 +1068,10 @@ public sealed class BotApi
         return 100.0 * s / v.MaxSp;
     }
 
-    /// <summary>How many mobs are currently aggroing the bot (combat window) — the
-    /// "am I overwhelmed?" signal for a flee transition.</summary>
+    /// <summary>How many mobs are currently aggroing the bot (combat window) — the "am I overwhelmed?" signal for a flee trans…</summary>
     public int aggressors() => _mgr.AggressorCount(Id);
 
-    /// <summary>The HANDLES of entities currently attacking the bot (from inbound SWING_DAMAGE where the
-    /// bot is the defender, within the combat window). Crucially this includes mobs that arrive as
-    /// scenario OBJECTS / characters — the JCQ promotion instance "shadow" waves come via
-    /// LOGINCHARACTER (0x1C06) + SCENARIO_OBJTYPECHANGE (0x6C0B), NOT via REGENMOB, so they NEVER enter
-    /// <see cref="nearbyMobs"/> — yet they swing at us, so they land here. The instance hoover uses this
-    /// to "fight who hits us" (auto-attack the aggressor handle; it's in melee range since it's hitting
-    /// us) and clear a room that <c>nearbyMobs()</c> reports as empty. Data-driven, reusable for KQs.</summary>
+    /// <summary>The HANDLES of entities currently attacking the bot (from inbound SWING_DAMAGE where the bot is the defender,…</summary>
     public DynValue aggressorHandles()
     {
         var t = NewTable();
@@ -1582,15 +1081,6 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Every current aggressor with its SPAWN ANCHOR and how far it has already been dragged from it
-    /// (operator 2026-08-05: "for each aggro'd enemy track where it spawned to calculate how far it will chase").
-    /// Rows: {handle, mobId, x, y, anchorX, anchorY, fromSpawn, chaseLimit, willDropIn}.
-    /// <para><c>fromSpawn</c> = how far this individual is from home right now. <c>chaseLimit</c> = the furthest
-    /// any mob of its id has been observed to chase, LEARNED from the wire (0 = not measured yet).
-    /// <c>willDropIn</c> = chaseLimit - fromSpawn, i.e. roughly how much further we must drag it before it gives
-    /// up — negative/zero means it is already past everything we've ever seen this mob type do.</para>
-    /// This is what makes a shed predictable per-mob instead of one global guess: each chaser has its own anchor,
-    /// so a tail sheds progressively as each one runs out of leash.</summary>
     public DynValue aggressorSpawns()
     {
         var t = NewTable();
@@ -1604,8 +1094,7 @@ public sealed class BotApi
             row["handle"] = n.Handle; row["mobId"] = n.MobId; row["x"] = n.X; row["y"] = n.Y;
             if (v.MobAnchor(n.Handle) is { } a) { row["anchorX"] = a.X; row["anchorY"] = a.Y; }
             var from = v.AnchorDistance(n.Handle) ?? 0;
-            // A clone has no mob id, so it has no learned chase limit — reading one would return mob 0's
-            // (a Slime's) leash and let the driver conclude the clone will disengage when it will not.
+            // A clone has no mob id, so it has no learned chase limit — reading one would return mob 0's (a Slime's) leash a…
             var limit = n.IsScenarioClone ? 0 : v.MobChaseLimit(n.MobId);
             if (n.IsScenarioClone) row["isClone"] = true;
             row["fromSpawn"] = from; row["chaseLimit"] = limit;
@@ -1615,15 +1104,9 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Learned chase limit for a mob id — furthest from its spawn one has been seen while still
-    /// aggroing. 0 = never measured. Read from the wire, never hardcoded.</summary>
     public double mobChaseLimit(int mobId) => View?.MobChaseLimit(mobId) ?? 0;
 
-    /// <summary>World position { x, y } of ANY tracked entity by handle — a mob (<c>_npcs</c>) OR a
-    /// character (<c>_nearby</c>). Nil if the handle isn't in view. Needed because scenario/instance
-    /// enemies (the JCQ "shadow" clones) arrive as CHARACTERS via LOGINCHARACTER and so aren't in
-    /// <see cref="nearbyMobs"/> — the instance hoover uses this to CLOSE range on an aggressor clone
-    /// before auto-attacking it (a swing needs melee range + facing).</summary>
+    /// <summary>World position { x, y } of ANY tracked entity by handle — a mob ( _npcs ) OR a character ( _nearby )</summary>
     public DynValue entityPos(int handle)
     {
         var v = View; if (v is null) return DynValue.Nil;
@@ -1633,43 +1116,36 @@ public sealed class BotApi
         return DynValue.Nil;
     }
 
-    /// <summary>Flee: walk away from the threat by <paramref name="dist"/> units. NON-BLOCKING
-    /// (returns immediately), so a survival tick can keep healing while retreating.</summary>
+    /// <summary>Flee: walk away from the threat by units</summary>
     public bool flee(double dist = 500) => Ok(_mgr.Flee(Id, dist));
 
     public double? x() => _handle.Position?.X;
     public double? y() => _handle.Position?.Y;
     public string? map() => _handle.CurrentMap;
 
-    /// <summary>True if a map (by name; defaults to the current map) is an INDOOR/dungeon/instance map
-    /// (MapInfo.shn InSide=1, e.g. RouTemDn01). The leveler prefers hunting field spawns and treats a
-    /// dungeon-only quest mob as instance content (operator 2026-07-16 "prefer field over dungeon").</summary>
+    /// <summary>True if a map (by name; defaults to the current map) is an INDOOR/dungeon/instance map (MapInfo.shn InSide=1,…</summary>
     public bool mapInside(string mapName = null) => _mgr.ClientData?.MapInside(mapName ?? _handle.CurrentMap) ?? false;
     public int? selfHandle() => _handle.SelfHandle;
     public bool mounted() => View?.IsMounted ?? false;
 
-    /// <summary>True while the travel driver is taking a GATE HOP and mounting must be held off.
-    /// A gate is silently ignored while mounted, so <c>mountUp()</c> MUST early-return on this — the Lua
-    /// tick and the C# gate code otherwise race, the Lua mounts mid-approach, and the hop aborts.</summary>
+    /// <summary>True while the travel driver is taking a GATE HOP and mounting must be held off</summary>
     public bool noMount() => _handle.SuppressMount;
     public double walkSpeed() => _handle.WalkSpeed;
     public int level() => (int)_handle.Level;
     public string phase() => _handle.Phase.ToString();
     public bool inZone() => _handle.Phase == BotPhase.InZone;
 
-    /// <summary>A monotonic millisecond clock for script-side cooldowns
-    /// (<c>if bot.now() - last > 3000 then ...</c>).</summary>
+    /// <summary>A monotonic millisecond clock for script-side cooldowns ( if bot.now() - last &gt; 3000 then</summary>
     public double now() => Environment.TickCount64;
 
-    /// <summary>Headline log (Note): quest accept/finish, level-up, death, purchase, errors.</summary>
+    /// <summary>Headline log (Note): quest accept/finish, level-up, death, purchase, errors</summary>
     public void log(string message) => _handle.Log(BotLogLevel.Note, $"[lua] {message}");
-    /// <summary>Progress log (Info): each kill, quest-objective credit, restock/travel choices.</summary>
+    /// <summary>Progress log (Info): each kill, quest-objective credit, restock/travel choices</summary>
     public void logi(string message) => _handle.Log(BotLogLevel.Info, $"[lua] {message}");
-    /// <summary>Firehose log (Verbose): per-tick move/cast/auto-attack + the state dump.</summary>
+    /// <summary>Firehose log (Verbose): per-tick move/cast/auto-attack + the state dump</summary>
     public void logv(string message) => _handle.Log(BotLogLevel.Verbose, $"[lua] {message}");
 
-    // ── perception (tables) ───────────────────────────────────────────────────
-    /// <summary>Zone handle of the nearest non-gate mob/NPC in view, or nil.</summary>
+    // perception (tables) ─────────────────────────────────────────────────── Zone handle of the nearest non-gate mo…
     public DynValue nearestMob()
     {
         var v = View; var pos = _handle.Position;
@@ -1684,14 +1160,7 @@ public sealed class BotApi
         return best is { } b ? DynValue.NewNumber(b) : DynValue.Nil;
     }
 
-    /// <summary>Resolve a mob/NPC id (e.g. a quest's startNpc/turnInNpc) to a live entity in
-    /// view: {handle, x, y, dist}, or nil if not currently spawned near the bot. Lets the quest
-    /// driver turn QuestData ids into something it can walkTo + doQuest.</summary>
-    /// <summary>✅ {x, y, dist, isGate, linkMap} of an NPC/gate by mobId from the AUTHORITATIVE map-enter
-    /// SEED (the bulk 0x1C09 broadcast at infinite range — ALL the map's NPCs+gates). The source of truth
-    /// for "where is NPC X on THIS map" — walkTo any quest giver / merchant / gate WITHOUT hardcoded coords
-    /// and WITHOUT having seen it. For a gate, <c>isGate=true</c> and <c>linkMap</c> = where it leads. nil
-    /// if the seed has no such NPC on the current map (it's on another map — don't use stale coords).</summary>
+    /// <summary>Resolve a mob/NPC id</summary>
     public DynValue npcLocation(int mobId)
     {
         if (View?.Npc(mobId) is not { } e) return DynValue.Nil;
@@ -1700,12 +1169,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>A quest/turn-in NPC's canonical location from client <c>MobCoordinate.shn</c>
-    /// ({map,x,y}), or nil if the NPC isn't in the table. Unlike <see cref="mobLocation"/> this KEEPS
-    /// zero-area POINT rows — a stationary NPC is a point, not a spawn field — so a cross-map hand-in can
-    /// resolve the right map AND walk to the NPC even when it was never roam-learned and isn't in the
-    /// current zone seed. Prefers the current map if the NPC is listed there. Client data (the same table
-    /// the quest-log marker uses) — no server files, no hardcoding. Operator 2026-07-07.</summary>
+    /// <summary>A quest/turn-in NPC's canonical location from client MobCoordinate.shn ({map,x,y}), or nil if the NPC isn't in…</summary>
     public DynValue npcCoord(int npcId)
     {
         var loc = _mgr.ClientData?.MobCoordinate(npcId, _handle.CurrentMap);
@@ -1713,29 +1177,16 @@ public sealed class BotApi
         var t = NewTable(); t["map"] = loc.Map; t["x"] = loc.CenterX; t["y"] = loc.CenterY;
         return DynValue.NewTable(t);
     }
-    /// <summary>Count of NPCs in the current map's seed roster.</summary>
+    /// <summary>Count of NPCs in the current map's seed roster</summary>
     public int npcSeedCount() => View?.NpcSeedCount ?? 0;
 
-    /// <summary>The full map-enter NPC SEED roster as a lua array of {mobId, x, y, isGate, linkMap, dist}
-    /// — every NPC+gate on the current map (authoritative). Iterate it to DISCOVER/visit services
-    /// (skill master / Smith / healer) by walking to their seed coords, instead of only probing the few
-    /// NPCs currently in view. dist is from the bot's position (nil if unknown).</summary>
+    /// <summary>The full map-enter NPC SEED roster as a lua array of {mobId, x, y, isGate, linkMap, dist} — every NPC+gate on…</summary>
     public DynValue npcSeedList()
     {
         var v = View; var arr = NewTable();
         if (v is not null)
         {
             int i = 1;
-            // ⛔ NpcSeedAll, NOT NpcSeed. This says "every NPC+gate on the current map (authoritative)" and
-            // for gates it was delivering ONE PER MOB ID, because NpcSeed is a mob-id-keyed dictionary and
-            // every teleport gate shares mob id 32. So all but one gate were dropped, and the survivor's
-            // position got paired with whichever destination won the race — which is exactly the "bogus
-            // gate edge" the router keeps discovering the expensive way:
-            //   [travel] hop 1/2: no gate to 'EldGbl02' in view near (10724,4318) — aborting
-            //   [travel] PRUNED bogus gate edge RouVal02 -> EldGbl02 (gate not there) — will re-route
-            // ClericFresh burned 68% of a 38-minute budget (1549s) walking to gates that were not there,
-            // pruning, re-routing and repeating, at +0 exp. Same root as the map layer only drawing one
-            // gate per map; the nav graph was the other victim.
             foreach (var e in v.NpcSeedAll)
             {
                 var t = NewTable();
@@ -1774,15 +1225,10 @@ public sealed class BotApi
             var row = NewTable();
             row["handle"] = n.Handle; row["mobId"] = n.MobId; row["mode"] = n.Mode;
             row["x"] = n.X; row["y"] = n.Y; row["isGate"] = n.IsGate; row["linkMap"] = n.LinkMap;
-            // Facing (SHINE_COORD_TYPE.dir) and the cur/max hp pair the client's health bar shows.
-            // hp is nil until this entity has been in a fight — absent means "never seen hurt", which
-            // is NOT the same as full and NOT the same as zero. Callers must treat nil as unknown.
+            // Facing (SHINE_COORD_TYPE.dir) and the cur/max hp pair the client's health bar shows
             row["dir"] = n.Dir;
             if (View?.EntityHp(n.Handle) is { } eh) row["hp"] = (double)eh;
-            // ⛔ A SCENARIO CLONE HAS NO MOB ID — do not look one up. Its MobId field reads 0, and 0 is a
-            // real mob ("Slime"), so this line used to hand a level-20 clone a level-1 Slime's MaxHp.
-            // Its name and level come from the character broadcast instead; maxhp stays absent, because a
-            // player entity never sends one and inventing it is what caused the wrong answer in the first place.
+            // A SCENARIO CLONE HAS NO MOB ID — do not look one up
             if (n.IsScenarioClone)
             {
                 row["isClone"] = true;
@@ -1794,10 +1240,7 @@ public sealed class BotApi
                 var mx = _mgr.ClientData?.Mob(n.MobId)?.MaxHp ?? -1;
                 if (mx > 0) row["maxhp"] = (double)mx;
             }
-            // Huntable = a real monster (not a guard / shop NPC / quest giver / resource node). Lets the
-            // field-grind avoid mistargeting a town NPC (it would walk into it forever). Unknown → true.
-            // A scenario clone the script declared fightable is huntable NO MATTER what MobInfo says —
-            // the JCQ clone is a PLAYER copy of ourselves, which MobInfo cannot classify at all.
+            // Huntable = a real monster (not a guard / shop NPC / quest giver / resource node)
             row["isHuntable"] = n.IsScenarioClone
                                 || (v.IsHuntableMob?.Invoke((ushort)n.MobId) ?? true);
             if (pos is { } p) row["dist"] = Math.Sqrt(Sq((double)n.X - p.X) + Sq((double)n.Y - p.Y));
@@ -1806,31 +1249,19 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Human label for an entity handle, for post-mortems: "SELF", "aggressor #N" (N = its place
-    /// in the current aggressor list), "mob&lt;id&gt;", or "h=&lt;handle&gt;" when we have never seen it.
-    /// ⚠️ The aggressor NUMBER is an index into the live list, not a durable id — it is there to make one
-    /// dump readable, not to correlate across dumps.</summary>
+    /// <summary>Human label for an entity handle, for post-mortems: "SELF", "aggressor #N" (N = its place in the current aggre…</summary>
     private string HandleLabel(ushort h, IReadOnlyList<ushort> aggro)
     {
         if (View?.SelfHandle == h) return "SELF";
         for (var i = 0; i < aggro.Count; i++) if (aggro[i] == h) return $"aggressor #{i + 1}";
         var npc = View?.NearbyNpcs.FirstOrDefault(n => n.Handle == h);
-        // A clone is named by its CHARACTER name — "mob0" would read as the Slime that mob id 0 really is.
+        // A clone is named by its CHARACTER name — "mob0" would read as the Slime that mob id 0 really is
         if (npc is { IsScenarioClone: true }) return $"clone {npc.CharName ?? "?"} L{npc.CharLevel?.ToString() ?? "?"}";
         if (npc is not null && npc.Handle == h) return $"mob{npc.MobId}";
         return $"h={h}";
     }
 
-    /// <summary>
-    /// The always-on packet ring: the last frames in BOTH directions, oldest first, as rows
-    /// { ts, outbound, opcode, name, len, hex, ascii, note }.
-    ///
-    /// `note` carries a plain-language decode for the combat opcodes, with entity handles translated to
-    /// labels ("aggressor #4 -> SELF dmg=101 rest=672"). Offsets are the PDB struct layouts, not guesses:
-    /// SWING_DAMAGE { attacker u16 @0, defender u16 @2, flag @4, damage u16 @6, resthp u32 @8 } and
-    /// SOMEONESWING_DAMAGE { attacker @0, defender @2, flag u8 @4, resthp u32 @5 }. Anything else gets
-    /// hex/ASCII only — no invented interpretation.
-    /// </summary>
+    /// <summary>The always-on packet ring: the last frames in BOTH directions, oldest first, as rows { ts, outbound, opcode, n…</summary>
     public DynValue recentPackets(int max = 100)
     {
         var t = NewTable();
@@ -1877,11 +1308,7 @@ public sealed class BotApi
         catch { return ""; }
     }
 
-    /// <summary>Every learned skill whose cooldown has NOT yet elapsed, as rows { id, name, remainMs }.
-    /// Remaining = ActiveSkill.DelayTime (client data) minus time since the last cast we sent. A skill we
-    /// have never cast this session is READY and is simply absent — absent means "not on cooldown", which
-    /// here is a real answer rather than a missing one, because a never-cast skill genuinely has no timer.
-    /// Also reports the HP soul-stone timer, which shares the "is my heal available" question.</summary>
+    /// <summary>Every learned skill whose cooldown has NOT yet elapsed, as rows { id, name, remainMs }</summary>
     public DynValue skillCooldowns()
     {
         var t = NewTable(); var i = 1;
@@ -1903,20 +1330,13 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Milliseconds until the HP soul stone can be used again (0 = ready, -1 = cooldown not yet
-    /// learned — it takes two heals in a session to measure it).</summary>
+    /// <summary>Milliseconds until the HP soul stone can be used again (0 = ready, -1 = cooldown not yet learned — it takes tw…</summary>
     public double hpStoneReadyInMs() => View?.HpStoneReadyInMs ?? -1;
 
-    /// <summary>Our FACING as a compass angle in degrees (0-360), or -1 if no heading has been set yet.
-    /// A core stat that belongs next to x()/y(): the server enforces a skill's <c>UsableDegree</c> arc
-    /// against it, so "can this cast proceed, or must I turn first?" is answered from here.
-    /// ⚠️ Degrees here are OUR heading in game-coordinate space (atan2 of the facing vector). A mob's
-    /// <c>dir</c> from nearbyMobs() is the raw wire byte (0-255) whose scale is NOT yet pinned — report
-    /// them side by side, never subtract one from the other.</summary>
+    /// <summary>Our FACING as a compass angle in degrees (0-360), or -1 if no heading has been set yet</summary>
     public double facingDeg() => _handle.FacingDeg;
 
-    /// <summary>Facing as its raw unit vector { dx, dy } plus <c>deg</c>, for callers doing their own
-    /// geometry rather than re-deriving it from the angle.</summary>
+    /// <summary>Facing as its raw unit vector { dx, dy } plus deg , for callers doing their own geometry rather than re-derivi…</summary>
     public DynValue facing()
     {
         var t = NewTable();
@@ -1949,8 +1369,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Items on the ground in view (rows: handle, itemId, x, y, dropMob, dist).
-    /// Loot a kill with <c>bot.loot()</c> (nearest) or <c>bot.loot(handle)</c>.</summary>
+    /// <summary>Items on the ground in view (rows: handle, itemId, x, y, dropMob, dist)</summary>
     public DynValue drops()
     {
         var t = NewTable();
@@ -1968,7 +1387,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Handle of the ground drop nearest the bot, or nil if nothing's on the ground.</summary>
+    /// <summary>Handle of the ground drop nearest the bot, or nil if nothing's on the ground</summary>
     public DynValue nearestDrop()
     {
         var v = View; var pos = _handle.Position;
@@ -1985,13 +1404,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Bag stack counts: slot → how many of that slot's item we hold. Pair with
-    /// <c>inventory()</c> (slot → itemId) and <c>itemInfo(id).maxLot</c> to answer "is there room for
-    /// this drop", which is NOT the same question as "is the bag full".
-    /// <para>The game does PARTIAL PICKS (operator 2026-08-12): with 48 held, MaxLot 50 and 3 on the
-    /// ground, a pick takes 2 and leaves 1. So a full bag can still accept items into any stack below
-    /// MaxLot, and skipping loot on bagFull alone throws those away. ZoneView has tracked these counts
-    /// from the wire lot field all along; nothing had ever exposed them.</para></summary>
+    /// <summary>Bag stack counts: slot → how many of that slot's item we hold</summary>
     public DynValue inventoryCounts()
     {
         var t = NewTable();
@@ -2008,7 +1421,7 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Resolve a nearby player by name (case-insensitive) to a row table, or nil.</summary>
+    /// <summary>Resolve a nearby player by name (case-insensitive) to a row table, or nil</summary>
     public DynValue playerByName(string name)
     {
         var p = View?.NearbyPlayers.FirstOrDefault(

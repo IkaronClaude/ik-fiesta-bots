@@ -3,21 +3,7 @@ using FiestaLibReloaded.Shn;
 
 namespace Fiesta.Bot.GameData;
 
-/// <summary>
-/// Loads client-side game-data tables (<c>.shn</c>) from a BYO <c>ressystem</c> directory
-/// the operator supplies, caching each parsed table. A bot is a synthetic <i>client</i>,
-/// so it may read anything a real client reads — item/skill/class/map tables — which lets
-/// feature code resolve game data (e.g. a skill's facing arc / cooldown / mana) from the
-/// operator's client files instead of hard-coding it.
-///
-/// <para><b>Boundary (see PROJECT_PLAN "Data-source boundary"):</b> this reads
-/// <i>client</i> SHNs only. Server-only tables (<c>NPC.txt</c>, <c>*Server.shn</c>, the
-/// shine text tables) are NOT a legitimate runtime source unless the operator actually
-/// has that server's files — don't load them here.</para>
-///
-/// <para>Same BYO data dir the [1801] checksums use (default
-/// <c>Z:/ClientProd2/ressystem</c>); nothing is shipped or committed. Thread-safe.</para>
-/// </summary>
+/// <summary>Loads client-side game-data tables ( .shn ) from a BYO ressystem directory the operator supplies, caching each…</summary>
 public sealed class ClientData
 {
     private readonly string _dataDir;
@@ -32,51 +18,31 @@ public sealed class ClientData
 
     public ClientData(string dataDir) => _dataDir = dataDir;
 
-    /// <summary>The BYO client data directory tables are loaded from.</summary>
+    /// <summary>The BYO client data directory tables are loaded from</summary>
     public string DataDir => _dataDir;
 
-    /// <summary>The CLIENT ROOT — the directory holding <c>ressystem</c>, <c>resmenu</c> and friends as
-    /// siblings (operator 2026-08-12: "do it BYO style but *full client dir* so ressystem, resmenu, etc.
-    /// all as siblings"). Derived from the data dir's parent, so an existing deployment pointing
-    /// CLIENT_DATA_DIR at <c>&lt;root&gt;/ressystem</c> already resolves the rest for free.</summary>
+    /// <summary>The CLIENT ROOT — the directory holding ressystem , resmenu and friends as siblings (operator 2026-08-12: "do…</summary>
     public string? ClientRoot => Path.GetDirectoryName(_dataDir.TrimEnd(Path.DirectorySeparatorChar, '/'));
 
-    /// <summary>Where the item icon ATLASES live: <c>&lt;client root&gt;/resmenu/Icon</c>. BYO like every
-    /// other client path — absent simply means the watch page draws name tiles instead of art.</summary>
+    /// <summary>Where the item icon ATLASES live: &amp;lt;client root&amp;gt;/resmenu/Icon</summary>
     public string? IconDir => ClientRoot is { } r ? Path.Combine(r, "resmenu", "Icon") : null;
 
-    /// <summary>Where the per-map MINIMAP art lives: <c>&lt;client root&gt;/resmenu/minimap</c>. Same BYO
-    /// deal as the icons — absent just means the watch page draws a plain grid.</summary>
+    /// <summary>Where the per-map MINIMAP art lives: &amp;lt;client root&amp;gt;/resmenu/minimap</summary>
     public string? MinimapDir => ClientRoot is { } r ? Path.Combine(r, "resmenu", "minimap") : null;
 
-    /// <summary>A map's minimap as a PNG, or null when the client ships no art for it. Cached — the
-    /// watch page requests one per map view and decoding a 512x512 DXT per poll would be silly.</summary>
+    /// <summary>A map's minimap as a PNG, or null when the client ships no art for it</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> _minimapPng =
         new(StringComparer.OrdinalIgnoreCase);
     public byte[]? MinimapPng(string mapName)
     {
         if (_minimapPng.TryGetValue(mapName, out var hit)) return hit;
         var png = MinimapDir is { } dir ? MinimapImage.Png(dir, mapName) : null;
-        // Cache HITS only. A null means "no art found *this time*" — which is also what a not-yet-populated
-        // BYO directory returns, and caching that would make art dropped onto the shared claim invisible
-        // until the process restarted. A miss is cheap to retry; a wrong permanent "no" is not.
+        // Cache HITS only. A null means "no art found *this time*" — which is also what a not-yet-populated BYO director…
         if (png is not null) _minimapPng[mapName] = png;
         return png;
     }
 
-    /// <summary>The fraction of a map's grid that its MINIMAP IMAGE actually covers, read from the
-    /// client's own <c>MapViewInfo.shn</c> (<c>StartX/StartY/EndX/EndY</c>, normalised 0..511).
-    ///
-    /// <para>⭐ THIS IS WHY RouN LOOKED WRONG. Most maps read 0,0..511,511 — the image is the whole map —
-    /// which is why a full-grid assumption looked "pretty damn spot on" on RouVal02/Urg/EldGbl02. But
-    /// RouN reads <c>104,49..413,358</c> and Eld <c>187,159..379,351</c>: their art covers a SUB-RECTANGLE,
-    /// so placing it across the full grid stretched it. Correlating walkability against the painted ground
-    /// confirms the table beats the assumption exactly where they differ — RouN 0.293 → 0.451, Eld
-    /// 0.282 → 0.593 — and is identical on the maps whose rect is already the full map.</para>
-    ///
-    /// <para>Returned as world-unit bounds, with Y already flipped into world orientation (the image's top
-    /// row is the HIGH world y). Null when the table or the row is missing, and the caller falls back to
-    /// the full grid.</para></summary>
+    /// <summary>The fraction of a map's grid that its MINIMAP IMAGE actually covers, read from the client's own MapViewInfo.sh…</summary>
     public (double X0, double Y0, double X1, double Y1)? MinimapWorldRect(string mapName, double gridWorldW, double gridWorldH)
     {
         var t = Table("MapViewInfo");
@@ -85,7 +51,7 @@ public sealed class ClientData
         foreach (var r in t.Rows)
             if (string.Equals(GetStr(r, "MapName"), mapName, StringComparison.OrdinalIgnoreCase)) { row = r; break; }
         if (row is null) return null;
-        // 0..511 inclusive over the map; +1 on the ends because End is the last cell, not the edge.
+        // 0..511 inclusive over the map; +1 on the ends because End is the last cell, not the edge
         const double Norm = 512.0;
         double sx = GetInt(row, "StartX"), sy = GetInt(row, "StartY");
         double ex = GetInt(row, "EndX") + 1, ey = GetInt(row, "EndY") + 1;
@@ -96,10 +62,7 @@ public sealed class ClientData
                 (1 - sy / Norm) * gridWorldH);
     }
 
-    /// <summary>Which atlas cell draws this item, from <c>ItemViewInfo.shn</c> (<c>IconFile</c> +
-    /// <c>IconIndex</c>). Null when the table or the row is missing.
-    /// <para>⚠️ IconIndex 0 is a REAL cell (the first one) and IconFile "-" is the table's own empty
-    /// marker — so absence is signalled by returning null, never by a zero.</para></summary>
+    /// <summary>Which atlas cell draws this item, from ItemViewInfo.shn ( IconFile + IconIndex )</summary>
     public (string File, int Index)? ItemIcon(int itemId)
     {
         var t = Table("ItemViewInfo");
@@ -110,11 +73,7 @@ public sealed class ClientData
         return (file, GetInt(row, "IconIndex"));
     }
 
-    /// <summary>A skill's icon cell + display text from <c>ActiveSkillView.shn</c> — the same
-    /// <c>IconFile</c>/<c>IconIndex</c> atlas scheme the items use, so the skill bar can draw the client's
-    /// own art. <c>InxName</c> is the internal name and <c>Descript</c> the tooltip text the client shows.
-    /// <para>⚠️ IconIndex 0 and skill ID 0 are both REAL (skill 0 is "Slice and Dice [01]"), so absence is
-    /// signalled by null and never by a zero.</para></summary>
+    /// <summary>A skill's icon cell + display text from ActiveSkillView.shn — the same IconFile / IconIndex atlas scheme the i…</summary>
     public (string File, int Index, string? Name, string? Descript)? SkillView(int skillId)
     {
         var t = Table("ActiveSkillView");
@@ -125,8 +84,7 @@ public sealed class ClientData
         return (file, GetInt(row, "IconIndex"), GetStr(row, "InxName"), GetStr(row, "Descript"));
     }
 
-    /// <summary>A skill's icon as a PNG, cut from the same atlases as the item icons (ClericSk00 and
-    /// friends already ship alongside them). Null when the client has no art for it.</summary>
+    /// <summary>A skill's icon as a PNG, cut from the same atlases as the item icons (ClericSk00 and friends already ship alon…</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte[]> _skillPng = new();
     public byte[]? SkillIconPng(int skillId)
     {
@@ -138,12 +96,7 @@ public sealed class ClientData
         return png;
     }
 
-    /// <summary>A buff/debuff's icon cell + text from <c>AbStateView.shn</c> (<c>iconFile</c>/<c>icon</c>,
-    /// lower-cased column names here, unlike the skill/item tables). Same atlas scheme again.</summary>
-    /// ⛔ NAME AND ICON ARE SEPARATE FACTS. This used to return null whenever the row had no
-    /// <c>iconFile</c>, which threw away the NAME as well — so a live buff rendered as a grey box with a
-    /// bare id (operator 2026-08-13) even though the client data knew what it was called. Missing art is
-    /// not missing knowledge: return whatever the row has, and let the caller decide what it can draw.
+    /// <summary>A buff/debuff's icon cell + text from AbStateView.shn ( iconFile / icon , lower-cased column names here, unlik…</summary>
     public (string? File, int Index, string? Name, string? Descript)? AbStateView(int abStateId)
     {
         var t = Table("AbStateView");
@@ -154,14 +107,7 @@ public sealed class ClientData
         return (file, GetInt(row, "icon"), GetStr(row, "inxName"), GetStr(row, "Descript"));
     }
 
-    /// <summary>Resolve a WIRE abstate index (what NC_BRIEFINFO_ABSTATE_CHANGE carries, e.g. 728) to its
-    /// <see cref="AbStateView"/> row.
-    ///
-    /// <para>⛔ TWO ID SPACES, AND THE WIRE USES THE OTHER ONE. <c>AbStateView.ID</c> is sparse (9315,
-    /// 9321, 9337…), so looking the wire value up there simply misses and the buff rendered as a grey box
-    /// with a bare number. The wire value is <c>AbState.shn</c>'s <c>AbStataIndex</c>; that row's
-    /// <c>ID</c> is the key into AbStateView. Same shape as the ActiveSkill/PassiveSkill id-space trap
-    /// already recorded in this codebase — an id is only meaningful with its table.</para></summary>
+    /// <summary>Resolve a WIRE abstate index (what NC_BRIEFINFO_ABSTATE_CHANGE carries</summary>
     public (string? File, int Index, string? Name, string? Descript)? AbStateByWireIndex(int wireIndex)
     {
         var t = Table("AbState");
@@ -170,7 +116,7 @@ public sealed class ClientData
             if (GetInt(row, "AbStataIndex") == wireIndex)
             {
                 var view = AbStateView(GetInt(row, "ID"));
-                // Even with no view row, AbState itself knows the internal name — better than a number.
+                // Even with no view row, AbState itself knows the internal name — better than a number
                 return view ?? (null, 0, GetStr(row, "InxName"), null);
             }
         return null;
@@ -187,8 +133,7 @@ public sealed class ClientData
         return png;
     }
 
-    /// <summary>The item icon as a PNG, or null when we have no art for it. Cached: the atlases are
-    /// small but decoding one per request for a 48-slot bag redrawn twice a second would not be.</summary>
+    /// <summary>The item icon as a PNG, or null when we have no art for it</summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte[]?> _iconPng = new();
     public byte[]? ItemIconPng(int itemId) => _iconPng.GetOrAdd(itemId, id =>
     {
@@ -197,12 +142,7 @@ public sealed class ClientData
         return path is null ? null : IconAtlas.IconPng(path, icon.Index);
     });
 
-    // ⛔ THE ATLAS FILENAMES DISAGREE WITH THE TABLE ON CASE, AND THE HOST RUNS ON LINUX.
-    // ItemViewInfo says "NckItem000" while the file is `Nckitem000.dds`, and "VarItem000" while the file
-    // is `VarItem000.DDS` — a different letter AND a different extension case, in the same directory.
-    // Windows does not care; the container does, so those items served no icon at all while their
-    // neighbours did. Same class of bug as the .shbd map grid earlier today, and it gets the same
-    // treatment: index the directory once, case-insensitively, and look every atlas up through it.
+    // THE ATLAS FILENAMES DISAGREE WITH THE TABLE ON CASE, AND THE HOST RUNS ON LINUX
     private Dictionary<string, string>? _iconFiles;
     private string? ResolveIconFile(string dir, string name)
     {
@@ -220,9 +160,7 @@ public sealed class ClientData
         return _iconFiles.TryGetValue(name, out var path) ? path : null;
     }
 
-    /// <summary>Load a client SHN table by name (e.g. "ActiveSkill", "ItemInfo",
-    /// "ClassName"), cached after the first read. Returns null if the file isn't present
-    /// in the data dir or fails to parse (callers fall back to their defaults).</summary>
+    /// <summary>Load a client SHN table by name</summary>
     public ShnTable? Table(string name)
     {
         if (_cache.TryGetValue(name, out var hit)) return hit;
@@ -231,13 +169,7 @@ public sealed class ClientData
         {
             if (!File.Exists(path)) { NoteTableFailure(name, "file not present"); return null; }
             var t = ShnTable.Load(path);
-            // ⛔ ONLY a SUCCESSFUL load is cached. This used to be _cache.GetOrAdd(...), which stored the
-            // NULL from a failed/missing read forever — so one transient miss (data dir not mounted yet,
-            // a partial read) permanently answered "this table does not exist" for the whole process, with
-            // the exception swallowed silently. Live 2026-08-06: MapWayPoint/MapLinkPoint came back null
-            // once, BuildGateEdges returned 0 edges, the map graph latched as "seeded" with nothing in it,
-            // and the bot was stranded in a dungeon with one routable exit, dying on repeat.
-            // A cache must hold ANSWERS, never failures — leaving it uncached simply retries next call.
+            // ONLY a SUCCESSFUL load is cached
             _cache[name] = t;
             return t;
         }
@@ -247,21 +179,15 @@ public sealed class ClientData
     private readonly ConcurrentDictionary<string, string> _tableFailures = new(StringComparer.OrdinalIgnoreCase);
     private void NoteTableFailure(string name, string why) => _tableFailures[name] = why;
 
-    /// <summary>Tables that failed to load, name → reason. Empty when everything read cleanly. Surfaced so a
-    /// downstream "I have no data" symptom (an empty nav graph, no item names) can name its actual cause
-    /// instead of being silently absorbed.</summary>
+    /// <summary>Tables that failed to load, name → reason</summary>
     public IReadOnlyDictionary<string, string> TableFailures => _tableFailures;
 
-    /// <summary>Look up an <c>ActiveSkill</c> row by its skill id and project the combat-
-    /// relevant fields. Null if the table is unavailable or the id isn't found. This is
-    /// the data the (future) data-driven cast keys off — facing arc, cast-while-moving,
-    /// cooldown, range, and mana — instead of the current hard-coded heuristic.</summary>
+    /// <summary>Look up an ActiveSkill row by its skill id and project the combat- relevant fields</summary>
     public SkillInfo? Skill(int skillId)
     {
         var t = Table("ActiveSkill");
         if (t is null) return null;
-        // The id column is "ID" in the client ActiveSkill table (verified against the BYO
-        // ressystem file). Fall back to "id" defensively in case of casing differences.
+        // The id column is "ID" in the client ActiveSkill table (verified against the BYO ressystem file)
         var row = t.FindByLong("ID", skillId) ?? t.FindByLong("id", skillId);
         if (row is null) return null;
         return new SkillInfo(
@@ -269,64 +195,28 @@ public sealed class ClientData
             UsableDegree: GetInt(row, "UsableDegree"),
             IsMovingSkill: GetInt(row, "IsMovingSkill") != 0,
             DelayTimeMs: GetInt(row, "DlyTime"),
-            // ActiveSkill.DemandType separates real COMBAT skills from gathering/event toys. Verified over
-            // every one of this character's 27 learned skills: DemandType 2 covers Mining, Ride Mover,
-            // Water Cannon, Throw a Water Balloon, Cake/Soda summons and all the Korean event skills (18 of
-            // them), while every combat skill — Slice and Dice, Bone Slicer, Fatal Slash, Concussive Charge,
-            // Snearing Kick, Vitality — is 0, 3 or 6. A DATA test, replacing a name blocklist that kept
-            // leaking new toys (operator P1 2026-08-06).
+            // ActiveSkill.DemandType separates real COMBAT skills from gathering/event toys
             DemandType: GetInt(row, "DemandType"),
-            // CastTime = the CAST ANIMATION length (ActiveSkill.shn col 26), distinct from DlyTime (the
-            // cooldown). While it runs the character is locked in the cast, so firing another skill during
-            // it is wasted — that is how castRotation ended up sending FIVE casts in 18ms, each one's STOP
-            // cancelling the melee swing stream (see the CEASE_FIRE ticket / packets-JcqFresh.log).
             CastTimeMs: GetInt(row, "CastTime"),
             Range: GetInt(row, "Range"),
             Sp: GetInt(row, "SP"),
             UseClass: GetInt(row, "UseClass"),
-            // MaxWC = the skill's weapon-damage coefficient. >0 = a real damage skill (Slice&Dice/Bone
-            // Slicer/Fatal Slash); 0 = a utility/no-damage skill (Snearing Kick, Concussive Charge). Lets
-            // the driver pick DAMAGE skills for the kite-chip so a fled mob keeps bleeding vs regenerating.
+            // MaxWC = the skill's weapon-damage coefficient
             MaxWc: GetInt(row, "MaxWC"),
-            // ⛔ MaxMA IS THE OTHER HALF OF "DOES THIS SKILL DEAL DAMAGE", AND IT WAS MISSING.
-            // MaxWC is the WEAPON coefficient; a spell's damage is in MaxMA, and for a caster's nukes
-            // MaxWC is 0. Verified across ActiveSkill.shn: 255 skills carry magic damage with ZERO weapon
-            // damage — every Magic Missile, Ice Bolt and Fire Bolt rank among them. With only MaxWC
-            // exposed, a Mage read as having NO damage skills at all, which quietly broke four separate
-            // rules that ask that question: the "stop auto-attacking once you have a rotation" threshold
-            // never tripped, engageRange() found no ranged damage skill and fell back to melee, the
-            // kite-chip filtered out every nuke, and castRotation's "pick the biggest hit" compared 0
-            // against 0 and took whatever the hash order offered — which is how a Cleric ended up
-            // spamming Protect and Resist and burning its SP stones.
+            // MaxMA IS THE OTHER HALF OF "DOES THIS SKILL DEAL DAMAGE", AND IT WAS MISSING
             MaxMa: GetInt(row, "MaxMA"),
-            // STUN: does any abnormal-state effect (StaNameA..D) apply a STUN? A stun skill (Concussive Charge =
-            // StaBattleBlowStun, 100%) freezes the target so the bot can safely kite+heal on low HP (operator
-            // "stun and kite on low hp"). Detected by the "Stun" substring in the state name — data-driven, NO
-            // hardcoded skill id. MaxWc is 0 for these (utility), so they were never in the damage rotation.
             Stun: GetStr(row, "StaNameA").Contains("Stun", System.StringComparison.OrdinalIgnoreCase)
                || GetStr(row, "StaNameB").Contains("Stun", System.StringComparison.OrdinalIgnoreCase)
                || GetStr(row, "StaNameC").Contains("Stun", System.StringComparison.OrdinalIgnoreCase)
                || GetStr(row, "StaNameD").Contains("Stun", System.StringComparison.OrdinalIgnoreCase),
-            // HEAL: EffectType==5 is the client's "heal applied" effect (verified over ALL Heal01-20 +
-            // GreatHeal01-05 in ActiveSkill.shn — 197 skills carry it). This is the DATA-DRIVEN way to
-            // categorise a heal (operator 2026-07-23: don't string-match the skill NAME). A direct heal.
+            // HEAL: EffectType==5 is the client's "heal applied" effect (verified over ALL Heal01-20 + GreatHeal01-05 in Act…
             Heal: GetInt(row, "EffectType") == 5,
-            // HEAL-OVER-TIME: a skill that applies a healing ABSTATE — decided by the abstate's STAT EFFECT,
-            // NOT its name (operator 2026-07-23: name-matching "Heal" sucks; go by stats). Resolve each
-            // StaNameA..D → AbState.shn → its SubAbState → and check whether that SubAbState applies the
-            // HP-RECOVER-OVER-TIME action (SubAbState ActionIndex == 30). VERIFIED via the real priest HoT:
-            // Restore → StaRestore, and the party HoT MultiProtect → StaMultiHeal, both resolve to a
-            // SubAbState with ActionIndexB=30 (subType 29); the poison DoT StaNorthPoison uses ActionIndex 27
-            // (HP damage) — so 30 cleanly means "recovers HP over time". Boss self-heals (KarenDotHeal etc.)
-            // also use 30, but they never enter the picture: the caller filters over the bot's OWN learned skills.
+            // HEAL-OVER-TIME: a skill that applies a healing ABSTATE — decided by the abstate's STAT EFFECT, NOT its name (o…
             HealOverTime: IsHealOverTimeState(GetStr(row, "StaNameA")) || IsHealOverTimeState(GetStr(row, "StaNameB"))
                        || IsHealOverTimeState(GetStr(row, "StaNameC")) || IsHealOverTimeState(GetStr(row, "StaNameD")));
     }
 
-    /// <summary>The English class name for a <c>ClassName.shn</c> <c>ClassID</c> (e.g. 1→"Fighter",
-    /// 6→"Cleric", plus promotion tiers), or null if the table/id isn't found. For the bots.ikaron.uk
-    /// status page (operator P1 2026-07-28) so it shows a class NAME, not the raw ClassID. ClassName.shn
-    /// columns: ClassID(Byte), acPrefix, acEngName, acLocalName — acEngName is the English display name.</summary>
+    /// <summary>The English class name for a ClassName.shn ClassID</summary>
     public string? ClassName(int classId)
     {
         var row = Table("ClassName")?.FindByLong("ClassID", classId);
@@ -335,14 +225,11 @@ public sealed class ClientData
         return string.IsNullOrWhiteSpace(name) ? null : name;
     }
 
-    // The SubAbState "action" index that means RECOVER HP OVER TIME (per-tick HP add). Empirically the heal
-    // discriminator: all heal abstates (StaRestore/StaMultiHeal/*DotHeal) carry it; the poison DoT uses 27.
+    // The SubAbState "action" index that means RECOVER HP OVER TIME (per-tick HP add)
     private const int HpRecoverOverTimeAction = 30;
     private HashSet<string>? _healOverTimeStates; // AbState InxNames whose SubAbState recovers HP over time
 
-    /// <summary>True if <paramref name="staName"/> is an abnormal-state that HEALS OVER TIME — resolved by
-    /// its actual stat effect (AbState → SubAbState → ActionIndex == HpRecoverOverTimeAction), not its name.
-    /// Built once from AbState.shn + SubAbState.shn (both client-side).</summary>
+    /// <summary>True if is an abnormal-state that HEALS OVER TIME — resolved by its actual stat effect (AbState → SubAbState →…</summary>
     private bool IsHealOverTimeState(string? staName)
     {
         if (string.IsNullOrEmpty(staName) || staName == "-") return false;
@@ -355,13 +242,13 @@ public sealed class ClientData
                     var ab = Table("AbState");
                     if (sub != null && ab != null)
                     {
-                        // SubAbState InxNames that apply the HP-recover-over-time action (any ActionIndexA..D).
+                        // SubAbState InxNames that apply the HP-recover-over-time action (any ActionIndexA..D)
                         var recoverSubs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         foreach (var r in sub.Rows)
                             if (GetInt(r, "ActionIndexA") == HpRecoverOverTimeAction || GetInt(r, "ActionIndexB") == HpRecoverOverTimeAction
                              || GetInt(r, "ActionIndexC") == HpRecoverOverTimeAction || GetInt(r, "ActionIndexD") == HpRecoverOverTimeAction)
                             { var n = GetStr(r, "InxName"); if (!string.IsNullOrEmpty(n)) recoverSubs.Add(n); }
-                        // AbStates whose SubAbState is one of those → the heal-over-time states.
+                        // AbStates whose SubAbState is one of those → the heal-over-time states
                         foreach (var r in ab.Rows)
                             if (recoverSubs.Contains(GetStr(r, "SubAbState")))
                             { var n = GetStr(r, "InxName"); if (!string.IsNullOrEmpty(n)) set.Add(n); }
@@ -371,10 +258,7 @@ public sealed class ClientData
         return _healOverTimeStates.Contains(staName);
     }
 
-    /// <summary>Look up a mob/NPC by its id in the client <c>MobInfo</c> table and project
-    /// the display fields — the bot reports only numeric <c>mobId</c>s from briefinfo, so
-    /// this is how a name ("Teleport Gate"), level, and max-HP get attached. Null if the
-    /// table is unavailable or the id isn't found. Client data, so always legitimate.</summary>
+    /// <summary>Look up a mob/NPC by its id in the client MobInfo table and project the display fields — the bot reports only…</summary>
     public MobData? Mob(int mobId)
     {
         var t = Table("MobInfo");
@@ -393,10 +277,7 @@ public sealed class ClientData
             GradeType: GetInt(row, "GradeType"));   // 0 = normal mob; >=1 = named boss/elite (e.g. Mara GradeType 1)
     }
 
-    /// <summary>Resolve a map id to its short name (e.g. 17 → "Urg") from the client
-    /// <c>MapInfo</c> table. A transition packet carries only the map <b>id</b>; the
-    /// client (and so the bot) resolves the name here — never from the wire. Null if the
-    /// table/id is missing.</summary>
+    /// <summary>Resolve a map id to its short name</summary>
     public string? MapName(int mapId)
     {
         var t = Table("MapInfo");
@@ -406,11 +287,7 @@ public sealed class ClientData
         return string.IsNullOrEmpty(n) ? null : n;
     }
 
-    /// <summary>The map's DISPLAY name — MapInfo.shn's <c>Name</c> column (e.g. "Elderine Cemetery"), as
-    /// opposed to <see cref="MapName"/> which returns the internal CODE (<c>EldCem01</c>). Both columns
-    /// have always been in the table; we only ever read the code, so every surface showed operators a
-    /// filename-ish token where the game shows a place. Accepts the CODE because that is what the bot
-    /// tracks as CurrentMap. Null when unknown — callers fall back to the code rather than inventing one.</summary>
+    /// <summary>The map's DISPLAY name — MapInfo.shn's Name column</summary>
     public string? MapDisplayName(string? mapCode)
     {
         if (string.IsNullOrEmpty(mapCode)) return null;
@@ -426,10 +303,7 @@ public sealed class ClientData
     }
 
     private HashSet<string>? _insideMaps;
-    /// <summary>True if the map (by MapName) is an INDOOR/dungeon/instance map — MapInfo.shn <c>InSide=1</c>
-    /// (e.g. RouTemDn01 "Luminous Stone 1"); field/town maps are InSide=0. A solo field-leveling char must not
-    /// route into a dungeon's dense packs to hunt a quest mob (operator 2026-07-16 "prefer field over dungeon").
-    /// Built once from MapInfo. False if unknown.</summary>
+    /// <summary>True if the map (by MapName) is an INDOOR/dungeon/instance map — MapInfo.shn InSide=1</summary>
     public bool MapInside(string? mapName)
     {
         if (string.IsNullOrEmpty(mapName)) return false;
@@ -445,8 +319,7 @@ public sealed class ClientData
         return _insideMaps.Contains(mapName);
     }
 
-    /// <summary>The display name of an item id (e.g. for a shop list) from client
-    /// <c>ItemInfo</c>. Empty if missing.</summary>
+    /// <summary>The display name of an item id</summary>
     public string ItemName(int itemId)
     {
         var t = Table("ItemInfo");
@@ -454,11 +327,7 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Name");
     }
 
-    /// <summary>Item fields from client <c>ItemInfo</c> for shop eval: <see cref="ItemData.UseClass"/>
-    /// (class line — Fighter 2–7, 0 = all), <see cref="ItemData.DemandLv"/> (level to use/equip),
-    /// <see cref="ItemData.Grade"/> (rarity), <see cref="ItemData.EquipSlot"/> (the <c>Equip</c> slot),
-    /// and <see cref="ItemData.IsScroll"/> (a skill scroll — <c>ItemUseSkill=="UseSkill"</c>; USE it to
-    /// learn the skill named the same as the item, e.g. "Slice and Dice [02]"). null if unknown.</summary>
+    /// <summary>Item fields from client ItemInfo for shop eval: (class line — Fighter 2–7, 0 = all), (level to use/equip), (ra…</summary>
     public ItemData? Item(int itemId)
     {
         var t = Table("ItemInfo");
@@ -468,25 +337,14 @@ public sealed class ClientData
             GetInt(row, "Grade"), GetInt(row, "Equip"), GetStr(row, "ItemUseSkill") == "UseSkill",
             GetInt(row, "Type"), GetInt(row, "ItemGradeType"),
             GetInt(row, "Class"), GetInt(row, "MaxLot"), GetInt(row, "SellPrice"),
-            // TwoHand=1 → a 2-handed weapon (occupies the weapon AND off-hand slot); ShieldAC>0 → a shield
-            // (off-hand). A shield can't be worn with a 2H weapon — the driver uses these to avoid the
-            // infinite "equip shield → server rejects → re-equip" loop on a 2H wielder (operator 2026-07-07).
+            // TwoHand=1 → a 2-handed weapon (occupies the weapon AND off-hand slot); ShieldAC>0 → a shield (off-hand)
             GetInt(row, "TwoHand") != 0, GetInt(row, "ShieldAC"),
-            // What the vendor CHARGES. Without it the driver could not tell "I want this" from "I can
-            // afford this", so it fired buy after buy the server rejected with 0x020B for lack of money —
-            // measured 2026-08-11: JcqFighter had 131 cen and kept buying a 290-cen mastery book,
-            // JcqCleric had 95 and kept buying a 380-cen necklace, both looping in town instead of
-            // grinding for the money that would have made the purchase possible.
             GetInt(row, "BuyPrice"),
-            // WeaponType tells us whether our AUTO-ATTACK reaches: 2 bow, 10 crossbow, 3 staff,
-            // 11 wand are RANGED; 1/4/5/13/17/18/19/21 (sword/axe/mace/hammer/dual/claw/blade) are
-            // melee. The driver needs this to stop walking ranged classes into melee.
+            // WeaponType tells us whether our AUTO-ATTACK reaches: 2 bow, 10 crossbow, 3 staff, 11 wand are RANGED; 1/4/5/13…
             GetInt(row, "WeaponType"));
     }
 
-    /// <summary>The display name of a skill id from client <c>ActiveSkill</c> (col "Name").
-    /// Empty if missing. Lets the bot resolve a learned-skill id (e.g. find the one named
-    /// "Heal") without hard-coding ids.</summary>
+    /// <summary>The display name of a skill id from client ActiveSkill (col "Name")</summary>
     public string SkillName(int skillId)
     {
         var t = Table("ActiveSkill");
@@ -494,8 +352,7 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Name");
     }
 
-    /// <summary>The display name of a PASSIVE skill id from client <c>PassiveSkill</c> (col "Name").
-    /// Passives live in their OWN table with their OWN id space — see <see cref="ScrollSkill"/>.</summary>
+    /// <summary>The display name of a PASSIVE skill id from client PassiveSkill (col "Name")</summary>
     public string PassiveSkillName(int skillId)
     {
         var t = Table("PassiveSkill");
@@ -503,23 +360,7 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Name");
     }
 
-    /// <summary>The skill a skill book/scroll teaches: its id and WHICH TABLE that id belongs to.
-    /// Returns <c>(-1, false)</c> if the item isn't a skill book (or no matching skill).
-    /// <para>⚠️ There are TWO skill tables with SEPARATE, OVERLAPPING id spaces: <c>ActiveSkill</c>
-    /// (castable skills) and <c>PassiveSkill</c> (masteries — "One Handed Sword Mastery [01]",
-    /// "Bravery Mastery [01]"). Both start at id 0 and collide: ActiveSkill 0 = "Slice and Dice [01]",
-    /// PassiveSkill 0 = "Bravery Mastery [01]"; ActiveSkill 9/10 are real skills and so are
-    /// PassiveSkill 9/10 (One Handed Sword Mastery [01]/[02]). So a bare skill id is MEANINGLESS
-    /// without knowing its table — hence the <c>Passive</c> flag, which must be carried all the way
-    /// through to <see cref="Session.ZoneView.HasSkill"/>.</para>
-    /// A book's <c>ItemInfo.InxName</c> equals the <c>InxName</c> of the skill it teaches
-    /// (scroll item 4720 "Bone Slicer [01]" InxName <c>SeverBone01</c> → ActiveSkill id 20;
-    /// book item 7613 "One Handed Sword Mastery [01]" InxName <c>OHSwdMastery01</c> → PassiveSkill id 9).
-    /// <c>ItemUseSkill</c> is only the generic use-handler ("UseSkill"), NOT the skill id — so we join
-    /// on InxName, ACTIVE first then PASSIVE.
-    /// <para>(2026-08-05: resolving against ActiveSkill ONLY is why the mastery books never learned —
-    /// they returned -1, and the leveler's learn-from-bag sweep skips anything with id &lt; 0, so three
-    /// mastery books sat unlearned in Bot7170's bag while <c>scrollEligible</c> refused to re-buy them.)</para></summary>
+    /// <summary>The skill a skill book/scroll teaches: its id and WHICH TABLE that id belongs to</summary>
     public (int Id, bool Passive) ScrollSkill(int itemId)
     {
         var it = Table("ItemInfo");
@@ -533,27 +374,14 @@ public sealed class ClientData
         return (-1, false);
     }
 
-    /// <summary>The ACTIVE-skill id a skill scroll teaches, or -1. Thin wrapper over
-    /// <see cref="ScrollSkill"/> that DISCARDS the passive flag — only safe where the caller has
-    /// already established the skill is an active. Prefer <see cref="ScrollSkill"/>.</summary>
+    /// <summary>The ACTIVE-skill id a skill scroll teaches, or -1</summary>
     public int ScrollSkillId(int itemId)
     {
         var (id, passive) = ScrollSkill(itemId);
         return passive ? -1 : id;
     }
 
-    /// <summary>The prerequisite skill a skill must already have learned before it can itself be learned —
-    /// the <c>DemandSk</c> column (in the SAME table as the skill) holds the prereq's <c>InxName</c>
-    /// (Fatal Slash [02] / <c>RedSlash02</c> → <c>DemandSk="RedSlash01"</c>; One Handed Sword Mastery [02]
-    /// / <c>OHSwdMastery02</c> → <c>DemandSk="OHSwdMastery01"</c>). A prereq is always in the same table as
-    /// the skill that demands it, so the returned id shares <paramref name="passive"/>'s id space.
-    /// <para>Returns <b>-1</b> when there is no prereq ("-"/empty/unresolvable) — NOT 0, because
-    /// <b>0 is a real skill id in both tables</b> (ActiveSkill 0 = "Slice and Dice [01]", the genuine
-    /// prereq of "Slice and Dice [02]"; PassiveSkill 0 = "Bravery Mastery [01]"). The old 0-means-none
-    /// sentinel made those two prereqs invisible — the same "id 0 is a REAL skill" trap already
-    /// documented for the login skill list.</para>
-    /// Lets the learn-from-bag sweep skip a rank-[02] book until rank-[01] is learned — the server
-    /// refuses the out-of-order USE, which otherwise loops forever re-using the unlearnable book.</summary>
+    /// <summary>The prerequisite skill a skill must already have learned before it can itself be learned — the DemandSk column…</summary>
     public int SkillPrereqId(int skillId, bool passive = false)
     {
         var t = Table(passive ? "PassiveSkill" : "ActiveSkill");
@@ -582,14 +410,7 @@ public sealed class ClientData
         }
     }
 
-    /// <summary>True if the abstate index (the value carried in NC_BAT_ABSTATESET_CMD /
-    /// NC_BAT_ABSTATERESET_CMD) IMMOBILIZES the target — i.e. the character cannot move while it is
-    /// active (stun / root / entangle / sleep). Derived data-driven from the client SHNs, no baked ids:
-    /// an <c>AbState</c> row (keyed by <c>AbStataIndex</c>) → its <c>SubAbState</c> → the SubAbState row
-    /// whose any <c>ActionIndex*</c> equals the immobilize action (19). This is how the bot knows a
-    /// server MOVEFAIL is caused by a ROOT (so it must NOT learn that tile as a wall — the grid-poisoning
-    /// bug that wedged it in the JCQ instance) and to WAIT rather than thrash. Verified: the JCQ clone
-    /// applies <c>StaQuestEntangle</c> (AbStataIndex 290 → SubStaQuestEntangle, ActionIndexA=19).</summary>
+    /// <summary>True if the abstate index (the value carried in NC_BAT_ABSTATESET_CMD / NC_BAT_ABSTATERESET_CMD) IMMOBILIZES t…</summary>
     public bool IsMoveBlockingAbstate(uint abStataIndex) => MoveBlockAbstates().Contains(abStataIndex);
 
     private const int ImmobilizeActionIndex = 19;
@@ -605,7 +426,7 @@ public sealed class ClientData
             var ab = Table("AbState");
             if (sub is not null && ab is not null)
             {
-                // 1) SubAbState InxNames whose any Action*Index == the immobilize action (19).
+                // 1) SubAbState InxNames whose any Action*Index == the immobilize action (19)
                 var immobilizeSubs = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var row in sub.Rows)
                 {
@@ -617,8 +438,7 @@ public sealed class ClientData
                         GetInt(row, "ActionIndexD") == ImmobilizeActionIndex)
                         immobilizeSubs.Add(inx);
                 }
-                // 2) AbState rows referencing an immobilize SubAbState → collect their AbStataIndex (the
-                //    value on the wire in ABSTATESET/RESET).
+                // 2) AbState rows referencing an immobilize SubAbState → collect their AbStataIndex (the value on the wire in AB…
                 foreach (var row in ab.Rows)
                 {
                     var subName = GetStr(row, "SubAbState");
@@ -630,27 +450,13 @@ public sealed class ClientData
         }
     }
 
-    // A stun ALSO carries the action-block action (25) alongside immobilize (19); a root/entangle carries
-    // 19 alone. Derived from the client SHNs exactly like the immobilize rule — the InxNames only VALIDATE
-    // it, they are never matched on. Validated over all 107 immobilizing SubAbState rows (2026-08-06):
-    //   19 + 25  (n=82) -> 46 "…Stun" names (SubStaBattleBlowStun, SubStaShockBladeStun, …)
-    //   19 alone (n=25) -> 16 "…Entangle" + 7 "…Bind" (SubStaSpiritThornEntangle, SubStaMarloneEntangle, …)
     private const int ActionBlockActionIndex = 25;
     private IReadOnlySet<uint>? _stunAbstates;
 
-    // AbState InxName -> AbStataIndex (the value that travels on the wire in ABSTATESET/RESET). The whole
-    // client uses names in ActiveSkill (StaNameA..D) and indices on the wire, so this is the join between
-    // "what does this skill apply" and "what is currently on me".
+    // AbState InxName -> AbStataIndex (the value that travels on the wire in ABSTATESET/RESET)
     private Dictionary<string, uint>? _abstateIndexByName;
 
-    /// <summary>The abstate INDICES a skill applies, from its <c>StaNameA..D</c> resolved through
-    /// <c>AbState.InxName → AbStataIndex</c>. Empty for a skill that applies no abnormal state.
-    ///
-    /// <para>This is what makes a BUFF castable exactly once instead of on cooldown (operator 2026-08-12:
-    /// "buffs will apply an abstate — we just need to check if the target (possibly ourselves) already
-    /// have this abstate, if so, do not cast"). ClericFresh was re-casting Protect [01] and Resist [01]
-    /// every time they came off cooldown, at 30 and 46 SP a press, draining the SP stones it needed for
-    /// the fight. A real player buffs once and then fights.</para></summary>
+    /// <summary>The abstate INDICES a skill applies, from its StaNameA..D resolved through AbState.InxName → AbStataIndex</summary>
     public IReadOnlyList<uint> SkillAbstates(int skillId)
     {
         var t = Table("ActiveSkill");
@@ -671,17 +477,14 @@ public sealed class ClientData
         foreach (var col in (string[])["StaNameA", "StaNameB", "StaNameC", "StaNameD"])
         {
             var n = GetStr(row, col);
-            // "-" is the client's empty marker in these columns.
+            // "-" is the client's empty marker in these columns
             if (string.IsNullOrEmpty(n) || n == "-") continue;
             if (_abstateIndexByName.TryGetValue(n, out var idx)) (outp ??= []).Add(idx);
         }
         return (IReadOnlyList<uint>?)outp ?? [];
     }
 
-    /// <summary>True if this abstate is a STUN (blocks actions as well as movement), as opposed to a
-    /// ROOT/entangle which only blocks movement. Both are move-blocking, so
-    /// <see cref="IsMoveBlockingAbstate"/> is true for either; this splits them so the two can be
-    /// counted and reacted to separately (a root still lets us cast; a stun does not).</summary>
+    /// <summary>True if this abstate is a STUN (blocks actions as well as movement), as opposed to a ROOT/entangle which only…</summary>
     public bool IsStunAbstate(uint abStataIndex) => StunAbstates().Contains(abStataIndex);
 
     private IReadOnlySet<uint> StunAbstates()
@@ -719,12 +522,7 @@ public sealed class ClientData
         }
     }
 
-    /// <summary>True if the mob id is a huntable enemy: not a shop NPC, not player-side
-    /// (a town guard reads <c>IsPlayerSide!=0</c> and must be skipped), and not a gatherable
-    /// resource node (<c>Type==9</c> = herb/wood/mushroom). The combat target filter — keeps
-    /// the bot from auto-attacking guards or harvest nodes. Verified live (Town Guard 9908
-    /// IsPlayerSide=2; Pinky/Orc=0; Herb/Mushroom Type=9). Unknown ids (no client data) are
-    /// treated as huntable so we don't silently skip a real mob.</summary>
+    /// <summary>True if the mob id is a huntable enemy: not a shop NPC, not player-side (a town guard reads IsPlayerSide!=0 an…</summary>
     public bool IsHuntableEnemy(int mobId)
     {
         var m = Mob(mobId);
@@ -732,18 +530,14 @@ public sealed class ClientData
         return !m.IsNpc && !m.IsPlayerSide && m.Type != ResourceNodeType;
     }
 
-    /// <summary>Look up a quest definition by its (wire) quest id from the bespoke
-    /// <c>QuestData.shn</c> — StartNPC, level/class gate, kill/collect objectives, rewards
-    /// and the Start/Action/Finish scripts. Parsed once and cached. Null if missing.
-    /// This is how the quest driver knows which NPC to visit and what the quest wants,
-    /// without hard-coding any of it.</summary>
+    /// <summary>Look up a quest definition by its (wire) quest id from the bespoke QuestData.shn — StartNPC, level/class gate,…</summary>
     public QuestDef? Quest(int questId)
     {
         var q = Quests;
         return q.TryGetValue(questId, out var def) ? def : null;
     }
 
-    /// <summary>All decoded quests, keyed by id (loaded once from QuestData.shn).</summary>
+    /// <summary>All decoded quests, keyed by id (loaded once from QuestData.shn)</summary>
     public IReadOnlyDictionary<int, QuestDef> Quests
     {
         get
@@ -761,9 +555,7 @@ public sealed class ClientData
         }
     }
 
-    /// <summary>Resolve a quest dialog/title id to its text from the standard-SHN
-    /// <c>QuestDialog.shn</c> (the indices used by quest scripts' <c>SAY n</c> and a quest's
-    /// Title/Description). Empty if missing.</summary>
+    /// <summary>Resolve a quest dialog/title id to its text from the standard-SHN QuestDialog.shn (the indices used by quest s…</summary>
     public string QuestDialog(int dialogId)
     {
         var t = Table("QuestDialog");
@@ -771,9 +563,7 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Dialog");
     }
 
-    /// <summary>The human NAME of a quest for LOGGING — QuestData title id → QuestDialog.shn text — formatted
-    /// "Name(q{id})" so the name leads but the id stays greppable. "q{id}" if unknown. Operator 2026-07-18:
-    /// never log a bare quest id.</summary>
+    /// <summary>The human NAME of a quest for LOGGING — QuestData title id → QuestDialog.shn text — formatted "Name(q{id})" so…</summary>
     public string QuestName(int questId)
     {
         var q = Quest(questId);
@@ -781,12 +571,7 @@ public sealed class ClientData
         return string.IsNullOrEmpty(n) ? $"q{questId}" : $"{n}(q{questId})";
     }
 
-    /// <summary>Where a mob type lives, from the client <c>MobCoordinate.shn</c> (the table the
-    /// real client uses to draw the quest-log minimap marker): map name + spawn-area centre. A
-    /// mob can have several rows (multiple spawn patches); we pick the one with the largest
-    /// Width×Height (the main field — the densest grind spot), ignoring the zero-area point
-    /// markers. Null if the table/mob is missing. Pure client data — this is how the quest
-    /// driver decides which map to travel to for an objective, with no server files.</summary>
+    /// <summary>Where a mob type lives, from the client MobCoordinate.shn (the table the real client uses to draw the quest-lo…</summary>
     public MobLocation? MobCoordinate(int mobId, string? preferMap = null)
     {
         var t = Table("MobCoordinate");
@@ -802,14 +587,10 @@ public sealed class ClientData
             var loc = new MobLocation(mobId, map, GetInt(row, "CenterX"), GetInt(row, "CenterY"),
                 GetInt(row, "Width"), GetInt(row, "Height"));
             bool onCur = preferMap != null && string.Equals(map, preferMap, StringComparison.OrdinalIgnoreCase);
-            // Prefer the largest spawn ON THE CURRENT MAP (if the mob lives here, grind here
-            // instead of traveling to a bigger patch elsewhere); else the largest overall.
+            // Prefer the largest spawn ON THE CURRENT MAP (if the mob lives here, grind here instead of traveling to a bigge…
             if (onCur && area > preferArea) { preferArea = area; onPrefer = loc; }
             if (area > bestArea) { bestArea = area; best = loc; }
-            // FIELD-OVER-DUNGEON (operator 2026-07-16): a solo field-leveling char must hunt the sparse FIELD
-            // spawn, never a dense dungeon/instance pack (MapInfo InSide=1, e.g. RouTemDn01 — packs of 6 that
-            // net-negative death-loop the bot). Track the best FIELD (InSide=0) spawn separately and prefer it;
-            // fall back to a dungeon spawn only when the mob has NO field spawn at all.
+            // FIELD-OVER-DUNGEON (operator 2026-07-16): a solo field-leveling char must hunt the sparse FIELD spawn, never a…
             if (!MapInside(map))
             {
                 if (onCur && area > preferFieldArea) { preferFieldArea = area; onPreferField = loc; }
@@ -819,9 +600,7 @@ public sealed class ClientData
         return onPreferField ?? bestField ?? onPrefer ?? best;
     }
 
-    /// <summary>All maps a mob spawns on (the largest spawn patch per map), from
-    /// <c>MobCoordinate.shn</c>. Lets the caller pick a spawn on a map it can actually reach
-    /// (e.g. one gated directly off the current map) instead of just the single biggest patch.</summary>
+    /// <summary>All maps a mob spawns on (the largest spawn patch per map), from MobCoordinate.shn</summary>
     public IReadOnlyList<MobLocation> MobCoordinatesAll(int mobId)
     {
         var t = Table("MobCoordinate");
@@ -840,9 +619,7 @@ public sealed class ClientData
         return byMap.Values.ToArray();
     }
 
-    /// <summary>The <c>ItemInfo.UseClass</c> of an item — the item-gating class enum (a DIFFERENT
-    /// enum from ClassName's ClassID; 1 = Any). 0 if missing. Used to pick a class-appropriate
-    /// quest reward.</summary>
+    /// <summary>The ItemInfo.UseClass of an item — the item-gating class enum (a DIFFERENT enum from ClassName's ClassID; 1 =…</summary>
     public int ItemUseClass(int itemId)
     {
         var t = Table("ItemInfo");
@@ -850,33 +627,10 @@ public sealed class ClientData
         return row is null ? 0 : GetInt(row, "UseClass");
     }
 
-    /// <summary>The set of <c>UseClass</c> values that belong to a character's archetype line,
-    /// keyed by the ClassName <c>ClassID</c> of the character (any tier in the line maps to the
-    /// whole line). The UseClass enum runs: Fighter 2–7, Cleric 8–13, Archer 14–19, Mage 20–25,
-    /// Joker 27–32, Sentinel/Savior 33–34 (26 is a non-class consumable slot). Lets the reward
-    /// picker accept gear for the char's class at any promotion tier (lower/higher/promotion).</summary>
-    /// <summary>Pick a VALID (hairType, hairColor, faceShape) for a class+gender, straight from the
-    /// client's own character-creation tables. Returns (0,0,0) only if the tables cannot be read.
-    /// <para>⛔ WE SENT 0/0/0 ON EVERY CREATE, WHICH IS NOT A VALID APPEARANCE. The client ships the
-    /// creation rules and we were ignoring them:</para>
-    /// <para>• <c>HairInfo.shn</c> has a column per class (fighter/archer/cleric/mage/Joker/Sentinel).
-    /// The value is the GENDER that hairstyle belongs to — 1 for the male cuts ("Wolf Cut", "Hero Cut"),
-    /// 2 for the female ones ("Pig Tails", "Long Hair") — so a hair is only legal when its column matches
-    /// the character's gender.</para>
-    /// <para>• <c>FaceInfo.shn</c> has a column per class AND gender (FM_A_Male, FM_A_Female, …).
-    /// <b>Face id 0 is 0 for every single class/gender combination</b> — nobody can pick it — yet 0 is
-    /// exactly what we were sending.</para>
-    /// <para>• <c>HairColorInfo.shn</c> lists the legal colours; the real client used 12.</para>
-    /// <para>Gender encoding here is the SHN's own (1=male, 2=female) while the wire's gender bit is 0/1,
-    /// hence the +1. Reading the tables is what keeps this honest: no baked ids, and it fixes every class
-    /// at once rather than special-casing the one that happened to fail.</para></summary>
+    /// <summary>The set of UseClass values that belong to a character's archetype line, keyed by the ClassName ClassID of the…</summary>
     public (byte HairType, byte HairColor, byte FaceShape) PickAppearance(int classId, byte genderBit)
     {
-        // ⚠️ THE WIRE GENDER BIT IS INVERTED RELATIVE TO THE SHN's 1=male/2=female.
-        // Wire 0 = FEMALE (SHN 2), wire 1 = MALE (SHN 1). Evidence: the only real-client create in
-        // LongCaptureNoDc.pcapng sends gender=0 with hairtype=1, and HairInfo row 1 ("Feather") is a
-        // value-2 hair — a female one. I had this backwards first and it produced AVATAR_CREATEFAIL
-        // err=387 on a FIGHTER, a class that had always created fine, by handing it a male-only cut.
+        // THE WIRE GENDER BIT IS INVERTED RELATIVE TO THE SHN's 1=male/2=female
         var shnGender = (uint)(genderBit == 0 ? 2 : 1);
         var classCol = classId switch
         {
@@ -893,7 +647,7 @@ public sealed class ClientData
                 if (ToU32(row, classCol) == shnGender) { hair = (byte)ToU32(row, "ID"); break; }
         if (Table("HairColorInfo") is { } hc)
             foreach (var row in hc.Rows) { colour = (byte)ToU32(row, "ID"); break; }
-        // Face columns are FM_<classletter>_<Male|Female>; non-zero means selectable.
+        // Face columns are FM_ _ ; non-zero means selectable
         var faceCol = $"FM_{classCol[0].ToString().ToUpperInvariant()}_{(genderBit == 0 ? "Female" : "Male")}";
         if (classCol == "Joker") faceCol = $"FM_J_{(genderBit == 0 ? "Female" : "Male")}";
         if (classCol == "Sentinel") faceCol = $"FM_S_{(genderBit == 0 ? "Female" : "Male")}";
@@ -906,24 +660,7 @@ public sealed class ClientData
     private static uint ToU32(IReadOnlyDictionary<string, object?> row, string col)
         => row.TryGetValue(col, out var v) && v is not null && uint.TryParse(v.ToString(), out var n) ? n : 0;
 
-    /// <summary>The RACE a class must be created as — <c>RaceNameInfo.shn</c> ids: 1=Human, 2=Elf,
-    /// 3=DarkElf (0 is the blank row and is NOT a valid race).
-    /// <para>⛔ WE WERE SENDING RACE 0 ON EVERY CREATE, and it is why Archer creation always failed with
-    /// <c>AVATAR_CREATEFAIL err=132</c> while Fighter/Cleric/Mage happened to survive it. Ground truth,
-    /// three independent sources agreeing:</para>
-    /// <para>• A REAL client create in Z:/LongCaptureNoDc.pcapng: <c>char_shape = 05 01 0c 00</c>, which
-    /// against the PDB bitfields (race:2, chrclass:5, gender:1) decodes to race=<b>1</b>, chrclass=1
-    /// (Fighter) — never 0.</para>
-    /// <para>• <c>World00_Character.tCharacterShape</c> on this server: nRace=<b>1</b> for every
-    /// Fighter/Cleric-line character, nRace=<b>3</b> for every Mage-line one. No row has race 0, and no
-    /// class-11 row exists at all — nothing had ever been created as an Archer.</para>
-    /// <para>• Operator, 2026-08-11: <i>"archers are always elves, not human"</i> — and RaceNameInfo says
-    /// Elf is exactly the id (2) left unclaimed between Human (Fighter/Cleric) and DarkElf (Mage).</para>
-    /// <para>The class→race pairing itself is not in any client table I could find (ClassName.shn has only
-    /// ClassID/prefix/names; RaceNameInfo.shn names the races but does not join them to classes), so it is
-    /// stated here once, against the SAME class-line ladder <see cref="UseClassLineFor"/> already uses,
-    /// rather than being scattered. Race is a 2-BIT field — 0-3 is the whole space.</para>
-    /// Returns 0 for an unknown class, which the caller must treat as "don't override".</summary>
+    /// <summary>The RACE a class must be created as — RaceNameInfo.shn ids: 1=Human, 2=Elf, 3=DarkElf (0 is the blank row and…</summary>
     public static int RaceForClass(int classId) => classId switch
     {
         >= 1 and <= 5   => 1,   // Fighter line   — Human
@@ -934,52 +671,6 @@ public sealed class ClientData
         _ => 0,
     };
 
-    /// <summary>Does the client's OWN matrix allow class <paramref name="classId"/> (a ClassName
-    /// <c>ClassID</c>, 1-27) to use an item/scroll whose ItemInfo <c>UseClass</c> is
-    /// <paramref name="useClass"/>? THIS is the real answer; <see cref="UseClassLineFor"/> is a
-    /// hand-written approximation of it and is wrong in four ways (kept only as a fallback).
-    ///
-    /// <para><b>The table:</b> <c>UseClassTypeInfo.shn</c> — 39 rows, one per UseClass value, each with a
-    /// 0/1 flag column per class. The 27 flag columns are the 27 ClassName ClassIDs IN ORDER (col 1 =
-    /// Fig = ClassID 1 … col 27 = Sav = ClassID 27), so the lookup is by ORDINAL, never by name: the
-    /// abbreviations do not match ClassName's acPrefix (Cfig/Cfi, Hcle/Hcl, Harc/Har, Wmag/Wma) and
-    /// acPrefix "War" is AMBIGUOUS — it is both Warrior (3) and Warlock (19).</para>
-    ///
-    /// <para><b>What the ladder got wrong</b> (measured against the table + ItemInfo, 2026-08-11):</para>
-    /// <para>• <b>UseClass 1 = EVERY class</b> (row 1 has all 27 flags set) and it is 7465 of the 14999
-    /// items — half the item file. The ladder does not contain 1 for anyone, so it rejected all-class gear
-    /// and consumables outright. <c>bestRewardIndex</c> had already worked this out independently
-    /// (<c>uc == 1 || line.Contains(uc)</c>) — the two disagreed.</para>
-    /// <para>• <b>UseClass 0 is used by NOTHING</b> — zero items carry it, and its row has every flag
-    /// CLEAR. The old <c>canUseClass</c> special-cased 0 as "everyone", which is exactly backwards; the
-    /// all-class value is 1. (0 being meaningful-but-empty here is not a licence to treat 0 as "unset"
-    /// elsewhere — see the golden rule in CLAUDE.md.)</para>
-    /// <para>• <b>The ladder was too PERMISSIVE for a base class.</b> It gave a Fighter (ClassID 1) the
-    /// whole band 2-7, but the table says Fig is only in UseClass 2 — 3-7 are the ADVANCED classes
-    /// (Cfig/War/Gla/Kni). So a fresh Fighter believed it could use gear and scrolls that require a job
-    /// change, i.e. it bought unusable items even on the one class we thought worked.</para>
-    /// <para>• <b>Cross-line and near-universal values were missing entirely:</b> 26 = everyone except
-    /// Sen/Sav; 35-38 are cross-line combos (35 = War/Gla/Kni + Sco/Sha/Ran). The ladder rejects all of
-    /// them for every class.</para>
-    ///
-    /// <para>Verified against a known item: "Slice and Dice [01]" (id 4700), the Fighter scroll a Mage
-    /// bought live, is <c>UseClass 2</c> → Fig/Cfig/War/Gla/Kni, which correctly excludes Mage (16).</para>
-    /// </summary>
-    /// <summary>If <paramref name="productId"/> is a CRAFTING RECIPE, the job it needs and how many job
-    /// points in that job — else null (an ordinary skill book / item).
-    ///
-    /// <para><c>Produce.shn</c> is keyed by <c>ProductID</c>, which is the same id as the recipe skill and
-    /// its book, so a plain lookup answers "is this a recipe, and can we ever learn it?". Verified against
-    /// the two books that were live-looping on 2026-08-11:
-    /// <c>24074 Recipe_R_LowToadStool → NeededMasteryType 5, NeededMasteryGain 100</c> and
-    /// <c>23073 Recipe_C_NorToadStool → type 4, 100</c> — matching the operator's "shows min skill
-    /// points: 100". <c>ProduceView.shn</c> names the five mastery types (1 = Potion Production, …).</para>
-    ///
-    /// <para>⛔ I PREVIOUSLY CONCLUDED THIS WAS NOT IN CLIENT DATA and nearly shipped a comment saying so.
-    /// It was — I had searched column names for "job" and file names for "craft/recipe", and this table
-    /// calls the concept MASTERY and the file is called Produce. The operator was right; the absence of a
-    /// match for MY chosen keyword was not evidence of absence. Recorded because "I searched and it isn't
-    /// there" is exactly the claim that needs the most scepticism.</para></summary>
     public (int MasteryType, int NeededPoints)? RecipeRequirement(int productId)
     {
         var t = Table("Produce");
@@ -989,9 +680,7 @@ public sealed class ClientData
         return ((int)ToU32(row, "NeededMasteryType"), (int)ToU32(row, "NeededMasteryGain"));
     }
 
-    /// <summary>Display name of a Produce mastery type (job) from <c>ProduceView.shn</c>, e.g. 1 →
-    /// "Potion Production". Null if unknown — used for logging so a skipped recipe says WHICH job it wants
-    /// rather than a bare number.</summary>
+    /// <summary>Display name of a Produce mastery type (job) from ProduceView.shn</summary>
     public string? MasteryTypeName(int masteryType)
     {
         var t = Table("ProduceView");
@@ -1008,25 +697,22 @@ public sealed class ClientData
         var t = Table("UseClassTypeInfo");
         if (t is null)
         {
-            // Fallback ONLY when the table is missing: the old ladder, plus the all-class value it
-            // never knew about. Documented as approximate — it is not the authority.
+            // Fallback ONLY when the table is missing: the old ladder, plus the all-class value it never knew about
             return useClass == 1 || UseClassLineFor(classId).Contains(useClass);
         }
         var row = t.FindByLong("UseClass", useClass);
         if (row is null) return false;                        // value not in the matrix → not usable
-        // Flag columns are everything after the leading UseClass column, in ClassID order.
+        // Flag columns are everything after the leading UseClass column, in ClassID order
         var flags = t.Columns.Where(c => !string.Equals(c.Name, "UseClass", StringComparison.OrdinalIgnoreCase))
                              .ToList();
         if (classId > flags.Count) return false;
         return ToU32(row, flags[classId - 1].Name) != 0;
     }
 
-    /// <summary>⚠️ APPROXIMATE — prefer <see cref="UseClassAllows"/>, which reads the client's own
-    /// UseClassTypeInfo matrix. Retained because it is the fallback when that table cannot be read, and
-    /// because <c>bestRewardIndex</c> still uses it as a coarse "our line" filter.</summary>
+    /// <summary>APPROXIMATE — prefer , which reads the client's own UseClassTypeInfo matrix</summary>
     public static IReadOnlySet<int> UseClassLineFor(int classId)
     {
-        // classId is a ClassName ClassID; resolve its archetype, return that line's UseClass band.
+        // classId is a ClassName ClassID; resolve its archetype, return that line's UseClass band
         int[] band =
             classId is >= 1 and <= 5  ? [2, 3, 4, 5, 6, 7]        // Fighter line (incl. CleverFighter)
           : classId is >= 6 and <= 10 ? [8, 9, 10, 11, 12, 13]    // Cleric line
@@ -1038,14 +724,7 @@ public sealed class ClientData
         return new HashSet<int>(band);
     }
 
-    /// <summary>Build the complete CROSS-MAP gate web from the client nav tables
-    /// <c>MapWayPoint.shn</c> (nodes: MapID, X=Undefined0, Y=Undefined1, MWP_Gate) +
-    /// <c>MapLinkPoint.shn</c> (edges: MLP_FromID, MLP_ToID, MLP_OneWay_Street — 0-based row
-    /// indices into MapWayPoint). A link whose two endpoints sit on DIFFERENT MapIDs is a
-    /// map-to-map gate; the from-point's (X,Y) is where to stand to take it. This is the game's
-    /// own routing graph — seeding it (vs the bot's slow auto-discovery) is what makes cross-map
-    /// pathfinding reliable: every map has a few interconnected teleports, so a route always
-    /// exists. Returns (fromMap, toMap, gateX, gateY); reverse direction added unless one-way.</summary>
+    /// <summary>Build the complete CROSS-MAP gate web from the client nav tables MapWayPoint.shn (nodes: MapID, X=Undefined0,…</summary>
     public IReadOnlyList<(string From, string To, uint X, uint Y, uint ToX, uint ToY)> BuildGateEdges()
     {
         var edges = new List<(string, string, uint, uint, uint, uint)>();
@@ -1064,8 +743,7 @@ public sealed class ClientData
             if (mf == mt) continue; // same-map waypoint edge (in-map nav), not a cross-map gate
             var fromName = NameOf(mf); var toName = NameOf(mt);
             if (fromName is null || toName is null) continue;
-            // The from-point's (X,Y) is where to stand to take the gate; the to-point's (X,Y) is
-            // where you EMERGE on the destination map — the entry point for costing the next hop.
+            // The from-point's (X,Y) is where to stand to take the gate; the to-point's (X,Y) is where you EMERGE on the des…
             uint fx = (uint)GetInt(wf, "Undefined0"), fy = (uint)GetInt(wf, "Undefined1");
             uint tx = (uint)GetInt(wt, "Undefined0"), ty = (uint)GetInt(wt, "Undefined1");
             edges.Add((fromName, toName, fx, fy, tx, ty));
@@ -1075,13 +753,7 @@ public sealed class ClientData
         return edges;
     }
 
-    /// <summary>All town-portal destinations from <c>TownPortal.shn</c> (rows:
-    /// <c>Index, MinLevel, TP_GroupNo, MapName, X=Undefined0, Y=Undefined1</c>). A portal NPC
-    /// standing in any map of a <c>GroupNo</c> network offers warps to the OTHER maps in the same
-    /// group; you pick a destination by its (global) row <c>Index</c> — the <c>dest</c> byte for
-    /// the portal packet (0x181A). <c>X</c>/<c>Y</c> is the arrival coord on that map, which sits
-    /// at/next to the map's portal NPC (so it doubles as "where the portal NPC is"). Used to add
-    /// town-portal edges to the routing graph. Returns empty if the table is absent.</summary>
+    /// <summary>All town-portal destinations from TownPortal.shn (rows: Index, MinLevel, TP_GroupNo, MapName, X=Undefined0, Y=…</summary>
     public IReadOnlyList<PortalDest> BuildPortalDests()
     {
         var outp = new List<PortalDest>();
@@ -1091,9 +763,7 @@ public sealed class ClientData
         foreach (var r in tp.Rows)
         {
             var map = GetStr(r, "MapName");
-            // The destination index sent to the portal is the (global) row ordinal — 0=RouN,
-            // 1=RouVal01, 2=Eld, … — matching TownPortalAsync's `dest`. Read it positionally so
-            // we don't depend on an "Index" column that may be the tool's row number.
+            // The destination index sent to the portal is the (global) row ordinal — 0=RouN, 1=RouVal01, 2=Eld, … — matching…
             if (!string.IsNullOrWhiteSpace(map))
                 outp.Add(new PortalDest(i, GetInt(r, "TP_GroupNo"), map, GetInt(r, "MinLevel"),
                     (uint)GetInt(r, "Undefined0"), (uint)GetInt(r, "Undefined1")));
@@ -1102,72 +772,39 @@ public sealed class ClientData
         return outp;
     }
 
-    /// <summary>MobInfo <c>Type</c> value for a gatherable resource node (herb/wood/mushroom).</summary>
+    /// <summary>MobInfo Type value for a gatherable resource node (herb/wood/mushroom)</summary>
     public const int ResourceNodeType = 9;
 
     private static int GetInt(IReadOnlyDictionary<string, object?> row, string col)
         => row.TryGetValue(col, out var v) && ShnTable.TryToLong(v, out var l) ? (int)l : 0;
 
-    /// <summary>A string cell, with SHN's fixed-width padding removed. Columns are fixed-width and
-    /// NUL-padded (MapName is 12 bytes, Name 32), so the raw value of "RouCos03" is
-    /// <c>"RouCos03    "</c>. That PRINTS identically to the trimmed form — including through JSON —
-    /// so a padded value looks perfectly correct while failing every string comparison against it. That is
-    /// exactly how MapDisplayName silently returned null for every map (found 2026-08-06). Trim once, here,
-    /// so no caller has to know.</summary>
+    /// <summary>A string cell, with SHN's fixed-width padding removed</summary>
     private static string GetStr(IReadOnlyDictionary<string, object?> row, string col)
         => row.TryGetValue(col, out var v) ? (v?.ToString() ?? "").Trim(' ').Trim() : "";
 }
 
-/// <summary>Display fields of a <c>MobInfo</c> row: the human-readable <see cref="Name"/>
-/// (e.g. "Teleport Gate", "Uruga"), the <see cref="InxName"/> (internal id like
-/// "Gate_Town"), plus <see cref="Level"/>/<see cref="MaxHp"/> and whether it's an
-/// <see cref="IsNpc"/> (vs a monster) — enough to label/triage what the bot sees.</summary>
+/// <summary>Display fields of a MobInfo row: the human-readable</summary>
 public sealed record MobData(int Id, string Name, string InxName, int Level, int MaxHp, bool IsNpc,
     bool IsPlayerSide = false, int Type = 0, int GradeType = 0);
 
-/// <summary>Shop-eval fields of an <c>ItemInfo</c> row. <see cref="IsScroll"/> = a skill scroll
-/// (USE to learn the skill named the same as the item); otherwise an equip if <see cref="EquipSlot"/>
-/// is a real slot. <see cref="UseClass"/> = the class line that may use it (Fighter 2–7, 0 = all),
-/// <see cref="DemandLv"/> = the level required, <see cref="Grade"/> = rarity tier. <see cref="GradeType"/>
-/// (client ItemInfo.shn column <c>ItemGradeType</c>) is the VENDOR-TRASH signal: verified against
-/// server ground truth (ItemInfo table) that every plain smith-bought armor piece (Leather/Chain
-/// Boots/Helmet/Pants, Buckler — the exact "basic starter gear" the bot auto-equips) is
-/// <c>ItemGradeType=0</c>, while every named/event variant (e.g. "Solar Eclipse Leather Boots") is
-/// &gt;=1 — so 0 = ordinary/replaceable gear (safe to sell once outgrown), &gt;=1 = a special/named
-/// drop worth keeping regardless of level (operator 2026-06-26: "dropped 'special' gear is a
-/// DIFFERENT (higher) rarity — never sell those").</summary>
+/// <summary>Shop-eval fields of an ItemInfo row</summary>
 public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
     int EquipSlot, bool IsScroll, int Type = 0, int GradeType = 0, int ItemClass = 0,
     int MaxLot = 0, int SellPrice = 0, bool TwoHand = false, int ShieldAc = 0, int BuyPrice = 0,
     int WeaponType = 0);
 
-/// <summary>Where a mob type spawns, from client <c>MobCoordinate.shn</c>: the
-/// <see cref="Map"/> short-name and the <see cref="CenterX"/>/<see cref="CenterY"/> of its
-/// main spawn field (with the field <see cref="Width"/>/<see cref="Height"/>). The quest
-/// driver travels to <see cref="Map"/> and grinds around the centre.</summary>
+/// <summary>Where a mob type spawns, from client MobCoordinate.shn : the short-name and the / of its main spawn field (wit…</summary>
 public sealed record MobLocation(int MobId, string Map, int CenterX, int CenterY, int Width, int Height);
 
-/// <summary>One town-portal destination from <c>TownPortal.shn</c>: within the <see cref="GroupNo"/>
-/// portal network, selecting <see cref="Index"/> at any portal NPC of that group warps to
-/// <see cref="Map"/> (arriving near <see cref="X"/>,<see cref="Y"/>), gated by <see cref="MinLevel"/>.
-/// <see cref="Index"/> is the <c>dest</c> byte for the portal packet (0x181A).</summary>
+/// <summary>One town-portal destination from TownPortal.shn : within the portal network, selecting at any portal NPC of th…</summary>
 public sealed record PortalDest(int Index, int GroupNo, string Map, int MinLevel, uint X, uint Y);
 
-/// <summary>Combat-relevant fields of an <c>ActiveSkill</c> row, projected from the client
-/// table. <see cref="UsableDegree"/> = the facing arc the target must be within (the cast
-/// fails otherwise — the root cause behind the earlier SKILLBASH_CAST_FAIL); 0 means no
-/// facing requirement. <see cref="IsMovingSkill"/> = castable while moving (no STOP needed).
-/// <see cref="DelayTimeMs"/> = cooldown (ms). <see cref="Range"/> = cast range (0 = melee).
-/// <see cref="Sp"/> = mana cost.</summary>
+/// <summary>Combat-relevant fields of an ActiveSkill row, projected from the client table</summary>
 public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0, int DemandType = 0, int MaxMa = 0)
 {
-    /// <summary>How hard this skill hits, whichever school it uses: <see cref="MaxWc"/> for a weapon
-    /// skill, <see cref="MaxMa"/> for a spell. **Ask this, never MaxWc alone** — a caster's nukes carry
-    /// zero weapon coefficient, so a MaxWc-only test reports every Mage as having no damage skills.
-    /// 0 means the skill deals no direct damage at all (a buff, a stun, a heal).</summary>
+    /// <summary>How hard this skill hits, whichever school it uses: for a weapon skill, for a spell</summary>
     public int Damage => Math.Max(MaxWc, MaxMa);
 
-    /// <summary>Gathering / mount / event-toy skill rather than a combat one — see the DemandType note
-    /// at the read site. The watch page hides these unless "show misc" is ticked.</summary>
+    /// <summary>Gathering / mount / event-toy skill rather than a combat one — see the DemandType note at the read site</summary>
     public bool IsMisc => DemandType == 2;
 };

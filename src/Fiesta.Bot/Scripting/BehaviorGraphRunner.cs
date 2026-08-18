@@ -5,17 +5,7 @@ using MoonSharp.Interpreter;
 
 namespace Fiesta.Bot.Scripting;
 
-/// <summary>Runs a <see cref="BehaviorGraph"/> for one bot on a dedicated thread (one Lua VM,
-/// single-threaded message pump — same model as <see cref="BotScriptRunner"/>).
-///
-/// <para>Each state and each transition is loaded into its OWN Lua environment table, so their
-/// globals (<c>tick</c>, <c>on_enter</c>, locals, …) never collide; all envs share <c>bot</c>,
-/// <c>log</c> and the graph's <c>Shared</c> helpers via a metatable <c>__index</c> → the VM
-/// globals. Each tick: fire a pending requested transition; else run the current state's
-/// <c>tick()</c>, then evaluate every outgoing transition's <c>check()</c> in order — the first
-/// truthy one fires (<c>from.on_exit()</c> → <c>to.on_enter()</c>). Events route to the current
-/// state's hook. A transition can also be requested explicitly (<c>RequestState</c> / the
-/// operator API / <c>bot.requestState</c>).</para></summary>
+/// <summary>Runs a for one bot on a dedicated thread (one Lua VM, single-threaded message pump — same model as )</summary>
 public sealed class BehaviorGraphRunner : IDisposable
 {
     private static readonly object RegisterGate = new();
@@ -65,11 +55,6 @@ public sealed class BehaviorGraphRunner : IDisposable
     public string CurrentState => _current;
     public string StatusLine => $"{_graph.Name}:{_current} [{_runState}] ticks={Interlocked.Read(ref _ticks)}";
 
-    /// <summary>Request a transition to <paramref name="state"/> on the next tick (operator
-    /// flip / <c>bot.requestState</c>). Fires even with no defined edge (a forced switch) and
-    /// <b>pins</b> the graph there — autonomous transitions are suppressed until you request
-    /// the special state <c>"auto"</c>, which resumes autonomous behaviour from the current
-    /// state. (So a deliberate flip to e.g. stay_alive holds for "90% control".)</summary>
     public void RequestState(string state)
     {
         if (string.Equals(state, "auto", StringComparison.OrdinalIgnoreCase)) _unpin = true;
@@ -119,16 +104,16 @@ public sealed class BehaviorGraphRunner : IDisposable
 
     private void TickOnce()
     {
-        // 0) Resume autonomous behaviour if the operator released the pin ("auto").
+        // 0) Resume autonomous behaviour if the operator released the pin ("auto")
         if (_unpin) { _unpin = false; if (_pinned) { _pinned = false; _log($"[graph:{_graph.Name}] autonomous transitions resumed (unpinned at {_current})"); } }
 
-        // 1) An explicit request wins and PINS the state (operator flip / bot.requestState).
+        // 1) An explicit request wins and PINS the state (operator flip / bot.requestState)
         if (_requested is { } req) { _requested = null; FireTo(req, "request"); _pinned = true; }
 
-        // 2) Run the current state.
+        // 2) Run the current state
         if (_states.TryGetValue(_current, out var cur)) SafeCall(cur.Tick, "tick");
 
-        // 3) Evaluate outgoing transitions in order; first truthy check fires — unless pinned.
+        // 3) Evaluate outgoing transitions in order; first truthy check fires — unless pinned
         if (_pinned) return;
         foreach (var t in _transitions)
         {
@@ -190,9 +175,7 @@ public sealed class BehaviorGraphRunner : IDisposable
         _lua.Globals["logv"] = (Action<string>)(m => _handle.Log(BotLogLevel.Verbose, $"[graph:{_graph.Name}:{_current}] {m}"));
         _lua.Options.DebugPrint = m => _log($"[graph:{_graph.Name}:{_current}] {m}");
 
-        // Shared helpers go into the VM globals so every node/transition env sees them
-        // (via metatable __index), alongside bot/log. This is the "import a shared helper"
-        // composition: e.g. survive() defined here, called by both stay_alive and mob_grind.
+        // Shared helpers go into the VM globals so every node/transition env sees them (via metatable __index), alongsid…
         if (!string.IsNullOrWhiteSpace(_graph.Shared))
             try { _lua.DoString(_graph.Shared, _lua.Globals, "shared"); }
             catch (Exception ex) { _log($"[graph:{_graph.Name}] shared script error: {ex.Message}"); }
@@ -220,9 +203,7 @@ public sealed class BehaviorGraphRunner : IDisposable
         }
     }
 
-    /// <summary>A fresh environment table that resolves unknown globals (bot/log/shared
-    /// helpers) from the VM globals via __index — so each chunk's own functions/locals stay
-    /// isolated while shared API is visible.</summary>
+    /// <summary>A fresh environment table that resolves unknown globals (bot/log/shared helpers) from the VM globals via __ind…</summary>
     private Table NewEnv()
     {
         var env = new Table(_lua);

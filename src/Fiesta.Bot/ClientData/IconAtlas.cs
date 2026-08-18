@@ -1,33 +1,12 @@
 namespace Fiesta.Bot.GameData;
 
-/// <summary>
-/// Cuts a single item icon out of a client icon ATLAS and hands it back as a PNG.
-///
-/// <para>Item art lives in <c>&lt;client&gt;/resmenu/Icon/&lt;IconFile&gt;.dds</c> — a 256x256 DXT-compressed
-/// sheet holding an 8x8 grid of 32px icons — and <c>ItemViewInfo.shn</c> says which sheet and which cell
-/// each item uses (<c>IconFile</c> + <c>IconIndex</c>). Nothing here is baked: the sheets are BYO client
-/// data supplied at runtime, exactly like <c>ressystem</c> and the BlockInfo grids.</para>
-///
-/// <para>Decoding is done by hand rather than with an image library because the host runs on Linux
-/// containers where System.Drawing is unavailable, and pulling in a full imaging dependency to crop a
-/// 32x32 tile would be a poor trade. BC1/BC2/BC3 and plain 32-bit surfaces cover every sheet in the
-/// client; anything else is reported rather than guessed at.</para>
-/// </summary>
+/// <summary>Cuts a single item icon out of a client icon ATLAS and hands it back as a PNG</summary>
 public static class IconAtlas
 {
-    /// <summary>Atlases are an 8x8 grid of cells, whatever their pixel size.</summary>
+    /// <summary>Atlases are an 8x8 grid of cells, whatever their pixel size</summary>
     public const int Columns = 8;
 
-    /// <summary>Decode one cell of a DDS atlas to a PNG. Returns null if the file is missing, the
-    /// format is one we do not decode, or the index is outside the sheet — the caller renders a
-    /// placeholder rather than a broken image.
-    ///
-    /// <para>⛔ CELL SIZE IS DERIVED, NOT 32. It used to be a hard 32px constant, which is right only for
-    /// the 256x256 item and skill sheets. The <b>abstate</b> sheets are 128x128, so a 32px cell made them
-    /// a 4x4 grid of 16 cells and every icon index above 15 fell off the end and returned null — which is
-    /// why a live buff rendered as a grey box with a number (operator 2026-08-13) even though its row
-    /// plainly said <c>icon=16, iconFile=AbState03</c>. Every family is an 8x8 grid of 64 cells: items and
-    /// skills 256/8 = 32px, abstates 128/8 = 16px. So take the cell size from the sheet.</para></summary>
+    /// <summary>Decode one cell of a DDS atlas to a PNG</summary>
     public static byte[]? IconPng(string ddsPath, int iconIndex)
     {
         if (!File.Exists(ddsPath)) return null;
@@ -53,9 +32,7 @@ public static class IconAtlas
         return Png.Encode(tile, size, size);
     }
 
-    /// <summary>DDS → RGBA8888. Supports DXT1/3/5 and uncompressed 32-bit; null otherwise.
-    /// <para>Internal rather than private because the minimap loader decodes whole surfaces from the
-    /// same client art (see <see cref="MinimapImage"/>) — one DDS decoder, two callers.</para></summary>
+    /// <summary>DDS → RGBA8888. Supports DXT1/3/5 and uncompressed 32-bit; null otherwise</summary>
     internal static byte[]? Decode(byte[] b, out int width, out int height)
     {
         width = height = 0;
@@ -94,8 +71,7 @@ public static class IconAtlas
         return null;
     }
 
-    /// <summary>One 4x4 block. BC2 carries 4-bit explicit alpha, BC3 an interpolated alpha ramp, BC1 a
-    /// 1-bit punch-through keyed on the colour ordering — the transparency item icons actually use.</summary>
+    /// <summary>One 4x4 block. BC2 carries 4-bit explicit alpha, BC3 an interpolated alpha ramp, BC1 a 1-bit punch-through key…</summary>
     private static void DecodeBlock(byte[] b, int off, string fourCc, byte[] outp, int w, int h, int px, int py)
     {
         var alpha = new byte[16];
@@ -163,9 +139,7 @@ public static class IconAtlas
         => (((c >> 11) & 0x1F) * 255 / 31, ((c >> 5) & 0x3F) * 255 / 63, (c & 0x1F) * 255 / 31);
 }
 
-/// <summary>A minimal PNG writer: enough to emit one RGBA image, with no imaging dependency.
-/// (Deflate comes from the BCL; PNG wants a zlib wrapper around it, which is a 2-byte header plus an
-/// Adler-32 trailer.)</summary>
+/// <summary>A minimal PNG writer: enough to emit one RGBA image, with no imaging dependency</summary>
 internal static class Png
 {
     public static byte[] Encode(byte[] rgba, int w, int h)

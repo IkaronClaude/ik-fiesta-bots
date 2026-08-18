@@ -4,17 +4,7 @@ using FiestaLibReloaded.Networking.Structs;
 
 namespace Fiesta.Bot.Behaviors;
 
-/// <summary>
-/// A priest parked in town that buffs people. It reacts to the <see cref="ZoneView"/>
-/// perception layer: when someone nearby chats the trigger word ("buff pls"), it
-/// casts the configured buff skills on that speaker; optionally it also buffs
-/// players as they appear. Buffs are single-target object casts —
-/// <see cref="PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ"/> {skill, target=zone handle}.
-///
-/// Casting is offloaded off the session read loop, per-target throttled, and a
-/// no-op (logged) when no buff skills are configured/learnt yet. This same
-/// request→react seam is what an LLM controller will drive later.
-/// </summary>
+/// <summary>A priest parked in town that buffs people</summary>
 public sealed class BuffInTownBehavior : IDisposable
 {
     private readonly BotSession _session;
@@ -50,7 +40,7 @@ public sealed class BuffInTownBehavior : IDisposable
 
     private async Task BuffTargetAsync(ushort target, string who)
     {
-        // Per-target cooldown so we don't spam the same person.
+        // Per-target cooldown so we don't spam the same person
         var now = DateTime.UtcNow;
         if (_lastBuffedUtc.TryGetValue(target, out var last) && now - last < _config.TargetCooldown)
             return;

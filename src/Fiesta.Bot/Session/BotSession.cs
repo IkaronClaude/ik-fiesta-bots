@@ -5,26 +5,13 @@ using FiestaLibReloaded.Networking.Enums;
 
 namespace Fiesta.Bot.Session;
 
-/// <summary>
-/// Keeps one bot alive in zone: a single read loop that pumps inbound S→C frames,
-/// answers the server's keepalive (Misc HEARTBEAT_REQ → HEARTBEAT_ACK), updates
-/// per-bot <see cref="State"/>, and fans every frame out to <see cref="PacketReceived"/>
-/// so higher layers (buffing, party, instance assist) can react without owning the
-/// socket. Sending is delegated to the connection (already serialized), so action
-/// code can <see cref="SendAsync(FiestaPacket, CancellationToken)"/> from any task.
-///
-/// The zone connection is taken over by this session (entered + handshaked by
-/// <c>ZoneEntry</c>) and disposed when the loop ends.
-/// </summary>
+/// <summary>Keeps one bot alive in zone: a single read loop that pumps inbound S→C frames, answers the server's keepalive…</summary>
 public sealed class BotSession : IAsyncDisposable
 {
-    // Keepalive opcodes, derived from the protocol enums (dept<<10 | cmd) — never
-    // hand-written hex. The server drives heartbeats; the client only answers.
+    // Keepalive opcodes, derived from the protocol enums (dept<<10 | cmd) — never hand-written hex
     private static readonly ushort OpHeartbeatReq = Opcode(ProtocolCommand.Misc, MiscOpcode.HeartbeatReq);
     private static readonly ushort OpHeartbeatAck = Opcode(ProtocolCommand.Misc, MiscOpcode.HeartbeatAck);
-    // Clean-logout pair the real client sends on "Quit Game" (from Full.pcapng):
-    // Char LOGOUTREADY (0x1071) then User cmd 24 (0x0C18, payload 0x00). Without
-    // this the server keeps the char "online" briefly and a quick relog is kicked.
+    // Clean-logout pair the real client sends on "Quit Game" (from Full.pcapng): Char LOGOUTREADY (0x1071) then User…
     private static readonly ushort OpLogoutReady = (ushort)(((int)ProtocolCommand.Char << 10) | 113);
     private static readonly ushort OpQuitGame = (ushort)(((int)ProtocolCommand.User << 10) | 24);
 
@@ -45,12 +32,7 @@ public sealed class BotSession : IAsyncDisposable
 
     public BotSessionState State { get; }
 
-    /// <summary>Runtime packet tap on the underlying connection — see
-    /// <see cref="FiestaClientConnection.PacketTap"/>. Set to dump both directions
-    /// (plaintext) to a log; null to disable.</summary>
-    /// <summary>Connection-level diagnostics that never appear on the wire — sends after dispose,
-    /// send-lock contention/timeouts, write timeouts on a half-open socket. Wire this to the bot log:
-    /// these are the process-level failures a pcap physically cannot show.</summary>
+    /// <summary>Runtime packet tap on the underlying connection — see</summary>
     public Action<string>? ConnDiag
     {
         get => _conn.Diag;
@@ -63,29 +45,25 @@ public sealed class BotSession : IAsyncDisposable
         set => _conn.PacketTap = value;
     }
 
-    /// <summary>Raised for every inbound frame after built-in keepalive handling.
-    /// Handlers must not block the loop — offload heavy work.</summary>
+    /// <summary>Raised for every inbound frame after built-in keepalive handling</summary>
     public event Action<FiestaPacket>? PacketReceived;
 
-    /// <summary>Opcode of the last C→S frame we sent — logged on disconnect so an invalid packet that
-    /// got us kicked is immediately visible (e.g. a scroll-USE or a stray menu-ack right before a kick).</summary>
+    /// <summary>Opcode of the last C→S frame we sent — logged on disconnect so an invalid packet that got us kicked is immedia…</summary>
     public ushort LastSentOpcode { get; private set; }
 
-    /// <summary>Send a C→S frame (enciphered + serialized by the connection).</summary>
+    /// <summary>Send a C→S frame (enciphered + serialized by the connection)</summary>
     public Task SendAsync(FiestaPacket packet, CancellationToken ct = default)
     {
         LastSentOpcode = packet.Opcode;
         return _conn.SendAsync(packet, ct);
     }
 
-    /// <summary>Send the client's clean-logout sequence so the server drops the
-    /// character immediately (avoids a duplicate-login kick on the next login).
-    /// Best-effort — never throws.</summary>
+    /// <summary>Send the client's clean-logout sequence so the server drops the character immediately (avoids a duplicate-logi…</summary>
     public async Task LogoutAsync(bool logoutReady = true, CancellationToken ct = default)
     {
         try
         {
-            // Zone link sends LOGOUTREADY first; both links send the quit (User cmd 24).
+            // Zone link sends LOGOUTREADY first; both links send the quit (User cmd 24)
             if (logoutReady)
                 await _conn.SendAsync(new FiestaPacket(OpLogoutReady, ReadOnlyMemory<byte>.Empty), ct);
             await _conn.SendAsync(new FiestaPacket(OpQuitGame, new byte[] { 0x00 }), ct);
@@ -94,19 +72,13 @@ public sealed class BotSession : IAsyncDisposable
         catch (Exception ex) { _log($"[Session:{State.CharName}] logout send failed: {ex.Message}"); }
     }
 
-    /// <summary>Send a typed C→S body.</summary>
     public Task SendAsync<T>(T body, CancellationToken ct = default) where T : IFiestaPacketBody
     {
         try { LastSentOpcode = PacketRegistry.GetOpcode<T>(); } catch { }
         return _conn.SendAsync(body, ct);
     }
 
-    /// <summary>
-    /// Pump inbound frames until the peer closes, an error occurs, or
-    /// <paramref name="ct"/> is cancelled. Returns when the session ends; the
-    /// reason is recorded in <see cref="State"/>. Does not throw on a normal
-    /// disconnect / cancellation.
-    /// </summary>
+    /// <summary>Pump inbound frames until the peer closes, an error occurs, or is cancelled</summary>
     public async Task RunAsync(CancellationToken ct)
     {
         _log($"[Session:{State.CharName}] read loop started ({State.Zone})");
@@ -123,14 +95,8 @@ public sealed class BotSession : IAsyncDisposable
 
                 if (pkt.Opcode == OpHeartbeatReq)
                 {
-                    // Bare-opcode reply, empty payload — matches the real client:
-                    //   S← [0x0804] NC_MISC_HEARTBEAT_REQ payload=0b
-                    //   C→ [0x0805] NC_MISC_HEARTBEAT_ACK payload=0b     (Z:/LongCaptureNoDc.pcapng, port 9013)
+                    // Bare-opcode reply, empty payload — matches the real client: S← [0x0804] NC_MISC_HEARTBEAT_REQ payload=0b C→ [0…
                     await _conn.SendAsync(new FiestaPacket(OpHeartbeatAck, ReadOnlyMemory<byte>.Empty), ct);
-                    // ⛔ RECORD THE RAW SEND TOO. LastSentOpcode used to be set ONLY by the typed Send<T>,
-                    // so every WM disconnect line read `lastSENT=0x0000` — which looks exactly like "we
-                    // never answered anything" and sent me chasing a missed-heartbeat theory. A diagnostic
-                    // that cannot distinguish "sent nothing" from "sent something untyped" is worse than none.
                     LastSentOpcode = OpHeartbeatAck;
                     State.RecordHeartbeat();
                     continue;
@@ -152,14 +118,7 @@ public sealed class BotSession : IAsyncDisposable
         State.Connected = false;
         State.DisconnectedAtUtc = DateTime.UtcNow;
         State.DisconnectReason = reason;
-        // PROMINENT immediate disconnect log (operator P1): a server kick = "peer closed" / forcibly-
-        // closed right after we sent an INVALID packet. lastSent is the prime suspect (e.g. a scroll
-        // USE, a stray menu-ack on a quest NPC). Compare lastSent to the action the bot just did.
-        // ⭐ NAME THE LINK. The WM session and the zone session log through this SAME method with the same
-        // char name, so "*** DISCONNECTED ***" alone could not tell you WHICH connection dropped — and
-        // that is the first question worth asking about any DC (operator 2026-08-11: "find out if dc is
-        // from WM or from zone"). The endpoint already distinguishes them by port (WM 9013, zone
-        // 9016-9028), it just was never printed. Now the line answers it on its own.
+        // PROMINENT immediate disconnect log (operator P1): a server kick = "peer closed" / forcibly- closed right after…
         _log($"[Session:{State.CharName}/{_tag}] *** DISCONNECTED *** reason={reason} | " +
              $"link={State.Zone} | lastSENT=0x{LastSentOpcode:X4} " +
              $"lastRECV=0x{State.LastOpcode:X4} — uptime {State.Uptime.TotalSeconds:F0}s, {State.InboundCount} frames");
@@ -174,7 +133,7 @@ public sealed class BotSession : IAsyncDisposable
     private static ushort Opcode(ProtocolCommand dept, MiscOpcode cmd)
         => (ushort)(((int)dept << 10) | ((int)cmd & 0x3FF));
 
-    // First up-to-48 payload bytes as hex, for inbound introspection.
+    // First up-to-48 payload bytes as hex, for inbound introspection
     private static string HexPreview(ReadOnlySpan<byte> payload)
     {
         if (payload.Length == 0) return "";

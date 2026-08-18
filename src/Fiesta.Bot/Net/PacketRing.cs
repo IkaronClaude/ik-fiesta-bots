@@ -1,20 +1,9 @@
 namespace Fiesta.Bot.Net;
 
-/// <summary>One captured frame: when, which way it went, its opcode and its raw bytes.</summary>
+/// <summary>One captured frame: when, which way it went, its opcode and its raw bytes</summary>
 public sealed record RingFrame(DateTime AtUtc, bool Outbound, ushort Opcode, byte[] Payload);
 
-/// <summary>
-/// A small always-on ring of the most recent frames in BOTH directions, so a post-mortem (a death, a
-/// stall, a refused action) can show what was actually on the wire in the moments before it — without
-/// anyone having had the foresight to enable the file packet log first.
-///
-/// This is deliberately separate from <see cref="PacketLog"/>: that writes every frame to disk and is
-/// opt-in per bot, whereas this keeps a bounded window in memory and is always running. The two coexist
-/// on the same tap.
-///
-/// Bounded by construction: a fixed-size array reused in place, so a long-running bot cannot grow it.
-/// Payloads are copied because the tap hands out pooled/reused memory that is invalid after it returns.
-/// </summary>
+/// <summary>A small always-on ring of the most recent frames in BOTH directions, so a post-mortem (a death, a stall, a ref…</summary>
 public sealed class PacketRing
 {
     private readonly RingFrame?[] _buf;
@@ -27,11 +16,10 @@ public sealed class PacketRing
     public int Capacity => _buf.Length;
     public long TotalSeen { get { lock (_lock) return _total; } }
 
-    /// <summary>Tap signature matches <c>ISession.PacketTap</c> so it can be chained with the file log.</summary>
+    /// <summary>Tap signature matches ISession.PacketTap so it can be chained with the file log</summary>
     public void Tap(bool outbound, ushort opcode, ReadOnlyMemory<byte> payload)
     {
-        // Copy: the caller's buffer is reused once this returns, so keeping the Memory would alias whatever
-        // frame lands next — the classic way a capture ends up showing the wrong bytes.
+        // Copy: the caller's buffer is reused once this returns, so keeping the Memory would alias whatever frame lands…
         var bytes = payload.ToArray();
         var frame = new RingFrame(DateTime.UtcNow, outbound, opcode, bytes);
         lock (_lock)
@@ -42,7 +30,7 @@ public sealed class PacketRing
         }
     }
 
-    /// <summary>The retained frames, OLDEST first. Returns at most <paramref name="max"/> (newest kept).</summary>
+    /// <summary>The retained frames, OLDEST first</summary>
     public IReadOnlyList<RingFrame> Snapshot(int max = int.MaxValue)
     {
         lock (_lock)

@@ -2,11 +2,7 @@ using Fiesta.Bot.Login;
 
 namespace Fiesta.Bot.Session;
 
-/// <summary>
-/// Live, mutable state of one bot's in-zone session. Owned by <see cref="BotSession"/>
-/// and updated from its read loop; readable from other threads for status/HTTP.
-/// Volatile/Interlocked-friendly fields — this is a snapshot surface, not a lock.
-/// </summary>
+/// <summary>Live, mutable state of one bot's in-zone session</summary>
 public sealed class BotSessionState
 {
     public BotSessionState(string charName, ushort wmHandle, FiestaEndpoint zone)
@@ -25,7 +21,7 @@ public sealed class BotSessionState
     public DateTime ConnectedAtUtc { get; }
     public volatile bool Connected = true;
 
-    /// <summary>When the read loop ended, and why (null while running / on clean stop).</summary>
+    /// <summary>When the read loop ended, and why (null while running / on clean stop)</summary>
     public DateTime? DisconnectedAtUtc { get; internal set; }
     public string? DisconnectReason { get; internal set; }
 

@@ -5,14 +5,7 @@ using Fiesta.Bot.Scripting;
 
 namespace Fiesta.Bot.Host;
 
-/// <summary>
-/// HTTP surface for behaviour scripting: a <b>library</b> of uploaded Lua scripts
-/// (<c>/api/scripts</c>) and per-bot <b>apply / stop / status</b> (<c>/api/bots/{id}/script</c>).
-/// Upload a script, apply it to a bot, and the bot loops it; a new apply replaces the
-/// running one. Apply takes either a stored script <c>name</c> or inline <c>source</c>.
-/// Mirrors <see cref="BotEndpoints"/>: thin mapping over <see cref="BotManager"/> +
-/// <see cref="ScriptStore"/>, 503 when the bot manager isn't configured.
-/// </summary>
+/// <summary>HTTP surface for behaviour scripting: a library of uploaded Lua scripts ( /api/scripts ) and per-bot apply / s…</summary>
 public static class ScriptEndpoints
 {
     public static void MapScriptEndpoints(this WebApplication app, BotManager? manager,
@@ -69,7 +62,7 @@ public static class ScriptEndpoints
             return;
         }
 
-        // ── Behaviour-graph library (states + transitions + scripts, disk-persisted) ──
+        // Behaviour-graph library (states + transitions + scripts, disk-persisted) ──
         var graphs = app.MapGroup("/api/graphs").WithTags("Graphs");
         graphs.MapGet("/", () => Results.Ok(manager.Graphs.List()))
             .WithSummary("List saved behaviour graphs");
@@ -171,14 +164,12 @@ public static class ScriptEndpoints
             ctx.Response.Headers.CacheControl = "no-cache";
             ctx.Response.Headers["X-Accel-Buffering"] = "no"; // disable proxy buffering
 
-            // Bounded so a slow/abandoned reader can't grow memory: drop oldest on overflow.
+            // Bounded so a slow/abandoned reader can't grow memory: drop oldest on overflow
             var ch = Channel.CreateBounded<string>(
                 new BoundedChannelOptions(2000) { FullMode = BoundedChannelFullMode.DropOldest });
             void OnLine(string l) => ch.Writer.TryWrite(l);
 
-            // Backfill the recent buffer first (so a fresh connection has context), then
-            // subscribe for live lines. Subscribe before reading the buffer would risk a
-            // gap; this order can at worst duplicate a line, which is harmless for a tail.
+            // Backfill the recent buffer first (so a fresh connection has context), then subscribe for live lines
             foreach (var l in bot.RecentLines(tail ?? 50)) ch.Writer.TryWrite(l);
             bot.LogLine += OnLine;
             var ct = ctx.RequestAborted;
@@ -196,10 +187,7 @@ public static class ScriptEndpoints
         .WithSummary("Live-tail a bot's log as NDJSON (script + engine lines; ?tail=N backfills the last N). curl -N to watch Lua run.");
     }
 
-    /// <summary>Resolve an apply request to (name, source): a stored library <c>Name</c>,
-    /// or inline <c>Source</c> (compile-checked, labelled by <c>NameAs</c>). Returns an
-    /// <see cref="IResult"/> error to return directly when neither is valid; otherwise the
-    /// error is null and name/source are set.</summary>
+    /// <summary>Resolve an apply request to (name, source): a stored library Name , or inline Source (compile-checked, labelle…</summary>
     private static (string? Name, string? Source, IResult? Error) Resolve(ScriptStore store, ApplyScriptRequest req)
     {
         if (!string.IsNullOrWhiteSpace(req.Name))
@@ -220,16 +208,13 @@ public static class ScriptEndpoints
     }
 }
 
-/// <summary>Body for <c>POST /api/scripts</c> — upload/replace a library script.</summary>
+/// <summary>Body for POST /api/scripts — upload/replace a library script</summary>
 public sealed record UploadScriptRequest
 {
     public string? Name { get; init; }
     public string? Source { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/script</c>. Give a stored <c>Name</c> OR
-/// inline <c>Source</c> (optionally labelled via <c>NameAs</c>). <c>TickMs</c> overrides
-/// the loop interval (default 250 ms).</summary>
 public sealed record ApplyScriptRequest
 {
     public string? Name { get; init; }
@@ -237,13 +222,11 @@ public sealed record ApplyScriptRequest
     public string? NameAs { get; init; }
     public int? TickMs { get; init; }
 
-    /// <summary>Log every <c>bot.*</c> call (with args) — tail it via <c>GET
-    /// /api/bots/{id}/logstream</c>. Noisy; opt-in for debugging.</summary>
+    /// <summary>Log every bot.* call (with args) — tail it via GET /api/bots/{id}/logstream</summary>
     public bool? Trace { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/graph</c> — run a saved graph by <c>Name</c>.
-/// <c>StartState</c> overrides the resumed/initial state; <c>TickMs</c> the loop interval.</summary>
+/// <summary>Body for POST /api/bots/{id}/graph — run a saved graph by Name</summary>
 public sealed record ApplyGraphRequest
 {
     public string? Name { get; init; }
@@ -251,8 +234,7 @@ public sealed record ApplyGraphRequest
     public int? TickMs { get; init; }
 }
 
-/// <summary>Body for <c>POST /api/bots/{id}/state</c> — request a transition to <c>Name</c>
-/// in graph <c>Graph</c> (Graph optional when only one graph is running).</summary>
+/// <summary>Body for POST /api/bots/{id}/state — request a transition to Name in graph Graph (Graph optional when only one…</summary>
 public sealed record StateRequest
 {
     public string? Graph { get; init; }

@@ -5,35 +5,22 @@ using FiestaLibReloaded.Networking.Structs;
 
 namespace Fiesta.Bot.Behaviors;
 
-/// <summary>
-/// Hand-rolled codec for in-zone chat. FiestaLib's generated <c>PROTO_NC_ACT_CHAT_REQ</c>
-/// / <c>PROTO_NC_ACT_SOMEONECHAT_CMD</c> read the text as <c>content[itemLinkDataCount]</c>,
-/// but the real wire format carries the text length in <c>len</c> (the
-/// <c>itemLinkDataCount</c> only counts trailing item-link blobs). We build/parse
-/// the bytes ourselves so the text is correct, while still resolving opcodes via
-/// <see cref="PacketRegistry"/> (no hand-written hex).
-///
-/// Layouts (confirmed from the extracted struct table):
-///   CHAT_REQ  (C→S): [itemLinkDataCount:1=0][len:1][text:len]
-///   SOMEONECHAT (S→C): [itemLinkDataCount:1][handle:2 LE][len:1][flag:1][font:1][balloon:1][text:len]
-/// </summary>
+/// <summary>Hand-rolled codec for in-zone chat</summary>
 public static class ChatCodec
 {
-    /// <summary>C→S ACT_CHAT_REQ opcode (resolved from the typed struct's attribute).</summary>
+    /// <summary>C→S ACT_CHAT_REQ opcode (resolved from the typed struct's attribute)</summary>
     public static readonly ushort ChatReqOpcode = PacketRegistry.GetOpcode<PROTO_NC_ACT_CHAT_REQ>();
 
-    /// <summary>S→C ACT_SOMEONECHAT_CMD opcode.</summary>
+    /// <summary>S→C ACT_SOMEONECHAT_CMD opcode</summary>
     public static readonly ushort SomeoneChatOpcode = PacketRegistry.GetOpcode<PROTO_NC_ACT_SOMEONECHAT_CMD>();
 
-    /// <summary>C→S ACT_WHISPER_REQ opcode.</summary>
+    /// <summary>C→S ACT_WHISPER_REQ opcode</summary>
     public static readonly ushort WhisperReqOpcode = PacketRegistry.GetOpcode<PROTO_NC_ACT_WHISPER_REQ>();
 
-    /// <summary>C→S ACT_PARTYCHAT_REQ opcode. Same wire layout as CHAT_REQ but the
-    /// server fans it to the party channel; it's sent on the <b>WM</b> link (verified
-    /// in PartyFriendTarget.pcapng — party/friend traffic is WorldManager-side).</summary>
+    /// <summary>C→S ACT_PARTYCHAT_REQ opcode</summary>
     public static readonly ushort PartyChatReqOpcode = PacketRegistry.GetOpcode<PROTO_NC_ACT_PARTYCHAT_REQ>();
 
-    /// <summary>Build a WHISPER_REQ: [itemLinkDataCount=0][receiver Name5(20)][len][text].</summary>
+    /// <summary>Build a WHISPER_REQ: [itemLinkDataCount=0][receiver Name5(20)][len][text]</summary>
     public static FiestaPacket BuildWhisperReq(string receiver, string text)
     {
         var name = FiestaText.Encode(receiver);
@@ -47,7 +34,7 @@ public static class ChatCodec
         return new FiestaPacket(WhisperReqOpcode, payload);
     }
 
-    /// <summary>Build a CHAT_REQ frame for plain (no item-link) text.</summary>
+    /// <summary>Build a CHAT_REQ frame for plain (no item-link) text</summary>
     public static FiestaPacket BuildChatReq(string text)
     {
         var body = FiestaText.Encode(text);
@@ -59,8 +46,7 @@ public static class ChatCodec
         return new FiestaPacket(ChatReqOpcode, payload);
     }
 
-    /// <summary>Build a PARTYCHAT_REQ frame: identical layout to CHAT_REQ
-    /// ([itemLinkDataCount=0][len][text]) on the party-chat opcode.</summary>
+    /// <summary>Build a PARTYCHAT_REQ frame: identical layout to CHAT_REQ ([itemLinkDataCount=0][len][text]) on the party-chat…</summary>
     public static FiestaPacket BuildPartyChatReq(string text)
     {
         var body = FiestaText.Encode(text);
@@ -72,10 +58,7 @@ public static class ChatCodec
         return new FiestaPacket(PartyChatReqOpcode, payload);
     }
 
-    /// <summary>
-    /// Parse a SOMEONECHAT payload into the speaker's zone handle and text.
-    /// Returns false if the frame is too short / malformed.
-    /// </summary>
+    /// <summary>Parse a SOMEONECHAT payload into the speaker's zone handle and text</summary>
     public static bool TryDecodeSomeoneChat(ReadOnlySpan<byte> payload, out ushort handle, out string text)
     {
         handle = 0;
