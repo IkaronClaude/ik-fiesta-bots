@@ -6,6 +6,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
     <RootNamespace>Fiesta.Bot.Host</RootNamespace>
+    <!-- The Web SDK defaults to Server GC, which sizes gen0 for throughput and lets RSS ride up near the
+         heap hard limit on purpose. This host is 4 low-throughput socket sessions in a 1-CPU / 512Mi
+         container, where that costs an OOMKill (2026-08-18) rather than buying anything. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
