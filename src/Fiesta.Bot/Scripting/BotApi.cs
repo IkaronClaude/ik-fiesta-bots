@@ -963,10 +963,15 @@ public sealed class BotApi
     /// <summary>Pathfind over the current map's block grid and walk to (x,y)</summary>
     public bool walkTo(double x, double y)
     {
+        // TEMPORARY INSTRUMENTATION (2026-08-18): find out what actually blocks the lua tick. Logs entry, the
+        // pathfind cost, and total, so the gap between them names the culprit instead of us guessing.
+        var swWalk = System.Diagnostics.Stopwatch.StartNew();
+        _handle.Log($"[nav-timing] walkTo ENTER ({(uint)x},{(uint)y})");
         if (_handle.CurrentMap is not { } map) return false;
         if (_mgr.GridProvider?.Invoke(map) is not { } grid) return false;
         if (_handle.Position is not { } pos) return false;
         var path = PathFinder.FindPath(grid, pos.X, pos.Y, (uint)x, (uint)y);
+        _handle.Log($"[nav-timing] walkTo PATHFIND done in {swWalk.ElapsedMilliseconds}ms -> {path.Count} steps");
         if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
         {
             // UNREACHABLE on the runtime-augmented grid, but learned MOVEFAIL blocks may have wrongly SEVERED a route the ra…
@@ -1019,7 +1024,11 @@ public sealed class BotApi
             }
             return false;
         }
-        return Ok(_mgr.WalkPath(Id, PathFinder.Simplify(path)));
+        var simplified = PathFinder.Simplify(path);
+        _handle.Log($"[nav-timing] walkTo SIMPLIFY done at {swWalk.ElapsedMilliseconds}ms -> {simplified.Count} waypoints");
+        var wr = _mgr.WalkPath(Id, simplified);
+        _handle.Log($"[nav-timing] walkTo RETURN at {swWalk.ElapsedMilliseconds}ms ({wr})");
+        return Ok(wr);
     }
 
     /// <summary>Face (x,y) and STOP, committing the bot's position to the server (MOVERUN+STOP, exactly what the real client s…</summary>
