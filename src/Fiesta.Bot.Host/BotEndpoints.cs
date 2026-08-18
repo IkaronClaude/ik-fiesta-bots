@@ -1047,7 +1047,12 @@ public static class BotEndpoints
     // clearance map is one byte PER TILE against one BIT in the packed .shbd, so a 7.2MB map costs ~58MB
     // resident once a path is computed on it. Four bots roaming a few big maps is the whole 512Mi limit,
     // which is what OOMKilled the pod and killed a script thread mid-session.
-    private const int MaxCachedGrids = 6;
+    // 6 WAS A DISASTER (2026-08-18): rebuilding an evicted grid recomputes the clearance map, an O(W*H)
+    // two-pass distance transform over ~57M tiles for a big map. Four bots share this cache and roam
+    // more than 6 maps, so it thrashed continuously: CPU pinned at 863m of a 1000m limit, throttled in
+    // 3943 of 5877 periods, and the leveler fell from ~150 ticks/min to ONE. The cache exists to avoid
+    // exactly that recompute, so it must comfortably hold the whole roaming set; memory is 1Gi now.
+    private const int MaxCachedGrids = 64;
     private static readonly ConcurrentDictionary<string, long> _gridUsed = new(StringComparer.OrdinalIgnoreCase);
     private static long _gridTick;
 
