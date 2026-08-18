@@ -250,6 +250,67 @@ public sealed class BlockGrid
         return SbiMoveFail.NotInDoor;
     }
 
+    // ── FIELD .sbi DOOR STATE FROM THE PUZZLE ENTITIES (operator 2026-08-18) ───────────────────────────────────
+    // The MOVEFAIL learning above is a CRUTCH: it only concludes "closed" AFTER bouncing off the wall 6-12 times,
+    // which costs ~30-60s of thrash every visit. The puzzle pieces themselves are a POSITIVE signal that is true
+    // the moment they come into view — the mini-game only runs while the door is shut, so a piece standing inside
+    // an .sbi door box means that door is closed, with no MOVEFAIL needed at all.
+    //
+    // ⚠️ AUTHORISED HARDCODE (operator 2026-08-18: "Hardcode the 3 spawned puzzle mob ids" → "Just do 03 and 04
+    // (the 2 puzzle types)"). The structural rule I proposed first — "any mob inside a door box" — was REJECTED by
+    // the operator as a false-positive risk, and rightly: one wandering mob would wall an OPEN courtyard and send
+    // the bot the long way round forever.
+    // Ids read from MobInfo (ServerSource). The puzzle block is contiguous 15000-15035:
+    //     15000/15001/15002  Xiaoming / Aruming / Toriming — the door NPCs
+    //     15003 PzlSlimeFull · 15004 PzlHoneyFull          — the completed-picture display, one per puzzle type
+    //     15005-15034 PzlSlime1_1..4_3 / PzlHoney1_1..4_3  — the individual sliding tiles
+    //     15035 PzlBoard_4x4                                — the board (PRIMARY signal)
+    //
+    // Spawn coords come from AIScript/Toryming.lua and all sit dead centre of the Toryming door box
+    // (16150,14350)-(16844,14694): boards at (16324,14522) and (16664,14522), the two Full pictures co-located
+    // with them, the 30 tiles across x16249-16739 / y14447-14597. So every candidate is genuinely inside.
+    //
+    // ⭐ MATCH THE BOARD AND ONLY THE BOARD (operator 2026-08-18: "Actually 35 might be best, if it's actually
+    // inside the door bounds?" — it is; then "Use only 35 (empty puzzle frame) will include future puzzles too").
+    // Three reasons it is the right single id:
+    //   1. STABLE for the whole closed period. The boards are regen'd by the same init loop that calls cDoorBuild
+    //      (Toryming.lua:370), so a board exists exactly as long as the event — and therefore the wall — does.
+    //   2. The Full pictures are NOT stable: PG_COMPLETE_SUCCESS_GAME re-spawns one when a puzzle is SOLVED
+    //      (Toryming.lua:1274), so 15003/15004 track play state, not door state.
+    //   3. GENERALISES. PzlBoard_4x4 is the empty frame shared by BOTH puzzle types (one id, both boards), so any
+    //      future puzzle built on the same frame is covered without touching this list.
+    //
+    // The door NPCs (15000-15002) are deliberately EXCLUDED — they are always present regardless of door state,
+    // so they identify WHICH door a box belongs to but say nothing about whether it is shut. Measured live: all
+    // three presented byte-identical state (mode=2 type=6 huntable=false level=0) while Toryming was closed.
+    public const int PuzzleMobBoard = 15035;   // PzlBoard_4x4 — the empty puzzle frame
+    public static bool IsPuzzlePieceMob(int mobId) => mobId == PuzzleMobBoard;
+
+    /// <summary>Mark any field <c>.sbi</c> door CLOSED that currently contains a puzzle-piece entity. Returns the
+    /// names of doors newly closed by this call (empty when nothing changed), so the caller can log it once.
+    /// Cheap and idempotent — safe to call on every entity refresh.</summary>
+    public IReadOnlyList<string> NotePuzzleEntities(IEnumerable<(uint X, uint Y, int MobId)> entities)
+    {
+        if (_doorCol is not { } col) return Array.Empty<string>();
+        List<string>? closed = null;
+        foreach (var e in entities)
+        {
+            if (!IsPuzzlePieceMob(e.MobId)) continue;
+            foreach (var d in col.Doors)
+            {
+                if (_packetDoorStates.ContainsKey(d.Name)) continue;      // instance doors are packet-authoritative
+                if (_learnedDoorStates.TryGetValue(d.Name, out var k) && k == 0) continue;  // already known closed
+                double x0 = d.StartX * WorldPerTile, x1 = (d.EndX + 1) * WorldPerTile;
+                double y0 = d.StartY * WorldPerTile, y1 = (d.EndY + 1) * WorldPerTile;
+                if (e.X < x0 || e.X >= x1 || e.Y < y0 || e.Y >= y1) continue;
+                _learnedDoorStates[d.Name] = 0;                            // CLOSED — apply the whole state0 wall
+                (closed ??= new List<string>()).Add(d.Name);
+            }
+        }
+        if (closed is not null) RebuildDoorOverlay();
+        return (IReadOnlyList<string>?)closed ?? Array.Empty<string>();
+    }
+
     /// <summary>Reset MOVEFAIL-learned field-door state on MAP RE-ENTRY — the door may have opened while we were
     /// off the map, so a stale "closed" would wall a now-open courtyard. Also clears runtime poison (transient,
     /// re-learned per visit). Packet-driven instance doors are untouched (BUILDDOOR re-seeds them on entry).</summary>

@@ -3281,6 +3281,21 @@ public sealed class BotManager : IAsyncDisposable
                     if (handle.CurrentMap is { } dmap && GridProvider?.Invoke(dmap) is { HasDoors: true } dgrid)
                         dgrid.SetDoorStates(states);
                 };
+                // FIELD .sbi DOOR STATE FROM THE PUZZLE BOARD (operator 2026-08-18). A field door's closed-state is
+                // never sent to a late-joiner, so the bot used to learn it only by MOVEFAILing into the wall 6-12
+                // times — ~30-60s of thrash on every visit, and the wedge that produced FighterFresh's 22.7% reject
+                // rate. The puzzle BOARD is a positive signal available the instant it comes into view: it is
+                // spawned by the same script init that builds the door, so board-in-a-door-box ⇒ that door is shut.
+                // Runs on entity refresh; NotePuzzleEntities is a single id compare per entity and idempotent.
+                zoneView.EntityChanged += _ =>
+                {
+                    if (handle.CurrentMap is not { } pmap || GridProvider?.Invoke(pmap) is not { HasDoors: true } pgrid) return;
+                    var boards = zoneView.NearbyNpcs
+                        .Where(n => BlockGrid.IsPuzzlePieceMob(n.MobId))
+                        .Select(n => (n.X, n.Y, (int)n.MobId));
+                    foreach (var name in pgrid.NotePuzzleEntities(boards))
+                        Log($"[nav] ⛔ .sbi door '{name}' is CLOSED — puzzle board (mob {BlockGrid.PuzzleMobBoard}) is inside its box, so a game is running. Walled the courtyard from the ENTITY signal (no MOVEFAIL probing needed) and re-pathing around it.");
+                };
                 if (entry.CharHandle is { } selfH2)
                 {
                     zoneView.SelfHandle = selfH2; // for MOVESPEED filtering
