@@ -260,6 +260,10 @@ public sealed class BotManager : IAsyncDisposable
         return false;
     }
 
+    /// <summary>Where the bot's last Lua tick went (null if no bot / no script)</summary>
+    public Scripting.BotScriptRunner.ProfileSnapshot? ScriptProfile(string id)
+        => _bots.TryGetValue(id, out var handle) ? handle.ScriptRunner?.Profile : null;
+
     /// <summary>Debug status of a bot's running script (null if no bot / no script)</summary>
     public ScriptStatus? ScriptStatus(string id)
         => _bots.TryGetValue(id, out var handle) ? handle.ScriptRunner?.Status() : null;

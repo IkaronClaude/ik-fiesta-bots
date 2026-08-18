@@ -33,6 +33,9 @@ public sealed class BotScriptRunner : IDisposable
     private long _ticks;
     private long _eventsHandled;
     private volatile string _state = "starting";
+    private double _tickMsTotal;
+    /// <summary>A tick over this long prints where it went. Target is ~50ms (20 ticks/sec).</summary>
+    private const int SlowTickMs = 250;
     private volatile string? _lastError;
     private volatile string? _smState; // current state-machine state (null for a plain script)
     private int _disposed;
@@ -78,6 +81,69 @@ public sealed class BotScriptRunner : IDisposable
         return new ScriptStatus(
             _name, _state, Interlocked.Read(ref _ticks), Interlocked.Read(ref _eventsHandled),
             _lastError, Math.Round((DateTime.UtcNow - _startedUtc).TotalSeconds, 1), globals, _smState);
+    }
+
+    /// <summary>One profiled Lua-visible call: time spent INSIDE it, plus the Lua time that ran just BEFORE it.</summary>
+    public sealed record ProfileRow(string Name, long Calls, double InMs, double MaxMs, double GapMs);
+
+    /// <summary>Where one tick went, worst-first. GapMs is pure-Lua work, attributed to the call that follows it.</summary>
+    public sealed record ProfileSnapshot(long Ticks, double TickMs, double InMs, double GapMs, long Calls,
+        IReadOnlyList<ProfileRow> Rows);
+
+    private volatile ProfileSnapshot _profile = new(0, 0, 0, 0, 0, []);
+
+    /// <summary>Latest profile. Sampled on the script thread; readers get an immutable snapshot.</summary>
+    public ProfileSnapshot Profile => _profile;
+
+    /// <summary>Start the gap clock at the top of the tick. Without this the FIRST call of a tick is charged the
+    /// whole inter-tick sleep as "lua time before it", which reads as one enormous phantom section.</summary>
+    private void ResetProfileWindow()
+    {
+        try
+        {
+            if (_lua?.Globals.Get("__prof") is { Type: DataType.Table } pv)
+                pv.Table.Set("last", DynValue.NewNumber(
+                    System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency));
+        }
+        catch { /* profiling must never break the tick */ }
+    }
+
+    /// <summary>Copy the Lua-side profile tables into an immutable snapshot, then zero them for the next window.
+    /// Runs on the script thread — the ONLY thread allowed to touch the VM.</summary>
+    private ProfileSnapshot? SampleProfile(long ticks, double tickMs)
+    {
+        if (_lua?.Globals.Get("__prof") is not { Type: DataType.Table } pv) return null;
+        var prof = pv.Table;
+        if (prof.Get("calls") is not { Type: DataType.Table } cv) return null;
+        var calls = cv.Table;
+        var secs = prof.Get("secs").Table;
+        var gaps = prof.Get("gaps").Table;
+        var maxs = prof.Get("maxs").Table;
+        var rows = new List<ProfileRow>();
+        foreach (var k in calls.Keys)
+        {
+            var name = k.CastToString();
+            if (name is null) continue;
+            rows.Add(new ProfileRow(name,
+                (long)(calls.Get(name).CastToNumber() ?? 0),
+                (secs.Get(name).CastToNumber() ?? 0) * 1000.0,
+                (maxs.Get(name).CastToNumber() ?? 0) * 1000.0,
+                (gaps.Get(name).CastToNumber() ?? 0) * 1000.0));
+        }
+        rows.Sort((a, b) => (b.InMs + b.GapMs).CompareTo(a.InMs + a.GapMs));
+        calls.Clear(); secs.Clear(); gaps.Clear(); maxs.Clear();
+        return new ProfileSnapshot(ticks, tickMs, rows.Sum(r => r.InMs), rows.Sum(r => r.GapMs),
+            rows.Sum(r => r.Calls), rows);
+    }
+
+    /// <summary>Log where a slow tick went, worst-first.</summary>
+    private void ReportProfile(ProfileSnapshot p)
+    {
+        var top = string.Join("  ", p.Rows.Take(8)
+            .Select(r => $"{r.Name}={r.InMs:F0}+{r.GapMs:F0}ms/{r.Calls}"));
+        _handle.Log(BotLogLevel.Note,
+            $"[prof] TICK {p.TickMs:F0}ms = {p.InMs:F0}ms in {p.Calls} bot.* calls + {p.GapMs:F0}ms lua | " +
+            $"name=inCall+luaBefore/calls: {top}");
     }
 
     private void OnEvent(BotEvent e)
@@ -163,7 +229,21 @@ public sealed class BotScriptRunner : IDisposable
                         continue;
                     }
                     Interlocked.Increment(ref _ticks);
+                    ResetProfileWindow();
+                    var swTick = System.Diagnostics.Stopwatch.StartNew();
                     SafeCall("tick");
+                    swTick.Stop();
+                    _tickMsTotal += swTick.Elapsed.TotalMilliseconds;
+                    try
+                    {
+                        var p = SampleProfile(Interlocked.Read(ref _ticks), swTick.Elapsed.TotalMilliseconds);
+                        if (p is not null)
+                        {
+                            _profile = p;
+                            if (swTick.ElapsedMilliseconds > SlowTickMs) ReportProfile(p);
+                        }
+                    }
+                    catch { /* profiling must never break the tick */ }
                     // Cheap, and on the ONLY thread allowed to touch the VM
                     if (Interlocked.Read(ref _ticks) % 25 == 0) RefreshGlobalsSnapshot();
                     nextTick = Environment.TickCount64 + _tickMs;
@@ -206,6 +286,7 @@ public sealed class BotScriptRunner : IDisposable
         _lua.DoString(StateMachineHarness, codeFriendlyName: "sm-harness");
         // Trace mode: wrap `bot` in a proxy that logs every call before forwarding, so the log stream shows each bot.* i…
         if (_trace) _lua.DoString(TraceShim, codeFriendlyName: "trace-shim");
+        else _lua.DoString(ProfileShim, codeFriendlyName: "profile-shim");
         _lua.DoString(_source, codeFriendlyName: _name);
     }
 
@@ -262,6 +343,45 @@ end
 ";
 
     // Replaces `bot` with a metatable proxy whose __index returns, for each function member, a closure that logs `call bot
+
+    // PROFILE SHIM. Same interception as the trace shim, but it COUNTS and TIMES instead of logging every call --
+    // logging per call is not free, so the trace numbers describe the instrumentation as much as the tick.
+    // Two clocks per call, not one: `secs` is time spent INSIDE the C# call, `gaps` is the wall time since the
+    // PREVIOUS call returned -- i.e. the pure-Lua work that ran just before this one. Without the gap column a
+    // slow tick made entirely of Lua loops profiles as "no call is slow", which is true and useless.
+    // MEMBER LOOKUP IS MEMOISED: a fresh closure per `bot.x` access would allocate ~1,400 closures per tick.
+    private const string ProfileShim = @"
+do
+  local real = bot
+  local clock = real.nowPrecise
+  __prof = { calls = {}, secs = {}, gaps = {}, maxs = {}, last = clock() }
+  local calls, secs, gaps, maxs = __prof.calls, __prof.secs, __prof.gaps, __prof.maxs
+  local wrapped = {}
+  local pack, unpack = table.pack, table.unpack
+  bot = setmetatable({}, { __index = function(_, k)
+    local w = wrapped[k]
+    if w ~= nil then return w end
+    local v = real[k]
+    if type(v) == 'function' then
+      w = function(...)
+        local t0 = clock()
+        gaps[k] = (gaps[k] or 0) + (t0 - __prof.last)
+        local r = pack(v(...))
+        local t1 = clock()
+        local dt = t1 - t0
+        __prof.last = t1
+        calls[k] = (calls[k] or 0) + 1
+        secs[k] = (secs[k] or 0) + dt
+        if dt > (maxs[k] or 0) then maxs[k] = dt end
+        return unpack(r, 1, r.n)
+      end
+      wrapped[k] = w
+      return w
+    end
+    return v
+  end })
+end
+";
     private const string TraceShim = @"
 do
   local real = bot

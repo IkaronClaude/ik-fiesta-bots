@@ -135,6 +135,10 @@ public sealed class BotApi
         return _mgr.Knowledge.ShopKind(_handle.Options.Host, map!, npcId) ?? "";
     }
 
+    /// <summary>High-resolution seconds for the profile shim. bot.now() is milliseconds and far too coarse to
+    /// attribute a call that costs microseconds -- 1,370 of those per tick is what we are trying to see.</summary>
+    public double nowPrecise() => System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+
     public void metric(string name, double value = 1) => _handle.Metrics.LogMetric(name, value);
 
     /// <summary>Declare a metric up front (direction + kind), so it appears on /metrics with the right percentile tail even be…</summary>
