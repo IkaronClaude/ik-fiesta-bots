@@ -273,7 +273,7 @@ public sealed class ZoneView : IDisposable
         var now = Environment.TickCount64;
         if (_aoiNextFlush == 0) { _aoiNextFlush = now + AoiFlushMs; return; }
         if (now < _aoiNextFlush) return;
-        LogV($"[AoI] +{_aoiIn} / -{_aoiOut} mob(s) in {AoiFlushMs}ms (roster {_npcs.Count})");
+        // [AoI] +/- churn line deleted (comment-scrub P0): 2,592 of 65,961 sampled lines, never diagnostic.
         _aoiIn = _aoiOut = 0;
         _aoiNextFlush = now + AoiFlushMs;
     }
@@ -1710,8 +1710,8 @@ public sealed class ZoneView : IDisposable
                 ? (DateTime.UtcNow - CastBarStartedAtUtc).TotalMilliseconds : -1;
             ClearCastBar();
             var verdict = heldMs < 0 ? "" : heldMs < 1000
-                ? " — CUT SHORT, something interrupted the cast (we moved?)"
-                : " — ran to full length (likely completed; check for the result packet)";
+                ? " — CUT SHORT, cast interrupted"
+                : " — ran to full length; completion is only confirmed by the result packet";
             _logLevel?.Invoke(BotLogLevel.Note,
                 $"[ZoneView] CASTBAR closed (0x2048) after {(heldMs < 0 ? 0 : heldMs):F0}ms{verdict}");
         }
@@ -2104,9 +2104,11 @@ public sealed class ZoneView : IDisposable
                     BashActive = false;
                     LastBashCeasedAtUtc = DateTime.UtcNow;
                     BashCeasedCount++;
-                    // Only NOTE the ones that actually killed a running auto-attack; the rest are routine (already idle) and would d…
-                    _logLevel?.Invoke(wasActive ? BotLogLevel.Note : BotLogLevel.Verbose,
-                        $"[combat] CEASE_FIRE on SELF — melee auto-attack STOPPED{(wasActive ? " (was ACTIVE)" : " (was already idle)")} (session {BashCeasedCount})");
+                    // Log only when this actually STOPPED something. The already-idle case is a no-op and was
+                    // 538 of 65,961 sampled lines saying nothing happened.
+                    if (wasActive)
+                        _logLevel?.Invoke(BotLogLevel.Note,
+                            $"[combat] CEASE_FIRE on SELF — melee auto-attack STOPPED (session {BashCeasedCount})");
                     try { BashCeased?.Invoke(who); } catch { }
                 }
                 else
@@ -2341,7 +2343,7 @@ public sealed class ZoneView : IDisposable
             var p = pkt.Payload.Span;
             LastStoneBuyFailErr = p.Length >= 2 ? (ushort)(p[0] | (p[1] << 8)) : (ushort)0;
             StoneBuyFailCount++;
-            _log?.Invoke($"[ZoneView] soul-stone BUY FAILED (0x5005) err=0x{LastStoneBuyFailErr:X4} — server refused the buy (count vs reserve/afford mismatch?)");
+            _log?.Invoke($"[ZoneView] soul-stone BUY FAILED (0x5005) err=0x{LastStoneBuyFailErr:X4} — server refused the buy");
         }
         else if (op == OpSoulStoneHpUseSuc || op == OpSoulStoneSpUseSuc)
         {

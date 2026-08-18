@@ -96,7 +96,7 @@ public sealed class ZoneEntry
                 FiestaPacket pkt;
                 try { pkt = await conn.ReadPacketAsync(cts.Token); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { break; } // deadline
-                _log($"[Zone] << 0x{pkt.Opcode:X4} dept={pkt.Department} cmd={pkt.Command} len={pkt.Payload.Length}");
+                // raw frame dump deleted (comment-scrub P0): superseded by the packet log, which decodes these.
 
                 if (pkt.Opcode == OpMapLoginFail)
                 {

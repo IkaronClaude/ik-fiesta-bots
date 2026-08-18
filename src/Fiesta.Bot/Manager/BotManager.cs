@@ -1991,7 +1991,7 @@ public sealed class BotManager : IAsyncDisposable
 
         // Success = the drop left view (picked/despawned)
         var picked = await WaitUntilAsync(() => view.Drops.All(d => d.Handle != drop.Handle), 3000, ct);
-        handle.Log(BotLogLevel.Info, picked ? $"looted h={drop.Handle}" : $"loot h={drop.Handle} unconfirmed (still on ground — inventory full / out of range / blocked?)");
+        handle.Log(BotLogLevel.Info, picked ? $"looted h={drop.Handle}" : $"loot h={drop.Handle} unconfirmed — still on ground, reason NOT established");
         return ActionResult.Sent;
     }
 
@@ -2635,8 +2635,8 @@ public sealed class BotManager : IAsyncDisposable
                         if (handle.ScriptRunner is null && handle.LastScriptSource is { } src)
                         {
                             handle.Log(BotLogLevel.Note,
-                                "⛔ WATCHDOG: IN ZONE but NO SCRIPT RUNNING — the leveler was lost (most likely an " +
-                                "unexpected drop disposed it and the relog never restored it). Re-applying the last script.");
+                                "⛔ WATCHDOG: IN ZONE but NO SCRIPT RUNNING — the leveler was lost (" +
+                                "cause NOT established). Re-applying the last script.");
                             ApplyScript(handle.Id, handle.LastScriptName ?? "level_quest", src,
                                         handle.LastScriptTickMs <= 0 ? 400 : handle.LastScriptTickMs);
                             stillSince = DateTime.UtcNow;
