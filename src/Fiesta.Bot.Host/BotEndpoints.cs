@@ -371,6 +371,20 @@ public static class BotEndpoints
         .WithSummary("Clean logout → re-login in place, re-applying the same script (operator recovery for a wedged bot). "
                    + "⚠️ The bot 404s for a few seconds mid-relog while the handle is replaced, and its ring buffer restarts empty.");
 
+        group.MapPost("/{id}/quests/clear-penalties", (string id) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var (deprio, deaths) = manager.Knowledge.ClearAllQuestPenalties(bot.KnowledgeScope);
+            bot.LogOperatorAction(
+                $"[quests] REPAIR: cleared {deprio} deprioritization(s) and {deaths} death counter(s) — the board is open again");
+            return Results.Ok(new { id, clearedDeprioritizations = deprio, clearedDeathCounters = deaths });
+        })
+        .WithSummary("Clear every quest deprioritization and death counter for this bot (repair after the state was poisoned)")
+        .WithDescription("A quest is deprioritized when its objective mob kills the bot repeatedly, and the mark persists until " +
+            "the character levels. If those marks were recorded wrongly the bot cannot level to clear them, because every quest " +
+            "is marked — this reopens the board. Read GET /{id}/quests to see what is currently marked.");
+
         group.MapPost("/{id}/packetlog", (string id, PacketLogRequest? req) =>
         {
             var enabled = req?.Enabled ?? true;

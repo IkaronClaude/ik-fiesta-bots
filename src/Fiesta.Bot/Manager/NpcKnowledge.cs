@@ -111,6 +111,29 @@ public sealed class NpcKnowledge
         return true;
     }
 
+    /// <summary>Wipe EVERY quest penalty recorded for this scope: the flee-deprioritizations and the death counters
+    /// behind them. Returns (deprioritizations, death counters) removed.
+    /// Exists because a bug can poison this state faster than the game can clear it: until lua c6fa7af a single
+    /// death was charged once per TICK while dead, so one death reached the "killed us 2x" limit on its own and
+    /// deprioritized quests that were never actually failed. The marks persist until the character levels, and the
+    /// character cannot level while every quest is marked -- a deadlock that needs an explicit repair.</summary>
+    public (int Deprio, int Deaths) ClearAllQuestPenalties(string host)
+    {
+        if (string.IsNullOrEmpty(host)) return (0, 0);
+        var prefix = host + "|";
+        var deprio = 0;
+        foreach (var k in _questDeprio.Keys)
+            if (k.StartsWith(prefix, StringComparison.Ordinal) && _questDeprio.TryRemove(k, out _)) deprio++;
+        var deaths = 0;
+        foreach (var k in _questDeaths.Keys)
+            if (k.StartsWith(prefix, StringComparison.Ordinal) && _questDeaths.TryRemove(k, out _)) deaths++;
+        foreach (var k in _questDeathsAtLevel.Keys)
+            if (k.StartsWith(prefix, StringComparison.Ordinal) && _questDeathsAtLevel.TryRemove(k, out _)) deaths++;
+        if (deprio > 0) SaveQuestDeprio();
+        if (deaths > 0) SaveQuestDeaths();
+        return (deprio, deaths);
+    }
+
     /// <summary>Reset the PER-LEVEL death counter for a quest at the given level, so a cleared mark is not re-applied by the v…</summary>
     public int ClearQuestDeathsAtLevel(string host, int questId, int level)
     {
