@@ -428,6 +428,9 @@ public sealed class BotHandle
     public long MsSinceMapChange =>
         Volatile.Read(ref _lastMapChangeTicks) is var t && t < 0 ? long.MaxValue : Environment.TickCount64 - t;
 
+    /// <summary>Off-tick pathfinding for this bot. Created on first walkTo; survives BotApi instances.</summary>
+    internal Navigation.NavPlanner? NavPlanner { get; set; }
+
     /// <summary>The Lua behaviour script currently looping on this bot, if any</summary>
     internal Scripting.BotScriptRunner? ScriptRunner { get; set; }
 

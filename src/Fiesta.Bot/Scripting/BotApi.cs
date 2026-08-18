@@ -137,8 +137,10 @@ public sealed class BotApi
 
     /// <summary>High-resolution seconds for the profile shim. bot.now() is milliseconds and far too coarse to
     /// attribute a call that costs microseconds -- 1,370 of those per tick is what we are trying to see.</summary>
-    public double nowPrecise() => System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
-
+    public double nowPrecise() => System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+
+
+
     public void metric(string name, double value = 1) => _handle.Metrics.LogMetric(name, value);
 
     /// <summary>Declare a metric up front (direction + kind), so it appears on /metrics with the right percentile tail even be…</summary>
@@ -964,42 +966,50 @@ public sealed class BotApi
         return Ok(Wait(_mgr.GmAsync(Id, c)));
     }
 
-    /// <summary>Pathfind over the current map's block grid and walk to (x,y)</summary>
+    /// <summary>Ask for a route to (x,y) on the current map. Returns WITHOUT pathfinding: the search runs off the
+    /// tick and the walk is issued when it lands. False means the last COMPLETED search for this exact target
+    /// found no route -- a caller that treats false as "unsolvable" learns it one tick later than it used to.</summary>
     public bool walkTo(double x, double y)
     {
-        // TEMPORARY INSTRUMENTATION (2026-08-18): find out what actually blocks the lua tick. Logs entry, the
-        // pathfind cost, and total, so the gap between them names the culprit instead of us guessing.
-        var swWalk = System.Diagnostics.Stopwatch.StartNew();
-        _handle.Log($"[nav-timing] walkTo ENTER ({(uint)x},{(uint)y})");
         if (_handle.CurrentMap is not { } map) return false;
+        if (_handle.Position is null) return false;
+        var planner = _handle.NavPlanner ??= new Navigation.NavPlanner(RouteAndWalk);
+        return planner.Request(map, (uint)x, (uint)y) != Navigation.NavPlanner.Verdict.Unreachable;
+    }
+
+    /// <summary>True while a pathfind for this bot is still running, so a script can wait instead of re-asking.</summary>
+    public bool pathPending() => _handle.NavPlanner?.Busy ?? false;
+
+    /// <summary>The pathfind + walk, run on the NavPlanner's worker thread. Returns whether a route was issued.
+    /// This is the ORIGINAL walkTo body: nothing about the search changed, it just does not block the tick.</summary>
+    private bool RouteAndWalk((string Map, uint X, uint Y) req)
+    {
+        var (map, x, y) = req;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         if (_mgr.GridProvider?.Invoke(map) is not { } grid) return false;
-        _handle.Log($"[nav-timing] walkTo GRID ready at {swWalk.ElapsedMilliseconds}ms ({map})");
+        // The bot keeps walking its previous route while we search, so read the position HERE, not when the
+        // script asked -- a route computed from a stale start point is a route the server rejects.
         if (_handle.Position is not { } pos) return false;
-        _handle.Log($"[nav-timing] walkTo POS ready at {swWalk.ElapsedMilliseconds}ms ({pos.X},{pos.Y})");
-        var swClr = System.Diagnostics.Stopwatch.StartNew();
-        grid.IsPathable((int)(pos.X / Fiesta.Bot.Pathfinding.BlockGrid.WorldPerTile), (int)(pos.Y / Fiesta.Bot.Pathfinding.BlockGrid.WorldPerTile), 0);
-        _handle.Log($"[nav-timing] walkTo CLEARANCE ready in {swClr.ElapsedMilliseconds}ms (total {swWalk.ElapsedMilliseconds}ms)");
-        var path = PathFinder.FindPath(grid, pos.X, pos.Y, (uint)x, (uint)y);
-        _handle.Log($"[nav-timing] walkTo PATHFIND done in {swWalk.ElapsedMilliseconds}ms -> {path.Count} steps");
+        if (!string.Equals(_handle.CurrentMap, map, StringComparison.OrdinalIgnoreCase)) return false;
+        var path = PathFinder.FindPath(grid, pos.X, pos.Y, x, y);
         if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
         {
-            // UNREACHABLE on the runtime-augmented grid, but learned MOVEFAIL blocks may have wrongly SEVERED a route the ra…
+            // UNREACHABLE on the runtime-augmented grid, but learned MOVEFAIL blocks may have wrongly SEVERED a route
             var poisoned = grid.RuntimeBlockedCount;
             grid.ClearRuntimeBlocked();
-            path = PathFinder.FindPath(grid, pos.X, pos.Y, (uint)x, (uint)y);
+            path = PathFinder.FindPath(grid, pos.X, pos.Y, x, y);
             if (path.Count > 0)
-                _handle.Log($"[nav] walkTo ({(uint)x},{(uint)y}) was UNREACHABLE — cleared {poisoned} poisoned learned-blocks, route re-opened");
+                _handle.Log($"[nav] walkTo ({x},{y}) was UNREACHABLE — cleared {poisoned} poisoned learned-blocks, route re-opened");
         }
         if (path.Count == 0)
         {
-            // Truly no route even on the clean grid (FindPath snaps a blocked start/goal to nearest walkable, so empty = gen…
             var (stx, sty) = grid.WorldToTile(pos.X, pos.Y);
-            var (gtx, gty) = grid.WorldToTile((uint)x, (uint)y);
+            var (gtx, gty) = grid.WorldToTile(x, y);
             bool startUnwalkable = !grid.IsWalkableTile(stx, sty);
-            _handle.Log($"[nav] walkTo ({(uint)x},{(uint)y}) UNREACHABLE on {map} — " +
+            _handle.Log($"[nav] walkTo ({x},{y}) UNREACHABLE on {map} after {sw.ElapsedMilliseconds}ms — " +
                 $"start=({stx},{sty})walk={startUnwalkable} goal=({gtx},{gty})walk={grid.IsWalkableTile(gtx, gty)} " +
                 $"grid={grid.WidthTiles}x{grid.HeightTiles}");
-            // BLIND-MOVE ESCAPE (2026-07-17): the .shbd marks the bot's OWN tile unwalkable, but the SERVER has it standing…
+            // BLIND-MOVE ESCAPE (2026-07-17): the .shbd marks the bot's OWN tile unwalkable, but the SERVER has it standing there
             if (startUnwalkable)
             {
                 // Escape toward the NEAREST WALKABLE .shbd tile — NOT blindly toward the target
@@ -1019,7 +1029,7 @@ public sealed class BotApi
                     _ = _mgr.WalkAsync(Id, pos.X, pos.Y, e.X, e.Y);
                     return true;
                 }
-                double dx = x - pos.X, dy = y - pos.Y;
+                double dx = (double)x - pos.X, dy = (double)y - pos.Y;
                 double len = System.Math.Sqrt(dx * dx + dy * dy);
                 if (len > 1)
                 {
@@ -1034,9 +1044,10 @@ public sealed class BotApi
             return false;
         }
         var simplified = PathFinder.Simplify(path);
-        _handle.Log($"[nav-timing] walkTo SIMPLIFY done at {swWalk.ElapsedMilliseconds}ms -> {simplified.Count} waypoints");
         var wr = _mgr.WalkPath(Id, simplified);
-        _handle.Log($"[nav-timing] walkTo RETURN at {swWalk.ElapsedMilliseconds}ms ({wr})");
+        // The search cost is the number that mattered: it used to be charged to the tick.
+        _handle.Log(BotLogLevel.Info,
+            $"[nav] route to ({x},{y}) on {map}: {sw.ElapsedMilliseconds}ms off-tick -> {simplified.Count} waypoints ({wr})");
         return Ok(wr);
     }
 
