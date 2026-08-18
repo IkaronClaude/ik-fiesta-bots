@@ -1047,12 +1047,13 @@ public static class BotEndpoints
     // clearance map is one byte PER TILE against one BIT in the packed .shbd, so a 7.2MB map costs ~58MB
     // resident once a path is computed on it. Four bots roaming a few big maps is the whole 512Mi limit,
     // which is what OOMKilled the pod and killed a script thread mid-session.
-    // 6 WAS A DISASTER (2026-08-18): rebuilding an evicted grid recomputes the clearance map, an O(W*H)
-    // two-pass distance transform over ~57M tiles for a big map. Four bots share this cache and roam
-    // more than 6 maps, so it thrashed continuously: CPU pinned at 863m of a 1000m limit, throttled in
-    // 3943 of 5877 periods, and the leveler fell from ~150 ticks/min to ONE. The cache exists to avoid
-    // exactly that recompute, so it must comfortably hold the whole roaming set; memory is 1Gi now.
-    private const int MaxCachedGrids = 64;
+    // BOUND BY BYTES, NOT COUNT. Maps differ 14x in size (RouN 4.2M tiles, Eld 16.8M, Adl 57.8M), so a count
+    // limit means nothing. And evicting is expensive on the wrong axis: rebuilding a grid re-runs the clearance
+    // transform, measured 213ms for RouN and 466ms for Eld. A count of 6 evicted the live roaming set and
+    // recomputed continuously -- CPU pinned at 863m/1000m, 67% throttled, the leveler down to one tick a minute
+    // (2026-08-18). Keep a floor of maps so the active set can never be evicted, whatever it weighs.
+    private const long GridCacheBudgetBytes = 300L * 1024 * 1024;
+    private const int GridCacheFloor = 12;
     private static readonly ConcurrentDictionary<string, long> _gridUsed = new(StringComparer.OrdinalIgnoreCase);
     private static long _gridTick;
 
@@ -1063,13 +1064,16 @@ public static class BotEndpoints
 
     private static void EvictGridsIfNeeded()
     {
-        while (_grids.Count > MaxCachedGrids)
+        while (_grids.Count > GridCacheFloor)
         {
+            long total = 0;
+            foreach (var kv in _grids) total += kv.Value?.ApproxBytes ?? 0;
+            if (total <= GridCacheBudgetBytes) return;
             var oldest = _gridUsed.OrderBy(kv => kv.Value).Select(kv => kv.Key).FirstOrDefault();
             if (oldest is null || !_grids.TryRemove(oldest, out var dropped)) return;
             _gridUsed.TryRemove(oldest, out _);
-            Console.Error.WriteLine($"[nav] grid cache evicted '{oldest}' " +
-                $"({(dropped?.ApproxBytes ?? 0) / 1048576.0:F1}MB) — over {MaxCachedGrids}; it reloads on next use.");
+            Console.Error.WriteLine($"[nav] grid cache evicted '{oldest}' ({(dropped?.ApproxBytes ?? 0) / 1048576.0:F1}MB); " +
+                $"cache was {total / 1048576.0:F0}MB over a {GridCacheBudgetBytes / 1048576}MB budget. It reloads on next use.");
         }
     }
 

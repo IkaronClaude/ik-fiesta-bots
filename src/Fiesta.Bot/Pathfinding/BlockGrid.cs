@@ -318,9 +318,24 @@ public sealed class BlockGrid
 
     // --- Obstacle inflation (P0 2026-06-30: paths hugged obstacle edges → the straight-run MOVERUN between waypoint…
 
-    private byte[]? _clearance;
+    // PACKED 2 BITS PER TILE. A byte per tile made the clearance map EIGHT TIMES the packed .shbd (~58MB for a
+    // 7.2MB map), which is what pushed the grid cache past the container limit -- and bounding that cache instead
+    // made things far worse, because evicting a grid means recomputing this transform (2026-08-18: CPU pinned at
+    // 863m/1000m, 67% throttled, the leveler down to one tick a minute).
+    // Two bits is exactly enough: IsPathable only ever asks `clearance > margin`, and the margin ladder is
+    // {2.0, 1.5, 1.0, 0.5, 0.0} (CoveragePath uses 1), so the only distinctions that exist are 0, 1, 2 and 3+.
+    // A saturating Chebyshev transform capped at 3 answers all of them exactly; one bit could not, since >=1,
+    // >=2 and >=3 are three different questions. Costs a shift+mask per read and buys back 75% of the memory.
+    private byte[]? _clearance;                 // 4 tiles per byte, 2 bits each
     private readonly object _clearanceLock = new();
-    private const byte ClearanceCap = 63; // margins are tiny; cap keeps it a byte
+    private const byte ClearanceCap = 3;        // max representable in 2 bits
+
+    private static byte ClrGet(byte[] a, int i) => (byte)((a[i >> 2] >> ((i & 3) << 1)) & 0x3);
+    private static void ClrSet(byte[] a, int i, int v)
+    {
+        int b = i >> 2, sh = (i & 3) << 1;
+        a[b] = (byte)((a[b] & ~(0x3 << sh)) | ((v & 0x3) << sh));
+    }
 
     private byte[] Clearance()
     {
@@ -329,43 +344,46 @@ public sealed class BlockGrid
         {
             if (_clearance is { } c2) return c2;
             int W = WidthTiles, H = HeightTiles;
-            var dist = new byte[W * H];
+            var dist = new byte[(W * H + 3) >> 2];
             // seed: blocked = 0, walkable = cap
             for (int y = 0; y < H; y++)
                 for (int x = 0; x < W; x++)
-                    dist[y * W + x] = IsWalkableTile(x, y) ? ClearanceCap : (byte)0;
-            // forward pass — pull from already-visited neighbours (and OOB = blocked at borders)
+                    ClrSet(dist, y * W + x, IsWalkableTile(x, y) ? ClearanceCap : 0);
+            // forward pass -- pull from already-visited neighbours (and OOB = blocked at borders)
             for (int y = 0; y < H; y++)
                 for (int x = 0; x < W; x++)
                 {
                     int i = y * W + x;
-                    if (dist[i] == 0) continue;
-                    int best = dist[i];
+                    int cur = ClrGet(dist, i);
+                    if (cur == 0) continue;
+                    int best = cur;
                     if (x == 0 || y == 0 || x == W - 1) best = Math.Min(best, 1); // touches OOB
-                    if (x > 0) best = Math.Min(best, dist[i - 1] + 1);
-                    if (y > 0) best = Math.Min(best, dist[i - W] + 1);
-                    if (x > 0 && y > 0) best = Math.Min(best, dist[i - W - 1] + 1);
-                    if (x < W - 1 && y > 0) best = Math.Min(best, dist[i - W + 1] + 1);
-                    dist[i] = (byte)best;
+                    if (x > 0) best = Math.Min(best, ClrGet(dist, i - 1) + 1);
+                    if (y > 0) best = Math.Min(best, ClrGet(dist, i - W) + 1);
+                    if (x > 0 && y > 0) best = Math.Min(best, ClrGet(dist, i - W - 1) + 1);
+                    if (x < W - 1 && y > 0) best = Math.Min(best, ClrGet(dist, i - W + 1) + 1);
+                    if (best != cur) ClrSet(dist, i, best);
                 }
-            // backward pass — pull from the other four neighbours
+            // backward pass -- pull from the other four neighbours
             for (int y = H - 1; y >= 0; y--)
                 for (int x = W - 1; x >= 0; x--)
                 {
                     int i = y * W + x;
-                    if (dist[i] == 0) continue;
-                    int best = dist[i];
+                    int cur = ClrGet(dist, i);
+                    if (cur == 0) continue;
+                    int best = cur;
                     if (x == W - 1 || y == H - 1 || x == 0) best = Math.Min(best, 1); // touches OOB
-                    if (x < W - 1) best = Math.Min(best, dist[i + 1] + 1);
-                    if (y < H - 1) best = Math.Min(best, dist[i + W] + 1);
-                    if (x < W - 1 && y < H - 1) best = Math.Min(best, dist[i + W + 1] + 1);
-                    if (x > 0 && y < H - 1) best = Math.Min(best, dist[i + W - 1] + 1);
-                    dist[i] = (byte)best;
+                    if (x < W - 1) best = Math.Min(best, ClrGet(dist, i + 1) + 1);
+                    if (y < H - 1) best = Math.Min(best, ClrGet(dist, i + W) + 1);
+                    if (x < W - 1 && y < H - 1) best = Math.Min(best, ClrGet(dist, i + W + 1) + 1);
+                    if (x > 0 && y < H - 1) best = Math.Min(best, ClrGet(dist, i + W - 1) + 1);
+                    if (best != cur) ClrSet(dist, i, best);
                 }
             _clearance = dist;
             return dist;
         }
     }
+
 
     /// <summary>Walkable AND at least tiles clear of the nearest blocked/out-of-bounds tile (Chebyshev)</summary>
     public bool IsPathable(int tx, int ty, double margin)
@@ -373,12 +391,17 @@ public sealed class BlockGrid
         if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return false;
         if (margin <= 0) return IsWalkableTile(tx, ty);
         // clearance c means the nearest blocked tile is Chebyshev-distance c away; we require every tile within `margin`…
-        return Clearance()[ty * WidthTiles + tx] > margin;
+        // 3+ saturates, so a margin at or above the cap is not answerable from this map and would
+        // silently read as "blocked everywhere". Nothing passes one today (the ladder stops at 2.0);
+        // if that changes, widen ClearanceCap rather than letting the query quietly lie.
+        if (margin >= ClearanceCap) throw new ArgumentOutOfRangeException(nameof(margin),
+            $"margin {margin} needs more than the {ClearanceCap} levels the packed clearance map stores");
+        return ClrGet(Clearance(), ty * WidthTiles + tx) > margin;
     }
 
-    /// <summary>Chebyshev distance (in tiles, capped at 63) from tile (tx,ty) to the nearest blocked/OOB tile</summary>
+    /// <summary>Chebyshev distance (in tiles, saturating at 3 -- see the packed clearance map) from tile (tx,ty) to the nearest blocked/OOB tile</summary>
     public int ClearanceAt(int tx, int ty)
-        => (uint)tx < (uint)WidthTiles && (uint)ty < (uint)HeightTiles ? Clearance()[ty * WidthTiles + tx] : 0;
+        => (uint)tx < (uint)WidthTiles && (uint)ty < (uint)HeightTiles ? ClrGet(Clearance(), ty * WidthTiles + tx) : 0;
 
     /// <summary>World coordinate of a tile's centre (for issuing move packets)</summary>
     public (uint X, uint Y) TileToWorld(int tx, int ty)
