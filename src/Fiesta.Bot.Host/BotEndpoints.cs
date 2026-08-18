@@ -687,6 +687,11 @@ public static class BotEndpoints
                     // Tooltip text + whether we have art, so the page can decide tile vs name-plate without a request per skill that…
                     descript = cd?.SkillView(s)?.Descript,
                     hasIcon = cd?.SkillView(s) is not null,
+                    // WHO IT LANDS ON (ActiveSkill Last): 0=enemy, 1=self, 2=party, 3=ally. This is what decides
+                    // whether the rotation may verify it against selfAbstates(); a stun never can.
+                    landsOn = cd?.Skill(s)?.LandsOn,
+                    castFrom = cd?.Skill(s)?.CastFrom,
+                    stun = cd?.Skill(s)?.Stun,
                 }),
                 abstates });
         })
