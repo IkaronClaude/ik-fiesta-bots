@@ -1861,7 +1861,7 @@ public sealed class BotManager : IAsyncDisposable
     }
 
     /// <summary>Derive the per-page MENU answers for a quest straight from its OWN script (data-driven, no hardcoding)</summary>
-    private Dictionary<int, uint> DeriveMenuAnswers(int questId)
+    public Dictionary<int, uint> DeriveMenuAnswers(int questId)
     {
         var map = new Dictionary<int, uint>();
         var q = ClientData?.Quest(questId);
@@ -1886,7 +1886,10 @@ public sealed class BotManager : IAsyncDisposable
         for (int i = 0; i < lines.Count; i++)
             if (lines[i].StartsWith(':')) label[lines[i][1..].Trim()] = i;
 
-        // Does the block at : reach ACCEPT (following GOTO + nested IF-RESULT menus)?
+        // Does the block at :lbl reach a TERMINAL (following GOTO + nested IF-RESULT menus)?
+        // ACCEPT terminates a start script; DONE terminates a FINISH script. Only ACCEPT counted, so on a
+        // hand-in quiz every branch scored false, no answer was derived, and the page defaulted to option 1
+        // -- Lost Love 2 (q430) looped SAY 20206 <-> 20207 forever and threw away 1,173 exp on every bot.
         bool BlockReaches(string lbl, HashSet<string> visiting)
         {
             if (!visiting.Add(lbl) || !label.TryGetValue(lbl, out var start)) return false;
@@ -1895,7 +1898,8 @@ public sealed class BotManager : IAsyncDisposable
             {
                 var ln = lines[i];
                 if (ln.StartsWith(':') || ln.Equals("END", StringComparison.OrdinalIgnoreCase)) break;
-                if (ln.Equals("ACCEPT", StringComparison.OrdinalIgnoreCase)) { reached = true; break; }
+                if (ln.Equals("ACCEPT", StringComparison.OrdinalIgnoreCase)
+                    || ln.Equals("DONE", StringComparison.OrdinalIgnoreCase)) { reached = true; break; }
                 var im = ReScriptIf.Match(ln);
                 if (im.Success) { if (BlockReaches(im.Groups[2].Value, visiting)) { reached = true; break; } continue; }
                 var gm = ReScriptGoto.Match(ln);
@@ -1912,12 +1916,19 @@ public sealed class BotManager : IAsyncDisposable
             if (sm.Success) { lastSayId = int.Parse(sm.Groups[1].Value); continue; }
             if (ReScriptIf.IsMatch(lines[i]) && lastSayId != 0)
             {
+                // A WRONG quiz answer loops BACK to the menu (`:MARK1 / SAY 20207 / GOTO MARK0`), so it can still
+                // reach the terminal the long way round -- through the very page we are answering. Seeding the
+                // visit set with the ENCLOSING label makes any branch that returns here score false, which is what
+                // distinguishes the one answer that completes the quest from the four that re-ask the question.
+                var enclosing = lines.Take(i).LastOrDefault(l => l.StartsWith(':'))?[1..].Trim();
                 uint answer = 0; int j = i;
                 for (; j < lines.Count; j++)
                 {
                     var rm = ReScriptIf.Match(lines[j]);
                     if (!rm.Success) break;
-                    if (BlockReaches(rm.Groups[2].Value, new HashSet<string>(StringComparer.OrdinalIgnoreCase)))
+                    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    if (enclosing is not null) seen.Add(enclosing);
+                    if (BlockReaches(rm.Groups[2].Value, seen))
                     { answer = uint.Parse(rm.Groups[1].Value); break; }
                 }
                 if (answer != 0) map[lastSayId] = answer;

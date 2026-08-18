@@ -803,10 +803,14 @@ public static class BotEndpoints
                 remoteAcceptable = q.RemoteAcceptable, remoteProgress = q.IsWaitListProgress, q.IsInstantHandIn, q.Region, q.QuestType, q.Repeatable,
                 title = cd!.QuestDialog(q.Title),
                 npcs = q.Npcs, objectives = q.Objectives, rewards = q.Rewards,
-                q.StartScript, q.ActionScript, q.FinishScript
+                q.StartScript, q.ActionScript, q.FinishScript,
+                // What the dialogue driver will actually ANSWER on each menu page, derived from the scripts above.
+                // Exposed so a wrong pick is READABLE without a probe script (q430's quiz answered 1 for months).
+                menuAnswers = manager.DeriveMenuAnswers(questId)
+                    .ToDictionary(kv => kv.Key.ToString(), kv => new { answer = kv.Value, page = cd!.QuestDialog(kv.Key) })
             });
         })
-        .WithSummary("Decoded QuestData.shn for a quest id (StartNPC, objectives, rewards, scripts)");
+        .WithSummary("Decoded QuestData.shn for a quest id (StartNPC, objectives, rewards, scripts, derived menu answers)");
 
         group.MapPost("/{id}/quest/answer", async (string id, QuestAnswerRequest? req) =>
             ToResult(await manager.ProceedQuestAsync(id, req?.Result ?? 1), id, new { id, answered = req?.Result ?? 1 }))
