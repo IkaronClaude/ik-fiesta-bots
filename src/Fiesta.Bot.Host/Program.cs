@@ -363,8 +363,10 @@ Task startupRestore = Task.CompletedTask;
                                                   missing ? "MISSING from the roster" : phase);
                             if (!missing)
                             {
-                                // A Failed bot keeps its id, so a bare Spawn would 409. Stop WITHOUT
-                                // forgetting: this bot is still one we were asked to run.
+                                // Stop WITHOUT forgetting: this bot is still one we were asked to run, so it
+                                // must stay in the restore roster. Spawn now REPLACES a Failed/Stopped handle
+                                // rather than 409ing on it, so this is just tidy teardown of any lingering
+                                // session — the respawn no longer depends on it having completed.
                                 try { await supMgr.StopAsync(id, default, forget: false); } catch { }
                                 await Task.Delay(TimeSpan.FromSeconds(3));
                             }

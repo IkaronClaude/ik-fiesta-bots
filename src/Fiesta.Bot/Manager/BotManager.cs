@@ -79,7 +79,27 @@ public sealed class BotManager : IAsyncDisposable
         var id = options.Id ?? $"b{Interlocked.Increment(ref _seq)}";
         var handle = new BotHandle(id, options);
         if (!_bots.TryAdd(id, handle))
-            throw new InvalidOperationException($"a bot with id '{id}' already exists");
+        {
+            // ⛔ A DEAD BOT MUST NOT HOLD ITS ID HOSTAGE (operator 2026-08-18: "fix the problem of
+            // 'failed' respawns"). A Failed/Stopped bot is a corpse: it cannot self-heal (the liveness
+            // watchdog only runs while Phase==InZone), so the id stayed occupied and EVERY respawn — the
+            // supervisor's and any manual one — got a 409. The supervisor worked around it by calling
+            // StopAsync(forget:false) then sleeping 3s, which is both racy and invisible to an API caller;
+            // measured live this session, all four bots sat Failed while POST /api/bots returned 409.
+            // A corpse carries no session and no script runner, so replacing it is safe and idempotent.
+            // Only a LIVE bot is a genuine conflict.
+            var existing = _bots.TryGetValue(id, out var e) ? e : null;
+            if (existing is null || existing.Phase is not (BotPhase.Stopped or BotPhase.Failed))
+                throw new InvalidOperationException(
+                    $"a bot with id '{id}' already exists and is {(existing?.Phase.ToString() ?? "live")} — " +
+                    "stop it first if you mean to replace it");
+            _globalLog?.Invoke($"[{id}] spawn over a {existing.Phase} bot — replacing the dead handle " +
+                               "(it cannot recover on its own; this is what used to 409)");
+            try { existing.Cts.Cancel(); } catch { }
+            _bots.TryRemove(new KeyValuePair<string, BotHandle>(id, existing));
+            if (!_bots.TryAdd(id, handle))
+                throw new InvalidOperationException($"a bot with id '{id}' was re-created concurrently");
+        }
 
         // Log/UI readability: rewrite every bare `mob<id>` token into "Marlone (Id 22)" (operator
         // 2026-08-05 — "I don't want to see anything like Mob22 in the web UI"). Same rule as
@@ -305,6 +325,11 @@ public sealed class BotManager : IAsyncDisposable
     /// runner, or null if the bot id is unknown. The runner subscribes to the bot's
     /// stable event hub, runs <c>on_start</c>, then ticks + dispatches events on its own
     /// thread until <see cref="StopScript"/> / <see cref="StopAsync"/>.</summary>
+    /// <summary>Durable-script key tied to the BOT ID (the same key the restore roster uses), as opposed to
+    /// <see cref="BotHandle.KnowledgeScope"/> which is keyed by character name and is therefore unknown until
+    /// after char-select.</summary>
+    internal static string ScriptKeyForId(string id) => $"botid|{id}";
+
     public BotScriptRunner? ApplyScript(string id, string name, string source, int tickMs = 250, bool trace = false)
     {
         if (!_bots.TryGetValue(id, out var handle)) return null;
@@ -316,7 +341,13 @@ public sealed class BotManager : IAsyncDisposable
         // PERSIST it too. The fields above are process memory, so a pod restart loses them and the
         // watchdog below has nothing to restore from — which is exactly how every deploy left the bots
         // standing in the field with no driver (operator 2026-08-06, raised above P0).
+        // Save under BOTH keys. KnowledgeScope is "host|CharName ?? Character ?? Id", and CharName is only
+        // known AFTER char-select — so for any bot whose character name differs from its id (JcqArcher plays
+        // "Elfyra") the script lands under "host|Elfyra" while a FRESH spawn, before char-select, would look
+        // it up under "host|JcqArcher" and find nothing. Keying by bot id as well ties the script to the same
+        // key as the roster entry, so the two are restored together or not at all.
         Knowledge?.SaveScript(handle.KnowledgeScope, name, source, tickMs);
+        Knowledge?.SaveScript(ScriptKeyForId(id), name, source, tickMs);
         handle.Log($"script '{name}' applied ({source.Length} chars, tick={tickMs}ms{(trace ? ", trace" : "")})");
         runner.Start();
         return runner;
@@ -3777,8 +3808,11 @@ public sealed class BotManager : IAsyncDisposable
                         // bot was spawned after a pod restart. Without this the watchdog could only heal a
                         // script lost WITHIN a session, and the far more common case (deploy → respawn)
                         // needed a human.
+                        // Try the char-scoped key first, then the id-keyed copy — see SaveScript above for why
+                        // the char-scoped one can be written under a name a fresh spawn does not yet know.
                         if (handle.ScriptRunner is null && handle.LastScriptSource is null
-                            && Knowledge?.LoadScript(handle.KnowledgeScope) is { } saved)
+                            && (Knowledge?.LoadScript(handle.KnowledgeScope)
+                                ?? Knowledge?.LoadScript(ScriptKeyForId(handle.Id))) is { } saved)
                         {
                             handle.LastScriptName = saved.Name;
                             handle.LastScriptSource = saved.Source;
