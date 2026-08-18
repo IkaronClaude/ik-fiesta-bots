@@ -1512,7 +1512,10 @@ public sealed class BotManager : IAsyncDisposable
     }
 
     /// <summary>Open a merchant's shop and wait for its sell list</summary>
-    public async Task<ActionResult> OpenShopAsync(string id, ushort npcHandle, byte menuOption = 1, CancellationToken ct = default)
+    /// <summary>Open an NPC's shop. <paramref name="maxReclicks"/>=1 is PROBE mode: one click, one 2s wait.
+    /// The 8-reclick default is for "I know this is a shop, open it"; using it to ASK "is this a shop?" costs
+    /// 16s per NPC that never replies, which is ~13 min per town of ~50 NPCs.</summary>
+    public async Task<ActionResult> OpenShopAsync(string id, ushort npcHandle, byte menuOption = 1, CancellationToken ct = default, int maxReclicks = 8)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
@@ -1520,7 +1523,7 @@ public sealed class BotManager : IAsyncDisposable
         var hb = new byte[] { (byte)npcHandle, (byte)(npcHandle >> 8) };
         // SYNC request→response open (operator 2026-06-30: "the recency window is insane — sync call with a timeout")
         var requestedMenu = false;
-        for (var reclicks = 0; reclicks < 8; reclicks++)
+        for (var reclicks = 0; reclicks < Math.Max(1, maxReclicks); reclicks++)
         {
             view?.ResetShopState();
             view?.ClearNpcMenu();

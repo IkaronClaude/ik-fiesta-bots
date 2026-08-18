@@ -872,9 +872,15 @@ public sealed class BotApi
     public bool buyHpStone(int number = 1) => Ok(Wait(_mgr.BuyHpStoneAsync(Id, (ushort)number)));
     public bool buySpStone(int number = 1) => Ok(Wait(_mgr.BuySpStoneAsync(Id, (ushort)number)));
     /// <summary>Open an NPC's shop SYNCHRONOUSLY and return the OUTCOME (operator 2026-06-30: no recency window)</summary>
-    public string openShop(int npcHandle, int menuOption = 1)
+    public string openShop(int npcHandle, int menuOption = 1) => OpenShopInner(npcHandle, menuOption, 8);
+
+    /// <summary>PROBE a candidate NPC: one click, ~2s wait, then give up. Use this for classification
+    /// sweeps — openShop() re-clicks 8x (16s) which is right for a known shop and ruinous for a survey.</summary>
+    public string probeShop(int npcHandle, int menuOption = 1) => OpenShopInner(npcHandle, menuOption, 1);
+
+    private string OpenShopInner(int npcHandle, int menuOption, int maxReclicks)
     {
-        Wait(_mgr.OpenShopAsync(Id, (ushort)npcHandle, (byte)menuOption));
+        Wait(_mgr.OpenShopAsync(Id, (ushort)npcHandle, (byte)menuOption, default, maxReclicks));
         var v = View; if (v is null) return "none";
         if (v.ShopOpen) return shopKind();
         if (v.RandomOptionUtc > DateTime.MinValue) return "randomoption";
