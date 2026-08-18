@@ -790,6 +790,16 @@ public static class BotEndpoints
 
         // MEMORY ATTRIBUTION. The pod OOMKilled at 512Mi with the consumers unattributed for weeks, because
         // there was no way to ASK. Managed heap + the grid cache (the dominant consumer) are both readable here.
+        // WHICH CLIENT TABLES ARE NOT LOADING. A missing table used to be re-stat-ed on every lookup against an
+        // NFS mount (5-383ms each), which is what starved the leveler. Name them so it is visible, not inferred.
+        group.MapGet("/diag/clientdata", () =>
+        {
+            var cd = manager.ClientData;
+            if (cd is null) return Results.Problem("no client data configured");
+            return Results.Ok(new { dataDir = cd.DataDir, failures = cd.TableFailures });
+        })
+        .WithSummary("Client SHN tables that failed to load, and why");
+
         group.MapGet("/diag/memory", () =>
         {
             var grids = GridCacheStats();

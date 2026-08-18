@@ -164,6 +164,12 @@ public sealed class ClientData
     public ShnTable? Table(string name)
     {
         if (_cache.TryGetValue(name, out var hit)) return hit;
+        // A FAILURE MUST BE REMEMBERED TOO. Only successes were cached, so every call for a table that is not
+        // there re-ran File.Exists + a full load -- and client data is an NFS mount whose stat latency measured
+        // 5-383ms from the pod. With four bots asking per tick that is the whole tick budget spent re-asking a
+        // question already answered: the leveler fell to ~6.4 SECONDS per bot.* call (557 calls in an hour).
+        // Re-checked on a TTL rather than never, so mounting the data later still recovers without a restart.
+        if (_tableFailures.TryGetValue(name, out var prev) && DateTime.UtcNow - prev.At < TableRetry) return null;
         var path = Path.Combine(_dataDir, name + ".shn");
         try
         {
@@ -171,16 +177,19 @@ public sealed class ClientData
             var t = ShnTable.Load(path);
             // ONLY a SUCCESSFUL load is cached
             _cache[name] = t;
+            _tableFailures.TryRemove(name, out _);
             return t;
         }
         catch (Exception ex) { NoteTableFailure(name, ex.Message); return null; }
     }
 
-    private readonly ConcurrentDictionary<string, string> _tableFailures = new(StringComparer.OrdinalIgnoreCase);
-    private void NoteTableFailure(string name, string why) => _tableFailures[name] = why;
+    private static readonly TimeSpan TableRetry = TimeSpan.FromMinutes(5);
+    private readonly ConcurrentDictionary<string, (string Why, DateTime At)> _tableFailures = new(StringComparer.OrdinalIgnoreCase);
+    private void NoteTableFailure(string name, string why) => _tableFailures[name] = (why, DateTime.UtcNow);
 
     /// <summary>Tables that failed to load, name → reason</summary>
-    public IReadOnlyDictionary<string, string> TableFailures => _tableFailures;
+    public IReadOnlyDictionary<string, string> TableFailures =>
+        _tableFailures.ToDictionary(kv => kv.Key, kv => kv.Value.Why, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Look up an ActiveSkill row by its skill id and project the combat- relevant fields</summary>
     public SkillInfo? Skill(int skillId)
