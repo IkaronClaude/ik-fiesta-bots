@@ -85,6 +85,11 @@ public sealed class BotApi
         var abs = NewTable(); var ai = 1;
         foreach (var a in _mgr.ClientData?.SkillAbstates(id) ?? []) abs[ai++] = (double)a;
         t["abstates"] = DynValue.NewTable(abs);
+        // landsOn = which SIDE the skill affects (ActiveSkill Last): 0=enemy, 1=self, 2=party, 3=ally.
+        // castFrom (First) is where the cast starts. Ask this, not whether the state looks like a buff:
+        // a stun is a DEBUFF that lands on an enemy, and its abstate will never show up in selfAbstates().
+        t["landsOn"] = si.LandsOn; t["castFrom"] = si.CastFrom;
+        t["selfTargeted"] = si.LandsOn == 1;
         return DynValue.NewTable(t);
     }
 
