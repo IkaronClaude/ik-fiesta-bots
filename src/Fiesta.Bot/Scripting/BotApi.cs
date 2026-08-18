@@ -969,7 +969,12 @@ public sealed class BotApi
         _handle.Log($"[nav-timing] walkTo ENTER ({(uint)x},{(uint)y})");
         if (_handle.CurrentMap is not { } map) return false;
         if (_mgr.GridProvider?.Invoke(map) is not { } grid) return false;
+        _handle.Log($"[nav-timing] walkTo GRID ready at {swWalk.ElapsedMilliseconds}ms ({map})");
         if (_handle.Position is not { } pos) return false;
+        _handle.Log($"[nav-timing] walkTo POS ready at {swWalk.ElapsedMilliseconds}ms ({pos.X},{pos.Y})");
+        var swClr = System.Diagnostics.Stopwatch.StartNew();
+        grid.IsPathable((int)(pos.X / Fiesta.Bot.Pathfinding.BlockGrid.WorldPerTile), (int)(pos.Y / Fiesta.Bot.Pathfinding.BlockGrid.WorldPerTile), 0);
+        _handle.Log($"[nav-timing] walkTo CLEARANCE ready in {swClr.ElapsedMilliseconds}ms (total {swWalk.ElapsedMilliseconds}ms)");
         var path = PathFinder.FindPath(grid, pos.X, pos.Y, (uint)x, (uint)y);
         _handle.Log($"[nav-timing] walkTo PATHFIND done in {swWalk.ElapsedMilliseconds}ms -> {path.Count} steps");
         if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
