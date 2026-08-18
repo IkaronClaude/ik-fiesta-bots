@@ -13,6 +13,8 @@ public sealed class ClientData
     private IReadOnlyDictionary<string, int>? _skillIdByInx;   // ActiveSkill  InxName -> skill ID
     private IReadOnlyDictionary<string, int>? _passiveIdByInx; // PassiveSkill InxName -> skill ID (SEPARATE id space)
     private readonly object _skillInxLock = new();
+    private IReadOnlyDictionary<int, IReadOnlyList<MobLocation>>? _mobCoords; // Mob_ID -> every spawn patch
+    private readonly object _mobCoordLock = new();
     private IReadOnlySet<uint>? _moveBlockAbstates; // AbState.AbStataIndex set that immobilizes (stun/root)
     private readonly object _abstateLock = new();
 
@@ -587,27 +589,59 @@ public sealed class ClientData
         return string.IsNullOrEmpty(n) ? $"q{questId}" : $"{n}(q{questId})";
     }
 
-    /// <summary>Where a mob type lives, from the client MobCoordinate.shn (the table the real client uses to draw the quest-lo…</summary>
+    // INDEXED ONCE. Both of these used to scan every row of MobCoordinate.shn PER CALL, doing a string-keyed
+    // lookup per column per row. Measured 2026-08-18 on the live bot: 3,523 rows x ~6 column reads x 23 calls
+    // in a single tick, and npcCoord alone cost 980ms of one 2,977ms tick (one call peaked at 959ms). There are
+    // only 878 distinct Mob_IDs, so the whole table collapses to one dictionary built on first use.
+    private IReadOnlyDictionary<int, IReadOnlyList<MobLocation>> MobCoords()
+    {
+        if (_mobCoords is { } hit) return hit;
+        lock (_mobCoordLock)
+        {
+            if (_mobCoords is { } inner) return inner;
+            var by = new Dictionary<int, List<MobLocation>>();
+            if (Table("MobCoordinate") is { } t)
+            {
+                // Resolve the column ordinals ONCE, then read cells by index rather than by name per row.
+                int cMob = t.IndexOfColumn("Mob_ID"), cMap = t.IndexOfColumn("MapName");
+                int cX = t.IndexOfColumn("CenterX"), cY = t.IndexOfColumn("CenterY");
+                int cW = t.IndexOfColumn("Width"), cH = t.IndexOfColumn("Height");
+                if (cMob >= 0 && cMap >= 0)
+                {
+                    for (var r = 0; r < t.RowCount; r++)
+                    {
+                        if (!ShnTable.TryToLong(t.Value(cMob, r), out var mob)) continue;
+                        var map = t.Value(cMap, r) as string;
+                        if (string.IsNullOrEmpty(map)) continue;
+                        var loc = new MobLocation((int)mob, map, CellInt(t, cX, r), CellInt(t, cY, r),
+                                                  CellInt(t, cW, r), CellInt(t, cH, r));
+                        if (!by.TryGetValue((int)mob, out var list)) by[(int)mob] = list = new List<MobLocation>();
+                        list.Add(loc);
+                    }
+                }
+            }
+            return _mobCoords = by.ToDictionary(k => k.Key, v => (IReadOnlyList<MobLocation>)v.Value);
+        }
+    }
+
+    private static int CellInt(ShnTable t, int col, int row)
+        => col >= 0 && ShnTable.TryToLong(t.Value(col, row), out var v) ? (int)v : 0;
+
+    /// <summary>Where a mob type lives, from the client MobCoordinate.shn (the table the real client uses to draw the quest-log marker)</summary>
     public MobLocation? MobCoordinate(int mobId, string? preferMap = null)
     {
-        var t = Table("MobCoordinate");
-        if (t is null) return null;
+        if (!MobCoords().TryGetValue(mobId, out var rows)) return null;
         MobLocation? best = null, onPrefer = null, bestField = null, onPreferField = null;
         long bestArea = -1, preferArea = -1, bestFieldArea = -1, preferFieldArea = -1;
-        foreach (var row in t.Rows)
+        foreach (var loc in rows)
         {
-            if (GetInt(row, "Mob_ID") != mobId) continue;
-            var map = GetStr(row, "MapName");
-            if (string.IsNullOrEmpty(map)) continue;
-            long area = (long)GetInt(row, "Width") * GetInt(row, "Height");
-            var loc = new MobLocation(mobId, map, GetInt(row, "CenterX"), GetInt(row, "CenterY"),
-                GetInt(row, "Width"), GetInt(row, "Height"));
-            bool onCur = preferMap != null && string.Equals(map, preferMap, StringComparison.OrdinalIgnoreCase);
-            // Prefer the largest spawn ON THE CURRENT MAP (if the mob lives here, grind here instead of traveling to a bigge…
+            long area = (long)loc.Width * loc.Height;
+            bool onCur = preferMap != null && string.Equals(loc.Map, preferMap, StringComparison.OrdinalIgnoreCase);
+            // Prefer the largest spawn ON THE CURRENT MAP (if the mob lives here, grind here instead of traveling to a bigger patch)
             if (onCur && area > preferArea) { preferArea = area; onPrefer = loc; }
             if (area > bestArea) { bestArea = area; best = loc; }
-            // FIELD-OVER-DUNGEON (operator 2026-07-16): a solo field-leveling char must hunt the sparse FIELD spawn, never a…
-            if (!MapInside(map))
+            // FIELD-OVER-DUNGEON (operator 2026-07-16): a solo field-leveling char must hunt the sparse FIELD spawn
+            if (!MapInside(loc.Map))
             {
                 if (onCur && area > preferFieldArea) { preferFieldArea = area; onPreferField = loc; }
                 if (area > bestFieldArea) { bestFieldArea = area; bestField = loc; }
@@ -619,19 +653,11 @@ public sealed class ClientData
     /// <summary>All maps a mob spawns on (the largest spawn patch per map), from MobCoordinate.shn</summary>
     public IReadOnlyList<MobLocation> MobCoordinatesAll(int mobId)
     {
-        var t = Table("MobCoordinate");
+        if (!MobCoords().TryGetValue(mobId, out var rows)) return Array.Empty<MobLocation>();
         var byMap = new Dictionary<string, MobLocation>(StringComparer.OrdinalIgnoreCase);
-        if (t is null) return Array.Empty<MobLocation>();
-        foreach (var row in t.Rows)
-        {
-            if (GetInt(row, "Mob_ID") != mobId) continue;
-            var map = GetStr(row, "MapName");
-            if (string.IsNullOrEmpty(map)) continue;
-            long area = (long)GetInt(row, "Width") * GetInt(row, "Height");
-            var loc = new MobLocation(mobId, map, GetInt(row, "CenterX"), GetInt(row, "CenterY"),
-                GetInt(row, "Width"), GetInt(row, "Height"));
-            if (!byMap.TryGetValue(map, out var ex) || area > (long)ex.Width * ex.Height) byMap[map] = loc;
-        }
+        foreach (var loc in rows)
+            if (!byMap.TryGetValue(loc.Map, out var ex) || (long)loc.Width * loc.Height > (long)ex.Width * ex.Height)
+                byMap[loc.Map] = loc;
         return byMap.Values.ToArray();
     }
 

@@ -662,9 +662,19 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
-    /// <summary>Quest definition from QuestData.shn (nil if unknown): startNpc, turnInNpc, minLevel/maxLevel, class, linkedQue…</summary>
+    // QUEST TABLE CACHE. bot.quest() is the single most-called API on the tick: measured 296-336 calls per tick
+    // on the live bot, costing 59-697ms of a 197-2,977ms tick. Almost all of that was rebuilding the SAME Lua
+    // table -- ~30 scalar fields plus nested npcs/objectives/rewards tables -- for a definition that comes from
+    // QuestData.shn and CANNOT change while the process runs.
+    // Only the per-objective progress is live, so the table is built once and just re-stamped on each call.
+    // Keyed per BotApi, so applying a new script (a new Script VM) starts a fresh cache -- a DynValue belongs to
+    // the VM that created it.
+    private readonly Dictionary<int, (DynValue Table, Table[] Objectives)> _questCache = [];
+
+    /// <summary>Quest definition from QuestData.shn (nil if unknown): startNpc, turnInNpc, minLevel/maxLevel, class, linkedQuest…</summary>
     public DynValue quest(int id)
     {
+        if (_questCache.TryGetValue(id, out var hit)) { StampProgress(id, hit.Objectives); return hit.Table; }
         var q = _mgr.ClientData?.Quest(id);
         if (q is null) return DynValue.Nil;
         var t = NewTable();
@@ -683,21 +693,39 @@ public sealed class BotApi
         var npcs = NewTable(); int ni = 1;
         foreach (var n in q.Npcs) { npcs[ni++] = n.Id; }
         t["npcs"] = DynValue.NewTable(npcs);
-        // Each objective is an INDIVIDUAL GOAL carrying its OWN progress (operator 2026-08-11: "expose to lua as individ…
+        // Each objective is an INDIVIDUAL GOAL carrying its OWN progress (operator 2026-08-11: "expose to lua as individual goals")
         var objs = NewTable(); int oi = 1;
+        var objRows = new List<Table>();
         foreach (var o in q.Objectives)
         {
             var e = NewTable(); e["type"] = o.Type; e["mob"] = o.Mob; e["count"] = o.Count; e["item"] = o.Item;
-            var idx = oi - 1;                       // wire objIdx is 0-based; oi is Lua's 1-based cursor
-            var prog = View?.QuestObjProgress(id, idx) ?? 0;
-            e["idx"] = idx; e["prog"] = prog; e["done"] = o.Count > 0 && prog >= o.Count;
+            e["idx"] = oi - 1;                  // wire objIdx is 0-based; oi is Lua's 1-based cursor
+            objRows.Add(e);
             objs[oi++] = DynValue.NewTable(e);
         }
         t["objectives"] = DynValue.NewTable(objs);
         var rewards = NewTable(); int ri = 1;
         foreach (var r in q.Rewards) { var e = NewTable(); e["method"] = r.Method; e["type"] = r.Type; e["itemId"] = r.ItemId; e["itemCount"] = r.ItemCount; e["amount"] = r.Amount; rewards[ri++] = DynValue.NewTable(e); }
         t["rewards"] = DynValue.NewTable(rewards);
-        return DynValue.NewTable(t);
+        var dv = DynValue.NewTable(t);
+        var arr = objRows.ToArray();
+        _questCache[id] = (dv, arr);
+        StampProgress(id, arr);
+        return dv;
+    }
+
+    /// <summary>Refresh the only fields of a cached quest table that can change: each objective's live progress.</summary>
+    private void StampProgress(int questId, Table[] objectives)
+    {
+        var v = View;
+        for (var i = 0; i < objectives.Length; i++)
+        {
+            var prog = v?.QuestObjProgress(questId, i) ?? 0;
+            objectives[i]["prog"] = prog;
+            // count 0 means "no target", so it is never complete -- not "already done"
+            var count = objectives[i].Get("count").CastToNumber() ?? 0;
+            objectives[i]["done"] = count > 0 && prog >= count;
+        }
     }
 
     /// <summary>Resolve a quest dialog/title id to its text (QuestDialog.shn)</summary>
