@@ -102,10 +102,22 @@ public sealed class BotLogFile : IDisposable
             {
                 if (res.Count >= max) break;
                 if (!File.Exists(f)) continue;
-                var lines = File.ReadAllLines(f);
-                var take = Math.Min(lines.Length, max - res.Count);
-                // take the TAIL of each file, and prepend since we are walking newest -> oldest
-                res.InsertRange(0, lines.Skip(lines.Length - take));
+                // ⛔ NEVER File.ReadAllLines HERE (fixed 2026-08-18). These rotated files are 1-4.6MB each
+                // (100MB total on disk), and reading one whole just to keep its TAIL allocated a string[]
+                // of every line — for up to 10 files x 4 bots, all during spawn. That transient spike is
+                // what OOMKilled the container 96s after start (exit 137, reason=OOMKilled) and dropped all
+                // four bots. Stream instead, keeping only the last `take` lines in a fixed ring.
+                var take = max - res.Count;
+                var ring = new string[take];
+                var n = 0; var total = 0;
+                using (var r = new StreamReader(f))
+                    while (r.ReadLine() is { } line) { ring[n] = line; n = (n + 1) % take; total++; }
+                var have = Math.Min(total, take);
+                var start = total <= take ? 0 : n;          // oldest kept line
+                var tail = new string[have];
+                for (var i = 0; i < have; i++) tail[i] = ring[(start + i) % take];
+                // prepend, since we are walking newest file -> oldest
+                res.InsertRange(0, tail);
             }
         }
         catch { }
