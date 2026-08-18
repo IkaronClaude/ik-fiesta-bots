@@ -1,10 +1,4 @@
--- guild_buff_sm.lua — a support bot as a STATE MACHINE: idle -> buff -> idle.
---
--- The "buff guild" tree: park in town, wait for a guildmate to ask in chat, then
--- buff them. Demonstrates chat-driven transitions. (Reaching a distant member via
--- academy teleport isn't wired yet — the packet is still TBD; flagged below.)
---
--- Apply with:  POST /api/bots/{id}/statemachine  { "name": "guild_buff_sm" }
+-- guild_buff_sm.lua — a support bot as a STATE MACHINE: idle -> buff -> idle
 local TRIGGER = "buff"        -- substring to match in local chat (case-insensitive)
 local BUFFS   = { 1580 }      -- learnt buff skill ids (1580 = Endure [01])
 local requester = nil
@@ -23,7 +17,7 @@ statemachine({
 
   buff = {
     on_enter = function()
-      -- TODO: if the requester isn't nearby, academy-teleport to them (packet TBD).
+      -- TODO: if the requester isn't nearby, academy-teleport to them (packet TBD)
       log("buff: casting on h=" .. tostring(requester))
       for _, s in ipairs(BUFFS) do bot.cast(s, requester) end
       requester = nil

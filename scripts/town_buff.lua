@@ -1,9 +1,4 @@
--- town_buff.lua — a priest parked in town that buffs people on request.
---
--- Listens to local chat; when someone says the trigger word it casts the configured
--- buff skills on that speaker (per-speaker throttled). This is the chat-command +
--- low-latency-reaction pattern: no HTTP round-trip, the bot reacts the instant the
--- chat frame arrives.
+-- town_buff.lua — a priest parked in town that buffs people on request
 local TRIGGER     = "buff"      -- substring to match (case-insensitive)
 local BUFF_SKILLS = { 1580 }    -- learnt buff skill ids (e.g. 1580 = Endure [01])
 local COOLDOWN_MS = 10000       -- don't re-buff the same person within this window

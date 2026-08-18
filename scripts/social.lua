@@ -1,7 +1,4 @@
--- social — auto-accept incoming party invites and friend requests. Runs as its own loop
--- (independent of the gameplay/grind script) so an operator can friend the bot and party
--- with it to watch, without the bot needing manual steering. Both are WM-link actions and
--- don't touch movement/combat.
+-- social — auto-accept incoming party invites and friend requests
 function on_enter() log("social: auto-accepting party invites + friend requests") end
 
 function tick()
