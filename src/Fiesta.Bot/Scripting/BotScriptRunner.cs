@@ -31,6 +31,9 @@ public sealed class BotScriptRunner : IDisposable
 
     private Script? _lua;
     private long _ticks;
+    /// <summary>How many ticks this script has run. Exposed so a script can cache per-TICK rather than per-call:
+    /// a wall-clock stamp cannot express "the same tick", so a cache keyed on it re-fetches on every call.</summary>
+    public long TickCount => Volatile.Read(ref _ticks);
     private long _eventsHandled;
     private volatile string _state = "starting";
     private double _tickMsTotal;

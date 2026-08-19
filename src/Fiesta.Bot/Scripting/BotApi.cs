@@ -877,7 +877,13 @@ public sealed class BotApi
             {
                 var mt = NewTable();
                 mt["inView"] = inView.Contains(mobId);
-                mt["hitMax"] = v.MobHitMax(mobId);
+                var hitMax = v.MobHitMax(mobId);
+                mt["hitMax"] = hitMax;
+                // The observed-lethality inputs, so scanLethalMob does not need two more crossings PER MOB:
+                // how many damage samples we have for this mob, and how many of its hits would kill us.
+                mt["hitSamples"] = v.MobHitSamples(mobId);
+                var mhp = v.MaxHp;
+                mt["hitsToKillUs"] = (hitMax <= 0 || mhp <= 0) ? -1 : (int)Math.Ceiling((double)mhp / hitMax);
                 mobs[mobId] = DynValue.NewTable(mt);
             }
             if (wantItems.Count > 0)
@@ -895,6 +901,11 @@ public sealed class BotApi
         root["items"] = DynValue.NewTable(items);
         return DynValue.NewTable(root);
     }
+
+    /// <summary>This script's tick counter. The identity of the CURRENT tick, so a script can cache something for
+    /// exactly one tick. bot.now() cannot do that job: it advances within a tick, so a cache keyed on it misses on
+    /// every call and quietly does nothing.</summary>
+    public double ticks() => _handle.ScriptRunner?.TickCount ?? 0;
 
     /// <summary>The PLAYER_QUEST_INFO status byte of an active quest (0 if not active)</summary>
     public int questStatus(int id) => View is { } v && v.ActiveQuests.TryGetValue(id, out var s) ? s : 0;
