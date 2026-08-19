@@ -137,13 +137,16 @@ public sealed class BotScriptRunner : IDisposable
     }
 
     /// <summary>Log where a slow tick went, worst-first.</summary>
-    private void ReportProfile(ProfileSnapshot p)
+    private void ReportProfile(ProfileSnapshot p, double pauseMs, (int G0, int G1, int G2) gc)
     {
         var top = string.Join("  ", p.Rows.Take(8)
             .Select(r => $"{r.Name}={r.InMs:F0}+{r.GapMs:F0}ms/{r.Calls}"));
+        // gc=<pause>ms/<g0>/<g1>/<g2>: time this tick spent with the runtime SUSPENDED, and the collections that did
+        // it. Read it FIRST -- a tick whose pause covers most of its duration is a memory problem, not a script one,
+        // and no amount of caching bot.* calls will move it.
         _handle.Log(BotLogLevel.Note,
             $"[prof] TICK {p.TickMs:F0}ms = {p.InMs:F0}ms in {p.Calls} bot.* calls + {p.GapMs:F0}ms lua | " +
-            $"name=inCall+luaBefore/calls: {top}");
+            $"gc={pauseMs:F0}ms/{gc.G0}/{gc.G1}/{gc.G2} | name=inCall+luaBefore/calls: {top}");
     }
 
     private void OnEvent(BotEvent e)
@@ -230,9 +233,19 @@ public sealed class BotScriptRunner : IDisposable
                     }
                     Interlocked.Increment(ref _ticks);
                     ResetProfileWindow();
+                    // WHAT THE TICK CLOCK ACTUALLY MEASURES. A stopwatch around the tick counts every reason the
+                    // thread was not running, and the per-call profiler then blames whichever bot.* call happened to
+                    // straddle the stall -- which is why the same 356 quest() calls read 317ms in one tick and 3ms in
+                    // the next. Sample the GC's own pause accounting across the tick so a stall can be attributed
+                    // instead of argued about: if pauseMs covers the overshoot, the tick is not slow, it is stopped.
+                    var gcPause0 = GC.GetTotalPauseDuration();
+                    var gc0 = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
                     var swTick = System.Diagnostics.Stopwatch.StartNew();
                     SafeCall("tick");
                     swTick.Stop();
+                    var pauseMs = (GC.GetTotalPauseDuration() - gcPause0).TotalMilliseconds;
+                    var gcN = (GC.CollectionCount(0) - gc0.Item1, GC.CollectionCount(1) - gc0.Item2,
+                               GC.CollectionCount(2) - gc0.Item3);
                     _tickMsTotal += swTick.Elapsed.TotalMilliseconds;
                     try
                     {
@@ -240,7 +253,7 @@ public sealed class BotScriptRunner : IDisposable
                         if (p is not null)
                         {
                             _profile = p;
-                            if (swTick.ElapsedMilliseconds > SlowTickMs) ReportProfile(p);
+                            if (swTick.ElapsedMilliseconds > SlowTickMs) ReportProfile(p, pauseMs, gcN);
                         }
                     }
                     catch { /* profiling must never break the tick */ }
