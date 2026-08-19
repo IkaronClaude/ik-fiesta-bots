@@ -1324,7 +1324,7 @@ public sealed class BotManager : IAsyncDisposable
                         handle.Log($"[travel] hop {hop + 1}: didn't re-enter zone after portal — aborting");
                         return;
                     }
-                    handle.SetCurrentMap(expected);
+                    handle.SetCurrentMap(expected, null, "travel-hop-expected");
                     ObserveGates(id);
                     handle.Log($"[travel] hop {hop + 1}/{route.Count}: arrived on {expected} (town portal)");
                     continue;
@@ -1382,7 +1382,7 @@ public sealed class BotManager : IAsyncDisposable
                     handle.Log($"[travel] hop {hop + 1}: didn't re-enter zone after handoff — aborting");
                     return;
                 }
-                handle.SetCurrentMap(expected); // belt-and-suspenders for the next hop's grid
+                handle.SetCurrentMap(expected, null, "travel-hop-expected"); // belt-and-suspenders for the next hop's grid
                 ObserveGates(id); // learn the new map's gates (next hop + future routing)
                 handle.Log($"[travel] hop {hop + 1}/{route.Count}: arrived on {expected}");
             }
@@ -2168,19 +2168,32 @@ public sealed class BotManager : IAsyncDisposable
         handle.BumpMapChange(); // wake any travel loop waiting on a transition
         // Resolve the destination map name
         var name = Catalog.NameFor(h.MapId);
+        var nameSource = name is null ? null : "catalog";
+        // WHERE THE NAME CAME FROM IS THE WHOLE DIAGNOSIS. PendingDestMap is where we INTENDED to go, not where
+        // the server put us -- and Catalog.Learn() makes that guess permanent for this map id. On a
+        // revive-in-place the intent can be stale, which is how the bot ends up naming itself one map while
+        // standing on another and pathfinding against the wrong .shbd.
         if (name is null && handle.PendingDestMap is { } pending)
         {
             name = pending;
+            nameSource = "PENDING-INTENT";
             Catalog.Learn(h.MapId, pending);
         }
         // Resolve the real short-name from the client MapInfo table (the wire only carries the map id; the client looks…
         if (name is null && ClientData?.MapName(h.MapId) is { } clientName)
         {
             name = clientName;
+            nameSource = "MapInfo.shn";
             Catalog.Learn(h.MapId, clientName);
         }
-        handle.SetCurrentMap(name ?? $"map#{h.MapId}");
-        log($"[nav] now on {name} (mapId={h.MapId}) at ({h.X},{h.Y})" +
+        // The authoritative answer, computed even when another source won, so a disagreement is READABLE.
+        var truth = ClientData?.MapName(h.MapId);
+        if (truth is not null && name is not null && !string.Equals(truth, name, StringComparison.OrdinalIgnoreCase))
+            handle.Log(BotLogLevel.Note,
+                $"⛔ MAP IDENTITY MISMATCH: naming ourselves '{name}' (via {nameSource}) but MapInfo.shn says " +
+                $"mapId={h.MapId} is '{truth}'. Pathfinding will use the WRONG .shbd — expect a MOVEFAIL storm.");
+        handle.SetCurrentMap(name ?? $"map#{h.MapId}", h.MapId, nameSource ?? "unresolved");
+        log($"[nav] now on {name} (mapId={h.MapId}, via {nameSource ?? "unresolved"}) at ({h.X},{h.Y})" +
             (h.IsCrossServer ? $" — cross-server handoff to {h.Ip}:{h.Port}, reconnecting" : " (in-band)"));
 
         // FIELD .sbi door learning is PER-VISIT — reset it on every map entry (operator 2026-07-22): the Eld "Puzzle God…

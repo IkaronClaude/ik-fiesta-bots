@@ -256,7 +256,21 @@ public sealed class BotHandle
 
     /// <summary>The short name of the map the bot is currently on</summary>
     public string? CurrentMap => _currentMap;
-    internal void SetCurrentMap(string map) => _currentMap = map;
+    internal void SetCurrentMap(string map) => SetCurrentMap(map, null, "legacy");
+
+    /// <summary>The map id the SERVER last gave us, and how the NAME was resolved from it. A wrong map identity
+    /// is invisible today: only the resolved name is exposed, so a name/id disagreement cannot be seen without
+    /// rendering the .shbd by hand. Measured 2026-08-19: a death + revive-in-place left the bot naming itself
+    /// EldCem01 while standing on EldGbl02, producing ~2,500 MOVEFAILs/hour for nine hours.</summary>
+    public int? CurrentMapId { get; private set; }
+    public string? CurrentMapSource { get; private set; }
+
+    internal void SetCurrentMap(string map, int? mapId, string source)
+    {
+        _currentMap = map;
+        if (mapId is { } id) CurrentMapId = id;
+        CurrentMapSource = source;
+    }
 
     private readonly object _posGate = new();
     private (uint X, uint Y)? _pos;
@@ -611,6 +625,8 @@ public sealed class BotHandle
             LastChat: view?.LastChat is { } c ? $"<{c.SenderName ?? $"h{c.Handle}"}> {c.Text}" : null,
             Position: Position is { } p ? $"{p.X},{p.Y}" : null,
             Map: CurrentMap,
+            MapId: CurrentMapId,
+            MapSource: CurrentMapSource,
             Mounted: view?.IsMounted ?? false,
             Hp: view?.Hp,
             Sp: view?.Sp,
@@ -672,6 +688,10 @@ public sealed record BotSnapshot(
     string? LastChat,
     string? Position,
     string? Map,
+    // The raw id the server gave us and HOW the name was derived. A name/id disagreement is the
+    // wrong-.shbd wedge, and it was previously undiagnosable from the API.
+    int? MapId,
+    string? MapSource,
     bool Mounted,
     uint? Hp,
     uint? Sp,
