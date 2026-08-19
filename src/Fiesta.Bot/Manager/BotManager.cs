@@ -2804,6 +2804,15 @@ public sealed class BotManager : IAsyncDisposable
                 using var buff = opt.Buff is { } buffCfg
                     ? new BuffInTownBehavior(zoneSession, zoneView, buffCfg, Log, ct)
                     : null;
+                // ALWAYS ON, like party handling. Picking up something already at our feet is a reflex, not a
+                // decision: it competes with nothing and there is no phase in which it is the wrong move. Leaving it
+                // to the driver meant it only happened in phases that loot, so kills during a kite or a travel leg
+                // were simply left on the ground. Walking to a drop stays with the driver, which is the only thing
+                // that knows whether walking is a good idea right now.
+                using var autoLoot = new Behaviors.AutoLootBehavior(
+                    handle, zoneView,
+                    h => PickupAsync(handle.Id, h, ct),
+                    (lvl, m) => handle.Log(lvl, m), ct);
 
                 handle.SetPhase(BotPhase.InZone);
                 handle.ZoneEnteredUtc = DateTime.UtcNow;   // relog pacing measures session life from here
