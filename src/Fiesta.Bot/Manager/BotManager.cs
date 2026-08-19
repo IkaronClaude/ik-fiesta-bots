@@ -2078,6 +2078,7 @@ public sealed class BotManager : IAsyncDisposable
         var walkCts = CancellationTokenSource.CreateLinkedTokenSource(handle.Cts.Token);
         handle.WalkCts?.Cancel();
         handle.WalkCts = walkCts;
+        handle.WalkPlan = waypoints;   // so the watch UI can draw where we are trying to GO, not just where we are
         var ct = walkCts.Token;
         _ = Task.Run(async () =>
         {
@@ -2120,7 +2121,8 @@ public sealed class BotManager : IAsyncDisposable
             catch (Exception ex) { handle.Log($"walk-path error: {ex.Message}"); }
             finally
             {
-                if (ReferenceEquals(handle.WalkCts, walkCts)) handle.WalkCts = null;
+                // Only clear the plan if THIS walk still owns it — a newer WalkPath may already have replaced both.
+                if (ReferenceEquals(handle.WalkCts, walkCts)) { handle.WalkCts = null; handle.WalkPlan = null; }
                 walkCts.Dispose();
             }
         }, ct);

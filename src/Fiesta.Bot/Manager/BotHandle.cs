@@ -413,6 +413,12 @@ public sealed class BotHandle
         $"{Options.Host}|{CharName ?? Options.Character ?? Id}";
 
     /// <summary>Cancellation for the currently-running , if any — cancelled to abort a walk early</summary>
+    /// <summary>The waypoints of the walk currently in flight, first to last, or null when nothing is walking.
+    /// The minimap draws where the bot IS; without this it cannot draw where the bot is trying to GO, so "is it even
+    /// heading anywhere?" is only answerable by reading the tail. The list is already computed by PathFinder.Simplify
+    /// and handed to WalkPath — this just keeps hold of it instead of dropping it on the floor.</summary>
+    public IReadOnlyList<(uint X, uint Y)>? WalkPlan { get; internal set; }
+
     internal CancellationTokenSource? WalkCts { get; set; }
 
     /// <summary>Cancellation for the currently-running follow loop (chase a target player), if any</summary>

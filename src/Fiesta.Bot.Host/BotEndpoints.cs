@@ -1439,6 +1439,14 @@ public static class BotEndpoints
             InCombat = zv?.InCombat ?? false,
             Aggressors = zv?.Aggressors.Count ?? 0,
             Dead = zv?.Dead ?? false,
+            // WHERE WE ARE TRYING TO GO. WalkTo is the final waypoint (the destination); WalkPath is the whole
+            // simplified route, so a detour around geometry reads as a detour instead of the bot wandering off.
+            WalkTo = bot.WalkPlan is { Count: > 0 } plan
+                ? new { X = (double)plan[^1].X, Y = (double)plan[^1].Y }
+                : null,
+            WalkPath = bot.WalkPlan is { Count: > 1 } wpath
+                ? wpath.Select(w => new[] { (double)w.X, (double)w.Y }).ToArray()
+                : null,
         };
     }
 

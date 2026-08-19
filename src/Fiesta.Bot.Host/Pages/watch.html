@@ -496,6 +496,38 @@ function drawCombat(ent, maxHp) {
     const [px,py] = toPx(p.x, p.y);
     g.beginPath(); g.arc(px, py, 7, 0, Math.PI*2); g.fillStyle = 'rgba(88,166,255,.7)'; g.fill();
   }
+  // ── WHERE WE ARE TRYING TO GO ────────────────────────────────────────────────────────────────
+  // Operator P0 2026-08-18: the map drew where the bot IS but never where it was HEADING, so "is it even
+  // going anywhere?" could only be answered from the tail. self.walkPath is the simplified route actually
+  // handed to WalkPath and self.walkTo its final waypoint, so a detour around geometry reads as a detour
+  // rather than as the bot wandering off. Nothing walking = nothing drawn, which is itself the useful
+  // signal: a motionless bot with no line is idle by decision, not stuck mid-route.
+  if (ent.self.walkTo) {
+    const wp = (ent.self.walkPath || []).map(w => toPx(w[0], w[1]));
+    g.save();
+    g.setLineDash([5,4]); g.lineWidth = 1.5; g.strokeStyle = "rgba(88,166,255,.85)";
+    g.beginPath(); g.moveTo(cx, cy);
+    for (const [x,y] of wp) g.lineTo(x, y);
+    if (!wp.length) { const [tx,ty] = toPx(ent.self.walkTo.x, ent.self.walkTo.y); g.lineTo(tx, ty); }
+    g.stroke();
+    g.setLineDash([]);
+    // Intermediate waypoints as small ticks, so a 30-hop path is visibly a PATH and not one long ray.
+    g.fillStyle = "rgba(88,166,255,.55)";
+    for (let i = 0; i < wp.length - 1; i++) g.fillRect(wp[i][0]-1.5, wp[i][1]-1.5, 3, 3);
+    // The destination. It is usually OUTSIDE the zoom window (a cross-map walk is thousands of units),
+    // so clamp it to the canvas edge and keep the true distance in the label — a marker pinned at the
+    // rim that says 8,700u is honest; silently dropping it would look like the bot has no destination.
+    let [dx, dy] = toPx(ent.self.walkTo.x, ent.self.walkTo.y);
+    const dist = Math.hypot(ent.self.walkTo.x - sx, ent.self.walkTo.y - sy);
+    const off = dx < 8 || dy < 8 || dx > W-8 || dy > H-8;
+    dx = Math.max(8, Math.min(W-8, dx)); dy = Math.max(14, Math.min(H-8, dy));
+    g.strokeStyle = "#58a6ff"; g.lineWidth = 2;
+    g.beginPath(); g.arc(dx, dy, 5, 0, 7); g.stroke();
+    g.beginPath(); g.moveTo(dx-8, dy); g.lineTo(dx+8, dy); g.moveTo(dx, dy-8); g.lineTo(dx, dy+8); g.stroke();
+    g.fillStyle = "#58a6ff"; g.font = "10px ui-monospace,monospace"; g.textAlign = "center";
+    g.fillText(`${off ? "→ " : ""}${Math.round(dist)}u`, dx, dy - 9);
+    g.restore();
+  }
   // ── FACING ARROW + TARGET RAY ────────────────────────────────────────────────────────────────
   // Operator 2026-08-11: show which way the bot is POINTED. Drawn together with a dashed ray to the
   // current target, because the pair is what actually diagnoses the open combat bug — if we overshoot
@@ -581,7 +613,7 @@ function drawCombat(ent, maxHp) {
   // useful but too long to hang over every circle.
   $('#legend').innerHTML = types.length
     ? '<span class="muted">gold ring = quest mob · red ring = has hit us hard · solid = aggro'
-      + ' · green arrow = our facing · dashed gold = to current target'
+      + ' · green arrow = our facing · dashed gold = to current target · dashed blue = walk route, ⊕ = destination'
       + ' · <span style="color:#8ee7f5">◆ NPC</span> · <span style="color:#d2b3ff">■ gate</span></span>'
       + types.map(m => `<span class="muted">${m.name} (m${m.mobId}${m.level?` L${m.level}`:''})</span>`).join('')
     : '<span class="muted">nothing in view</span>';
