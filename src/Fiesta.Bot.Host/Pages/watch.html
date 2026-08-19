@@ -821,6 +821,12 @@ function selectedMap() {
   return v || (lastLive && lastLive.map) || null;
 }
 let pts = [], sinceT = 0, lastMap = null;
+// Declared HERE, with the rest of the trace state, and not down beside the render loop: tickTrace() is invoked
+// immediately at startup, well above that point, and a `let` read before its declaration is a TDZ ReferenceError
+// rather than an undefined -- it would have thrown on the very first poll.
+let bigMapDirty = true, lastBigDraw = 0;
+let serverSkewMs = 0;                       // serverNow - clientNow, learned on each /trace poll
+const serverNow = () => Date.now() + serverSkewMs;
 async function tickTrace() {
   try {
     const map = selectedMap() || undefined;
@@ -830,7 +836,11 @@ async function tickTrace() {
     const d = await r.json();
     for (const p of d.points) { pts.push(p); if (p.t > sinceT) sinceT = p.t; }
     if (pts.length > 20000) pts = pts.slice(-20000);
-    draw(d.nowUnixMs);
+    // ONE CLOCK FOR ALL TRACE POINTS. Poll points are stamped with SERVER time; points appended from the stream can
+    // only see the browser's. Mixing them makes the age-based fade wrong for whichever set is on the other clock, by
+    // exactly the clock difference. The poll is the one place both are visible at once, so learn the offset here.
+    serverSkewMs = d.nowUnixMs - Date.now();
+    bigMapDirty = true;          // the render loop owns the repaint now; the poll just supplies history          // the render loop owns the repaint now; the poll just supplies history
   } catch {}
 }
 
@@ -1155,7 +1165,8 @@ function applyStream(msg) {
     if (msg.self && msg.self.x != null && lastEnt.map) {
       const mk = selectedMap();
       if (!mk || mk === lastEnt.map) {
-        pts.push({ x: msg.self.x, y: msg.self.y, map: lastEnt.map, t: Date.now() });
+        pts.push({ x: msg.self.x, y: msg.self.y, map: lastEnt.map, t: serverNow() });
+        bigMapDirty = true;
         if (pts.length > 20000) pts = pts.slice(-20000);
       }
     }
@@ -1335,8 +1346,20 @@ function interpolated(ent) {
 // ── the render loop ───────────────────────────────────────────────────────────────────────────────
 // Drawing only when a packet arrives makes motion as choppy as the packets are; interpolation needs its
 // own clock. requestAnimationFrame also stops the work entirely when the tab is hidden.
+// THE BIG MAP RENDERS HERE TOO. Feeding its trace from the stream was only half the job: draw() was called from
+// tickTrace() and NOWHERE else, so however live the points were, the canvas still repainted once a second and the
+// big map visibly lagged the combat map beside it. Same loop, same clock, both maps.
+// Throttled rather than per-frame: the big map blits the whole minimap image and up to 20,000 trace points, which
+// is real work and does not need 60fps for a walking trace. It repaints only when something actually changed --
+// bigMapDirty is set when a point is appended or a poll lands -- so an idle page does nothing.
+const BIG_MAP_MIN_MS = 100;
 function frame() {
   if (lastEnt) { try { drawCombat(interpolated(lastEnt), evMaxHp); } catch {} }
+  const now = Date.now();
+  if (bigMapDirty && now - lastBigDraw >= BIG_MAP_MIN_MS) {
+    bigMapDirty = false; lastBigDraw = now;
+    try { draw(serverNow()); } catch {}   // server clock: that is what point timestamps are in
+  }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
