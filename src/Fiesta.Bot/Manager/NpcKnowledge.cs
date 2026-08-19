@@ -134,6 +134,26 @@ public sealed class NpcKnowledge
         return (deprio, deaths);
     }
 
+    /// <summary>Wipe every penalty recorded against ONE quest: its flee-deprioritization plus the lifetime and
+    /// per-level death counters behind it. ClearAllQuestPenalties is all-or-nothing per bot, which is the wrong tool
+    /// when exactly one quest was marked wrongly -- it throws away the marks that were EARNED along with the one that
+    /// was not, and those are the bot's only memory of what actually killed it. Returns (deprio removed, counters removed).</summary>
+    public (bool Deprio, int Deaths) ClearQuestPenalties(string host, int questId)
+    {
+        if (string.IsNullOrEmpty(host)) return (false, 0);
+        var deprio = _questDeprio.TryRemove(QKey(host, questId), out _);
+        var deaths = 0;
+        if (_questDeaths.TryRemove(QKey(host, questId), out _)) deaths++;
+        // The per-level counters are keyed host|quest|L<level>, and the mark must go at EVERY level or the
+        // still-standing count re-applies the deprioritization the moment the quest is evaluated again.
+        var lprefix = host + "|" + questId + "|L";
+        foreach (var k in _questDeathsAtLevel.Keys)
+            if (k.StartsWith(lprefix, StringComparison.Ordinal) && _questDeathsAtLevel.TryRemove(k, out _)) deaths++;
+        if (deprio) SaveQuestDeprio();
+        if (deaths > 0) SaveQuestDeaths();
+        return (deprio, deaths);
+    }
+
     /// <summary>Reset the PER-LEVEL death counter for a quest at the given level, so a cleared mark is not re-applied by the v…</summary>
     public int ClearQuestDeathsAtLevel(string host, int questId, int level)
     {

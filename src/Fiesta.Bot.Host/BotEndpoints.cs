@@ -385,6 +385,25 @@ public static class BotEndpoints
             "the character levels. If those marks were recorded wrongly the bot cannot level to clear them, because every quest " +
             "is marked — this reopens the board. Read GET /{id}/quests to see what is currently marked.");
 
+        group.MapPost("/{id}/quests/{questId:int}/clear-penalties", (string id, int questId) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var (deprio, deaths) = manager.Knowledge.ClearQuestPenalties(bot.KnowledgeScope, questId);
+            bot.LogOperatorAction(
+                $"[quests] REPAIR: cleared penalties on quest {questId} — deprioritized={deprio}, {deaths} death counter(s). "
+                + "Every other quest keeps its marks.");
+            return Results.Ok(new { id, questId, clearedDeprioritization = deprio, clearedDeathCounters = deaths });
+        })
+        .WithSummary("Clear the penalties on ONE quest, leaving every other quest's marks intact")
+        .WithDescription("The all-or-nothing repair throws away the marks that were EARNED along with the one that was not, "
+            + "and those marks are the bot's only memory of what actually killed it. Use this when a single quest was marked "
+            + "wrongly. NOTE what this does NOT cover, because that state does not exist to clear: the 'over-level swarm' "
+            + "demotion is DERIVED fresh on every evaluation (objective mob level vs our level + margin), so it is not stored "
+            + "and self-clears on level-up; and 'observed-lethal' is counted and logged but is deliberately NOT a "
+            + "disqualifier (level_quest.lua: risky = deprioritized or swarmRisk). Deprioritization is the only durable mark.")
+        ;
+
         group.MapPost("/{id}/packetlog", (string id, PacketLogRequest? req) =>
         {
             var enabled = req?.Enabled ?? true;
