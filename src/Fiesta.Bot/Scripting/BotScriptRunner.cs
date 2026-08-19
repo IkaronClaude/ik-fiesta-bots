@@ -376,7 +376,20 @@ do
   __prof = { calls = {}, secs = {}, gaps = {}, maxs = {}, last = clock() }
   local calls, secs, gaps, maxs = __prof.calls, __prof.secs, __prof.gaps, __prof.maxs
   local wrapped = {}
-  local pack, unpack = table.pack, table.unpack
+  -- NO table.pack HERE. The obvious way to time a call and still return all of its results is
+  -- `local r = pack(v(...)) ... return unpack(r, 1, r.n)`, and that allocates ONE TABLE PER CALL --
+  -- at ~1,200 bot.* calls per tick, the measurement was a large allocator in the thing it measures.
+  -- Forwarding through a second function instead keeps exact multi-return semantics with no table:
+  -- `return done(k, t0, v(...))` passes every result as an argument, and `return ...` hands them back.
+  local function done(k, t0, ...)
+    local t1 = clock()
+    local dt = t1 - t0
+    __prof.last = t1
+    calls[k] = (calls[k] or 0) + 1
+    secs[k] = (secs[k] or 0) + dt
+    if dt > (maxs[k] or 0) then maxs[k] = dt end
+    return ...
+  end
   bot = setmetatable({}, { __index = function(_, k)
     local w = wrapped[k]
     if w ~= nil then return w end
@@ -385,14 +398,7 @@ do
       w = function(...)
         local t0 = clock()
         gaps[k] = (gaps[k] or 0) + (t0 - __prof.last)
-        local r = pack(v(...))
-        local t1 = clock()
-        local dt = t1 - t0
-        __prof.last = t1
-        calls[k] = (calls[k] or 0) + 1
-        secs[k] = (secs[k] or 0) + dt
-        if dt > (maxs[k] or 0) then maxs[k] = dt end
-        return unpack(r, 1, r.n)
+        return done(k, t0, v(...))
       end
       wrapped[k] = w
       return w
