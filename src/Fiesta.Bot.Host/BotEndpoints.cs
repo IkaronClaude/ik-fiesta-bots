@@ -1439,7 +1439,7 @@ public static class BotEndpoints
     }
 
     /// <summary>EVERYTHING about US that a viewer needs — the ONE self projection, shared by the polled /entities snapshot, th…</summary>
-    internal static object? SelfView(BotHandle bot)
+    internal static object? SelfView(BotHandle bot, GameData.ClientData? cd = null)
     {
         var p = bot.Position;
         if (p is null) return null;
@@ -1465,6 +1465,10 @@ public static class BotEndpoints
             // changes, so carrying the map here means any single lost or clobbered update heals on the
             // next sample instead of persisting until a reload.
             Map = bot.CurrentMap,
+            // The DISPLAY name travels with the code so the header can render itself from a self sample
+            // alone. Without it the page can self-heal the map CODE but not the human-readable half, and
+            // would sit showing a bare "RouVal02" until some poll happened to supply "Burning Hill".
+            MapDisplay = cd?.MapDisplayName(bot.CurrentMap),
             // WHERE WE ARE TRYING TO GO. WalkTo is the final waypoint (the destination); WalkPath is the whole
             // simplified route, so a detour around geometry reads as a detour instead of the bot wandering off.
             WalkTo = bot.WalkPlan is { Count: > 0 } plan
@@ -1521,7 +1525,7 @@ public static class BotEndpoints
         // Facing + the current target handle travel with self so the map can draw WHERE WE ARE POINTED and WHERE THE TAR…
         return new
         {
-            Self = SelfView(bot),
+            Self = SelfView(bot, cd),
             Mobs = mobs,
             Party = party,
             Npcs = npcs,

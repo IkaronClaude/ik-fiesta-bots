@@ -156,6 +156,47 @@ public static class EventStreamEndpoint
                         name = manager.ClientData?.SkillName(sc.SkillId),   // a cast is always an ACTIVE skill
                     });
                     break;
+                case BotEventKind.Stones:
+                {
+                    // Same shape the /metrics poll builds, so the page reuses stoneTiles() unchanged. Built here
+                    // from live ZoneView state rather than carried on the event: the reserve is four numbers plus
+                    // two cooldowns, and freezing that into an event signature would date badly.
+                    var zvs = bot.ZoneView;
+                    Post(new
+                    {
+                        t = "stones",
+                        stones = new object[]
+                        {
+                            new
+                            {
+                                kind = "hp", count = zvs?.HpStones, max = zvs?.MaxHpStones ?? 0,
+                                cooldownMs = zvs?.HpStoneCooldownMs,
+                                // ReadyInMs is -1 for "no successful use yet", which with a known cooldown means
+                                // READY -- clamp rather than letting -1 reach the sweep as a negative fraction.
+                                remainingMs = zvs is null ? (double?)null : Math.Max(0, zvs.HpStoneReadyInMs),
+                                depleted = zvs?.HpStoneDepleted ?? false,
+                            },
+                            new
+                            {
+                                kind = "sp", count = zvs?.SpStones, max = zvs?.MaxSpStones ?? 0,
+                                cooldownMs = zvs?.SpStoneCooldownMs,
+                                remainingMs = zvs is null ? (double?)null : Math.Max(0, zvs.SpStoneReadyInMs),
+                                depleted = zvs?.SpStoneDepleted ?? false,
+                            },
+                        },
+                    });
+                    break;
+                }
+                case BotEventKind.Exp when e.Data is long expNow:
+                    Post(new { t = "exp", exp = expNow }); break;
+                case BotEventKind.Money when e.Data is long cenNow:
+                    Post(new { t = "money", money = cenNow }); break;
+                case BotEventKind.LevelUp when e.Data is byte lvNow:
+                    // A level-up invalidates most of the panel at once (stats, exp band, what is deprioritized),
+                    // so it also asks for a full resend rather than trying to patch each field.
+                    Post(new { t = "levelup", level = (int)lvNow });
+                    resendState = true; Signal();
+                    break;
                 case BotEventKind.MoveFailed when e.Data is ValueTuple<uint, uint> p:
                     Post(new { t = "movefail", x = p.Item1, y = p.Item2 }); break;
                 case BotEventKind.PlayerLeft when e.Data is ushort h2:
@@ -228,7 +269,7 @@ public static class EventStreamEndpoint
                 foreach (var h in removed) await SendAsync(ws, new { t = "gone", handle = (int)h }, ct);
 
                 // SELF is sampled, not evented — we move because our own script walked us, and there is no inbound packet for th…
-                var sv = BotEndpoints.SelfView(bot);
+                var sv = BotEndpoints.SelfView(bot, manager.ClientData);
                 var svJson = JsonSerializer.Serialize(sv, Json);
                 if (svJson != lastSelfJson)
                 {

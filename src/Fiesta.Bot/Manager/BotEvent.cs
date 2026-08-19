@@ -27,6 +27,14 @@ public enum BotEventKind
     SkillLearned,
     /// <summary>SkillCastInfo — the server confirmed one of OUR casts started and named the skill (0x244E)</summary>
     SkillCast,
+    /// <summary>long — character EXP total changed (0x1073)</summary>
+    Exp,
+    /// <summary>long — money ("cen") changed (CENCHANGE)</summary>
+    Money,
+    /// <summary>byte — we levelled up (0x240C)</summary>
+    LevelUp,
+    /// <summary>no payload — soul-stone reserve/cooldown changed (buy ack, use, or zone-enter seed)</summary>
+    Stones,
 }
 
 /// <summary>A skill the server just confirmed we learned. Passive and active ids are SEPARATE, OVERLAPPING spaces,

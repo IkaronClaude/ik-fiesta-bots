@@ -536,6 +536,7 @@ public sealed class ZoneView : IDisposable
     {
         if (hpStones is { } h && h >= 0) { HpStones = h; if (h > 0) HpStoneDepleted = false; }
         if (spStones is { } s && s >= 0) { SpStones = s; if (s > 0) SpStoneDepleted = false; }
+        StonesChanged?.Invoke();
     }
 
     /// <summary>Raised when the bot's own HP changes (HPCHANGE 0x240E), with the new current HP</summary>
@@ -561,6 +562,15 @@ public sealed class ZoneView : IDisposable
     /// <summary>(areaName,(x,y)) → is the point inside that scenario area's .aid box?</summary>
     public Func<string, (uint X, uint Y), bool>? IsInsideScenarioArea { get; set; }
 
+    /// <summary>The character total after an EXP change (0x1073). Exp already drives the whole progress panel and
+    /// was only ever visible through a poll, so a level of grinding showed up as a step every 2 seconds.</summary>
+    /// <summary>The soul-stone reserve or its cooldown changed — a buy ack, a use, or the zone-enter seed. No
+    /// payload: the reserve is four numbers plus two cooldowns, and a subscriber that needs them can read the live
+    /// values rather than have a snapshot shape frozen into an event signature.</summary>
+    public event Action? StonesChanged;
+    public event Action<long>? ExpChanged;
+    /// <summary>Money ("cen") after a CENCHANGE. Same reason: it is on the wire, it just never left ZoneView.</summary>
+    public event Action<long>? MoneyChanged;
     public event Action<uint>? HpChanged;
 
     /// <summary>Raised when the bot's own SP changes (SPCHANGE 0x240F)</summary>
@@ -2133,6 +2143,7 @@ public sealed class ZoneView : IDisposable
                 long cur = (long)System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(p.Slice(6, 8));
                 long prev = Exp;
                 Exp = cur;
+                ExpChanged?.Invoke(cur);
                 string d = prev >= 0 ? (cur - prev >= 0 ? $"+{cur - prev}" : (cur - prev).ToString()) : "seed";
                 _logLevel?.Invoke(BotLogLevel.Info, $"[exp] SERVER-SET {cur} (was {(prev >= 0 ? prev.ToString() : "?")}, {d})");
             }
@@ -2344,6 +2355,7 @@ public sealed class ZoneView : IDisposable
                 int total = p[0] | (p[1] << 8);
                 if (op == OpSoulStoneHpBuyAck) { HpStones = total; if (total > 0) HpStoneDepleted = false; }
                 else { SpStones = total; if (total > 0) SpStoneDepleted = false; }
+                StonesChanged?.Invoke();
                 _log?.Invoke($"[ZoneView] soul-stone {(op == OpSoulStoneHpBuyAck ? "HP" : "SP")} BUY ok — reserve now {total}");
             }
         }
@@ -2363,6 +2375,7 @@ public sealed class ZoneView : IDisposable
             {
                 HpStoneDepleted = false;
                 if (HpStones is { } n && n > 0) HpStones = n - 1;
+                StonesChanged?.Invoke();   // a USE also restarts the cooldown, which the tile draws
                 if (LastHpStoneSuccessUtc > DateTime.MinValue)
                 {
                     var gapMs = (DateTime.UtcNow - LastHpStoneSuccessUtc).TotalMilliseconds;
@@ -2386,6 +2399,7 @@ public sealed class ZoneView : IDisposable
             {
                 SpStoneDepleted = false;
                 if (SpStones is { } n && n > 0) SpStones = n - 1;
+                StonesChanged?.Invoke();
                 LastSpStoneSuccessUtc = DateTime.UtcNow;
             }
         }
@@ -2574,6 +2588,7 @@ public sealed class ZoneView : IDisposable
                     else _log?.Invoke($"[ZoneView] {line}");
                 }
                 Money = cen;
+                MoneyChanged?.Invoke((long)cen);
             }
         }
         else if (op == OpSellAck)
