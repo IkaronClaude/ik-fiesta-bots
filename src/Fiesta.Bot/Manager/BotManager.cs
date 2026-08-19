@@ -2095,6 +2095,10 @@ public sealed class BotManager : IAsyncDisposable
     private static readonly ushort OpMoveRun =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.MoverunCmd);
 
+    /// <summary>How far to step when a cast is refused as out-of-range from inside our own melee stop radius. Big
+    /// enough that the server must answer it (accept or MOVEFAIL), small enough not to abandon the fight.</summary>
+    private const double DesyncProbeStep = 40.0;
+
     /// <summary>Max distance (world units) of a single MoverunCmd</summary>
     private const double MaxMoveStep = 250.0;
 
@@ -2131,6 +2135,14 @@ public sealed class BotManager : IAsyncDisposable
                         var sy = (uint)Math.Round(fy + (ty - (double)fy) * k / subSteps);
                         // HOLD STILL WHILE A CAST BAR IS OPEN — moving cancels the cast
                         while (handle.ZoneView is { CastBarActive: true } && !ct.IsCancellationRequested)
+                            await Task.Delay(100, ct);
+                        // AND WHILE ROOTED/STUNNED. This is not politeness, it is the position model: BeginMove
+                        // below advances our BELIEVED position as each step is SENT, so streaming steps at a server
+                        // that is refusing to move us walks the belief away from the truth with nothing to correct
+                        // it. Measured 2026-08-19: a root at 16:44:36 (moveBlock=True) landed mid-run, and 50s later
+                        // the bot was casting at a target it believed was 35u away while the server rejected every
+                        // cast as OUT OF RANGE — because it was measuring from where we actually were.
+                        while (handle.ZoneView is { Rooted: true } && !ct.IsCancellationRequested)
                             await Task.Delay(100, ct);
                         var paceSpeed = handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec;
                         var from = handle.BeginMove(sx, sy, paceSpeed);
@@ -2726,6 +2738,27 @@ public sealed class BotManager : IAsyncDisposable
                             else
                             {
                                 // APPROACH but STOP at melee range (tick 41): walk to a point ~ScenarioMeleeStop SHORT of the target along the b…
+                                // ALREADY INSIDE OUR OWN STOP RADIUS AND STILL "OUT OF RANGE" = A POSITION DESYNC,
+                                // NOT A DISTANCE PROBLEM -- and the approach below cannot fix it, because
+                                // dist - meleeStop clamps to 0 and walks us nowhere. That is a hard freeze: cast,
+                                // fail, "approach" zero units, cast again, several times a second, indefinitely.
+                                // Observed 16:45:32 at dist=35u with stop=70u after a mid-run root.
+                                // Take a REAL step instead. The server then either accepts it (our belief was wrong
+                                // and is now corrected) or MOVEFAILs (which snaps us to the truth) -- either way the
+                                // desync resolves, which standing still can never do.
+                                if (dist < meleeStop)
+                                {
+                                    Log($"[combat] cast rejected as OUT OF RANGE at {dist:F0}u while our own melee stop is " +
+                                        $"{meleeStop:F0}u — we cannot be both. Treating it as a POSITION DESYNC and stepping to " +
+                                        "force the server to correct us, rather than approaching zero units forever.");
+                                    var (sx, sy) = (pos.X, pos.Y);
+                                    var stepX = (uint)Math.Max(0, sx + (dx / dist) * DesyncProbeStep);
+                                    var stepY = (uint)Math.Max(0, sy + (dy / dist) * DesyncProbeStep);
+                                    // Fire-and-forget like the step-back branch: this handler is not async, and the
+                                    // point is only to make the server answer, not to wait for it here.
+                                    _ = Task.Run(() => WalkAsync(botId, sx, sy, stepX, stepY, ct), ct);
+                                    return;
+                                }
                                 Log($"[combat] cast out of range (0x{reason:X4}) — approaching to melee (dist {dist:F0}u, stop {meleeStop:F0}u, learnedRange {learnedRange:F0}u)");
                                 var goalDist = Math.Max(0.0, dist - meleeStop);
                                 var gx = (uint)Math.Round(pos.X + dx / dist * goalDist);
