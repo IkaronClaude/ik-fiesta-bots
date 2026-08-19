@@ -1319,7 +1319,9 @@ public sealed class BotManager : IAsyncDisposable
                         }
                     }
                     handle.PendingDestMap = null;
-                    if (!await WaitUntilAsync(() => handle.Phase == BotPhase.InZone && handle.ZoneSession is not null, 20000, ct))
+                    if (!await WaitUntilAsync(
+                            () => handle.Phase == BotPhase.InZone && handle.ZoneSession is not null
+                                  && !handle.HandoffInFlight, 20000, ct))
                     {
                         handle.Log($"[travel] hop {hop + 1}: didn't re-enter zone after portal — aborting");
                         return;
@@ -1375,9 +1377,12 @@ public sealed class BotManager : IAsyncDisposable
                 handle.PendingDestMap = null; // consumed by OnMapChanged
                 handle.SuppressMount = false; // hop taken — transit mounting allowed again
 
-                // A cross-server hop re-logs in on a fresh connection — wait until we're back in zone before the next hop
+                // A cross-server hop re-logs in on a fresh connection — wait until we're back in zone before the next hop.
+                // Phase/ZoneSession alone are NOT enough: they still hold the OLD session's values while the teardown and
+                // re-login run, so this wait used to pass ~2.3s early and the next hop's approach walked into a dead link.
                 if (!await WaitUntilAsync(
-                        () => handle.Phase == BotPhase.InZone && handle.ZoneSession is not null, 20000, ct))
+                        () => handle.Phase == BotPhase.InZone && handle.ZoneSession is not null
+                              && !handle.HandoffInFlight, 20000, ct))
                 {
                     handle.Log($"[travel] hop {hop + 1}: didn't re-enter zone after handoff — aborting");
                     return;
@@ -1443,10 +1448,38 @@ public sealed class BotManager : IAsyncDisposable
         for (int i = 1; i < wp.Count; i++) pathLen += Dist(wp[i - 1], wp[i].X, wp[i].Y);
         var speed = handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec;
         int waitMs = (int)Math.Clamp(pathLen / Math.Max(1, speed) * 1000 * 1.6 + 10000, 30000, 180000);
-        await WaitUntilAsync(
-            () => (handle.Position is { } p && Dist((p.X, p.Y), tx, ty) <= Math.Max(stopShort, 24)) || handle.WalkCts is null,
-            waitMs, ct);
+        // A WALK THAT NEVER STARTED MUST NOT COST THE FULL TIMEOUT. That timeout is sized for the walk to COMPLETE --
+        // at minimum 30s and up to 3 minutes -- so if the movement was never delivered (the classic case: sent into a
+        // link that was being torn down by a handoff) the bot stands still for the whole of it, doing nothing, and
+        // only the liveness watchdog eventually frees it. That is the "randomly standing still" the operator sees.
+        // Detect the no-start case in seconds and hand back to the caller, which has its own re-approach path.
+        var origin = handle.Position;
+        var startedAt = Environment.TickCount64;
+        var neverMoved = false;
+        await WaitUntilAsync(() =>
+        {
+            if (handle.Position is { } p)
+            {
+                if (Dist((p.X, p.Y), tx, ty) <= Math.Max(stopShort, 24)) return true;
+                if (origin is { } o && Environment.TickCount64 - startedAt > ApproachNoStartMs
+                    && Dist((p.X, p.Y), o.X, o.Y) < ApproachMovedEps)
+                {
+                    neverMoved = true;
+                    return true;
+                }
+            }
+            return handle.WalkCts is null;
+        }, waitMs, ct);
+        if (neverMoved)
+            handle.Log($"[nav] approach to ({tx},{ty}): the walk NEVER STARTED — still within {ApproachMovedEps}u of " +
+                       $"({origin?.X},{origin?.Y}) after {ApproachNoStartMs}ms, {wp.Count} waypoint(s) issued. " +
+                       "Returning instead of holding the full arrival timeout; the caller re-approaches.");
     }
+
+    /// <summary>How long to give a freshly-issued walk to produce ANY movement before calling it a no-start</summary>
+    private const int ApproachNoStartMs = 6000;
+    /// <summary>World units of drift still counted as "has not moved" (server position updates jitter a little)</summary>
+    private const double ApproachMovedEps = 8.0;
 
     private static double Dist((uint X, uint Y) a, uint x, uint y)
         => Math.Sqrt(Math.Pow((double)a.X - x, 2) + Math.Pow((double)a.Y - y, 2));
@@ -2165,6 +2198,9 @@ public sealed class BotManager : IAsyncDisposable
     private void OnMapChanged(BotHandle handle, MapHandoff h, Action<string> log)
     {
         handle.SetPosition(h.X, h.Y);
+        // Raise this BEFORE bumping the sequence, so a waiter woken by the bump can never observe the transition
+        // without also observing that the link behind it is about to go away.
+        if (h.IsCrossServer) handle.HandoffInFlight = true;
         handle.BumpMapChange(); // wake any travel loop waiting on a transition
         // GROUND TRUTH FIRST. The wire carries a map ID; MapInfo.shn is the client's own ID -> MapName table and it
         // covers every id the server sends (138 rows, verified 2026-08-19 against the ids seen live: 6/9/10/45/75/150).
@@ -2679,6 +2715,7 @@ public sealed class BotManager : IAsyncDisposable
                     ? $"*** {sel.Name} IN ZONE ({zoneEp}) — running until stopped ***"
                     : $"*** {sel.Name} RE-ENTERED ZONE ({zoneEp}, {currentMap}) after cross-server handoff ***");
                 // The new zone link is live — let the leveler tick again (no-op unless we suspended it for a handoff above)
+                handle.HandoffInFlight = false;   // cleared HERE and nowhere else: this is the first moment the link is usable
                 handle.ScriptRunner?.Resume($"zone live again ({zoneEp}, {currentMap})");
                 firstEntry = false;
 

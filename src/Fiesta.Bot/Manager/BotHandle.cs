@@ -431,6 +431,18 @@ public sealed class BotHandle
     private long _lastMapChangeTicks = -1;
 
     /// <summary>Monotonic counter bumped once per map transition (gate / town portal, in-band or cross-server)</summary>
+    /// <summary>TRUE from the moment a CROSS-SERVER map change is seen until the new zone link is actually live.
+    /// Phase and ZoneSession cannot answer this: on a handoff the old values stay set for the ~2.3s the teardown and
+    /// re-login take, so anything that checks "am I in zone" during that window gets a STALE yes and sends packets
+    /// into a dead session. Measured 2026-08-19: the zone dropped at 08:13:58.346, the travel loop's re-entry wait
+    /// passed at 08:13:58.477, and MAP_LOGIN_ACK did not land until 08:14:00.736.</summary>
+    public bool HandoffInFlight
+    {
+        get => Volatile.Read(ref _handoffInFlight) != 0;
+        internal set => Volatile.Write(ref _handoffInFlight, value ? 1 : 0);
+    }
+    private int _handoffInFlight;
+
     public int MapChangeSeq => Volatile.Read(ref _mapChangeSeq);
     internal void BumpMapChange()
     {
