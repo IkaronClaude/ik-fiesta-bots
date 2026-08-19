@@ -1484,6 +1484,10 @@ public static class BotEndpoints
             // alone. Without it the page can self-heal the map CODE but not the human-readable half, and
             // would sit showing a bare "RouVal02" until some poll happened to supply "Burning Hill".
             MapDisplay = cd?.MapDisplayName(bot.CurrentMap),
+            // Where a cross-map journey is HEADING, both halves, so the header can read
+            // "Roumen (RouN) - travelling to Elderine (Eld)" without the page owning a map table.
+            TravelTo = bot.TravelDestMap,
+            TravelToDisplay = cd?.MapDisplayName(bot.TravelDestMap),
             // WHERE WE ARE TRYING TO GO. WalkTo is the final waypoint (the destination); WalkPath is the whole
             // simplified route, so a detour around geometry reads as a detour instead of the bot wandering off.
             WalkTo = bot.WalkPlan is { Count: > 0 } plan

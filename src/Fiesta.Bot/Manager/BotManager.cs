@@ -1248,6 +1248,7 @@ public sealed class BotManager : IAsyncDisposable
         var travelCts = CancellationTokenSource.CreateLinkedTokenSource(handle.Cts.Token);
         handle.TravelCts?.Cancel();
         handle.TravelCts = travelCts;
+        handle.TravelDestMap = route[^1].ToMap;   // the END of the route, not the next hop
         _ = Task.Run(() => RunTravelAsync(handle, route, unitsPerSec, travelCts), travelCts.Token);
         return (TravelResult.Started, route);
     }
@@ -1418,7 +1419,13 @@ public sealed class BotManager : IAsyncDisposable
         }
         catch (OperationCanceledException) { handle.Log("[travel] cancelled"); }
         catch (Exception ex) { handle.Log($"[travel] error: {ex.Message}"); }
-        finally { if (ReferenceEquals(handle.TravelCts, travelCts)) handle.TravelCts = null; travelCts.Dispose(); }
+        finally
+        {
+            // Only clear if THIS travel still owns the slot: a newer TravelTo may already have replaced both, and
+            // blanking its destination would make the UI claim the bot stopped travelling while it is still going.
+            if (ReferenceEquals(handle.TravelCts, travelCts)) { handle.TravelCts = null; handle.TravelDestMap = null; }
+            travelCts.Dispose();
+        }
     }
 
     /// <summary>The live in-view gate whose link destination is (case-insensitive), or null if none is currently visible</summary>

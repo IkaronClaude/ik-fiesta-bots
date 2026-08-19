@@ -821,6 +821,18 @@ function selectedMap() {
   return v || (lastLive && lastLive.map) || null;
 }
 let pts = [], sinceT = 0, lastMap = null;
+// THE MAP HEADER, in one place. It was previously written from three call sites in three slightly different
+// formats, which is how it ended up stuck showing a stale map: whichever path fired last won. Everything now
+// renders through here, and it adds the destination while a cross-map journey is running, because "where is it
+// and where is it going" is one question.
+function setMapHeader(code, display, travelCode, travelDisplay) {
+  if (!code) { $("#mapname").textContent = ""; return; }
+  let t = display ? `· ${display} (${code})` : `· ${code}`;
+  if (travelCode && travelCode !== code) {
+    t += travelDisplay ? ` — travelling to ${travelDisplay} (${travelCode})` : ` — travelling to ${travelCode}`;
+  }
+  $("#mapname").textContent = t;
+}
 // Declared HERE, with the rest of the trace state, and not down beside the render loop: tickTrace() is invoked
 // immediately at startup, well above that point, and a `let` read before its declaration is a TDZ ReferenceError
 // rather than an undefined -- it would have thrown on the very first poll.
@@ -1120,7 +1132,8 @@ function applyStream(msg) {
     // the marker would sit unanimated on a stale position for as long as it stayed put.
     selfAnim = null; lastSelfAt = 0;
     if (lastEnt.self) noteSelfMove(lastEnt.self, null);
-    $('#mapname').textContent = msg.mapDisplay ? `· ${msg.mapDisplay} (${lastEnt.map})` : (lastEnt.map ? `· ${lastEnt.map}` : '');
+    setMapHeader(lastEnt.map, msg.mapDisplay,
+                 lastEnt.self && lastEnt.self.travelTo, lastEnt.self && lastEnt.self.travelToDisplay);
   } else if (!lastEnt) {
     return;                       // a delta before hello describes a picture we do not have yet
   } else if (msg.t === 'entity') {
@@ -1155,8 +1168,7 @@ function applyStream(msg) {
     // THE MAP HEADER, from the self sample. It carries both halves — the code and the display name — so the header
     // renders fully without waiting for a poll or for the next one-shot map event.
     if (msg.self && msg.self.map) {
-      $('#mapname').textContent = msg.self.mapDisplay
-        ? `· ${msg.self.mapDisplay} (${msg.self.map})` : `· ${msg.self.map}`;
+      setMapHeader(msg.self.map, msg.self.mapDisplay, msg.self.travelTo, msg.self.travelToDisplay);
     }
     // THE BIG MAP'S TRACE, from the same sample. The path used to advance only when the 1s /trace poll landed, so a
     // bot moving at 200 u/s drew a line of 200-unit steps. Appending here draws it at the rate the server actually
@@ -1219,7 +1231,8 @@ function applyStream(msg) {
     // on this message rather than waiting for anything.
     lastEnt.map = msg.map; lastEnt.mobs = []; lastEnt.npcs = []; anim.clear();
     if (lastEnt.self && msg.x != null) { lastEnt.self.x = msg.x; lastEnt.self.y = msg.y; selfAnim = null; }
-    $('#mapname').textContent = msg.mapDisplay ? `· ${msg.mapDisplay} (${msg.map})` : `· ${msg.map}`;
+    setMapHeader(msg.map, msg.mapDisplay,
+                 lastEnt.self && lastEnt.self.travelTo, lastEnt.self && lastEnt.self.travelToDisplay);
   } else return;                  // hit / chat / castfail / movefail — narration, not map state
 }
 
@@ -1374,7 +1387,9 @@ async function pollEntities() {
     const r = await api('/entities');
     if (!r.ok) return;
     const d = await r.json();
-    $('#mapname').textContent = d.mapDisplay ? `· ${d.mapDisplay} (${d.map})` : (d.map ? `· ${d.map}` : '');
+    setMapHeader(d.map, d.mapDisplay,
+                 d.entities && d.entities.self && d.entities.self.travelTo,
+                 d.entities && d.entities.self && d.entities.self.travelToDisplay);
     lastEnt = d.entities; evMaxHp = d.maxHp;
     for (const m of lastEnt.mobs || []) noteMove(m);
   } catch {}

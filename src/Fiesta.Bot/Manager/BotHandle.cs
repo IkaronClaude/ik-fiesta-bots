@@ -427,6 +427,12 @@ public sealed class BotHandle
     /// <summary>Narrate what the bot is doing into GAME CHAT, so it can be watched in the client instead of only in
     /// the tail. OFF by default and deliberately so: it is visible to other players and the server rate-limits chat,
     /// so it is a debugging aid you switch on while watching, not a permanent mode.</summary>
+    /// <summary>The FINAL map a cross-map travel is heading for, or null when not travelling. Distinct from
+    /// PendingDestMap, which is only the NEXT HOP and is cleared the moment that hop lands -- a three-hop route
+    /// would blank it twice mid-journey. This one lives for the whole journey, which is what "where is it going?"
+    /// actually means.</summary>
+    public string? TravelDestMap { get; internal set; }
+
     public bool AnnounceChat { get; set; }
     internal DateTime LastAnnounceUtc { get; set; } = DateTime.MinValue;
     internal string LastAnnounceText { get; set; } = "";
