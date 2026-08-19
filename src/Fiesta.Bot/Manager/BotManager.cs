@@ -457,7 +457,13 @@ public sealed class BotManager : IAsyncDisposable
             await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
             handle.CurrentTarget = target; handle.TargetAsserted = true; handle.TargetSetAtUtc = DateTime.UtcNow;
             if (handle.ZoneView is { } zvT) zvT.CurrentTargetHandle = target;   // so a death can invalidate it
-            // A cast carries no target either — it hits the server's CURRENT selection
+            // ⚠️ A CAST DOES CARRY ITS TARGET. PROTO_NC_BAT_SKILLBASH_OBJ_CAST_REQ is {skill u16 @0,
+            // target u16 @2} (PDB), and the send below puts this handle straight into it -- the server does
+            // NOT fall back to its current selection to decide what we hit. The comment that used to sit here
+            // said the opposite, and it is load-bearing misinformation: it makes every 0x0FCA look like a
+            // target-desync, which is a theory that has been chased repeatedly and is disproved on our own
+            // wire (23 casts, cast-target == last-targetted handle every time, 5 of them still failed).
+            // We still send TARGETTING first because the real client does (Z:/CombatExtensive.pcapng).
             var ok = await AwaitTargetConfirmAsync(handle, target, ct);
             handle.Log(BotLogLevel.Verbose,
                 $"cast {skill}: target h={target} {(ok ? "CONFIRMED" : "NOT confirmed (timeout)")} after " +
