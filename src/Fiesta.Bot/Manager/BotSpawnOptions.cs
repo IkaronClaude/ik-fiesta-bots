@@ -46,4 +46,10 @@ public sealed record BotSpawnOptions
 
     /// <summary>Start the tailable both-directions packet dump from the VERY FIRST connection (login → WM → zone), so the logi…</summary>
     public bool PacketLog { get; init; }
+
+    /// <summary>Narrate phase/tactic changes and cast failures into GAME CHAT. Lives HERE rather than only on the
+    /// handle because the handle is rebuilt on every respawn and pod rollout, so a runtime-only flag silently
+    /// reverts to off exactly when you are mid-observation and least expecting it. The roster persists this record,
+    /// so the setting survives a reconnect the same way PacketLog does.</summary>
+    public bool Announce { get; init; }
 }

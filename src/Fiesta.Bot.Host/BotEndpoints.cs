@@ -406,11 +406,9 @@ public static class BotEndpoints
 
         group.MapPost("/{id}/announce", (string id, AnnounceRequest? req) =>
         {
-            var bot = manager.Get(id);
-            if (bot is null) return Results.NotFound();
-            bot.AnnounceChat = req?.Enabled ?? true;
-            bot.LogOperatorAction($"[announce] chat narration {(bot.AnnounceChat ? "ON" : "OFF")}");
-            return Results.Ok(new { id, announcing = bot.AnnounceChat });
+            var on = manager.SetAnnounce(id, req?.Enabled ?? true);
+            if (on is null) return Results.NotFound();
+            return Results.Ok(new { id, announcing = on.Value });
         })
         .WithSummary("Narrate what the bot is doing into GAME CHAT, so it can be watched in the client")
         .WithDescription("Body {\"enabled\":true|false} (default true). Says cast failures (with the distance the "
@@ -1480,6 +1478,9 @@ public static class BotEndpoints
             // changes, so carrying the map here means any single lost or clobbered update heals on the
             // next sample instead of persisting until a reload.
             Map = bot.CurrentMap,
+            // So the UI toggle can render the CURRENT state on load rather than assuming off — a switch that
+            // disagrees with the thing it switches is worse than no switch.
+            Announcing = bot.AnnounceChat,
             // The DISPLAY name travels with the code so the header can render itself from a self sample
             // alone. Without it the page can self-heal the map CODE but not the human-readable half, and
             // would sit showing a bare "RouVal02" until some poll happened to supply "Burning Hill".

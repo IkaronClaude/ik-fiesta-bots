@@ -94,6 +94,18 @@ public sealed class BotManager : IAsyncDisposable
     public BotHandle? Get(string id) => _bots.TryGetValue(id, out var h) ? h : null;
 
     /// <summary>Toggle a tailable, both-directions, plaintext (XOR-decoded) packet log for a bot — every S→C and C→S frame, in…</summary>
+    /// <summary>Turn chat narration on/off AND remember it. Writing only the runtime flag is why it kept reverting:
+    /// the handle is rebuilt on every respawn and pod rollout, so the setting has to go back into the roster record
+    /// that the rebuild replays -- exactly how PacketLog survives.</summary>
+    public bool? SetAnnounce(string id, bool enabled)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return null;
+        handle.AnnounceChat = enabled;
+        Knowledge?.SaveRosterEntry(id, handle.Options with { Announce = enabled });
+        handle.LogOperatorAction($"[announce] chat narration {(enabled ? "ON" : "OFF")} (persisted for reconnects)");
+        return enabled;
+    }
+
     public (bool Found, bool Enabled, string? Path) SetPacketLog(string id, bool enabled)
     {
         if (!_bots.TryGetValue(id, out var handle)) return (false, false, null);
@@ -2315,6 +2327,7 @@ public sealed class BotManager : IAsyncDisposable
             var chain = new LoginChain(_xorTable, Log);
 
             // If requested at spawn, start the packet dump NOW — before the first connect — so the login handshake AND the z…
+            if (opt.Announce) handle.AnnounceChat = true;   // restored from the roster, so it survives a rollout
             if (opt.PacketLog && handle.PacketLog is null)
             {
                 var dir = Environment.GetEnvironmentVariable("PACKETLOG_DIR") ?? Directory.GetCurrentDirectory();

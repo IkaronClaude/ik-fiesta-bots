@@ -157,6 +157,10 @@
   <button class="mini" id="relogbtn" onclick="relogBot()"
     title="Clean logout → re-login in place, re-applying the same script. The recovery for a wedged bot.
 ⚠️ The bot 404s for a few seconds while the handle is replaced, and its ring buffer RESTARTS EMPTY — copy anything you need from the log first.">relog</button>
+  <button class="mini" id="saybtn" onclick="toggleAnnounce()"
+    title="Narrate what the bot is doing into GAME CHAT: phase and tactic changes (chase / kite / shed / retaliate)
+and every cast failure with the distance the bot BELIEVED at the time.
+Visible to other players and rate-limited server-side, so it is for watching, not for leaving on.">say: ?</button>
   <label>token <input id="tok" type="password" size="16" placeholder="bearer"></label>
   <label>log level
     <select id="lvl"><option>note</option><option selected>info</option><option>verbose</option></select>
@@ -266,7 +270,10 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const api = (p, q={}, method='GET') => {
+// body is optional and additive: every existing caller passes at most three arguments, and a POST with no body
+// still behaves exactly as before. Without it a toggle can only ever send its default, i.e. it can turn a thing
+// ON and never off.
+const api = (p, q={}, method='GET', body=null) => {
   // The picker is populated asynchronously, so the first tick can fire before any bot is selected.
   // Return a not-ok response rather than requesting /api/bots//metrics, which 404s and paints an error
   // over a page that is merely still starting up.
@@ -275,7 +282,9 @@ const api = (p, q={}, method='GET') => {
   const u = new URL(`/api/bots/${encodeURIComponent(who)}${p}`, location.origin);
   for (const [k,v] of Object.entries(q || {})) if (v !== undefined && v !== null && v !== '') u.searchParams.set(k,v);
   const tok = $('#tok').value.trim();
-  return fetch(u, { method, headers: tok ? { Authorization:'Bearer '+tok } : {} });
+  const headers = tok ? { Authorization:'Bearer '+tok } : {};
+  if (body !== null && body !== undefined) headers['Content-Type'] = 'application/json';
+  return fetch(u, { method, headers, body: (body === null || body === undefined) ? undefined : JSON.stringify(body) });
 };
 const num = v => v === null || v === undefined ? '—'
   : (typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : v);
@@ -1167,6 +1176,11 @@ function applyStream(msg) {
     }
     // THE MAP HEADER, from the self sample. It carries both halves — the code and the display name — so the header
     // renders fully without waiting for a poll or for the next one-shot map event.
+    // Keep the toggle honest: the bot is the authority on whether it is narrating, not this page. This also makes
+    // the button correct after a reconnect, where the setting used to silently revert without the UI noticing.
+    if (msg.self && msg.self.announcing !== undefined && msg.self.announcing !== announcing) {
+      paintAnnounce(!!msg.self.announcing);
+    }
     if (msg.self && msg.self.map) {
       setMapHeader(msg.self.map, msg.self.mapDisplay, msg.self.travelTo, msg.self.travelToDisplay);
     }
@@ -1479,6 +1493,28 @@ function focusLine(f) {
 // driver's HARD-WEDGE watchdog does automatically after 150s of frozen position AND exp; this is the
 // manual handle for when a human can see it is stuck before the watchdog does.
 // Confirm first — a relog costs the ring buffer (new handle, new buffer) and ~30s of play.
+// CHAT NARRATION TOGGLE. The label always shows the CURRENT state, refreshed from the self sample, so it cannot
+// drift out of sync with the bot — including after a reconnect, where this setting used to silently revert.
+let announcing = null;
+function paintAnnounce(on) {
+  announcing = on;
+  const b = $("#saybtn");
+  if (!b) return;
+  b.textContent = on === null ? "say: ?" : (on ? "say: ON" : "say: off");
+  b.style.color = on ? "var(--ok)" : "";
+}
+async function toggleAnnounce() {
+  const id = $("#bot").value;
+  if (!id) return;
+  try {
+    const r = await api("/announce", {}, "POST", { enabled: !announcing });
+    if (!r.ok) { toast("goal", [id, "say toggle FAILED", `HTTP ${r.status}`]); return; }
+    const d = await r.json();
+    paintAnnounce(!!d.announcing);
+    toast("hand", [id, `chat narration ${d.announcing ? "ON" : "off"}`, "persists across reconnects"]);
+  } catch (e) { toast("goal", [id, "say toggle FAILED", e.message]); }
+}
+
 async function relogBot() {
   const id = $('#bot').value;
   if (!id) return;
