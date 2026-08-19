@@ -2166,27 +2166,35 @@ public sealed class BotManager : IAsyncDisposable
     {
         handle.SetPosition(h.X, h.Y);
         handle.BumpMapChange(); // wake any travel loop waiting on a transition
-        // Resolve the destination map name
-        var name = Catalog.NameFor(h.MapId);
-        var nameSource = name is null ? null : "catalog";
-        // WHERE THE NAME CAME FROM IS THE WHOLE DIAGNOSIS. PendingDestMap is where we INTENDED to go, not where
-        // the server put us -- and Catalog.Learn() makes that guess permanent for this map id. On a
-        // revive-in-place the intent can be stale, which is how the bot ends up naming itself one map while
-        // standing on another and pathfinding against the wrong .shbd.
+        // GROUND TRUTH FIRST. The wire carries a map ID; MapInfo.shn is the client's own ID -> MapName table and it
+        // covers every id the server sends (138 rows, verified 2026-08-19 against the ids seen live: 6/9/10/45/75/150).
+        // This order used to be inverted -- a learned CACHE, then our own travel INTENT, and only then the table --
+        // which let a guess outrank the answer. That is the whole shape of the nine-hour wedge: the intent branch also
+        // called Catalog.Learn(), baking the wrong id->name pair in for the life of the process, after which every
+        // later arrival at that id resolved to the wrong name via "catalog" and pathfinding loaded the wrong .shbd.
+        // Nothing short of a relog could clear it. An intent can never be more authoritative than the table.
+        var name = ClientData?.MapName(h.MapId);
+        var nameSource = name is null ? null : "MapInfo.shn";
+        // The learned cache is now only for ids MapInfo.shn does NOT know.
+        if (name is null && Catalog.NameFor(h.MapId) is { } cached)
+        {
+            name = cached;
+            nameSource = "catalog";
+        }
+        // LAST RESORT: where we INTENDED to go, which is not the same as where the server put us. Only reachable for an
+        // id no client table knows, and it is still learned so the next arrival is at least consistent -- but it can no
+        // longer overwrite a name the client data could have supplied.
         if (name is null && handle.PendingDestMap is { } pending)
         {
             name = pending;
             nameSource = "PENDING-INTENT";
             Catalog.Learn(h.MapId, pending);
         }
-        // Resolve the real short-name from the client MapInfo table (the wire only carries the map id; the client looks…
-        if (name is null && ClientData?.MapName(h.MapId) is { } clientName)
-        {
-            name = clientName;
-            nameSource = "MapInfo.shn";
-            Catalog.Learn(h.MapId, clientName);
-        }
-        // The authoritative answer, computed even when another source won, so a disagreement is READABLE.
+        // Keep the cache in step with the table so IdFor() reverse lookups still work.
+        if (nameSource == "MapInfo.shn" && name is { } clientName) Catalog.Learn(h.MapId, clientName);
+        // INVARIANT GUARD, not a diagnostic: after the reordering above this can only fire if a name came from the cache
+        // or the intent for an id MapInfo.shn also knows -- which the order now makes impossible. It stays because it is
+        // the assertion that the order is still right, and it is free.
         var truth = ClientData?.MapName(h.MapId);
         if (truth is not null && name is not null && !string.Equals(truth, name, StringComparison.OrdinalIgnoreCase))
             handle.Log(BotLogLevel.Note,
@@ -2392,7 +2400,13 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SeedStats(entry.Stats);   // STR/END/.../DEF/M.Def for the watch panel
                 zoneView.SeedItems(entry.Items);
                 zoneView.SeedQuests(entry.DoneQuests, entry.ActiveQuests, entry.ReadQuests);
-                handle.SetCurrentMap(currentMap);
+                // MAP IDENTITY AT ZONE-ENTER. The name here comes from the WM avatar list (loginmap) because
+                // MAP_LOGIN_ACK carries no map at all -- PROTO_NC_CHAR_MAPLOGIN_ACK is {charhandle, CHAR_PARAMETER_DATA,
+                // logincoord} and CHAR_PARAMETER_DATA has no map field (PDB extract, checked 2026-08-19). So resolve the
+                // id from the name via MapInfo.shn rather than leaving CurrentMapId null for the whole session: without
+                // it, "which map does the bot think it is on, and does the server agree" is unanswerable exactly when
+                // the bot is wedged and has had no recent transition to re-derive it.
+                handle.SetCurrentMap(currentMap, ClientData?.MapId(currentMap), "WM-loginmap");
                 zoneView.MapChanged += h =>
                 {
                     handle.Emit(new BotEvent(BotEventKind.MapChanged, h));

@@ -305,6 +305,20 @@ public sealed class ClientData
         return string.IsNullOrEmpty(n) ? null : n;
     }
 
+    /// <summary>Resolve a short map name back to its server map id. MapInfo.shn is the SAME table the client uses in
+    /// both directions, so a name we were handed (e.g. the WM avatar list's loginmap) can always be turned into the id
+    /// the wire speaks in -- which is what makes a map-identity claim checkable instead of merely asserted.</summary>
+    public int? MapId(string? mapName)
+    {
+        if (string.IsNullOrEmpty(mapName)) return null;
+        var t = Table("MapInfo");
+        if (t is null) return null;
+        foreach (var row in t.Rows)
+            if (string.Equals(GetStr(row, "MapName"), mapName, StringComparison.OrdinalIgnoreCase))
+                return GetInt(row, "ID");
+        return null;
+    }
+
     /// <summary>The map's DISPLAY name — MapInfo.shn's Name column</summary>
     public string? MapDisplayName(string? mapCode)
     {
