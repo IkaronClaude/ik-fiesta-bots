@@ -1072,6 +1072,24 @@ public sealed class BotApi
         return planner.Request(map, (uint)x, (uint)y) != Navigation.NavPlanner.Verdict.Unreachable;
     }
 
+    /// <summary>Is this world point on WALKABLE ground on the current map? O(1) grid lookup, NO side effects.
+    /// Exists because walkTo() cannot answer it any more and scripts were using it as if it could. Since pathfinding
+    /// went asynchronous, walkTo returns NavPlanner.Verdict != Unreachable, and a fresh request is Pending -- so it
+    /// returns TRUE for a target in the middle of a wall, because the search has not run yet. The shed's escape-bearing
+    /// sweep probed bearings by CALLING walkTo and treating a truthy return as "walkable", so it always accepted the
+    /// first bearing it tried and fled into whatever was there. Measured at the 09:02:44 death on EldGbl02: the bot at
+    /// (10828,6053) sat in a pocket open to the west, and both the direct escape (11485,5438) and the +45 deg fallback
+    /// (11727,6084) were BLOCKED tiles with no path; it died on that exact spot with moving=false on every SHED line.
+    /// This is a tile test, not a reachability test -- it will not catch a walkable point behind a wall, but it does
+    /// catch fleeing INTO one, and it costs nothing to ask.</summary>
+    public bool isWalkable(double x, double y)
+    {
+        var grid = _handle.CurrentMap is { } map ? _mgr.GridProvider?.Invoke(map) : null;
+        if (grid is null) return true;   // no grid loaded: the server governs walkability, so do not veto the move
+        var (tx, ty) = grid.WorldToTile((uint)Math.Max(0, x), (uint)Math.Max(0, y));
+        return grid.IsWalkableTile(tx, ty);
+    }
+
     /// <summary>True while a pathfind for this bot is still running, so a script can wait instead of re-asking.</summary>
     public bool pathPending() => _handle.NavPlanner?.Busy ?? false;
 
