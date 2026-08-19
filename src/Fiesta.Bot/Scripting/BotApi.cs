@@ -780,12 +780,36 @@ public sealed class BotApi
                 continue;
             }
             e["missing"] = false;
+            // FULL FIELD PARITY WITH bot.quest(id) is deliberate: it lets Lua alias every quest() call site onto this
+            // cache instead of converting them one at a time. A partial record would silently return nil for whatever
+            // a caller happened to need, which is a far worse failure than an extra field on a table built once.
             e["exp"] = q.ExpReward;
             e["questType"] = q.QuestType;
             e["repeatable"] = q.Repeatable;
             e["objectiveMob"] = q.ObjectiveMob;
             e["startNpc"] = q.StartNpc;
             e["turnInNpc"] = q.TurnInNpc;
+            e["minLevel"] = q.MinLevel; e["maxLevel"] = q.MaxLevel; e["isNeedLevel"] = q.IsNeedLevel;
+            e["endNeedsLevel"] = q.EndNeedsLevel; e["endLevel"] = q.EndLevel;
+            e["class"] = q.Class; e["linkedQuest"] = q.LinkedQuest;
+            e["needsNpc"] = q.NeedsNpc; e["needsItem"] = q.NeedsItem; e["needsItemId"] = q.NeedsItemId;
+            e["needsClass"] = q.NeedsClass; e["isWaitListView"] = q.IsWaitListView;
+            e["remoteAcceptable"] = q.RemoteAcceptable; e["questListVisible"] = q.IsWaitListView;
+            e["remoteHandIn"] = q.RemoteHandIn;
+            e["region"] = q.Region;
+            e["startScript"] = q.StartScript; e["actionScript"] = q.ActionScript; e["finishScript"] = q.FinishScript;
+            var npcs = NewTable(); var ni = 1;
+            foreach (var n in q.Npcs) npcs[ni++] = n.Id;
+            e["npcs"] = DynValue.NewTable(npcs);
+            var rewards = NewTable(); var ri = 1;
+            foreach (var r in q.Rewards)
+            {
+                var re = NewTable();
+                re["method"] = r.Method; re["type"] = r.Type; re["itemId"] = r.ItemId;
+                re["itemCount"] = r.ItemCount; re["amount"] = r.Amount;
+                rewards[ri++] = DynValue.NewTable(re);
+            }
+            e["rewards"] = DynValue.NewTable(rewards);
             var objs = NewTable(); var oi = 1;
             var mobIds = new List<int>();
             foreach (var o in q.Objectives)
@@ -896,6 +920,12 @@ public sealed class BotApi
                 foreach (var itemId in wantItems) items[itemId] = have.TryGetValue(itemId, out var c) ? c : 0;
             }
         }
+        // The COMPLETED set, so questDone(id) can be answered without a crossing. It is a plain id->true map; a quest
+        // absent from it is simply not done. Rebuilt per pulse because completions land mid-session -- that is the
+        // whole reason it cannot live in the static cache.
+        var done = NewTable();
+        if (v is not null) foreach (var id in v.DoneQuests) done[id] = true;
+        root["done"] = DynValue.NewTable(done);
         root["quests"] = DynValue.NewTable(quests);
         root["mobs"] = DynValue.NewTable(mobs);
         root["items"] = DynValue.NewTable(items);
