@@ -93,6 +93,9 @@ public sealed class BotHandle
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, double> _phaseSeconds = new();
     private string? _currentPhase;
     private DateTime _phaseSinceUtc = DateTime.UtcNow;
+    /// <summary>Last moment phase time was ACCOUNTED. Separate from _phaseSinceUtc (when the phase began) because
+    /// NotePhase is called every tick, so the accumulator needs a delta, not the time since the phase started.</summary>
+    private DateTime _phaseTickUtc = DateTime.UtcNow;
     private readonly object _phaseGate = new();
 
     /// <summary>Seconds spent in each driver phase since this bot started, newest total wins</summary>
@@ -134,17 +137,25 @@ public sealed class BotHandle
             var now = DateTime.UtcNow;
             if (_currentPhase is { } prev)
             {
-                var d = (now - _phaseSinceUtc).TotalSeconds;
+                // TWO CLOCKS, DELIBERATELY. _phaseSinceUtc is when this phase STARTED (the PhaseVisit record needs
+                // it); _phaseTickUtc is when we last accounted. Adding "now - phaseStart" on every call was adding
+                // the ENTIRE elapsed time of the phase once per tick instead of the delta, so a phase lasting T with
+                // N ticks accumulated ~N*T/2 rather than T -- quadratic in duration. At ~10 ticks/sec that inflates
+                // a 60s phase to hours, and it inflates the LONGEST phase worst, which is exactly the one being
+                // investigated. Every TIME-BUDGET percentage read before this fix was distorted the same way.
+                var d = (now - _phaseTickUtc).TotalSeconds;
                 if (d > 0 && d < 3600) _phaseSeconds.AddOrUpdate(prev, d, (_, v) => v + d);
+                var sinceStart = (now - _phaseSinceUtc).TotalSeconds;
                 // Record the VISIT only when the phase actually changes — NotePhase is called every tick to keep the open phase'…
                 if (!string.Equals(prev, phase, StringComparison.Ordinal))
                 {
-                    _phaseLog.Add(new PhaseVisit(prev, _phaseSinceUtc, d));
-                    NoteEvent("phase", $"{prev} -> {phase} after {d:F1}s");
+                    _phaseLog.Add(new PhaseVisit(prev, _phaseSinceUtc, sinceStart));
+                    NoteEvent("phase", $"{prev} -> {phase} after {sinceStart:F1}s");
                     if (_phaseLog.Count > MaxPhaseVisits) _phaseLog.RemoveRange(0, _phaseLog.Count - MaxPhaseVisits);
                 }
             }
             if (!string.Equals(_currentPhase, phase, StringComparison.Ordinal)) _phaseSinceUtc = now;
+            _phaseTickUtc = now;   // accounted up to here, whether or not the phase changed
             _currentPhase = phase;
             // Flush at most every 30s: frequent enough that a pod kill loses seconds, not hours, and rare enough that a per-…
             if ((now - _phaseFlushUtc).TotalSeconds >= 30) { _phaseFlushUtc = now; flush = true; }

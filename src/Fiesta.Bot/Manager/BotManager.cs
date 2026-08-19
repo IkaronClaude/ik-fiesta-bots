@@ -2198,10 +2198,16 @@ public sealed class BotManager : IAsyncDisposable
             }
             return ActionResult.Sent;   // treat as handled: the caller must not escalate/re-path on this
         }
+        // DO NOT MOVE THE BELIEF BEFORE CHECKING WE CAN ACTUALLY SEND. BeginMove starts an interpolated segment --
+        // Position now walks toward the destination on a timer -- and ActAsync only checks Phase/ZoneSession AFTER,
+        // so every walk issued while not in zone (reconnect, handoff, dead link) still teleported the believed
+        // position to the target. That belief feeds cast-range checks, facing, MOVEFAIL wall-learning and the
+        // motionless watchdog, and nothing corrects it: proven on the wire 2026-08-19 when the bot believed it was
+        // 35u from a mob the client showed 144u away, a 108u error, and every cast was refused 0x0FCA.
+        if (!_bots.TryGetValue(id, out var mh)) return ActionResult.NotFound;
+        if (mh.Phase != BotPhase.InZone || mh.ZoneSession is null) return ActionResult.NotInZone;
         // THE CALLER'S `from` IS NOT TRUSTED (2026-08-13)
-        var live = _bots.TryGetValue(id, out var mh)
-            ? mh.BeginMove(toX, toY, mh.WalkSpeed > 0 ? mh.WalkSpeed : 120.0)
-            : (X: fromX, Y: fromY);
+        var live = mh.BeginMove(toX, toY, mh.WalkSpeed > 0 ? mh.WalkSpeed : 120.0);
         var drift = Math.Sqrt(Math.Pow(live.X - (double)fromX, 2) + Math.Pow(live.Y - (double)fromY, 2));
         var label = drift > 8
             ? $"walk ({live.X},{live.Y})->({toX},{toY}) [caller said from ({fromX},{fromY}), drift {drift:F0}u]"
@@ -2923,6 +2929,10 @@ public sealed class BotManager : IAsyncDisposable
                 // TravelCts is deliberately NOT cancelled here: RunTravelAsync is written to survive a handoff and
                 // waits for the zone to come back, which is the whole point of the re-entry gate in 355b51c.
                 handle.WalkCts?.Cancel();
+                // FollowAsync has the SAME shape and was missed: it captures `session` once and links its CTS to the
+                // BOT lifetime, so after a reconnect it keeps writing MOVERUN into the disposed connection for as
+                // long as the followed player stays in view.
+                handle.FollowCts?.Cancel();
 
                 // A captured cross-server handoff (and not a real stop) means reconnect to the carried endpoint with its WM hand…
                 if (handoff is { IsCrossServer: true } ho && ho.Ip is { } ip && !ct.IsCancellationRequested)
