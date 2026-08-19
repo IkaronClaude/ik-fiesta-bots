@@ -137,7 +137,7 @@ public sealed class BotScriptRunner : IDisposable
     }
 
     /// <summary>Log where a slow tick went, worst-first.</summary>
-    private void ReportProfile(ProfileSnapshot p, double pauseMs, (int G0, int G1, int G2) gc)
+    private void ReportProfile(ProfileSnapshot p, double pauseMs, (int G0, int G1, int G2) gc, double allocKb)
     {
         var top = string.Join("  ", p.Rows.Take(8)
             .Select(r => $"{r.Name}={r.InMs:F0}+{r.GapMs:F0}ms/{r.Calls}"));
@@ -146,7 +146,7 @@ public sealed class BotScriptRunner : IDisposable
         // and no amount of caching bot.* calls will move it.
         _handle.Log(BotLogLevel.Note,
             $"[prof] TICK {p.TickMs:F0}ms = {p.InMs:F0}ms in {p.Calls} bot.* calls + {p.GapMs:F0}ms lua | " +
-            $"gc={pauseMs:F0}ms/{gc.G0}/{gc.G1}/{gc.G2} | name=inCall+luaBefore/calls: {top}");
+            $"gc={pauseMs:F0}ms/{gc.G0}/{gc.G1}/{gc.G2} alloc={allocKb:F0}KB | name=inCall+luaBefore/calls: {top}");
     }
 
     private void OnEvent(BotEvent e)
@@ -240,10 +240,16 @@ public sealed class BotScriptRunner : IDisposable
                     // instead of argued about: if pauseMs covers the overshoot, the tick is not slow, it is stopped.
                     var gcPause0 = GC.GetTotalPauseDuration();
                     var gc0 = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
+                    // HOW MUCH THE TICK ALLOCATES. A gen0/gen1 collection costing 170-493ms is not explained by the
+                    // GC mode -- it is explained by how much garbage it has to walk. This is the thread-local counter,
+                    // so it measures THIS tick on THIS thread and nothing else, and it is a plain read of a per-thread
+                    // field (no allocation, no stop-the-world).
+                    var alloc0 = GC.GetAllocatedBytesForCurrentThread();
                     var swTick = System.Diagnostics.Stopwatch.StartNew();
                     SafeCall("tick");
                     swTick.Stop();
                     var pauseMs = (GC.GetTotalPauseDuration() - gcPause0).TotalMilliseconds;
+                    var allocKb = (GC.GetAllocatedBytesForCurrentThread() - alloc0) / 1024.0;
                     var gcN = (GC.CollectionCount(0) - gc0.Item1, GC.CollectionCount(1) - gc0.Item2,
                                GC.CollectionCount(2) - gc0.Item3);
                     _tickMsTotal += swTick.Elapsed.TotalMilliseconds;
@@ -253,7 +259,7 @@ public sealed class BotScriptRunner : IDisposable
                         if (p is not null)
                         {
                             _profile = p;
-                            if (swTick.ElapsedMilliseconds > SlowTickMs) ReportProfile(p, pauseMs, gcN);
+                            if (swTick.ElapsedMilliseconds > SlowTickMs) ReportProfile(p, pauseMs, gcN, allocKb);
                         }
                     }
                     catch { /* profiling must never break the tick */ }
