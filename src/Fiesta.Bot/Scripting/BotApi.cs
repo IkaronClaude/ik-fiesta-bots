@@ -932,6 +932,15 @@ public sealed class BotApi
         return DynValue.NewTable(root);
     }
 
+    /// <summary>Narrate a decision into GAME CHAT, if announcing is switched on for this bot (POST
+    /// /api/bots/{id}/announce). A no-op when it is off, so call sites can be left in place permanently.
+    /// Rate-limited and de-duplicated host-side: a tactic that re-asserts every tick says nothing new, and a chat
+    /// flood gets dropped by the server, which is worse than silence because it reads as "that never happened".</summary>
+    public void announce(string text) => _mgr.Announce(_handle, text ?? "");
+
+    /// <summary>Is chat narration on? Lets a script skip building a message it would not send.</summary>
+    public bool announcing() => _handle.AnnounceChat;
+
     /// <summary>This script's tick counter. The identity of the CURRENT tick, so a script can cache something for
     /// exactly one tick. bot.now() cannot do that job: it advances within a tick, so a cache keyed on it misses on
     /// every call and quietly does nothing.</summary>

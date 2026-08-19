@@ -388,6 +388,23 @@ public sealed class BotManager : IAsyncDisposable
     private static readonly ushort OpActChangeMode =
         (ushort)(((int)ProtocolCommand.Act << 10) | (int)ActOpcode.ChangemodeReq);
 
+    /// <summary>Say something in game chat IF announcing is switched on for this bot. Everything that narrates goes
+    /// through here so there is exactly one rate limit: the server will throttle or drop a chat flood, and a dropped
+    /// line is worse than no line because it reads as "that never happened". Identical consecutive text is also
+    /// suppressed -- a tactic that re-asserts every tick would otherwise bury the change you are watching for.</summary>
+    public void Announce(BotHandle handle, string text)
+    {
+        if (!handle.AnnounceChat || string.IsNullOrWhiteSpace(text)) return;
+        var now = DateTime.UtcNow;
+        if ((now - handle.LastAnnounceUtc).TotalMilliseconds < AnnounceMinGapMs) return;
+        if (string.Equals(text, handle.LastAnnounceText, StringComparison.Ordinal)) return;
+        handle.LastAnnounceUtc = now; handle.LastAnnounceText = text;
+        _ = SayAsync(handle.Id, text.Length > 90 ? text[..90] : text);
+    }
+
+    /// <summary>Minimum gap between chat announcements. Chat is rate-limited server-side and shared with real players.</summary>
+    private const int AnnounceMinGapMs = 1200;
+
     /// <summary>Cast a skill on a target zone handle, replaying the client's target → battle-mode → (face/stop) → cast sequenc…</summary>
     public async Task<ActionResult> CastAsync(string id, ushort skill, ushort target, bool? stopFirst = null, CancellationToken ct = default)
     {
@@ -2085,6 +2102,7 @@ public sealed class BotManager : IAsyncDisposable
         handle.WalkCts?.Cancel();
         handle.WalkCts = walkCts;
         handle.WalkPlan = waypoints;   // so the watch UI can draw where we are trying to GO, not just where we are
+        handle.WalkPlanIndex = 1;      // heading toward waypoint 1; waypoint 0 is where we started
         var ct = walkCts.Token;
         _ = Task.Run(async () =>
         {
@@ -2095,6 +2113,7 @@ public sealed class BotManager : IAsyncDisposable
                 {
                     var (fx, fy) = waypoints[i];
                     var (tx, ty) = waypoints[i + 1];
+                    handle.WalkPlanIndex = i + 1;   // the waypoint we are walking toward right now
                     var segDist = Math.Sqrt(Math.Pow((double)tx - fx, 2) + Math.Pow((double)ty - fy, 2));
                     var subSteps = Math.Max(1, (int)Math.Ceiling(segDist / MaxStepFor(unitsPerSec)));
                     double cx = fx, cy = fy;
@@ -2637,6 +2656,11 @@ public sealed class BotManager : IAsyncDisposable
                         $"[castfail] 0x{reason:X4} ({ZoneView.CastFailReason.Describe(reason)}) " +
                         $"— dist={g.Dist:F0} reach={g.Range:F0} " +
                         $"offBy={(g.OffByDeg < 0 ? "n/a" : $"{g.OffByDeg:F0}°")} arc={g.ArcDeg}° ({g.Note})");
+                    // Narrate the failure in game chat when watching. It carries the distance WE BELIEVED at the
+                    // time, which is the number under suspicion: the operator can see it next to where the
+                    // character actually is on screen.
+                    Announce(handle, $"cast FAIL 0x{reason:X4} d={(g.Dist < 0 ? "?" : g.Dist.ToString("F0"))}u"
+                        + (g.OffByDeg >= 0 ? $" off{g.OffByDeg:F0}°" : ""));
                     // NON-BATTLE MODE means the server disagrees with our belief, whatever we think. Drop it so the
                     // next EnsureBattleModeAsync re-sends CHANGEMODE_REQ instead of skipping it -- this is the
                     // result-packet feedback that keeps the optimistic model honest when something we do not model

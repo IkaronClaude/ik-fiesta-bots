@@ -419,6 +419,18 @@ public sealed class BotHandle
     /// and handed to WalkPath — this just keeps hold of it instead of dropping it on the floor.</summary>
     public IReadOnlyList<(uint X, uint Y)>? WalkPlan { get; internal set; }
 
+    /// <summary>Index of the waypoint we are currently walking TOWARD. Everything before it is already behind us.
+    /// Without this a viewer can only draw the WHOLE plan, which renders as a line from the bot back to the route's
+    /// origin plus every step already taken -- the opposite of the question being asked, which is "where next".</summary>
+    public int WalkPlanIndex { get; internal set; }
+
+    /// <summary>Narrate what the bot is doing into GAME CHAT, so it can be watched in the client instead of only in
+    /// the tail. OFF by default and deliberately so: it is visible to other players and the server rate-limits chat,
+    /// so it is a debugging aid you switch on while watching, not a permanent mode.</summary>
+    public bool AnnounceChat { get; set; }
+    internal DateTime LastAnnounceUtc { get; set; } = DateTime.MinValue;
+    internal string LastAnnounceText { get; set; } = "";
+
     internal CancellationTokenSource? WalkCts { get; set; }
 
     /// <summary>Cancellation for the currently-running follow loop (chase a target player), if any</summary>

@@ -404,6 +404,21 @@ public static class BotEndpoints
             + "disqualifier (level_quest.lua: risky = deprioritized or swarmRisk). Deprioritization is the only durable mark.")
         ;
 
+        group.MapPost("/{id}/announce", (string id, AnnounceRequest? req) =>
+        {
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            bot.AnnounceChat = req?.Enabled ?? true;
+            bot.LogOperatorAction($"[announce] chat narration {(bot.AnnounceChat ? "ON" : "OFF")}");
+            return Results.Ok(new { id, announcing = bot.AnnounceChat });
+        })
+        .WithSummary("Narrate what the bot is doing into GAME CHAT, so it can be watched in the client")
+        .WithDescription("Body {\"enabled\":true|false} (default true). Says cast failures (with the distance the "
+            + "bot BELIEVED at the time) and tactic changes — chase / kite / shed / retaliate / travel. OFF by "
+            + "default: chat is visible to other players and rate-limited server-side, so this is a debugging aid to "
+            + "switch on while watching, not a permanent mode. Announcements are throttled and de-duplicated.")
+        ;
+
         group.MapPost("/{id}/packetlog", (string id, PacketLogRequest? req) =>
         {
             var enabled = req?.Enabled ?? true;
@@ -1474,8 +1489,12 @@ public static class BotEndpoints
             WalkTo = bot.WalkPlan is { Count: > 0 } plan
                 ? new { X = (double)plan[^1].X, Y = (double)plan[^1].Y }
                 : null,
+            // ONLY THE PART STILL AHEAD. Publishing the whole plan drew a line from the bot back to the route's
+            // ORIGIN and left every already-walked leg on screen, which reads as the bot heading the wrong way.
+            // WalkPlanIndex is the waypoint currently being walked toward, so the tail from there is what remains.
             WalkPath = bot.WalkPlan is { Count: > 1 } wpath
-                ? wpath.Select(w => new[] { (double)w.X, (double)w.Y }).ToArray()
+                ? wpath.Skip(Math.Clamp(bot.WalkPlanIndex, 0, wpath.Count - 1))
+                       .Select(w => new[] { (double)w.X, (double)w.Y }).ToArray()
                 : null,
         };
     }
@@ -1648,6 +1667,12 @@ public sealed record SayRequest
 
 /// <summary>Body for /packetlog. Enabled true (default) starts the dump, false stops it</summary>
 public sealed record PacketLogRequest
+{
+    public bool? Enabled { get; init; }
+}
+
+/// <summary>Body for the chat-narration toggle. Omitting Enabled turns it ON, matching the packetlog toggle.</summary>
+public sealed record AnnounceRequest
 {
     public bool? Enabled { get; init; }
 }
