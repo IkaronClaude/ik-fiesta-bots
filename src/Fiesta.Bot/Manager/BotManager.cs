@@ -2447,12 +2447,18 @@ public sealed class BotManager : IAsyncDisposable
                 handle.SetCurrentMap(currentMap, ClientData?.MapId(currentMap), "WM-loginmap");
                 zoneView.MapChanged += h =>
                 {
-                    handle.Emit(new BotEvent(BotEventKind.MapChanged, h));
                     // A map change ends combat server-side: battle mode and any running swing stream are gone, so re-assert them on…
                     handle.InBattleMode = false;
                     handle.BashTarget = 0;
                     if (handle.ZoneView is { } zvm) zvm.BashActive = false;
                     OnMapChanged(handle, h, Log);
+                    // EMIT AFTER OnMapChanged, NOT BEFORE. Subscribers react by re-reading handle state -- the /stream
+                    // pump answers this event by resending its FULL state, which reads bot.CurrentMap. Emitting first
+                    // meant that resend captured the OLD map name and overwrote the correct one the event itself had
+                    // just delivered, so the watch UI drew the previous map's art and filtered every NPC out of the
+                    // frame (its npc list is gated on lastEnt.map === drawnMap). The event is the same either way; only
+                    // the order of "tell them" and "be ready to be asked" changes.
+                    handle.Emit(new BotEvent(BotEventKind.MapChanged, h));
                     if (h.IsCrossServer) { handoff = h; zoneCts.Cancel(); } // break to reconnect
                 };
                 zoneView.MoveFailed += pos =>

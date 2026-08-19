@@ -1458,6 +1458,13 @@ public static class BotEndpoints
             InCombat = zv?.InCombat ?? false,
             Aggressors = zv?.Aggressors.Count ?? 0,
             Dead = zv?.Dead ?? false,
+            // THE MAP RIDES WITH SELF so the UI can SELF-HEAL. The map used to reach the page only as a
+            // one-shot event; miss one, or let a full-state resend overwrite it with a staler value, and
+            // the page stayed on the wrong map indefinitely -- drawing the old art and filtering every NPC
+            // out, because its npc list is gated on lastEnt.map === drawnMap. self is re-sent whenever it
+            // changes, so carrying the map here means any single lost or clobbered update heals on the
+            // next sample instead of persisting until a reload.
+            Map = bot.CurrentMap,
             // WHERE WE ARE TRYING TO GO. WalkTo is the final waypoint (the destination); WalkPath is the whole
             // simplified route, so a detour around geometry reads as a detour instead of the bot wandering off.
             WalkTo = bot.WalkPlan is { Count: > 0 } plan

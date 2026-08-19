@@ -1135,6 +1135,14 @@ function applyStream(msg) {
   } else if (msg.t === 'self') {
     noteSelfMove(msg.self, lastEnt.self);
     lastEnt.self = msg.self;
+    // SELF-HEAL THE MAP. The map used to arrive only as a one-shot 'map' event, so a single missed or
+    // overwritten update left this page on the wrong map forever: the combat canvas kept drawing the old
+    // art and every NPC vanished, because the npc list is gated on lastEnt.map === drawnMap. self is
+    // re-sent whenever it changes and now carries the map, so a disagreement corrects itself here.
+    if (msg.self && msg.self.map && msg.self.map !== lastEnt.map) {
+      lastEnt.map = msg.self.map; lastEnt.mobs = []; lastEnt.npcs = []; anim.clear();
+      $('#mapname').textContent = `· ${msg.self.map}`;
+    }
   } else if (msg.t === 'map') {
     // Every handle we hold belongs to the old map, and so do the NPC markers and the background art. Clear
     // and let the login burst refill it — the map NAME comes from the handoff itself, so the art switches
