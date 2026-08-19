@@ -2905,6 +2905,16 @@ public sealed class BotManager : IAsyncDisposable
                 }
                 await zoneRun; // let the zone loop finish (naturally, or via the cancel above)
 
+                // KILL THE IN-FLIGHT WALK WITH THE SESSION IT WAS SENDING ON. WalkPath streams MOVERUN on a
+                // background task whose CTS is linked to the BOT lifetime, not the zone session -- so a pod roll or
+                // any reconnect left it stepping into a disposed connection:
+                //   [conn] SEND AFTER DISPOSE op=0x2019 -- caller is using a dead connection
+                //   walk-path error: send op=0x2019 after dispose
+                // A walk is inherently per-session (it is a stream of moves on THAT link), so it must not outlive it.
+                // TravelCts is deliberately NOT cancelled here: RunTravelAsync is written to survive a handoff and
+                // waits for the zone to come back, which is the whole point of the re-entry gate in 355b51c.
+                handle.WalkCts?.Cancel();
+
                 // A captured cross-server handoff (and not a real stop) means reconnect to the carried endpoint with its WM hand…
                 if (handoff is { IsCrossServer: true } ho && ho.Ip is { } ip && !ct.IsCancellationRequested)
                 {
