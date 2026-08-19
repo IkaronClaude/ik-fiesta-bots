@@ -126,6 +126,36 @@ public static class EventStreamEndpoint
                     resendState = true; Signal();
                     break;
                 }
+                // VITALS AS EVENTS, not as a 2-second poll. HPCHANGE/SPCHANGE already arrive on the wire and the
+                // handle already republishes them; the stream simply never forwarded them, so the UI's health bar
+                // moved on a /metrics poll instead of on the packet that changed it.
+                case BotEventKind.Hp when e.Data is uint hpNow:
+                    Post(new { t = "hp", hp = (int)hpNow, maxHp = bot.ZoneView?.MaxHp ?? 0 }); break;
+                case BotEventKind.Sp when e.Data is uint spNow:
+                    Post(new { t = "sp", sp = (int)spNow, maxSp = bot.ZoneView?.MaxSp ?? 0 }); break;
+                case BotEventKind.SkillLearned when e.Data is Manager.SkillLearnedInfo sl:
+                    Post(new
+                    {
+                        t = "skilllearn",
+                        skillId = sl.SkillId,
+                        level = sl.Level,
+                        passive = sl.Passive,
+                        // Resolve the name here: the page should not have to own a copy of the skill tables, and the
+                        // id alone is unreadable in a feed. ACTIVE and PASSIVE are separate, OVERLAPPING id spaces --
+                        // id 5 is a different skill in each -- so the flag picks the table, it is not cosmetic.
+                        name = sl.Passive ? manager.ClientData?.PassiveSkillName(sl.SkillId)
+                                          : manager.ClientData?.SkillName(sl.SkillId),
+                    });
+                    break;
+                case BotEventKind.SkillCast when e.Data is Manager.SkillCastInfo sc:
+                    Post(new
+                    {
+                        t = "skillcast",
+                        skillId = sc.SkillId,
+                        target = sc.Target,
+                        name = manager.ClientData?.SkillName(sc.SkillId),   // a cast is always an ACTIVE skill
+                    });
+                    break;
                 case BotEventKind.MoveFailed when e.Data is ValueTuple<uint, uint> p:
                     Post(new { t = "movefail", x = p.Item1, y = p.Item2 }); break;
                 case BotEventKind.PlayerLeft when e.Data is ushort h2:

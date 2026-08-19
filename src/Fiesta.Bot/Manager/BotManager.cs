@@ -2603,6 +2603,10 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.LevelChanged += lvl => { handle.SetLevel(lvl); handle.Log($"level up -> {lvl}"); };
                 zoneView.Promoted += cls => { var old = handle.Class; handle.SetClass(cls); handle.Log($"JOB CHANGE: class {old} -> {cls} (PROMOTE_ACK)"); };
                 zoneView.HpChanged += hp => handle.Emit(new BotEvent(BotEventKind.Hp, hp));
+                zoneView.SkillLearned += (id, lvl, passive) =>
+                    handle.Emit(new BotEvent(BotEventKind.SkillLearned, new SkillLearnedInfo(id, lvl, passive)));
+                zoneView.SkillCastStarted += (id, target) =>
+                    handle.Emit(new BotEvent(BotEventKind.SkillCast, new SkillCastInfo(id, target)));
                 zoneView.SpChanged += sp => handle.Emit(new BotEvent(BotEventKind.Sp, sp));
                 zoneView.Damaged += hit => handle.Emit(new BotEvent(BotEventKind.Hit, hit));
                 var botId = handle.Id; // capture for the lambda

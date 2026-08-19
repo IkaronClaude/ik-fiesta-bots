@@ -1321,6 +1321,11 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Raised when the learned-skill list is (re)populated at zone login</summary>
     public event Action? SkillsChanged;
+    /// <summary>(skillId, level, isPassive) — the server CONFIRMED a learn (0x4804). Carries WHICH skill, so a
+    /// viewer can react to the learn itself instead of re-fetching the whole list and diffing it.</summary>
+    public event Action<int, int, bool>? SkillLearned;
+    /// <summary>(skillId, target) — the server confirmed one of OUR casts started and named the skill (0x244E)</summary>
+    public event Action<int, int>? SkillCastStarted;
 
     // ── Personal storage (warehouse) ───────────────────────────────────────────────────────────────
     private (byte Slot, ushort ItemId)[] _storageItems = [];
@@ -2179,6 +2184,9 @@ public sealed class ZoneView : IDisposable
                 }
                 _logLevel?.Invoke(BotLogLevel.Verbose,
                     $"[combat] skill {startedSkill} STARTED (0x244E) — cooldown clock begins");
+                // 0x244E is {skill u16 @0, targetobj u16 @2, index u16 @4} — the target is only present on the
+                // longer form, so report 0 rather than inventing one when the frame is short.
+                SkillCastStarted?.Invoke(startedSkill, ps.Length >= 4 ? (ps[2] | (ps[3] << 8)) : 0);
             }
         }
         else if (op == OpBatLevelup)
@@ -2948,6 +2956,7 @@ public sealed class ZoneView : IDisposable
                     _log?.Invoke($"[ZoneView] {(passive ? "PASSIVE" : "SKILL")} LEARNED: id={skillId} lv{lvl} " +
                                  $"(now know {_skills.Count} active / {_passives.Count} passive)");
                     SkillsChanged?.Invoke();
+                    SkillLearned?.Invoke(skillId, lvl, passive);
                 }
             }
         }

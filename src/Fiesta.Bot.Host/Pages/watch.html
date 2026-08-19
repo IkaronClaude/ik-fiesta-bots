@@ -1143,6 +1143,33 @@ function applyStream(msg) {
       lastEnt.map = msg.self.map; lastEnt.mobs = []; lastEnt.npcs = []; anim.clear();
       $('#mapname').textContent = `· ${msg.self.map}`;
     }
+  } else if (msg.t === 'hp' || msg.t === 'sp') {
+    // VITALS FROM THE PACKET, not from the 2-second /metrics poll. HPCHANGE/SPCHANGE already arrive on the wire and
+    // the handle already republishes them; the stream simply never forwarded them. At 14 ticks/sec a 2s poll can miss
+    // an entire fight. lastLive stays the authority for the rest of that panel -- only the numbers the event actually
+    // carries are patched, and the next poll reconciles everything else.
+    if (lastLive) {
+      if (msg.t === 'hp') { lastLive.hp = msg.hp; if (msg.maxHp) lastLive.maxHp = msg.maxHp; }
+      else { lastLive.sp = msg.sp; if (msg.maxSp) lastLive.maxSp = msg.maxSp; }
+      $('#vitals').innerHTML = vitals(lastLive);
+    }
+    if (lastEnt && lastEnt.self) {
+      if (msg.t === 'hp') { lastEnt.self.hp = msg.hp; if (msg.maxHp) lastEnt.self.maxHp = msg.maxHp; }
+      else { lastEnt.self.sp = msg.sp; if (msg.maxSp) lastEnt.self.maxSp = msg.maxSp; }
+    }
+  } else if (msg.t === 'skillcast') {
+    // The server CONFIRMED this cast started (0x244E), which is the instant its cooldown begins. Start the tile's
+    // sweep from here rather than from whenever the next poll happens to land -- the poll then reconciles it.
+    if (lastLive && lastLive.skills) {
+      const sk = lastLive.skills.find(x => x.id === msg.skillId);
+      if (sk && sk.cooldownMs) { sk.remainingMs = sk.cooldownMs; sk.castAt = Date.now(); skillTiles(lastLive.skills); }
+    }
+  } else if (msg.t === 'skilllearn') {
+    // A learn changes what the bot CAN DO, so it should not wait up to 2s to appear. The event names the skill, so
+    // there is no list-diffing; refresh the panel immediately and let the poll fill in the full record.
+    $('#skhint').textContent = `· learned ${msg.passive ? 'passive' : 'skill'} ${msg.name || ('#' + msg.skillId)}`
+                             + (msg.level ? ` lv${msg.level}` : '') + ' — refreshing';
+    tickMetrics();
   } else if (msg.t === 'map') {
     // Every handle we hold belongs to the old map, and so do the NPC markers and the background art. Clear
     // and let the login burst refill it — the map NAME comes from the handoff itself, so the art switches
@@ -1303,6 +1330,24 @@ function tickCombat() {
   if (!evAlive) pollEntities();
 }
 setInterval(tickCombat, 200);   tickCombat();
+
+// COOLDOWN DECAY, LOCALLY. The sweep used to advance only when /metrics landed, so it stepped in 2-second jumps.
+// Cooldowns are just arithmetic once you know when the cast started, and the cast now arrives as an event -- so run
+// the clock here and keep the poll purely as the reconciler. Re-renders ONLY while something is actually cooling, so
+// an idle page does no work.
+let lastDecayAt = Date.now();
+setInterval(() => {
+  const now = Date.now(), dt = now - lastDecayAt; lastDecayAt = now;
+  if (dt <= 0 || !lastLive || !lastLive.skills) return;
+  let cooling = false;
+  for (const sk of lastLive.skills) {
+    if (sk.remainingMs != null && sk.remainingMs > 0) {
+      sk.remainingMs = Math.max(0, sk.remainingMs - dt);
+      cooling = true;
+    }
+  }
+  if (cooling) skillTiles(lastLive.skills);
+}, 250);
 
 // ── quest board ───────────────────────────────────────────────────────────────────────────────────
 // Progress is the SERVER's credited count, not our kill tally — a mob dying credits nothing if the

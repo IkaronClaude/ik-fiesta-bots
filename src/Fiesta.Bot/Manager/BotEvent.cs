@@ -23,7 +23,18 @@ public enum BotEventKind
     Sp,
     /// <summary>— a combat hit in view (own swing or others')</summary>
     Hit,
+    /// <summary>SkillLearnedInfo — the server CONFIRMED a skill/passive was learned (0x4804)</summary>
+    SkillLearned,
+    /// <summary>SkillCastInfo — the server confirmed one of OUR casts started and named the skill (0x244E)</summary>
+    SkillCast,
 }
+
+/// <summary>A skill the server just confirmed we learned. Passive and active ids are SEPARATE, OVERLAPPING spaces,
+/// so the flag is part of the identity, not a decoration.</summary>
+public sealed record SkillLearnedInfo(int SkillId, int Level, bool Passive);
+
+/// <summary>A cast the server confirmed started (0x244E), with the target it named.</summary>
+public sealed record SkillCastInfo(int SkillId, int Target);
 
 /// <summary>One thing that happened to a bot, carried on the stable hub</summary>
 public sealed record BotEvent(BotEventKind Kind, object? Data);
