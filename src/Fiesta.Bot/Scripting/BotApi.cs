@@ -748,6 +748,154 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>STATIC quest facts for the ids you ASK FOR. Everything here comes from QuestData/MobInfo/MobCoordinate
+    /// and cannot change within a session, so Lua caches it per quest id and never asks twice.
+    /// WHY THE FILTER IS MANDATORY: the point of this API is to move BYTES, not just calls. Passing no ids returns an
+    /// empty table on purpose -- "give me everything" is exactly the shape that made the old code expensive.
+    /// Allocation is ~9.5KB per Lua->C# CROSSING almost regardless of payload (measured 2026-08-19: 848 calls ->
+    /// 8064KB, 935 -> 8892KB, 1004 -> 9882KB; removing 156 calls removed 1.8MB). The scoring loop made ~25 crossings
+    /// per quest over ~40 quests -- ~1,000 crossings and ~9.5MB of garbage per tick, i.e. 2-4 gen0 collections and the
+    /// bulk of the tick. Only the crossing COUNT moves that number.
+    /// Carries DATA, not POLICY: bands, thresholds, blacklists and the tower/solvable rules stay in Lua.</summary>
+    public DynValue questStatics(DynValue ids)
+    {
+        var outT = NewTable();
+        var cd = _mgr.ClientData;
+        if (cd is null || ids is not { Type: DataType.Table } t) return DynValue.NewTable(outT);
+        var mobSeen = new Dictionary<int, DynValue>();
+        foreach (var pair in t.Table.Pairs)
+        {
+            var id = (int)(pair.Value.CastToNumber() ?? -1);
+            if (id < 0) continue;
+            var q = cd.Quest(id);
+            var e = NewTable();
+            e["id"] = id;
+            e["name"] = cd.QuestName(id) ?? ("q" + id);
+            if (q is null)
+            {
+                // ACTIVE on the character but absent from QuestData. Reported rather than skipped -- swallowing it here
+                // would hide a decode gap the Lua already knows how to complain about.
+                e["missing"] = true;
+                outT[id] = DynValue.NewTable(e);
+                continue;
+            }
+            e["missing"] = false;
+            e["exp"] = q.ExpReward;
+            e["questType"] = q.QuestType;
+            e["repeatable"] = q.Repeatable;
+            e["objectiveMob"] = q.ObjectiveMob;
+            e["startNpc"] = q.StartNpc;
+            e["turnInNpc"] = q.TurnInNpc;
+            var objs = NewTable(); var oi = 1;
+            var mobIds = new List<int>();
+            foreach (var o in q.Objectives)
+            {
+                var oe = NewTable();
+                oe["idx"] = oi - 1;                  // wire objIdx is 0-based; oi is Lua's 1-based cursor
+                oe["type"] = o.Type; oe["mob"] = o.Mob; oe["item"] = o.Item; oe["count"] = o.Count;
+                objs[oi++] = DynValue.NewTable(oe);
+                if (o.Mob != 0 && !mobIds.Contains(o.Mob)) mobIds.Add(o.Mob);
+            }
+            e["objectives"] = DynValue.NewTable(objs);
+            if (q.ObjectiveMob > 0 && !mobIds.Contains(q.ObjectiveMob)) mobIds.Add(q.ObjectiveMob);
+            var mobs = NewTable(); var mi = 1;
+            foreach (var mobId in mobIds)
+            {
+                if (!mobSeen.TryGetValue(mobId, out var mv))
+                {
+                    var mt = NewTable();
+                    var info = cd.Mob(mobId);
+                    mt["id"] = mobId;
+                    mt["level"] = info?.Level ?? -1;
+                    mt["maxHp"] = info?.MaxHp ?? -1;
+                    mt["grade"] = info?.GradeType ?? -1;
+                    // Every map this mob actually SPAWNS on. Zero-area MobCoordinate rows are quest-log markers, not
+                    // spawns, and are dropped -- the Lua compares this against the current map to decide "local".
+                    var maps = NewTable(); var si = 1;
+                    foreach (var l in cd.MobCoordinatesAll(mobId))
+                        if ((long)l.Width * l.Height > 0) maps[si++] = l.Map;
+                    mt["spawnMaps"] = DynValue.NewTable(maps);
+                    mv = DynValue.NewTable(mt);
+                    mobSeen[mobId] = mv;
+                }
+                mobs[mi++] = mv;
+            }
+            e["mobs"] = DynValue.NewTable(mobs);
+            outT[id] = DynValue.NewTable(e);
+        }
+        return DynValue.NewTable(outT);
+    }
+
+    /// <summary>The ONLY things about a quest that change while you play: progress, and the live facts around it.
+    /// One crossing per tick for the whole board. Everything else is static and belongs in the Lua-side cache built
+    /// from questStatics(), which is why this deliberately repeats none of it -- no names, no exp, no objective
+    /// definitions, no mob stats. Keyed by quest id so the Lua can look up its cached static record directly.
+    /// mobs/items are keyed maps covering only what the ACTIVE quests actually reference.</summary>
+    public DynValue questPulse()
+    {
+        var root = NewTable();
+        var v = View;
+        root["level"] = (int)_handle.Level;
+        root["maxHp"] = v?.MaxHp ?? 0;
+        root["map"] = _handle.CurrentMap ?? "";
+        var quests = NewTable();
+        var mobs = NewTable();
+        var items = NewTable();
+        if (v is not null)
+        {
+            var cd = _mgr.ClientData;
+            var inView = new HashSet<int>();
+            foreach (var n in v.NearbyNpcs)
+                if (!n.IsGate && (n.IsScenarioClone || (v.IsHuntableMob?.Invoke((ushort)n.MobId) ?? true)))
+                    inView.Add(n.MobId);
+            var wantMobs = new HashSet<int>();
+            var wantItems = new HashSet<int>();
+            foreach (var id in v.ActiveQuests.Keys)
+            {
+                if (v.IsQuestDone(id)) continue;
+                var e = NewTable();
+                e["prog"] = v.QuestProgress(id);
+                e["deprioAtLevel"] = _mgr.Knowledge.QuestDeprioritizedAtLevel(_handle.KnowledgeScope, id);
+                var q = cd?.Quest(id);
+                if (q is not null)
+                {
+                    var op = NewTable(); var oi = 1;
+                    foreach (var o in q.Objectives)
+                    {
+                        op[oi] = v.QuestObjProgress(id, oi - 1);
+                        oi++;
+                        if (o.Mob != 0) wantMobs.Add(o.Mob);
+                        if (o.Item != 0) wantItems.Add(o.Item);
+                    }
+                    e["objProg"] = DynValue.NewTable(op);
+                    if (q.ObjectiveMob > 0) wantMobs.Add(q.ObjectiveMob);
+                }
+                quests[id] = DynValue.NewTable(e);
+            }
+            // Only the mobs and items the active board actually references -- the filter is the whole point.
+            foreach (var mobId in wantMobs)
+            {
+                var mt = NewTable();
+                mt["inView"] = inView.Contains(mobId);
+                mt["hitMax"] = v.MobHitMax(mobId);
+                mobs[mobId] = DynValue.NewTable(mt);
+            }
+            if (wantItems.Count > 0)
+            {
+                // One inventory sweep for ALL wanted items, instead of one invenCountOf() crossing per objective.
+                var have = new Dictionary<int, int>();
+                foreach (var (slot, itemId) in v.Inventory)
+                    if (wantItems.Contains(itemId))
+                        have[itemId] = have.TryGetValue(itemId, out var c) ? c + v.ItemCount(slot) : v.ItemCount(slot);
+                foreach (var itemId in wantItems) items[itemId] = have.TryGetValue(itemId, out var c) ? c : 0;
+            }
+        }
+        root["quests"] = DynValue.NewTable(quests);
+        root["mobs"] = DynValue.NewTable(mobs);
+        root["items"] = DynValue.NewTable(items);
+        return DynValue.NewTable(root);
+    }
+
     /// <summary>The PLAYER_QUEST_INFO status byte of an active quest (0 if not active)</summary>
     public int questStatus(int id) => View is { } v && v.ActiveQuests.TryGetValue(id, out var s) ? s : 0;
 
