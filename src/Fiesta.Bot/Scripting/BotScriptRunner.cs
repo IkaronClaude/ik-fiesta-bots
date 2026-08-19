@@ -102,8 +102,15 @@ public sealed class BotScriptRunner : IDisposable
         try
         {
             if (_lua?.Globals.Get("__prof") is { Type: DataType.Table } pv)
+            {
                 pv.Table.Set("last", DynValue.NewNumber(
                     System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency));
+                // THE PER-TICK MEMO DIES HERE, and this is the only place it may. It caches values that are stable
+                // for the duration of one tick but not beyond it (bot.map()), so it has to be dropped at the tick
+                // boundary -- a memo that outlives its tick is a stale read, and a memo cleared anywhere else could
+                // be cleared mid-decision. The forever-memo (__prof.memo, pure SHN data) is deliberately untouched.
+                if (pv.Table.Get("tick") is { Type: DataType.Table } tickMemo) tickMemo.Table.Clear();
+            }
         }
         catch { /* profiling must never break the tick */ }
     }
@@ -376,6 +383,23 @@ do
   __prof = { calls = {}, secs = {}, gaps = {}, maxs = {}, last = clock() }
   local calls, secs, gaps, maxs = __prof.calls, __prof.secs, __prof.gaps, __prof.maxs
   local wrapped = {}
+  -- MEMOISED LOOKUPS. Allocation is ~10-12KB PER bot.* CALL and holds across a 3.4x range of call counts
+  -- (437 calls -> 4974KB, 1004 -> 9882KB, 1466 -> 17621KB), so the cost is per-call interop, not any one API,
+  -- and the only lever is making fewer calls. At ~1,200 calls a tick that is 10-15MB of garbage and 2-4 gen0
+  -- collections, which is where the tick time actually goes.
+  -- Two tiers, and the split is the whole safety argument:
+  --   memoK = pure SHN game data keyed by one id. It cannot change within a session, so cache it forever.
+  --   tickK = true for the duration of ONE tick only; __prof.tick is cleared at the top of every tick.
+  -- DELIBERATELY ABSENT: bot.quest(id). Its C# side re-stamps live objective progress into the cached table on
+  -- every call (StampProgress), so skipping the call would freeze quest progress at whatever it was first read as.
+  -- Also absent: anything returning live state (hp, x, y, now, drops, nearbyMobs, inventory) and anything the
+  -- caller might mutate. Only scalars are cached, so no shared table can be written through.
+  local memoK = { mobMaxHp = true, mobLevel = true, mobGrade = true, questName = true }
+  local tickK = { map = true }
+  __prof.memo = {}
+  __prof.tick = {}
+  local memo, tickmemo = __prof.memo, __prof.tick
+  local NILV = {}   -- 0 and false are REAL results; only this sentinel means a cached nil
   -- NO table.pack HERE. The obvious way to time a call and still return all of its results is
   -- `local r = pack(v(...)) ... return unpack(r, 1, r.n)`, and that allocates ONE TABLE PER CALL --
   -- at ~1,200 bot.* calls per tick, the measurement was a large allocator in the thing it measures.
@@ -395,7 +419,29 @@ do
     if w ~= nil then return w end
     local v = real[k]
     if type(v) == 'function' then
+      local mk, tk = memoK[k], tickK[k]
       w = function(...)
+        if mk or tk then
+          local n = select('#', ...)
+          if n <= 1 then
+            local key = n == 0 and NILV or ...
+            if key ~= nil then
+              local store = mk and memo or tickmemo
+              local byArg = store[k]
+              if byArg == nil then byArg = {}; store[k] = byArg end
+              local hit = byArg[key]
+              if hit ~= nil then
+                if hit == NILV then return nil end
+                return hit
+              end
+              local t0m = clock()
+              gaps[k] = (gaps[k] or 0) + (t0m - __prof.last)
+              local r = done(k, t0m, v(...))
+              byArg[key] = (r == nil) and NILV or r
+              return r
+            end
+          end
+        end
         local t0 = clock()
         gaps[k] = (gaps[k] or 0) + (t0 - __prof.last)
         return done(k, t0, v(...))
