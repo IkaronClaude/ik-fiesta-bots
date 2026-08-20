@@ -1561,6 +1561,16 @@ public sealed class ZoneView : IDisposable
         if (moveBlock || changed) _log?.Invoke(msg); else LogV(msg);
     }
 
+    /// <summary>The value this protocol uses for "this slot is empty".
+    ///
+    /// It is 0xFFFF, NOT 0. Item id 0 is the real item "Leather Boots", so every <c>itemId != 0</c> test written to
+    /// mean "slot occupied" silently deletes that item instead: the login bag snapshot dropped the slot (BagFreeSlots
+    /// then over-reported, and the sell/declutter classifier never saw it), and an equip of item 0 was read as
+    /// UNequipping, leaving the character reported bare in that slot for the rest of the session.
+    ///
+    /// Named rather than repeated, so the next bare <c>!= 0</c> reads as visibly wrong beside it.</summary>
+    private const ushort EmptyCellItemId = 0xFFFF;
+
     private void OnPacket(FiestaPacket pkt)
     {
         var op = pkt.Opcode;
@@ -2195,9 +2205,13 @@ public sealed class ZoneView : IDisposable
                 }
                 _logLevel?.Invoke(BotLogLevel.Verbose,
                     $"[combat] skill {startedSkill} STARTED (0x244E) — cooldown clock begins");
-                // 0x244E is {skill u16 @0, targetobj u16 @2, index u16 @4} — the target is only present on the
-                // longer form, so report 0 rather than inventing one when the frame is short.
-                SkillCastStarted?.Invoke(startedSkill, ps.Length >= 4 ? (ps[2] | (ps[3] << 8)) : 0);
+                // 0x244E is {skill u16 @0, targetobj u16 @2, index u16 @4} and PROTO_NC_BAT_SKILLBASH_HIT_OBJ_START_CMD
+                // is SizeOf=6 in the PDB — the target is ALWAYS present. An earlier comment here invented a "shorter
+                // form" and fell back to handle 0, which is a REAL entity handle, so a subscriber could not tell
+                // "server confirmed a cast on handle 0" from "we failed to parse it". A frame too short to hold the
+                // documented struct is a decode gap and is reported as one rather than papered over with a 0.
+                if (ps.Length >= 4) SkillCastStarted?.Invoke(startedSkill, ps[2] | (ps[3] << 8));
+                else _log?.Invoke($"[ZoneView] 0x244E SHORT FRAME ({ps.Length}b, expected 6) — target not decoded");
             }
         }
         else if (op == OpBatLevelup)
@@ -2802,7 +2816,12 @@ public sealed class ZoneView : IDisposable
                         int attr = datasize - 4;
                         int count = (attr == 1 && off + 5 < p.Length) ? p[off + 5]
                                   : (attr == 2 && off + 6 < p.Length) ? (p[off + 5] | (p[off + 6] << 8)) : 1;
-                        if (itemId != 0) { _inventory[slot] = itemId; _invCount[slot] = count; }
+                        // ITEM ID 0 IS THE REAL ITEM "Leather Boots" — SeedItems 1500 lines up says exactly that.
+                        // The empty marker on this wire is 0xFFFF (the CELLCHANGE handler gets it right), and the
+                        // login list only sends OCCUPIED slots anyway. Dropping id 0 made that slot invisible:
+                        // BagFreeSlots over-reported, the sell/declutter classifier never saw the item, and
+                        // AutoLootBehavior's free-slot gate was wrong until a CELLCHANGE happened to touch it.
+            if (itemId != EmptyCellItemId) { _inventory[slot] = itemId; _invCount[slot] = count; }
                         off += 1 + datasize;
                     }
                 }
@@ -2822,7 +2841,7 @@ public sealed class ZoneView : IDisposable
                     var slot = (byte)(location & 0xFF);
                     var itemId = (ushort)(p[4] | (p[5] << 8));
                     // EMPTY IS 0xFFFF, NOT 0 (operator 2026-08-13: "sometimes randomly 2 items change to item 65535 x1
-                    if (itemId != 0xFFFF)
+                    if (itemId != EmptyCellItemId)
                     {
                         _inventory[slot] = itemId;
                         // stack count = the lot after itemid: len 7 = byte-lot, len 8 = word-lot, bigger = gear/complex (count 1)
@@ -2842,7 +2861,10 @@ public sealed class ZoneView : IDisposable
             {
                 var equipSlot = p[2];
                 var itemId = (ushort)(p[3] | (p[4] << 8));
-                if (itemId != 0) _equipment[equipSlot] = itemId; else _equipment.TryRemove(equipSlot, out _);
+                // Same rule: id 0 is a real item, 0xFFFF is the empty marker. Treating "equipped item 0" as UNequipping
+            // left the character reported as bare in that slot for the rest of the session.
+            if (itemId != EmptyCellItemId) _equipment[equipSlot] = itemId;
+            else _equipment.TryRemove(equipSlot, out _);
             }
         }
         else if (op == OpDropedItem)
