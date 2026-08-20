@@ -2325,8 +2325,16 @@ public sealed class ZoneView : IDisposable
             if (!string.IsNullOrEmpty(name))
             {
                 _doorNames[bd.handle] = name;
-                _doorStateByName[name] = bd.doorstate;
-                _log?.Invoke($"[ZoneView] SCENARIO DOOR BUILD '{name}' h={bd.handle} state={bd.doorstate} ({(bd.doorstate == 0 ? "CLOSED" : "open")}) — seeded nav overlay");
+                // A DOORSTATE update for this handle may have arrived BEFORE the BUILDDOOR that names it. Those
+                // could not be mapped to a name, so they never reached _doorStateByName and the nav overlay never
+                // saw them -- measured on MageFresh 2026-08-20: four doors reported states at 13:21:21 and the
+                // BUILDDOOR naming h=20715 'Door02' did not arrive until 13:22:27, a 66-SECOND window in which the
+                // bot had been told the door was closed and could not act on it. We DO record them by handle, so
+                // prefer what we actually OBSERVED over bd.doorstate, which is only the state at spawn time.
+                var seeded = _doorStates.TryGetValue(bd.handle, out var obs) ? obs.State : bd.doorstate;
+                _doorStateByName[name] = seeded;
+                _log?.Invoke($"[ZoneView] SCENARIO DOOR BUILD '{name}' h={bd.handle} state={seeded} ({(seeded == 0 ? "CLOSED" : "open")}) — seeded nav overlay"
+                    + (seeded != bd.doorstate ? $" (from an EARLIER unnamed DOORSTATE; the BUILD said {bd.doorstate} and was stale)" : ""));
                 DoorStatesByNameChanged?.Invoke(DoorStatesByName);
             }
         }
@@ -2349,7 +2357,10 @@ public sealed class ZoneView : IDisposable
                 DoorStatesByNameChanged?.Invoke(DoorStatesByName);
             }
             else
-                _log?.Invoke($"[ZoneView] SCENARIO DOOR h={b.door} state={b.doorstate} @({dx?.ToString() ?? "?"},{dy?.ToString() ?? "?"}) (name not yet known — no BUILDDOOR seen)");
+                // NOT LOST: _doorStates already holds it by handle, and the BUILDDOOR that names this handle will
+                // adopt this state rather than its own spawn-time field. Until then the overlay cannot place it,
+                // because the overlay is keyed by .sbi block NAME and we do not yet know which block this is.
+                _log?.Invoke($"[ZoneView] SCENARIO DOOR h={b.door} state={b.doorstate} @({dx?.ToString() ?? "?"},{dy?.ToString() ?? "?"}) (name not yet known — no BUILDDOOR seen; held by handle, applied when it is named)");
         }
         else if (op == OpCharReviveOther)
         {
