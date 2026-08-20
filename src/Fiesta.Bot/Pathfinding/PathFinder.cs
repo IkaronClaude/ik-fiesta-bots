@@ -93,6 +93,37 @@ public static class PathFinder
         return SmoothLineOfSight(grid, path, used);
     }
 
+    /// <summary>Uniform-cost search: A* with the heuristic switched off entirely (weight 0).
+    ///
+    /// Worth having as a real option rather than a curiosity. The default heuristic here is deliberately
+    /// INADMISSIBLE (octile x2.0), which is fast on open ground but is exactly what makes the search explode on
+    /// certain starts -- it drives expansion confidently into a dead area and then has to unwind it, re-expanding
+    /// closed nodes on the way. That is why the same route measured 1ms one way and 2292ms reversed.
+    ///
+    /// Dijkstra cannot be misled, because it has no opinion about direction. It expands strictly by distance from
+    /// the start, so its cost depends on how much of the map lies within the goal's radius and NOT on which end
+    /// you begin at -- which should make it both symmetric and predictable, at the price of exploring more of the
+    /// map on an easy route where the heuristic would have gone straight there.
+    ///
+    /// One structural saving comes free: FindPath runs its whole margin ladder with the greedy heuristic and then,
+    /// if that found nothing, runs the ENTIRE ladder again admissibly, because an inadmissible heuristic can miss
+    /// a path that exists. A zero heuristic is admissible, so there is nothing to fall back to -- one ladder, not
+    /// potentially two.</summary>
+    public static IReadOnlyList<(uint X, uint Y)> FindPathDijkstra(
+        BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
+        int maxExpansions = 8_000_000, double margin = 2, CancellationToken ct = default)
+    {
+        double[] steps = margin >= 2 ? new[] { 2.0, 1.5, 1.0, 0.5, 0.0 }
+                        : margin > 0 ? new[] { margin, 0.0 }
+                        : new[] { 0.0 };
+        foreach (var m in steps)
+        {
+            var p = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, m, 0, 1, ct: ct);
+            if (p.Count > 0) return SmoothLineOfSight(grid, p, m);
+        }
+        return Array.Empty<(uint, uint)>();
+    }
+
     /// <summary>Search FORWARD and BACKWARD at the same time and keep whichever finishes first.
     ///
     /// WHY: the cost of a search is dominated by WHICH END IT STARTS FROM, not by the distance. Measured on
@@ -116,27 +147,144 @@ public static class PathFinder
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
         int maxExpansions = 8_000_000, double margin = 2)
     {
-        using var cts = new CancellationTokenSource();
-        var token = cts.Token;
-        var fwd = Task.Run(() => FindPath(grid, startX, startY, goalX, goalY, maxExpansions, margin, token), token);
-        var rev = Task.Run(() => FindPath(grid, goalX, goalY, startX, startY, maxExpansions, margin, token), token);
-
-        var pending = new List<Task<IReadOnlyList<(uint X, uint Y)>>> { fwd, rev };
-        while (pending.Count > 0)
+        // Three searches advanced IN LOCKSTEP on this thread -- a slice of each in turn, first to finish wins.
+        //
+        // WHY THESE THREE. Search cost is dominated by which end you start from and by whether the heuristic is
+        // lying to you, and neither is predictable from the endpoints:
+        //   * A* forward and A* backward differ wildly on the SAME route -- measured 1ms against 2292ms, and a
+        //     start that cost ~10.5s to every destination tried cost 388ms from the far end.
+        //   * A* and Dijkstra differ by map shape. Over 455 pairs: Eld favours A* 37x (356ms vs 13,204ms, open
+        //     ground where the heuristic walks straight there), EldGbl02 favours Dijkstra 5x (wide lobes joined by
+        //     narrow necks, where a greedy heuristic charges into a lobe and must unwind it to find the neck).
+        // Racing two A*s could never fix the tail, because both inherit the same lie: worst case stayed 9,730ms
+        // against A*'s 10,374ms. Dijkstra caps it at 1,676ms because it has no opinion to be wrong about.
+        //
+        // WHY LOCKSTEP AND NOT THREADS. Threads cost scheduler pressure and cancellation plumbing, and burn k cores
+        // to produce one answer. Interleaving costs one thread and bounds the answer at k x the winner's work,
+        // deterministically. Nothing here is CPU-bound enough to want a core each.
+        //
+        // One direction of Dijkstra is enough: with no heuristic there is no direction to be wrong about.
+        // LADDER THE RACE, don't fall back to a single algorithm.
+        // The first version raced only at the top margin and, when all three failed there, called FindPath() --
+        // the full sequential A* ladder. So the worst case was A*'s worst case (measured 10,185ms) even with
+        // Dijkstra in the race capping at 1,735ms: Dijkstra never got to run at the margin that had the answer.
+        // Dropping the inflation margin IS the completeness path, so run the race at each rung instead. Dijkstra
+        // at margin 0 is admissible and complete, so there is nothing left to fall back to.
+        double[] steps = margin >= 2 ? new[] { 2.0, 1.5, 1.0, 0.5, 0.0 }
+                        : margin > 0 ? new[] { margin, 0.0 }
+                        : new[] { 0.0 };
+        foreach (var m in steps)
         {
-            var done = Task.WhenAny(pending).GetAwaiter().GetResult();
-            pending.Remove(done);
-            IReadOnlyList<(uint X, uint Y)> path;
-            try { path = done.GetAwaiter().GetResult(); }
-            catch (OperationCanceledException) { continue; }
-            if (path.Count == 0) continue;                 // not an answer -- let the other direction speak
-            cts.Cancel();
-            if (!ReferenceEquals(done, rev)) return path;
-            var flipped = new (uint X, uint Y)[path.Count];  // reverse: the backward search walked goal -> start
-            for (int i = 0; i < path.Count; i++) flipped[i] = path[path.Count - 1 - i];
-            return flipped;
+            var racers = new[]
+            {
+                new Stepper(grid, startX, startY, goalX, goalY, m, GreedyWeightNum, GreedyWeightDen, false),
+                new Stepper(grid, goalX, goalY, startX, startY, m, GreedyWeightNum, GreedyWeightDen, true),
+                new Stepper(grid, startX, startY, goalX, goalY, m, 0, 1, false),
+            };
+            // Slice size trades interleave overhead against overshoot: too small and we pay the loop, too large and
+            // a finished racer waits while a doomed one burns its slice.
+            const int Slice = 4096;
+            int budgetEach = Math.Max(Slice, maxExpansions / racers.Length);
+            bool anyAlive = true;
+            while (anyAlive)
+            {
+                anyAlive = false;
+                foreach (var r in racers)
+                {
+                    if (r.Finished) continue;
+                    r.Step(Slice, budgetEach);
+                    if (r.Finished)
+                    {
+                        // An empty result never wins: a racer that exhausted its budget has proved nothing, so let
+                        // the others keep going. Only a real path ends the race.
+                        if (r.Result.Count > 0)
+                            return r.Reversed ? Flip(SmoothLineOfSight(grid, r.Result, m))
+                                              : SmoothLineOfSight(grid, r.Result, m);
+                    }
+                    else anyAlive = true;
+                }
+            }
         }
         return Array.Empty<(uint, uint)>();
+    }
+
+    private static IReadOnlyList<(uint X, uint Y)> Flip(IReadOnlyList<(uint X, uint Y)> p)
+    {
+        var f = new (uint X, uint Y)[p.Count];
+        for (int i = 0; i < p.Count; i++) f[i] = p[p.Count - 1 - i];
+        return f;
+    }
+
+    /// <summary>One resumable A*/Dijkstra search. Holds the frontier between slices so lockstep interleaving costs
+    /// nothing but the loop -- restarting each racer per round would throw away exactly the work that makes the
+    /// next round cheaper.</summary>
+    private sealed class Stepper
+    {
+        private readonly BlockGrid _grid;
+        private readonly int _sx, _sy, _gx, _gy, _w, _esc, _hn, _hd;
+        private readonly double _margin;
+        private readonly Dictionary<int, int> _came = new();
+        private readonly Dictionary<int, int> _g = new();
+        private readonly PriorityQueue<(int x, int y), int> _open = new();
+        private int _expansions;
+
+        public bool Finished { get; private set; }
+        public bool Reversed { get; }
+        public IReadOnlyList<(uint X, uint Y)> Result { get; private set; } = Array.Empty<(uint, uint)>();
+
+        public Stepper(BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
+                       double margin, int heurNum, int heurDen, bool reversed)
+        {
+            _grid = grid; _margin = margin; _hn = heurNum; _hd = heurDen; Reversed = reversed;
+            _w = grid.WidthTiles;
+            var (sx, sy) = grid.WorldToTile(startX, startY);
+            var (gx, gy) = grid.WorldToTile(goalX, goalY);
+            if (!grid.IsWalkableTile(sx, sy) && NearestWalkable(grid, sx, sy) is { } ns) (sx, sy) = ns;
+            if (!grid.IsWalkableTile(gx, gy) && NearestWalkable(grid, gx, gy) is { } ng) (gx, gy) = ng;
+            _sx = sx; _sy = sy; _gx = gx; _gy = gy;
+            _esc = Math.Max(1, (int)Math.Ceiling(margin));
+            if (!grid.IsWalkableTile(sx, sy) || !grid.IsWalkableTile(gx, gy)) { Finished = true; return; }
+            _g[sy * _w + sx] = 0;
+            _open.Enqueue((sx, sy), Heur(sx, sy, gx, gy, heurNum, heurDen));
+        }
+
+        private bool NearEnd(int x, int y) =>
+            (Math.Max(Math.Abs(x - _sx), Math.Abs(y - _sy)) <= _esc ||
+             Math.Max(Math.Abs(x - _gx), Math.Abs(y - _gy)) <= _esc) && _grid.IsWalkableTile(x, y);
+        private bool Passable(int x, int y) => _grid.IsPathable(x, y, _margin) || NearEnd(x, y);
+
+        /// <summary>Advance at most <paramref name="slice"/> expansions. Sets Finished when the goal is reached or
+        /// the frontier is exhausted or this racer's share of the budget is spent.</summary>
+        public void Step(int slice, int budget)
+        {
+            int done = 0;
+            while (done < slice && _open.TryDequeue(out var cur, out _))
+            {
+                if (cur.x == _gx && cur.y == _gy)
+                {
+                    Result = Reconstruct(_grid, _came, _gy * _w + _gx, _w);
+                    Finished = true;
+                    return;
+                }
+                if (++_expansions > budget) { Finished = true; return; }
+                done++;
+                int curG = _g[cur.y * _w + cur.x];
+                foreach (var (dx, dy) in Neighbors)
+                {
+                    int nx = cur.x + dx, ny = cur.y + dy;
+                    if (!Passable(nx, ny)) continue;
+                    if (dx != 0 && dy != 0 &&
+                        (!Passable(cur.x + dx, cur.y) || !Passable(cur.x, cur.y + dy))) continue;
+                    int ng2 = curG + ((dx != 0 && dy != 0) ? 14 : 10);
+                    int nid = ny * _w + nx;
+                    if (_g.TryGetValue(nid, out var prev) && ng2 >= prev) continue;
+                    _g[nid] = ng2;
+                    _came[nid] = cur.y * _w + cur.x;
+                    _open.Enqueue((nx, ny), ng2 + Heur(nx, ny, _gx, _gy, _hn, _hd));
+                }
+            }
+            if (_open.Count == 0) Finished = true;
+        }
     }
 
     private static IReadOnlyList<(uint X, uint Y)> FindPathCore(

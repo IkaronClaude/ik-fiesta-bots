@@ -43,101 +43,111 @@ public static class NavMeshPath
     }
 
     /// <summary>Full path in TILE coordinates, or null when the goal is not reachable through the mesh.</summary>
-    public static List<(int X, int Y)>? Find(NavMesh mesh, int sx, int sy, int gx, int gy, bool swapWinding = false)
+    public static List<(int X, int Y)>? Find(NavMesh mesh, int sx, int sy, int gx, int gy)
     {
         int sr = mesh.RegionAt(sx, sy), gr = mesh.RegionAt(gx, gy);
         var route = RegionRoute(mesh, sr, gr);
         if (route is null) return null;
         if (route.Count == 1) return new List<(int, int)> { (sx, sy), (gx, gy) };
 
-        // Portal list as (left,right) pairs. The funnel needs each gate as a SEGMENT with consistent handedness,
-        // not a midpoint -- handing it midpoints is precisely the centre-to-centre path we are trying to avoid.
-        var lefts = new List<(double X, double Y)>();
-        var rights = new List<(double X, double Y)>();
+        // BUILD A PATH THAT IS VALID BY CONSTRUCTION, IN TILES, AND ONLY THEN SHORTEN IT.
+        //
+        // The invariant we need is: EVERY consecutive pair of via points lies inside ONE rectangle. That is the
+        // only statement convexity actually gives us -- the union of two adjacent rectangles is NOT convex, so a
+        // pair that merely "straddles a portal" is not covered by it.
+        //
+        // The previous version alternated centre, PORTAL POINT, centre. A portal point sits ON the far side of the
+        // boundary (Portal.At is the neighbour's first row/column -- measured: true for all 111,598 portal records
+        // across the five test maps), so every centre<->portal pair straddled the boundary, and a straddling pair
+        // is exactly the case the convexity argument does not cover. In CONTINUOUS coordinates the excursion looks
+        // harmless (half a tile); in TILE coordinates -- which is what we emit and what gets walked -- the sampled
+        // column flips at the MIDPOINT of the x-travel, not at the boundary. So on a long thin strip the line
+        // spends HALF its length in the neighbour's column while its y has already run off the end of the
+        // neighbour's extent. Measured failing case on Sand Hill (EldGbl02): portal point (1023,732) in r2621
+        // (x1023, y710..756) to the centre (1022,473) of r120 (x1022, y191..755) clipped at (1023,709) -- one row
+        // past the end of r2621, with 130 more rows of the same column still to come. That single geometry error
+        // accounted for 216 of 380 invalid paths there.
+        //
+        // The fix is to never straddle: cross the boundary with its OWN one-tile step. Each portal contributes the
+        // pair of adjacent tiles either side of it, at the same offset along the span, near side first:
+        //     centre(A) -> nearTile   both in A
+        //     nearTile  -> farTile    one tile apart, both in the mesh
+        //     farTile   -> centre(B)  both in B
+        // Any offset in [From,Until] works for this: the run was grouped by owner, so along the whole span the low
+        // tile is in one region and the high tile in the other (measured: 0 violations over those same 111,598
+        // portals). Which offset to use is therefore free, and is chosen below.
+        var tiles = new List<(int X, int Y)>();
+        void Push(int x, int y) { if (tiles.Count == 0 || tiles[^1] != (x, y)) tiles.Add((x, y)); }
+
+        // WHERE along each doorway to cross is a FREE PARAMETER, so choose it instead of always taking the middle.
+        // Every offset in [From,Until] is equally legal (the run was grouped by owner, so the straddling pair is
+        // {this region, that region} along the whole span), which means picking a good one cannot cost validity --
+        // only length. Do not expect much from it on these maps: measured against A*, always-midpoint gave
+        // 1.133/1.188/1.200/1.177 x on EldGbl02/Eld/RouVal01/RouCos02 and relaxing the offset gives
+        // 1.115/1.194/1.200/1.162 -- a percent or two, because greedy strips make most spans short. It is kept
+        // because it is free and because a wide doorway is exactly where a midpoint crossing is worst.
+        // Relaxation: each crossing is placed where it minimises (previous crossing -> here -> next crossing),
+        // sweeping a few times because moving one crossing changes its neighbours' best answer. Both terms are
+        // convex in the offset, so the minimum is found by ternary search rather than scanning the span.
+        var ports = new NavMesh.Portal[route.Count - 1];
         for (int i = 0; i + 1 < route.Count; i++)
         {
-            var p = FindPortal(mesh, route[i], route[i + 1]);
-            if (p is not { } pt) return null;
-            // Half-tile inset keeps the funnel off the exact boundary line, where rounding can place a waypoint in
-            // the neighbouring wall.
-            // HANDEDNESS IS RELATIVE TO THE DIRECTION OF TRAVEL. The funnel keeps a left/right wedge, so a portal
-            // crossed in -x or -y has its endpoints in the opposite order; assigning them positionally (as a first
-            // version did) inverts the wedge on every such crossing, which pulls the path to the WRONG side of the
-            // doorway. Measured signature of that bug: 83 of 91 paths clipping walls and 2.6x the length of A*.
-            var ra = mesh.Rects[route[i]];
-            var rb = mesh.Rects[route[i + 1]];
-            double dirX = rb.CX - ra.CX, dirY = rb.CY - ra.CY;
-            (double X, double Y) e1, e2;
-            bool forward;
-            if (pt.Vertical)
-            {
-                double x = pt.At;
-                e1 = (x, pt.From); e2 = (x, pt.Until + 1.0);
-                forward = dirX >= 0;
-            }
-            else
-            {
-                double y = pt.At;
-                e1 = (pt.From, y); e2 = (pt.Until + 1.0, y);
-                forward = dirY >= 0;
-            }
-            if (forward != swapWinding) { lefts.Add(e1); rights.Add(e2); }
-            else { lefts.Add(e2); rights.Add(e1); }
+            if (FindPortal(mesh, route[i], route[i + 1]) is not { } p) return null;
+            ports[i] = p;
         }
-        // Portal midpoints first, then a VERIFIED string-pull.
-        //
-        // The first version used a Simple Stupid Funnel here and it did not work: ~90% of paths clipped walls, at
-        // both windings, with segments averaging 85-320 tiles -- the wedge was collapsing and emitting near-straight
-        // lines across the map. A funnel is only safe if it is exactly right, because it never CHECKS anything: it
-        // assumes the corridor is convex, and a chain of rectangles is not.
-        //
-        // So this pulls the string by testing instead of assuming. From each anchor, reach for the furthest later
-        // point that still has clear line of sight, and settle for the last one that did. Worst case it degrades to
-        // the portal midpoints, which are inside free space by construction -- it cannot produce a path through a
-        // wall, which is the property that actually matters.
-        // INTERLEAVE REGION CENTRES WITH PORTAL MIDPOINTS.
-        // Consecutive portal midpoints lie in DIFFERENT regions. Each region is convex, but the union of two
-        // adjacent rectangles is not, so a straight line between two midpoints can leave the corridor -- which is
-        // what the first string-pull did whenever no longer sight-line existed and it fell back to the next point
-        // untested (126 of 190 invalid on Sand Hill).
-        // Alternating centre, portal, centre, portal makes every consecutive pair lie inside ONE convex rectangle,
-        // so the unpulled path is valid by construction and the pull can only shorten it.
-        var via = new List<(double X, double Y)> { (sx + 0.5, sy + 0.5) };
-        for (int i = 0; i < lefts.Count; i++)
+        var cut = new int[ports.Length];
+        for (int i = 0; i < ports.Length; i++) cut[i] = ports[i].MidA;
+        // The crossing point is ON the shared edge: x = At for a vertical portal (the line between column At-1 and
+        // column At), and the offset picks where along it.
+        (double X, double Y) Cross(int i) => ports[i].Vertical ? (ports[i].At, cut[i] + 0.5) : (cut[i] + 0.5, ports[i].At);
+        for (int pass = 0; pass < 3; pass++)
+            for (int i = 0; i < ports.Length; i++)
+            {
+                var a = i == 0 ? (X: sx + 0.5, Y: sy + 0.5) : Cross(i - 1);
+                var b = i == ports.Length - 1 ? (X: gx + 0.5, Y: gy + 0.5) : Cross(i + 1);
+                var pt = ports[i];
+                double Cost(int o)
+                {
+                    double px = pt.Vertical ? pt.At : o + 0.5, py = pt.Vertical ? o + 0.5 : pt.At;
+                    return Math.Sqrt((px - a.X) * (px - a.X) + (py - a.Y) * (py - a.Y))
+                         + Math.Sqrt((px - b.X) * (px - b.X) + (py - b.Y) * (py - b.Y));
+                }
+                int lo = pt.From, hi = pt.Until;
+                while (hi - lo > 2)
+                {
+                    int m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+                    if (Cost(m1) <= Cost(m2)) hi = m2 - 1; else lo = m1 + 1;
+                }
+                int bestO = lo;
+                for (int o = lo + 1; o <= hi; o++) if (Cost(o) < Cost(bestO)) bestO = o;
+                cut[i] = bestO;
+            }
+
+        Push(sx, sy);
+        for (int i = 0; i < ports.Length; i++)
         {
+            // The region centre stays in the list as an extra anchor for the string-pull. It is inside the region
+            // by construction, so it can never invalidate anything, and having more candidates measurably helps
+            // the pull find a longer clear run (removing it made Eld 8% LONGER).
             var rc = mesh.Rects[route[i]];
-            via.Add((rc.CX + 0.5, rc.CY + 0.5));
-            // The MIDPOINT of a portal is not guaranteed to survive flooring: it sits on the boundary, and the
-            // tile it lands in can be one the mesh excluded for clearance. Walk outward along the span for the
-            // nearest tile that is genuinely in the mesh, so every via point is real free space.
-            var pp = FindPortal(mesh, route[i], route[i + 1]);
-            via.Add(pp is { } pt2
-                ? OnPortal(mesh, pt2)
-                : ((lefts[i].X + rights[i].X) / 2.0, (lefts[i].Y + rights[i].Y) / 2.0));
+            Push(rc.CX, rc.CY);
+            var (near, far) = PortalStep(mesh, ports[i], route[i], cut[i]);
+            Push(near.X, near.Y);
+            Push(far.X, far.Y);
         }
         var rl = mesh.Rects[route[^1]];
-        via.Add((rl.CX + 0.5, rl.CY + 0.5));
-        via.Add((gx + 0.5, gy + 0.5));
+        Push(rl.CX, rl.CY);
+        Push(gx, gy);
 
-        // SNAP TO TILES *BEFORE* TESTING, so the segment we verify is the segment we return.
-        // The first version tested `via` in continuous coordinates and then floored each endpoint into a tile on
-        // the way out. Flooring moves an endpoint by up to a whole tile, which alongside a wall is enough to push
-        // the emitted line into the clearance band that the mesh deliberately excludes -- so Clear() would pass on
-        // a line that was never the one handed back. Caught by dumping a failing case: tile (809,761),
-        // IsWalkable=True but IsPathable(margin 2)=False, on a 114-tile segment whose ENDPOINTS were both fine.
-        var tiles = new List<(int X, int Y)>(via.Count);
-        foreach (var (vx, vy) in via)
-        {
-            var t = ((int)Math.Floor(vx), (int)Math.Floor(vy));
-            if (tiles.Count == 0 || tiles[^1] != t) tiles.Add(t);
-        }
-
+        // String-pull by TESTING, not by assuming. From each anchor, reach for the furthest later point that still
+        // has clear line of sight and settle for the last one that did. Worst case it degrades to the list above,
+        // which is valid by construction -- so it can shorten a path but never invalidate one. (A Simple Stupid
+        // Funnel was tried here and removed: it never checks anything and assumes a convex corridor, which a chain
+        // of rectangles is not; ~90% of paths clipped at either winding.)
         var outp = new List<(int X, int Y)>();
         int at = 0;
         while (at < tiles.Count - 1)
         {
-            // Reach for the furthest point still in sight; fall back to the next one, which is inside a single
-            // convex region and therefore always reachable.
             int best = at + 1;
             for (int k = tiles.Count - 1; k > at; k--)
                 if (Clear(mesh, tiles[at], tiles[k])) { best = k; break; }
@@ -148,38 +158,57 @@ public static class NavMeshPath
         return outp;
     }
 
-    /// <summary>Is the straight segment between two points entirely inside free space? Sampled at half-tile steps,
-    /// which is finer than the one-tile features the grid can express.</summary>
-    private static bool Clear(NavMesh mesh, (int X, int Y) a, (int X, int Y) b)
+    /// <summary>The two adjacent tiles either side of a portal, near side (the one inside <paramref name="from"/>)
+    /// first. Portal.At is the HIGH side's first row/column and At-1 is the low side's last, so the pair straddles
+    /// the boundary by exactly one tile step.</summary>
+    private static ((int X, int Y) Near, (int X, int Y) Far) PortalStep(NavMesh mesh, NavMesh.Portal p, int from, int a)
     {
-        double dx = b.X - a.X, dy = b.Y - a.Y;
-        double len = Math.Sqrt(dx * dx + dy * dy);
-        int steps = (int)Math.Max(1, len * 2);
-        for (int q = 0; q <= steps; q++)
-        {
-            double t = (double)q / steps;
-            if (mesh.RegionAt((int)Math.Round(a.X + dx * t), (int)Math.Round(a.Y + dy * t)) < 0) return false;
-        }
-        return true;
+        var lo = p.Vertical ? (X: p.At - 1, Y: a) : (X: a, Y: p.At - 1);
+        var hi = p.Vertical ? (X: p.At, Y: a) : (X: a, Y: p.At);
+        if (mesh.RegionAt(lo.X, lo.Y) == from) return (lo, hi);
+        if (mesh.RegionAt(hi.X, hi.Y) == from) return (hi, lo);
+        // Not reachable for a mesh built by NavMesh.Build (checked against every portal of the test maps); walking
+        // the span is a cheap guard against a hand-made or future mesh whose runs are not owner-grouped.
+        for (int d = 1; d <= p.Until - p.From; d++)
+            foreach (int b in new[] { a - d, a + d })
+            {
+                if (b < p.From || b > p.Until) continue;
+                var l2 = p.Vertical ? (X: p.At - 1, Y: b) : (X: b, Y: p.At - 1);
+                var h2 = p.Vertical ? (X: p.At, Y: b) : (X: b, Y: p.At);
+                if (mesh.RegionAt(l2.X, l2.Y) == from && mesh.RegionAt(h2.X, h2.Y) >= 0) return (l2, h2);
+                if (mesh.RegionAt(h2.X, h2.Y) == from && mesh.RegionAt(l2.X, l2.Y) >= 0) return (h2, l2);
+            }
+        return (lo, hi);
     }
 
-    /// <summary>A point ON a portal that is actually inside the mesh. Starts at the midpoint -- the natural
-    /// crossing -- and walks outward along the span until it finds a tile the mesh kept, because the ends of a
-    /// span often fall inside the clearance band that the decomposition deliberately excluded.</summary>
-    private static (double X, double Y) OnPortal(NavMesh mesh, NavMesh.Portal p)
+    /// <summary>Is the straight segment between two points entirely inside free space? Sampled at half-tile steps,
+    /// which is finer than the one-tile features the grid can express.</summary>
+    /// <summary>Is the straight segment between two tiles entirely inside free space?
+    ///
+    /// SUPERCOVER, NOT POINT SAMPLING. Sampling a line at N places is sampling-rate dependent: it happily approves
+    /// a segment that shaves a corner BETWEEN two samples. That is not hypothetical -- at 2 samples per tile this
+    /// reported 0 invalid paths over 3,387, while a supercover audit of the very same paths found 635 of them
+    /// clipping a tile the mesh excludes (always exactly ONE tile, always at a corner). If the pull's own predicate
+    /// is not exact, the pull will keep choosing shortcuts that are not actually clear.
+    ///
+    /// This walks EVERY tile the segment touches, so it cannot miss a clip at any geometry. Cost is O(dx+dy) with
+    /// integer arithmetic only -- cheaper per tile than the old floating-point sampling, and it examines each tile
+    /// exactly once instead of oversampling short segments and undersampling long ones.</summary>
+    private static bool Clear(NavMesh mesh, (int X, int Y) a, (int X, int Y) b)
     {
-        int lo = p.From, hi = p.Until, mid = (lo + hi) / 2;
-        for (int d = 0; d <= hi - lo; d++)
+        int dx = Math.Abs(b.X - a.X), dy = Math.Abs(b.Y - a.Y);
+        int x = a.X, y = a.Y, n = 1 + dx + dy;
+        int xi = b.X > a.X ? 1 : -1, yi = b.Y > a.Y ? 1 : -1;
+        int err = dx - dy;
+        dx *= 2; dy *= 2;
+        for (; n > 0; --n)
         {
-            foreach (var a in d == 0 ? new[] { mid } : new[] { mid - d, mid + d })
-            {
-                if (a < lo || a > hi) continue;
-                int tx = p.Vertical ? p.At : a;
-                int ty = p.Vertical ? a : p.At;
-                if (mesh.RegionAt(tx, ty) >= 0) return (tx + 0.5, ty + 0.5);
-            }
+            if (mesh.RegionAt(x, y) < 0) return false;
+            if (err > 0) { x += xi; err -= dy; }
+            else if (err < 0) { y += yi; err += dx; }
+            else { x += xi; y += yi; err -= dy; err += dx; --n; }   // exact diagonal: one step, not two
         }
-        return p.Vertical ? (p.At + 0.5, mid + 0.5) : (mid + 0.5, p.At + 0.5);
+        return true;
     }
 
     private static NavMesh.Portal? FindPortal(NavMesh mesh, int a, int b)
