@@ -54,6 +54,7 @@ public sealed class BotManager : IAsyncDisposable
     {
         var id = options.Id ?? $"b{Interlocked.Increment(ref _seq)}";
         var handle = new BotHandle(id, options);
+        handle.AnnounceChat = options.Announce;   // the toggle is a spawn option too, so a relog/restart restores it
         if (!_bots.TryAdd(id, handle))
         {
             var existing = _bots.TryGetValue(id, out var e) ? e : null;
@@ -100,8 +101,17 @@ public sealed class BotManager : IAsyncDisposable
     public bool? SetAnnounce(string id, bool enabled)
     {
         if (!_bots.TryGetValue(id, out var handle)) return null;
+        // THREE PLACES, OR IT DOES NOT PERSIST -- and it claimed to while persisting nowhere.
+        //  1. the live flag, which Announce() reads on the next narration;
+        //  2. handle.Options, because Relog() re-spawns from THAT object, so a value only written to the roster
+        //     reverted on every reconnect;
+        //  3. the roster on disk, for a host restart.
+        // Options.Announce also had no reader at all until now (Spawn ignored it), so even the roster round-trip was
+        // dead: the toast said "persisted for reconnects" while the setting survived neither. A log that asserts a
+        // guarantee the code does not provide is worse than no log.
         handle.AnnounceChat = enabled;
-        Knowledge?.SaveRosterEntry(id, handle.Options with { Announce = enabled });
+        handle.Options = handle.Options with { Announce = enabled };
+        Knowledge?.SaveRosterEntry(id, handle.Options);
         handle.LogOperatorAction($"[announce] chat narration {(enabled ? "ON" : "OFF")} (persisted for reconnects)");
         return enabled;
     }

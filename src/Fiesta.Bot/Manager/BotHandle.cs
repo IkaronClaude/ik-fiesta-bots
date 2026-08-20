@@ -39,7 +39,10 @@ public sealed class BotHandle
     }
 
     public string Id { get; }
-    public BotSpawnOptions Options { get; }
+    /// <summary>The options this bot was spawned with. SETTABLE because a few of them are live toggles rather than
+    /// spawn-time facts: Relog re-spawns from this object, so anything changed at runtime that is not written back
+    /// here silently reverts on the next reconnect (see SetAnnounce).</summary>
+    public BotSpawnOptions Options { get; internal set; }
     public DateTime CreatedAtUtc { get; }
 
     public DateTime LastBashSentUtc { get; internal set; } = DateTime.MinValue;
