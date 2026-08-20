@@ -328,6 +328,12 @@ function vitals(l) {
 //
 // A map with no art (several instances) simply leaves the canvas background — the markers still draw,
 // so the panel degrades to what it was before rather than breaking.
+// Declared HERE, above both minimap() and tickTrace(): both are reached before the render loop's own code, and a
+// `let` read before its declaration is a TDZ ReferenceError rather than an undefined -- it would throw on the very
+// first poll or the first art load.
+// bigMapUrgent bypasses the repaint throttle for STRUCTURAL changes (a new map, or its art finishing loading), as
+// opposed to the routine "a trace point arrived" dirtying. See frame().
+let bigMapDirty = true, bigMapUrgent = false, lastBigDraw = 0;
 const mmCache = new Map();          // map -> {img, meta, failed}
 function minimap(map) {
   if (!map) return null;
@@ -335,14 +341,21 @@ function minimap(map) {
   if (e) return e.failed ? null : e;
   e = { img: null, meta: null, failed: false };
   mmCache.set(map, e);
+  // EVERY exit from this fetch repaints the big map, because every one of them CHANGES WHAT IT SHOULD DRAW --
+  // new art, or a settled "there is no art for this map". The combat map repaints on every animation frame, so it
+  // picked new art up ~16ms after the PNG decoded; the big map only repaints when bigMapDirty is set, and nothing
+  // here set it. It therefore kept the OLD map's art until some unrelated event (a trace point, a poll) dirtied it.
+  // Operator, 2026-08-20: "Combat map still changes over to the new background image like 0.2 secs before the big
+  // map. Feels weird!" -- that gap was this, plus the repaint throttle below.
+  const repaintBig = () => { bigMapDirty = true; bigMapUrgent = true; };
   fetch(`/minimap/${encodeURIComponent(map)}.json`).then(r => r.ok ? r.json() : null).then(m => {
-    if (!m || !m.worldWidth) { e.failed = true; return; }   // no grid loaded => cannot place art
+    if (!m || !m.worldWidth) { e.failed = true; repaintBig(); return; }   // no grid loaded => cannot place art
     e.meta = m;
     const im = new Image();
-    im.onload = () => { e.img = im; };
-    im.onerror = () => { e.failed = true; };
+    im.onload = () => { e.img = im; repaintBig(); };
+    im.onerror = () => { e.failed = true; repaintBig(); };
     im.src = `/minimap/${encodeURIComponent(map)}.png`;
-  }).catch(() => { e.failed = true; });
+  }).catch(() => { e.failed = true; repaintBig(); });
   return e;
 }
 // Paint the sub-rectangle of the minimap covering world [wx0,wy0]-[wx1,wy1] into the DESTINATION rect
@@ -842,10 +855,8 @@ function setMapHeader(code, display, travelCode, travelDisplay) {
   }
   $("#mapname").textContent = t;
 }
-// Declared HERE, with the rest of the trace state, and not down beside the render loop: tickTrace() is invoked
-// immediately at startup, well above that point, and a `let` read before its declaration is a TDZ ReferenceError
-// rather than an undefined -- it would have thrown on the very first poll.
-let bigMapDirty = true, lastBigDraw = 0;
+// (bigMapDirty/bigMapUrgent/lastBigDraw moved up beside mmCache -- minimap()'s load callbacks now set them, and
+// minimap() is defined above this point. Same TDZ reasoning as before, one step further up.)
 let serverSkewMs = 0;                       // serverNow - clientNow, learned on each /trace poll
 const serverNow = () => Date.now() + serverSkewMs;
 async function tickTrace() {
@@ -1244,6 +1255,7 @@ function applyStream(msg) {
     // and let the login burst refill it — the map NAME comes from the handoff itself, so the art switches
     // on this message rather than waiting for anything.
     lastEnt.map = msg.map; lastEnt.mobs = []; lastEnt.npcs = []; anim.clear();
+    bigMapDirty = true; bigMapUrgent = true;   // the big map's art and markers just became wrong -- repaint NOW
     if (lastEnt.self && msg.x != null) { lastEnt.self.x = msg.x; lastEnt.self.y = msg.y; selfAnim = null; }
     setMapHeader(msg.map, msg.mapDisplay,
                  lastEnt.self && lastEnt.self.travelTo, lastEnt.self && lastEnt.self.travelToDisplay);
@@ -1383,8 +1395,10 @@ const BIG_MAP_MIN_MS = 100;
 function frame() {
   if (lastEnt) { try { drawCombat(interpolated(lastEnt), evMaxHp); } catch {} }
   const now = Date.now();
-  if (bigMapDirty && now - lastBigDraw >= BIG_MAP_MIN_MS) {
-    bigMapDirty = false; lastBigDraw = now;
+  // The throttle exists to stop a 20,000-point trace repainting at 60fps; it must not also delay a map SWAP, which
+  // happens once and is exactly the moment the two canvases are compared side by side.
+  if (bigMapDirty && (bigMapUrgent || now - lastBigDraw >= BIG_MAP_MIN_MS)) {
+    bigMapDirty = false; bigMapUrgent = false; lastBigDraw = now;
     try { draw(serverNow()); } catch {}   // server clock: that is what point timestamps are in
   }
   requestAnimationFrame(frame);
