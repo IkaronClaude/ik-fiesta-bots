@@ -817,8 +817,12 @@ public sealed class BotApi
                 var oe = NewTable();
                 oe["idx"] = oi - 1;                  // wire objIdx is 0-based; oi is Lua's 1-based cursor
                 oe["type"] = o.Type; oe["mob"] = o.Mob; oe["item"] = o.Item; oe["count"] = o.Count;
+                // Mob is -1 when nothing names a source; `pickable` says the same thing without the caller having
+                // to know that, and without any chance of confusing it with mob id 0 (Slime).
+                oe["pickable"] = o.Pickable;
                 objs[oi++] = DynValue.NewTable(oe);
-                if (o.Mob != 0 && !mobIds.Contains(o.Mob)) mobIds.Add(o.Mob);
+                // >= 0, not != 0: "none" is -1 now, and mob id 0 is a real mob that belongs in this list.
+                if (o.Mob >= 0 && !mobIds.Contains(o.Mob)) mobIds.Add(o.Mob);
             }
             e["objectives"] = DynValue.NewTable(objs);
             if (q.ObjectiveMob > 0 && !mobIds.Contains(q.ObjectiveMob)) mobIds.Add(q.ObjectiveMob);
@@ -888,7 +892,7 @@ public sealed class BotApi
                     {
                         op[oi] = v.QuestObjProgress(id, oi - 1);
                         oi++;
-                        if (o.Mob != 0) wantMobs.Add(o.Mob);
+                        if (o.Mob >= 0) wantMobs.Add(o.Mob);   // -1 = no source named; 0 is a real mob
                         if (o.Item != 0) wantItems.Add(o.Item);
                     }
                     e["objProg"] = DynValue.NewTable(op);
@@ -1034,7 +1038,8 @@ public sealed class BotApi
             e["remoteAcceptable"] = q.RemoteAcceptable; e["questListVisible"] = q.IsWaitListView; e["remoteHandIn"] = q.RemoteHandIn;
             var objs = NewTable(); int oi = 1;
             foreach (var o in q.Objectives)
-            { var oe = NewTable(); oe["type"] = o.Type; oe["mob"] = o.Mob; oe["count"] = o.Count; oe["item"] = o.Item; objs[oi++] = DynValue.NewTable(oe); }
+            { var oe = NewTable(); oe["type"] = o.Type; oe["mob"] = o.Mob; oe["count"] = o.Count; oe["item"] = o.Item;
+              oe["pickable"] = o.Pickable; objs[oi++] = DynValue.NewTable(oe); }
             e["objectives"] = DynValue.NewTable(objs);
             t[i++] = DynValue.NewTable(e);
         }

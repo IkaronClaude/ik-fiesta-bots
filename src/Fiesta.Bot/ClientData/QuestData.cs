@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 
 namespace Fiesta.Bot.GameData;
 
@@ -93,8 +93,14 @@ public static class QuestData
                 if (b[o] == 0 && U16(o + 2) == 0) continue;
                 int itemId = U16(o + 2); int lot = U16(o + 4);
                 // Attach the dropping mob from the Action map so the collect objective knows what to kill
-                if (itemId != 0) objectives.Add(new QuestObjective(2,
-                    dropMobForItem.TryGetValue(itemId, out var dm) ? dm : 0, lot == 0 ? 1 : lot, itemId));
+                // -1, not 0, when the Action map names no dropping mob: 0 is a real mob id and would read as
+                // "Slime drops this". Pickable records the same fact positively for callers that would rather ask
+                // that question than infer it from a sentinel.
+                if (itemId != 0)
+                {
+                    bool known = dropMobForItem.TryGetValue(itemId, out var dm);
+                    objectives.Add(new QuestObjective(2, known ? dm : -1, lot == 0 ? 1 : lot, itemId, known));
+                }
             }
 
             // --- Rewards @516, stride 12
@@ -216,7 +222,16 @@ public sealed record QuestDef(
 public sealed record QuestTarget(bool IsNpc, int Id, bool ToKill, int Amount);
 
 /// <summary>A quest objective. : 1 = kill the mob, 2 = collect an item, 3 = find/visit a mob/NPC</summary>
-public sealed record QuestObjective(int Type, int Mob, int Count, int Item);
+/// <summary>A quest objective. <paramref name="Type"/>: 1 = kill the mob, 2 = collect an item, 3 = find/visit.
+///
+/// <paramref name="Mob"/> is <b>-1</b> when no mob is named, NEVER 0 — mob id 0 is a real mob (Slime), so using 0
+/// for "none" makes the two indistinguishable. That is not hypothetical: a collect objective with no known drop
+/// source stored Mob = 0, every reachability test then asked about Slime and answered yes, and quests that could
+/// never be started were graded workable. A whole class of dead quests hid behind it on a capped 40/40 board.
+///
+/// <paramref name="Pickable"/> says whether the data actually tells us where the item comes from. False means it is
+/// an ordinary world item — a herb, an ore — that the bot has no way to locate yet.</summary>
+public sealed record QuestObjective(int Type, int Mob, int Count, int Item, bool Pickable = true);
 
 /// <summary>A quest reward: (1=Fixed,2=Choice), (0=EXP,1=Money,2=Item,3=Fame), with item / for item rewards or otherwise</summary>
 public sealed record QuestRewardDef(int Method, int Type, int ItemId, int ItemCount, ulong Amount, int RawIndex = 0);
