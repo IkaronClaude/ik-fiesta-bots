@@ -1,4 +1,4 @@
-using Fiesta.Bot.Manager;
+﻿using Fiesta.Bot.Manager;
 using Fiesta.Bot.Pathfinding;
 using MoonSharp.Interpreter;
 
@@ -960,6 +960,17 @@ public sealed class BotApi
 
     /// <summary>Abandon a quest (NC_QUEST_GIVE_UP_REQ)</summary>
     public bool giveUpQuest(int id) => Ok(Wait(_mgr.GiveUpQuestAsync(Id, (ushort)id)));
+
+    /// <summary>The server's answer to our last give-up: {id=questId, err=code}, or nil if we have never abandoned one.
+    /// err 0 = abandoned; anything else = REFUSED and the quest is STILL HELD (so the log slot is still occupied).
+    /// giveUpQuest() only reports that the REQ went out - abandoning is irreversible, so read the ack, not the send.</summary>
+    public DynValue lastGiveUpResult()
+    {
+        if (View?.LastGiveUpResult is not { } r) return DynValue.Nil;
+        var t = NewTable();
+        t["id"] = r.QuestId; t["err"] = r.Err; t["ok"] = r.Err == 0;
+        return DynValue.NewTable(t);
+    }
 
     /// <summary>Start a quest by id (NC_QUEST_START_REQ) — the accept for menu/remote quests where clicking the NPC opens a se…</summary>
     public bool startQuest(int id) => Ok(Wait(_mgr.StartQuestAsync(Id, (ushort)id)));

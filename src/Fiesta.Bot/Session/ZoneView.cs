@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Navigation;
 using FiestaLibReloaded.Networking;
@@ -1432,6 +1432,11 @@ public sealed class ZoneView : IDisposable
     /// <summary>(questId, err) of the most recent accept result, or null</summary>
     public (int QuestId, int Err)? LastQuestAcceptResult { get; private set; }
 
+    /// <summary>(questId, err) of the most recent GIVE_UP_ACK, or null if we have never abandoned a quest this session.
+    /// err 0 = the server abandoned it; anything else = REFUSED and the quest is still held. Give-up is irreversible,
+    /// so the caller must read this rather than assume the REQ landed.</summary>
+    public (int QuestId, int Err)? LastGiveUpResult { get; private set; }
+
     /// <summary>Raised on every quest accept/start result (success or refusal) with (questId, err)</summary>
     public event Action<int, int>? QuestAcceptResult;
 
@@ -2765,11 +2770,28 @@ public sealed class ZoneView : IDisposable
             if (p.Length >= 2)
             {
                 int qid = p[0] | (p[1] << 8);
-                int err = p.Length >= 4 ? (p[2] | (p[3] << 8)) : 0;
-                _activeQuests.TryRemove(qid, out _);
-                _questProgress.TryRemove(qid, out _);
-                for (var oi = 0; oi < 5; oi++) _questObjProgress.TryRemove((qid << 16) | oi, out _);
-                _log?.Invoke($"[ZoneView] QUEST_GIVE_UP_ACK quest={qid} err={err} — removed from active");
+                // PROTO_NC_QUEST_GIVE_UP_ACK {nQuestID u16, ErrorCode u16}. A SHORT frame is a decode gap, not a
+                // success: without the code we cannot tell "abandoned" from "refused", so treat it as refused and say so.
+                int err = p.Length >= 4 ? (p[2] | (p[3] << 8)) : -1;
+                if (err == 0)
+                {
+                    LastGiveUpResult = (qid, 0);
+                    _activeQuests.TryRemove(qid, out _);
+                    _questProgress.TryRemove(qid, out _);
+                    for (var oi = 0; oi < 5; oi++) _questObjProgress.TryRemove((qid << 16) | oi, out _);
+                    _log?.Invoke($"[ZoneView] QUEST_GIVE_UP_ACK quest={QName(qid)} ACCEPTED - abandoned, removed from active");
+                }
+                else
+                {
+                    // The server REFUSED the abandon. Dropping it from _activeQuests here (which is what this did for
+                    // months) would make the driver believe a quest it still holds is gone: it would stop working it,
+                    // stop handing it in, and free a log slot that is not free - so every later accept fails at the cap
+                    // with no visible cause. The refusal is the answer; keep the quest and report the code.
+                    LastGiveUpResult = (qid, err);
+                    _log?.Invoke($"[ZoneView] CRUTCH[CRIT] QUEST_GIVE_UP_ACK quest={QName(qid)} REFUSED err={err}"
+                        + (p.Length >= 4 ? "" : $" (SHORT frame, {p.Length}B - no ErrorCode field; DECODE GAP)")
+                        + " - the quest is STILL HELD and still occupies a log slot");
+                }
             }
         }
         else if (op == OpQuestStartAck)
