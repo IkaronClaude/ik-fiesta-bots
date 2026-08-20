@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Manager;
@@ -1170,6 +1170,27 @@ public static class BotEndpoints
             // COMPANION .bdt (2026-07-21): attach the reverse-engineered 50-unit quadtree collision for the measuring-stick…
             try { grid.AttachBdt(Fiesta.Bot.Pathfinding.BdtGrid.Load(Path.Combine(dir, m + ".bdt"))); }
             catch { /* no .bdt / malformed → no companion, unchanged */ }
+
+            // PRECOMPUTED CONNECTIVITY (tools/IslandMapBuilder). Optional: with no cache the pathfinder behaves
+            // exactly as before, so a pod without the files loses the optimisation and nothing else. Defaults to
+            // BLOCKINFO_DIR, but that tree is read-only reference data, so ISLANDMAP_DIR usually points elsewhere.
+            // The loader refuses a cache whose dimensions disagree with this .shbd rather than trusting it.
+            try
+            {
+                var idir = Environment.GetEnvironmentVariable("ISLANDMAP_DIR");
+                if (string.IsNullOrWhiteSpace(idir)) idir = dir;
+                var im = Fiesta.Bot.Pathfinding.IslandMap.Load(idir, m, grid.WidthTiles, grid.HeightTiles);
+                if (im is null)
+                {
+                    var swI = System.Diagnostics.Stopwatch.StartNew();
+                    im = Fiesta.Bot.Pathfinding.IslandMap.Build(grid);
+                    swI.Stop();
+                    Console.Error.WriteLine($"[nav] no island cache for '{m}' — built it in {swI.ElapsedMilliseconds}ms "
+                        + $"({im.Islands.Count} island(s)); cheaper than one avoidable search, and reused for this process");
+                }
+                grid.AttachIslands(im);
+            }
+            catch { /* no cache / malformed -> search as before */ }
             return grid;
         }
         catch { return null; }

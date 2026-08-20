@@ -60,6 +60,11 @@ public sealed class BlockGrid
     /// <summary>Attach this map's scenario-door collision (from its .sbi )</summary>
     public void AttachDoors(DoorCollision? doors) => _doorCol ??= doors;
 
+    /// <summary>Precomputed connectivity for this map (tools/IslandMapBuilder), or null when no cache is present --
+    /// in which case every caller simply searches as it always did.</summary>
+    public IslandMap? Islands { get; private set; }
+    public void AttachIslands(IslandMap? islands) => Islands ??= islands;
+
     // --- COMPANION .bdt (server-collision candidate, reverse-engineered 2026-07-21)
     private BdtGrid? _bdt;
     /// <summary>Attach this map's .bdt quadtree collision</summary>

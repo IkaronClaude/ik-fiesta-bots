@@ -1325,9 +1325,27 @@ public sealed class BotApi
         // A route that IS reachable on the poisoned grid but needs more than this simply falls into the same
         // clear-and-retry, which finds it. Slightly more eager about dropping learned blocks; enormously cheaper.
         const int PoisonedGridBudget = 300_000;
+        // ASK THE CACHE BEFORE SEARCHING. Precomputed connectivity answers "is this even reachable" with an integer
+        // compare; A* answers it by expanding the whole map, which is what turned a 511-unit walk into 357 seconds.
+        // One-way on purpose: different islands PROVES unreachable, same island proves nothing (see IslandMap).
+        var (stx0, sty0) = grid.WorldToTile(pos.X, pos.Y);
+        var (gtx0, gty0) = grid.WorldToTile(x, y);
+        if (grid.Islands is { } isl && isl.DefinitelyUnreachable(stx0, sty0, gtx0, gty0))
+        {
+            _handle.Log($"[nav] walkTo ({x},{y}) on {map}: UNREACHABLE by precomputed connectivity — "
+                + $"start island {isl.At(stx0, sty0)} != goal island {isl.At(gtx0, gty0)}. No search run "
+                + $"({sw.ElapsedMilliseconds}ms); the two are not joined on this map's .shbd at all.");
+            return false;
+        }
+        // Race both directions. The cost of a search is dominated by WHICH END it starts from, not by distance:
+        // measured over 455 random reachable pairs on five maps, 226,449ms one-way against 42,816ms raced (5.3x),
+        // with single pairs as lopsided as 1ms vs 2292ms for the identical route. Nothing about the endpoints
+        // predicts which end is the bad one, so run both and keep the winner.
+        // NOTE the tail is NOT fixed by this: worst single search went 11,355ms -> 9,933ms, because when both
+        // directions are slow there is nothing to win. That is what the precomputed gate/POI graph is for.
         var path = grid.RuntimeBlockedCount > 0
-            ? PathFinder.FindPath(grid, pos.X, pos.Y, x, y, PoisonedGridBudget)
-            : PathFinder.FindPath(grid, pos.X, pos.Y, x, y);
+            ? PathFinder.FindPathBidirectional(grid, pos.X, pos.Y, x, y, PoisonedGridBudget)
+            : PathFinder.FindPathBidirectional(grid, pos.X, pos.Y, x, y);
         if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
         {
             // UNREACHABLE on the runtime-augmented grid, but learned MOVEFAIL blocks may have wrongly SEVERED a route

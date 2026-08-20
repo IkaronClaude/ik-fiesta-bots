@@ -1,4 +1,4 @@
-namespace Fiesta.Bot.Pathfinding;
+﻿namespace Fiesta.Bot.Pathfinding;
 
 /// <summary>A* over a (8-directional, no corner-cutting through blocked diagonals)</summary>
 public static class PathFinder
@@ -69,7 +69,7 @@ public static class PathFinder
 
     public static IReadOnlyList<(uint X, uint Y)> FindPath(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
-        int maxExpansions = 8_000_000, double margin = 2)
+        int maxExpansions = 8_000_000, double margin = 2, CancellationToken ct = default)
     {
         // Use the HIGHEST obstacle-inflation margin that yields a path, stepping DOWN only as needed (operator 2026-07-1…
         double[] steps = margin >= 2 ? new[] { 2.0, 1.5, 1.0, 0.5, 0.0 }
@@ -79,23 +79,70 @@ public static class PathFinder
         IReadOnlyList<(uint X, uint Y)> path = System.Array.Empty<(uint, uint)>();
         foreach (var m in steps)
         {
-            path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, m, GreedyWeightNum, GreedyWeightDen);
+            path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, m, GreedyWeightNum, GreedyWeightDen, ct: ct);
             if (path.Count > 0) { used = m; break; }
         }
         // Completeness fallback: the greedy heuristic is INADMISSIBLE, so on a route whose direct corridor is walled it…
         if (path.Count == 0)
             foreach (var m in steps)
             {
-                path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, m, 1, 1);
+                path = FindPathCore(grid, startX, startY, goalX, goalY, maxExpansions, m, 1, 1, ct: ct);
                 if (path.Count > 0) { used = m; break; }
             }
         // Disc-swept line-of-sight smoothing at the margin we actually pathed with (see SmoothLineOfSight)
         return SmoothLineOfSight(grid, path, used);
     }
 
+    /// <summary>Search FORWARD and BACKWARD at the same time and keep whichever finishes first.
+    ///
+    /// WHY: the cost of a search is dominated by WHICH END IT STARTS FROM, not by the distance. Measured on
+    /// EldGbl02 over random reachable pairs: (8340,9215)->(5828,9915) takes 1ms and the identical route reversed
+    /// takes 2292ms; (6209,6578)->(3428,3728) is 991ms one way and 57ms the other. The worst start random sampling
+    /// found cost ~10.5 SECONDS to every destination tried, and 388ms from the far end -- and it was not walled in,
+    /// it reaches a near neighbour in 0ms. The greedy heuristic simply leads the search into a large dead area from
+    /// one end and not from the other.
+    ///
+    /// Nothing about the two endpoints predicts which end is the bad one, so do not try to choose: run both and
+    /// take the winner. The grid is undirected, so the loser's answer would have been the same path reversed.
+    ///
+    /// This is a RACE, not a meet-in-the-middle bidirectional A*. A true bidirectional search would be better
+    /// still, but the heuristic here is deliberately inadmissible (GreedyWeight) and meeting two inadmissible
+    /// frontiers correctly is a real piece of work; racing needs no new pathfinder and cannot change which paths
+    /// are found -- only how fast one of them arrives.
+    ///
+    /// An EMPTY result never wins. A direction that finds nothing is not evidence there is nothing to find (it may
+    /// have been cancelled, or hit its budget), so we wait for the other one before reporting failure.</summary>
+    public static IReadOnlyList<(uint X, uint Y)> FindPathBidirectional(
+        BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
+        int maxExpansions = 8_000_000, double margin = 2)
+    {
+        using var cts = new CancellationTokenSource();
+        var token = cts.Token;
+        var fwd = Task.Run(() => FindPath(grid, startX, startY, goalX, goalY, maxExpansions, margin, token), token);
+        var rev = Task.Run(() => FindPath(grid, goalX, goalY, startX, startY, maxExpansions, margin, token), token);
+
+        var pending = new List<Task<IReadOnlyList<(uint X, uint Y)>>> { fwd, rev };
+        while (pending.Count > 0)
+        {
+            var done = Task.WhenAny(pending).GetAwaiter().GetResult();
+            pending.Remove(done);
+            IReadOnlyList<(uint X, uint Y)> path;
+            try { path = done.GetAwaiter().GetResult(); }
+            catch (OperationCanceledException) { continue; }
+            if (path.Count == 0) continue;                 // not an answer -- let the other direction speak
+            cts.Cancel();
+            if (!ReferenceEquals(done, rev)) return path;
+            var flipped = new (uint X, uint Y)[path.Count];  // reverse: the backward search walked goal -> start
+            for (int i = 0; i < path.Count; i++) flipped[i] = path[path.Count - 1 - i];
+            return flipped;
+        }
+        return Array.Empty<(uint, uint)>();
+    }
+
     private static IReadOnlyList<(uint X, uint Y)> FindPathCore(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
-        int maxExpansions, double margin, int heurNum, int heurDen, bool[]? corridor = null, int corridorW = 0)
+        int maxExpansions, double margin, int heurNum, int heurDen, bool[]? corridor = null, int corridorW = 0,
+        CancellationToken ct = default)
     {
         var (sx, sy) = grid.WorldToTile(startX, startY);
         var (gx, gy) = grid.WorldToTile(goalX, goalY);
@@ -127,6 +174,9 @@ public static class PathFinder
         {
             if (cur.x == gx && cur.y == gy) return Reconstruct(grid, came, Id(gx, gy), W);
             if (++expansions > maxExpansions) break;
+            // Checked rarely enough to be free (once per 4096 expansions) and often enough that the losing half of a
+            // raced pair stops within milliseconds instead of running its full budget on another core.
+            if ((expansions & 0xFFF) == 0 && ct.IsCancellationRequested) break;
             int curG = g[Id(cur.x, cur.y)];
 
             foreach (var (dx, dy) in Neighbors)
