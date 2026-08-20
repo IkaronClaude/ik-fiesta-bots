@@ -1313,7 +1313,21 @@ public sealed class BotApi
         // script asked -- a route computed from a stale start point is a route the server rejects.
         if (_handle.Position is not { } pos) return false;
         if (!string.Equals(_handle.CurrentMap, map, StringComparison.OrdinalIgnoreCase)) return false;
-        var path = PathFinder.FindPath(grid, pos.X, pos.Y, x, y);
+        // BOUND THE SEARCH WE ARE ABOUT TO THROW AWAY. When learned MOVEFAIL blocks are on the grid and they have
+        // severed the route, the very next thing this method does is clear them and search again on a clean grid --
+        // so proving unreachability EXHAUSTIVELY against the poisoned one is work with no consumer.
+        // Unbounded, that first search is 8,000,000 expansions against a 2048x2048 = 4.19M-tile grid, and it is
+        // exactly how a 511-unit walk cost 357 SECONDS live on 2026-08-20 (EldGbl02, (9130,8360)->(9608,8179), a
+        // straight line that samples 0/171 blocked). The first search ground the whole map to answer "no"; the
+        // clear-and-retry below then returned 58 waypoints in milliseconds. Meanwhile the bot stood in
+        // phase=restock through three MOTIONLESS watchdogs and a HARD-WEDGE at 271s, and moved the instant the
+        // route came back -- the driver was never at fault, and every wedge message blamed it.
+        // A route that IS reachable on the poisoned grid but needs more than this simply falls into the same
+        // clear-and-retry, which finds it. Slightly more eager about dropping learned blocks; enormously cheaper.
+        const int PoisonedGridBudget = 300_000;
+        var path = grid.RuntimeBlockedCount > 0
+            ? PathFinder.FindPath(grid, pos.X, pos.Y, x, y, PoisonedGridBudget)
+            : PathFinder.FindPath(grid, pos.X, pos.Y, x, y);
         if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
         {
             // UNREACHABLE on the runtime-augmented grid, but learned MOVEFAIL blocks may have wrongly SEVERED a route
