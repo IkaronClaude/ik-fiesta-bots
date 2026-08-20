@@ -446,10 +446,19 @@ do
       local mk, tk = memoK[k], tickK[k]
       w = function(...)
         if mk or tk then
-          local n = select('#', ...)
-          if n <= 1 then
-            local key = n == 0 and NILV or ...
-            if key ~= nil then
+          -- DO NOT USE select('#', ...) HERE. Under MoonSharp it reports 1 for a call made with NO arguments, so
+          -- `n == 0` was never true, the key expression fell through to `...` (empty, therefore nil), the
+          -- `key ~= nil` test failed, and every ZERO-ARGUMENT function silently skipped the memo. map has been
+          -- enrolled since the memo was written and was still measured at 79 real crossings in a single tick;
+          -- ticks at 190. Only the id-keyed entries (mobMaxHp, questName, skillDamageAvg) ever cached, which is
+          -- why the hit counter showed traffic while the enrolled scalars showed none.
+          -- Reading the varargs directly is exact and needs no count: a2 is non-nil only for a genuine 2+ arg
+          -- call, and a1 == nil covers both the no-argument case and a single nil argument, which share a bucket
+          -- and cannot disagree because a nil argument cannot change these results.
+          local a1, a2 = ...
+          if a2 == nil then
+            local key = a1 == nil and NILV or a1
+            if true then
               local store = mk and memo or tickmemo
               local byArg = store[k]
               if byArg == nil then byArg = {}; store[k] = byArg end
