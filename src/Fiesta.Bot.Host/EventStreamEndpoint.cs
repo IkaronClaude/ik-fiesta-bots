@@ -232,15 +232,21 @@ public static class EventStreamEndpoint
             {
                 AttachZoneView(bot.ZoneView);      // survive a map handoff (see AttachZoneView)
 
+                // ONE-SHOT EVENTS BEFORE THE RESEND, and the order matters more than it looks.
+                // A map change queues BOTH a t:"map" here and resendState below. Draining second put "state" on the
+                // wire first, and the client's map handler clears mobs/npcs -- so it wiped the full state that had
+                // just arrived. FullState -> EntityPanel is the ONLY path that carries the whole-map NPC seed (the
+                // per-entity path walks NearbyNpcs, which is AoI-only), so the gate and NPC layer stayed EMPTY after
+                // every map change until the socket reconnected. Operator, watching it live: "Bot just arrived in
+                // Burning Hill WITHOUT NPC (gate) SEED! npcs are only filling in as we get near."
+                while (oob.Reader.TryRead(out var msg)) await SendAsync(ws, msg, ct);
+
                 if (resendState)
                 {
                     resendState = false;
                     lock (dirty) { dirty.Clear(); gone.Clear(); }   // they named the OLD map's handles
                     await SendAsync(ws, FullState(bot, manager, "state"), ct);
                 }
-
-                // One-shot events first — they are the "what just happened" narration
-                while (oob.Reader.TryRead(out var msg)) await SendAsync(ws, msg, ct);
 
                 // Then the coalesced entity state
                 ushort[] changed, removed;
