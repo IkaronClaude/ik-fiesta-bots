@@ -65,6 +65,27 @@ public sealed class BlockGrid
     public IslandMap? Islands { get; private set; }
     public void AttachIslands(IslandMap? islands) => Islands ??= islands;
 
+    /// <summary>This map's convex decomposition, built once and SHARED by every bot on the map -- the grid itself
+    /// is cached per map, so hanging the mesh here means one decomposition serves the whole fleet rather than one
+    /// per bot. Lazy so that two bots entering a map at the same moment cannot both build it (observed live with
+    /// the island maps: RouCos02 built twice, 688ms and 693ms, one result discarded).</summary>
+    private Lazy<NavMesh>? _mesh;
+    public NavMesh Mesh(double margin = PathFinder.DefaultMargin)
+    {
+        var l = _mesh;
+        if (l is null || Math.Abs(l.Value.Margin - margin) > 1e-9)
+        {
+            l = new Lazy<NavMesh>(() => NavMesh.Build(this, margin), LazyThreadSafetyMode.ExecutionAndPublication);
+            _mesh = l;
+        }
+        return l.Value;
+    }
+    /// <summary>Seed the mesh from a cache file so the first request does not pay for the decomposition.</summary>
+    public void AttachMesh(NavMesh? mesh)
+    {
+        if (mesh is not null) _mesh ??= new Lazy<NavMesh>(mesh);
+    }
+
     // --- COMPANION .bdt (server-collision candidate, reverse-engineered 2026-07-21)
     private BdtGrid? _bdt;
     /// <summary>Attach this map's .bdt quadtree collision</summary>

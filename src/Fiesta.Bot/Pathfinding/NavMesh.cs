@@ -123,7 +123,7 @@ public sealed class NavMesh
 
     /// <summary>Greedy maximal rectangles. NOT a minimal partition -- a smarter decomposition yields fewer regions,
     /// so the counts above are an upper bound rather than the best achievable.</summary>
-    public static NavMesh Build(BlockGrid grid, double margin = 2)
+    public static NavMesh Build(BlockGrid grid, double margin = PathFinder.DefaultMargin)
     {
         int W = grid.WidthTiles, H = grid.HeightTiles;
         var pass = new bool[W * H];

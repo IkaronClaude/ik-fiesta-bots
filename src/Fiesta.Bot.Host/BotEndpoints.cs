@@ -1191,6 +1191,22 @@ public static class BotEndpoints
                 grid.AttachIslands(im);
             }
             catch { /* no cache / malformed -> search as before */ }
+
+            // NAVMESH: seed from the cache when NAVMESH_DIR has one, otherwise the grid builds it lazily on first
+            // use. Either way it lives on the SHARED per-map grid, so one decomposition serves every bot on the map.
+            try
+            {
+                var ndir = Environment.GetEnvironmentVariable("NAVMESH_DIR");
+                if (!string.IsNullOrWhiteSpace(ndir))
+                {
+                    var nm = Fiesta.Bot.Pathfinding.NavMesh.Load(Path.Combine(ndir, m + ".navmesh"),
+                                                                 grid.WidthTiles, grid.HeightTiles, Fiesta.Bot.Pathfinding.PathFinder.DefaultMargin);
+                    grid.AttachMesh(nm);
+                    if (nm is not null)
+                        Console.Error.WriteLine($"[nav] navmesh for '{m}' loaded from cache: {nm.Rects.Count} regions");
+                }
+            }
+            catch { /* no cache / malformed -> search as before */ }
             return grid;
         }
         catch { return null; }

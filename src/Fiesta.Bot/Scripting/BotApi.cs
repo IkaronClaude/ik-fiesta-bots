@@ -1304,6 +1304,19 @@ public sealed class BotApi
 
     /// <summary>The pathfind + walk, run on the NavPlanner's worker thread. Returns whether a route was issued.
     /// This is the ORIGINAL walkTo body: nothing about the search changed, it just does not block the tick.</summary>
+    /// <summary>Mesh path in tiles -> world waypoints, in the shape the walker expects. Returns null when the mesh
+    /// cannot route it, so the caller falls back to the search rather than standing still.</summary>
+    private static IReadOnlyList<(uint X, uint Y)>? PathFinder2Tiles(
+        Fiesta.Bot.Pathfinding.BlockGrid grid, Fiesta.Bot.Pathfinding.NavMesh mesh,
+        int sx, int sy, int gx, int gy)
+    {
+        var tiles = Fiesta.Bot.Pathfinding.NavMeshPath.Find(mesh, sx, sy, gx, gy);
+        if (tiles is null || tiles.Count < 2) return null;
+        var outp = new List<(uint X, uint Y)>(tiles.Count);
+        foreach (var (tx, ty) in tiles) outp.Add(grid.TileToWorld(tx, ty));
+        return outp;
+    }
+
     private bool RouteAndWalk((string Map, uint X, uint Y) req)
     {
         var (map, x, y) = req;
@@ -1343,9 +1356,32 @@ public sealed class BotApi
         // predicts which end is the bad one, so run both and keep the winner.
         // NOTE the tail is NOT fixed by this: worst single search went 11,355ms -> 9,933ms, because when both
         // directions are slow there is nothing to win. That is what the precomputed gate/POI graph is for.
-        var path = grid.RuntimeBlockedCount > 0
-            ? PathFinder.FindPathBidirectional(grid, pos.X, pos.Y, x, y, PoisonedGridBudget)
-            : PathFinder.FindPathBidirectional(grid, pos.X, pos.Y, x, y);
+        // NAVMESH FIRST. Measured over 649 pairs on five maps: A* 322,511ms against 827ms (390x), worst single
+        // search 9,938ms against 20ms, and 0 of 649 mesh paths cross excluded ground under a supercover audit
+        // versus 533 of 649 for A*. So this is both far faster and stricter than what it replaces.
+        // The mesh is built per map on the SHARED grid, so every bot on a map reuses one decomposition.
+        // It does NOT know about runtime MOVEFAIL blocks -- it is carved from the static .shbd -- so when the grid
+        // has learned blocks we still go through the search, which does respect them. That is the honest division:
+        // the mesh is for the common case, the search for the case where we have learned the map lies to us.
+        IReadOnlyList<(uint X, uint Y)> path = Array.Empty<(uint, uint)>();
+        if (grid.RuntimeBlockedCount == 0)
+        {
+            try
+            {
+                var mesh = grid.Mesh();
+                var tp = PathFinder2Tiles(grid, mesh, stx0, sty0, gtx0, gty0);
+                if (tp is { Count: > 1 }) path = tp;
+            }
+            catch (Exception ex)
+            {
+                // A mesh failure must never strand the bot: fall through to the search rather than refuse to move.
+                _handle.Log($"[nav] navmesh path failed ({ex.GetType().Name}) — falling back to search");
+            }
+        }
+        if (path.Count == 0)
+            path = grid.RuntimeBlockedCount > 0
+                ? PathFinder.FindPathBidirectional(grid, pos.X, pos.Y, x, y, PoisonedGridBudget)
+                : PathFinder.FindPathBidirectional(grid, pos.X, pos.Y, x, y);
         if (path.Count == 0 && grid.RuntimeBlockedCount > 0)
         {
             // UNREACHABLE on the runtime-augmented grid, but learned MOVEFAIL blocks may have wrongly SEVERED a route

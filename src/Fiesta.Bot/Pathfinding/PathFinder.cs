@@ -7,6 +7,23 @@ public static class PathFinder
         { (1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1) };
 
     // A modest heuristic weight makes A* greedier — it explores roughly a corridor toward the goal instead of a full…
+    /// <summary>Obstacle-inflation margin, in tiles. ZERO: the clearance band is gone.
+    ///
+    /// It was added 2026-06-30 because "paths hugged obstacle edges -> the straight-run MOVERUN between waypoints"
+    /// failed. Three weeks later, on 2026-07-22, the actual cause of those failures was found -- ShbdTileShift, the
+    /// .shbd blocked-bit at index (i,j) representing the world cell one tile over in EACH axis -- and the workaround
+    /// was never removed.
+    ///
+    /// Measured 2026-08-20, which is what settles it: the search was not even enforcing its own margin. Validated in
+    /// world space at ~6 samples per tile with no rounding, A* paths entered the clearance band on 62/66, 41/66 and
+    /// 32/66 routes on EldGbl02, Job1_Dn01 and Eld -- and crossed an actual WALL zero times, with the longest
+    /// excursion 3 world units. The fleet has been walking those paths for weeks.
+    ///
+    /// So the band cost a five-rung margin ladder (run twice, greedy then admissible), a whole-map clearance
+    /// transform, and the island/navmesh disagreement -- while not actually being applied. One constant, one line
+    /// to put back if live movement ever disagrees.</summary>
+    public const double DefaultMargin = 0;
+
     private const int GreedyWeightNum = 2, GreedyWeightDen = 1; // 2.0x — fast on open maps
 
     /// <summary>Raised when the coarse pathfinder fails and we fall back to the unconstrained search. Never routine.</summary>
@@ -27,7 +44,7 @@ public static class PathFinder
     /// </summary>
     public static IReadOnlyList<(uint X, uint Y)> FindPathFast(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
-        int maxExpansions = 8_000_000, double margin = 2)
+        int maxExpansions = 8_000_000, double margin = DefaultMargin)
     {
         double[] steps = margin >= 2 ? new[] { 2.0, 1.5, 1.0, 0.5, 0.0 }
                         : margin > 0 ? new[] { margin, 0.0 }
@@ -69,7 +86,7 @@ public static class PathFinder
 
     public static IReadOnlyList<(uint X, uint Y)> FindPath(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
-        int maxExpansions = 8_000_000, double margin = 2, CancellationToken ct = default)
+        int maxExpansions = 8_000_000, double margin = DefaultMargin, CancellationToken ct = default)
     {
         // Use the HIGHEST obstacle-inflation margin that yields a path, stepping DOWN only as needed (operator 2026-07-1…
         double[] steps = margin >= 2 ? new[] { 2.0, 1.5, 1.0, 0.5, 0.0 }
@@ -111,7 +128,7 @@ public static class PathFinder
     /// potentially two.</summary>
     public static IReadOnlyList<(uint X, uint Y)> FindPathDijkstra(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
-        int maxExpansions = 8_000_000, double margin = 2, CancellationToken ct = default)
+        int maxExpansions = 8_000_000, double margin = DefaultMargin, CancellationToken ct = default)
     {
         double[] steps = margin >= 2 ? new[] { 2.0, 1.5, 1.0, 0.5, 0.0 }
                         : margin > 0 ? new[] { margin, 0.0 }
@@ -145,7 +162,7 @@ public static class PathFinder
     /// have been cancelled, or hit its budget), so we wait for the other one before reporting failure.</summary>
     public static IReadOnlyList<(uint X, uint Y)> FindPathBidirectional(
         BlockGrid grid, uint startX, uint startY, uint goalX, uint goalY,
-        int maxExpansions = 8_000_000, double margin = 2)
+        int maxExpansions = 8_000_000, double margin = DefaultMargin)
     {
         // Three searches advanced IN LOCKSTEP on this thread -- a slice of each in turn, first to finish wins.
         //
