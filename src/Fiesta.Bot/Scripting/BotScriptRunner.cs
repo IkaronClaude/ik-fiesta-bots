@@ -419,7 +419,17 @@ do
   -- same tick (a buy, a hand-in), and a cached answer would make the bot re-decide on a state it has already
   -- changed. skillInfo is out for a different reason -- it returns a TABLE, and the rule here is scalars only so
   -- no caller can write through a shared reference.
-  local tickK = { map = true, ticks = true, level = true, mounted = true, skillDamageAvg = true }
+  -- The quest/inventory reads below are SERVER state. Nothing we do in a tick changes them synchronously: a
+  -- hand-in, a buy, a sell all take effect when the server's packet arrives, which happens asynchronously and
+  -- lands on a later tick. So within one tick they are constant by construction, and caching them yields a
+  -- CONSISTENT snapshot rather than a torn one where the same question answers differently at the top and the
+  -- bottom of a decision. (An earlier version of this list left them out for fear of caching across our own
+  -- action; that fear had the causality backwards -- our action does not write these, the server does.)
+  -- skillInfo stays out: it returns a TABLE, and the rule here is scalars only so no caller can write through a
+  -- shared reference.
+  local tickK = { map = true, ticks = true, level = true, mounted = true, skillDamageAvg = true,
+                  questDone = true, questStatus = true, questProgress = true,
+                  invenCountOf = true, invenCount = true, itemUseFails = true }
   __prof.memo = {}
   __prof.tick = {}
   local memo, tickmemo = __prof.memo, __prof.tick
