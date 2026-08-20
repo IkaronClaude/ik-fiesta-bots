@@ -1598,6 +1598,13 @@ public sealed class ZoneView : IDisposable
             }
             if (_npcs.TryRemove(hnd, out var goneNpc)) StashRecentNpc(hnd, goneNpc); // sticky-hold mobs through AoI flicker
             NoteEntityGone(hnd);
+            // LEAVING VIEW INVALIDATES THE SELECTION TOO, exactly as death and teleport already do. Without this the
+            // assertion outlived the entity: MageFresh 2026-08-20 reported target h=6755 held for 225 SECONDS with
+            // inView=false and kind="unseen". Combat still recovered, because attacking a DIFFERENT handle re-sends
+            // TARGETTING on the CurrentTarget != target check -- but re-engaging the SAME handle after it flickered
+            // out and back would skip the re-assert, and every readout of our target was a handle that is not there.
+            // Re-asserting on a flicker costs one TARGETTING packet, which is what the real client sends anyway.
+            if (hnd == CurrentTargetHandle) TargetInvalidated?.Invoke($"target h={hnd} left view");
         }
         else if (op == OpReallyKill)
         {
