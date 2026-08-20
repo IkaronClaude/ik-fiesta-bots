@@ -62,8 +62,23 @@ public sealed class BlockGrid
 
     /// <summary>Precomputed connectivity for this map (tools/IslandMapBuilder), or null when no cache is present --
     /// in which case every caller simply searches as it always did.</summary>
-    public IslandMap? Islands { get; private set; }
-    public void AttachIslands(IslandMap? islands) => Islands ??= islands;
+    // LAZY, for the same reason the mesh is. Without it every bot that enters a map builds its own copy: observed
+    // live at 19:06 as RouCos02 built twice (688ms and 693ms, one discarded), and again far worse after the navmesh
+    // landed -- five bots restarting together, each racing an island build against the others AND against the mesh
+    // builds, drove a single RouCos02 island build to 16,374ms and RouN to 5,884ms on a 1.5-core pod. One build per
+    // map, shared by the whole fleet.
+    private Lazy<IslandMap>? _islands;
+    public IslandMap? Islands => _islands?.Value;
+    public void AttachIslands(IslandMap? islands)
+    {
+        if (islands is not null) _islands ??= new Lazy<IslandMap>(islands);
+    }
+    /// <summary>Ensure an island map exists, building it once for all callers if no cache seeded one.</summary>
+    public IslandMap IslandsOrBuild()
+    {
+        _islands ??= new Lazy<IslandMap>(() => IslandMap.Build(this), LazyThreadSafetyMode.ExecutionAndPublication);
+        return _islands.Value;
+    }
 
     /// <summary>This map's convex decomposition, built once and SHARED by every bot on the map -- the grid itself
     /// is cached per map, so hanging the mesh here means one decomposition serves the whole fleet rather than one

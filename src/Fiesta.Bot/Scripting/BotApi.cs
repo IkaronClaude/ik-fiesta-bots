@@ -1343,7 +1343,7 @@ public sealed class BotApi
         // One-way on purpose: different islands PROVES unreachable, same island proves nothing (see IslandMap).
         var (stx0, sty0) = grid.WorldToTile(pos.X, pos.Y);
         var (gtx0, gty0) = grid.WorldToTile(x, y);
-        if (grid.Islands is { } isl && isl.DefinitelyUnreachable(stx0, sty0, gtx0, gty0))
+        if (grid.IslandsOrBuild() is { } isl && isl.DefinitelyUnreachable(stx0, sty0, gtx0, gty0))
         {
             _handle.Log($"[nav] walkTo ({x},{y}) on {map}: UNREACHABLE by precomputed connectivity — "
                 + $"start island {isl.At(stx0, sty0)} != goal island {isl.At(gtx0, gty0)}. No search run "
@@ -1368,7 +1368,14 @@ public sealed class BotApi
         {
             try
             {
+                var swM = System.Diagnostics.Stopwatch.StartNew();
                 var mesh = grid.Mesh();
+                swM.Stop();
+                // Only the FIRST call pays; a shared Lazy means every later caller gets it for nothing. Logged
+                // because a lazily-built mesh had no log line at all, which left a multi-second startup cost
+                // invisible on the pod.
+                if (swM.ElapsedMilliseconds > 50)
+                    _handle.Log($"[nav] navmesh for {map} built in {swM.ElapsedMilliseconds}ms ({mesh.Rects.Count} regions) — shared by all bots on this map");
                 var tp = PathFinder2Tiles(grid, mesh, stx0, sty0, gtx0, gty0);
                 if (tp is { Count: > 1 }) path = tp;
             }

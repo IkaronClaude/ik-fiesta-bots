@@ -1180,15 +1180,11 @@ public static class BotEndpoints
                 var idir = Environment.GetEnvironmentVariable("ISLANDMAP_DIR");
                 if (string.IsNullOrWhiteSpace(idir)) idir = dir;
                 var im = Fiesta.Bot.Pathfinding.IslandMap.Load(idir, m, grid.WidthTiles, grid.HeightTiles);
-                if (im is null)
-                {
-                    var swI = System.Diagnostics.Stopwatch.StartNew();
-                    im = Fiesta.Bot.Pathfinding.IslandMap.Build(grid);
-                    swI.Stop();
-                    Console.Error.WriteLine($"[nav] no island cache for '{m}' — built it in {swI.ElapsedMilliseconds}ms "
-                        + $"({im.Islands.Count} island(s)); cheaper than one avoidable search, and reused for this process");
-                }
+                // Seed from cache if present; otherwise leave it to the grid's LAZY builder, so concurrent bots
+                // entering the same map share one build instead of racing several.
                 grid.AttachIslands(im);
+                if (im is null)
+                    Console.Error.WriteLine($"[nav] no island cache for '{m}' — will build once, lazily, shared by all bots");
             }
             catch { /* no cache / malformed -> search as before */ }
 
