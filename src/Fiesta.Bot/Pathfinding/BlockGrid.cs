@@ -1,4 +1,4 @@
-namespace Fiesta.Bot.Pathfinding;
+﻿namespace Fiesta.Bot.Pathfinding;
 
 public sealed class BlockGrid
 {
@@ -269,6 +269,12 @@ public sealed class BlockGrid
 
     // Runtime "server-blocked" tiles LEARNED from MOVEFAIL: the SHBD says a tile is walkable but the server rejected…
     private Dictionary<int, long>? _rtBlocked;
+
+    // HOW MANY TIMES THE SERVER HAS REFUSED EACH CELL. A cell MOVEFAILed once may well be a desync artefact; a cell
+    // refused again and again is a WALL the .shbd does not know about (a closed scenario door, most often), and it
+    // is the single most valuable thing the nav has learned. The wedge recovery used to delete it along with
+    // everything else, which is what made the wedge permanent -- see ClearRuntimeBlocked.
+    private Dictionary<int, int>? _rtHits;
     private readonly object _rtLock = new();
     private bool RtBlocked(int tx, int ty)
     {
@@ -288,7 +294,7 @@ public sealed class BlockGrid
     {
         if ((uint)tx >= (uint)WidthTiles || (uint)ty >= (uint)HeightTiles) return;
         bool isNew;
-        lock (_rtLock) { _rtBlocked ??= new(); isNew = !_rtBlocked.ContainsKey(ty * WidthTiles + tx); _rtBlocked[ty * WidthTiles + tx] = long.MaxValue; }
+        lock (_rtLock) { _rtBlocked ??= new(); _rtHits ??= new(); int k = ty * WidthTiles + tx; isNew = !_rtBlocked.ContainsKey(k); _rtBlocked[k] = long.MaxValue; _rtHits[k] = _rtHits.TryGetValue(k, out var hp) ? hp + 1 : 1; }
         if (isNew) _clearance = null; // NEW block → re-inflate obstacle margins around it on next use
     }
     /// <summary>Mark a tile server-blocked with a short TTL — for a SCENARIO INSTANCE MOVEFAIL, where the rejected cell is oft…</summary>
@@ -303,17 +309,42 @@ public sealed class BlockGrid
             int key = ty * WidthTiles + tx;
             isNew = !_rtBlocked.ContainsKey(key);
             if (!_rtBlocked.TryGetValue(key, out var cur) || (cur != long.MaxValue && expiry > cur)) _rtBlocked[key] = expiry;
+            _rtHits ??= new();
+            _rtHits[key] = _rtHits.TryGetValue(key, out var h) ? h + 1 : 1;   // re-confirmed by another refusal
         }
         if (isNew) _clearance = null; // NEW block → re-inflate obstacle margins around it on next use
     }
     /// <summary>Count of learned server-blocked tiles (diagnostics)</summary>
     public int RuntimeBlockedCount { get { lock (_rtLock) return _rtBlocked?.Count ?? 0; } }
 
-    /// <summary>Forget all MOVEFAIL-learned runtime blocks</summary>
-    public void ClearRuntimeBlocked()
+    /// <summary>Forget MOVEFAIL-learned runtime blocks, KEEPING any cell the server has refused at least
+    /// <paramref name="keepAtHits"/> times (0 = forget everything, which is what a map load wants).
+    /// Returns how many blocks were KEPT.
+    /// WHY THE FILTER EXISTS: the wedge recovery clears these on the theory that accumulated blocks have boxed the
+    /// bot in. That is a real failure, but the clear was indiscriminate, so it also deleted the cell the server was
+    /// refusing RIGHT THEN -- and then re-pathed "on the clean .shbd" straight back into it. Measured on MageFresh
+    /// 2026-08-20 12:29 in Job1_Dn01: block cell (337,489), streak to 8, clear, re-path, MOVEFAIL at the same
+    /// (2113,3050), forever, with `total 1` never growing because the one real block was wiped every cycle. The
+    /// escape hatch was destroying the only state that could produce an escape.</summary>
+    public int ClearRuntimeBlocked(int keepAtHits = 0)
     {
-        lock (_rtLock) { if (_rtBlocked is null || _rtBlocked.Count == 0) return; _rtBlocked.Clear(); }
+        int kept = 0;
+        lock (_rtLock)
+        {
+            if (_rtBlocked is null || _rtBlocked.Count == 0) return 0;
+            if (keepAtHits <= 0) { _rtBlocked.Clear(); _rtHits?.Clear(); }
+            else
+            {
+                foreach (var key in _rtBlocked.Keys.ToList())
+                {
+                    if (_rtHits is not null && _rtHits.TryGetValue(key, out var h) && h >= keepAtHits) { kept++; continue; }
+                    _rtBlocked.Remove(key);
+                    _rtHits?.Remove(key);
+                }
+            }
+        }
         _clearance = null; // obstacle inflation was built around the (now-gone) blocks → rebuild
+        return kept;
     }
 
     // --- Obstacle inflation (P0 2026-06-30: paths hugged obstacle edges → the straight-run MOVERUN between waypoint…

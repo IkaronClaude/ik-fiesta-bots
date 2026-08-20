@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Metrics;
@@ -2627,9 +2627,16 @@ public sealed class BotManager : IAsyncDisposable
                             && GridProvider?.Invoke(wmap) is { } wgrid && wgrid.RuntimeBlockedCount > 0)
                         {
                             var poisoned = wgrid.RuntimeBlockedCount;
-                            wgrid.ClearRuntimeBlocked();
+                            // KEEP WHAT THE SERVER HAS CONFIRMED. Clearing every block was what made this loop
+                            // permanent: the recovery deleted the very cell being refused and re-pathed straight
+                            // back into it, so `total` never grew past 1 and the bot ground the same wall for
+                            // hours. A cell refused 3+ times is not poison, it is a wall the .shbd does not know
+                            // about -- typically a closed scenario door -- and it is the one thing worth keeping.
+                            const int ConfirmedHits = 3;
+                            var kept = wgrid.ClearRuntimeBlocked(keepAtHits: ConfirmedHits);
                             handle.MoveFailStreak = 0;
-                            Log($"[nav] WEDGE RECOVERY: MOVEFAIL-wedged x8+ @({pos.X},{pos.Y}) — cleared {poisoned} poisoned runtime-blocks, re-pathing on the clean .shbd");
+                            Log($"[nav] WEDGE RECOVERY: MOVEFAIL-wedged x8+ @({pos.X},{pos.Y}) — cleared {poisoned - kept} speculative runtime-block(s), "
+                                + $"KEPT {kept} the server has refused {ConfirmedHits}+ times (real walls, not poison), re-pathing");
                         }
                         handle.Emit(new BotEvent(BotEventKind.MoveFailed, pos));
                         return;
