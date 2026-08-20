@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Fiesta.Bot.Manager;
 using Fiesta.Bot.Navigation;
 using Fiesta.Bot.Session;
@@ -91,7 +91,11 @@ public sealed class BotScriptRunner : IDisposable
 
     /// <summary>Where one tick went, worst-first. GapMs is pure-Lua work, attributed to the call that follows it.</summary>
     public sealed record ProfileSnapshot(long Ticks, double TickMs, double InMs, double GapMs, long Calls,
-        IReadOnlyList<ProfileRow> Rows);
+        IReadOnlyList<ProfileRow> Rows)
+    {
+        /// <summary>bot.* calls served from the per-tick/forever memo instead of crossing into C#.</summary>
+        public long MemoHits { get; init; }
+    }
 
     private volatile ProfileSnapshot _profile = new(0, 0, 0, 0, 0, []);
 
@@ -141,9 +145,17 @@ public sealed class BotScriptRunner : IDisposable
                 (gaps.Get(name).CastToNumber() ?? 0) * 1000.0));
         }
         rows.Sort((a, b) => (b.InMs + b.GapMs).CompareTo(a.InMs + a.GapMs));
+        // Memo hits are crossings that DID NOT happen. Reported next to the calls that did, because the ratio is
+        // the only honest measure of whether an enrolment actually bought anything.
+        long memoHits = 0;
+        if (prof.Get("hits") is { Type: DataType.Table } hv)
+        {
+            foreach (var hk in hv.Table.Keys) memoHits += (long)(hv.Table.Get(hk).CastToNumber() ?? 0);
+            hv.Table.Clear();
+        }
         calls.Clear(); secs.Clear(); gaps.Clear(); maxs.Clear();
         return new ProfileSnapshot(ticks, tickMs, rows.Sum(r => r.InMs), rows.Sum(r => r.GapMs),
-            rows.Sum(r => r.Calls), rows);
+            rows.Sum(r => r.Calls), rows) { MemoHits = memoHits };
     }
 
     /// <summary>Log where a slow tick went, worst-first.</summary>
@@ -155,7 +167,7 @@ public sealed class BotScriptRunner : IDisposable
         // it. Read it FIRST -- a tick whose pause covers most of its duration is a memory problem, not a script one,
         // and no amount of caching bot.* calls will move it.
         _handle.Log(BotLogLevel.Note,
-            $"[prof] TICK {p.TickMs:F0}ms = {p.InMs:F0}ms in {p.Calls} bot.* calls + {p.GapMs:F0}ms lua | " +
+            $"[prof] TICK {p.TickMs:F0}ms = {p.InMs:F0}ms in {p.Calls} bot.* calls (+{p.MemoHits} memo hits) + {p.GapMs:F0}ms lua | " +
             $"gc={pauseMs:F0}ms/{gc.G0}/{gc.G1}/{gc.G2} alloc={allocKb:F0}KB | name=inCall+luaBefore/calls: {top}");
     }
 
@@ -383,8 +395,8 @@ end
 do
   local real = bot
   local clock = real.nowPrecise
-  __prof = { calls = {}, secs = {}, gaps = {}, maxs = {}, last = clock() }
-  local calls, secs, gaps, maxs = __prof.calls, __prof.secs, __prof.gaps, __prof.maxs
+  __prof = { calls = {}, secs = {}, gaps = {}, maxs = {}, hits = {}, last = clock() }
+  local calls, secs, gaps, maxs, hits = __prof.calls, __prof.secs, __prof.gaps, __prof.maxs, __prof.hits
   local wrapped = {}
   -- MEMOISED LOOKUPS. Allocation is ~10-12KB PER bot.* CALL and holds across a 3.4x range of call counts
   -- (437 calls -> 4974KB, 1004 -> 9882KB, 1466 -> 17621KB), so the cost is per-call interop, not any one API,
@@ -398,7 +410,16 @@ do
   -- Also absent: anything returning live state (hp, x, y, now, drops, nearbyMobs, inventory) and anything the
   -- caller might mutate. Only scalars are cached, so no shared table can be written through.
   local memoK = { mobMaxHp = true, mobLevel = true, mobGrade = true, questName = true }
-  local tickK = { map = true }
+  -- Enrolled here means: constant for the duration of ONE tick, and a SCALAR. Measured over 8,998 slow ticks the
+  -- crossings break down as ticks=164/tick, map=79, questDone=57, level=51, invenCountOf=34, skillDamageAvg=33,
+  -- and at ~11KB of garbage per crossing that is most of the 7.4MB a tick allocates -- which is why 55% of tick
+  -- time is GC pause. bot.ticks() is the clearest case of all: it returns the tick counter, so within one tick it
+  -- is a constant by definition and was still being fetched 164 times.
+  -- NOT enrolled, deliberately: invenCountOf and questDone. Both can change from an ACTION taken earlier in the
+  -- same tick (a buy, a hand-in), and a cached answer would make the bot re-decide on a state it has already
+  -- changed. skillInfo is out for a different reason -- it returns a TABLE, and the rule here is scalars only so
+  -- no caller can write through a shared reference.
+  local tickK = { map = true, ticks = true, level = true, mounted = true, skillDamageAvg = true }
   __prof.memo = {}
   __prof.tick = {}
   local memo, tickmemo = __prof.memo, __prof.tick
@@ -434,6 +455,11 @@ do
               if byArg == nil then byArg = {}; store[k] = byArg end
               local hit = byArg[key]
               if hit ~= nil then
+                -- COUNT THE HITS. Without this a memo that silently never fires is indistinguishable from one
+                -- that works: `map` was enrolled and still showed 79 real calls in a single tick, and there was
+                -- no way to tell a broken cache from a caller that legitimately asks 79 times. Now the tick line
+                -- reports hits, so the question is answered by the log instead of by reading the shim.
+                hits[k] = (hits[k] or 0) + 1
                 if hit == NILV then return nil end
                 return hit
               end
