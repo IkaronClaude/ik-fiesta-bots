@@ -972,7 +972,9 @@ public sealed class BotApi
     {
         if (View?.LastGiveUpResult is not { } r) return DynValue.Nil;
         var t = NewTable();
-        t["id"] = r.QuestId; t["err"] = r.Err; t["ok"] = r.Err == 0;
+        // 2881 (0x0B41) is SUCCESS on this ack, not an error -- see the ZoneView handler. Verified against a
+        // real-client capture and against our own board dropping 40 -> 39 after the server's next quest seed.
+        t["id"] = r.QuestId; t["err"] = r.Err; t["ok"] = r.Err == 0 || r.Err == 2881;
         return DynValue.NewTable(t);
     }
 

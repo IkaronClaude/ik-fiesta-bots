@@ -2791,13 +2791,23 @@ public sealed class ZoneView : IDisposable
                 // PROTO_NC_QUEST_GIVE_UP_ACK {nQuestID u16, ErrorCode u16}. A SHORT frame is a decode gap, not a
                 // success: without the code we cannot tell "abandoned" from "refused", so treat it as refused and say so.
                 int err = p.Length >= 4 ? (p[2] | (p[3] << 8)) : -1;
-                if (err == 0)
+                // 2881 (0x0B41) IS SUCCESS ON THIS ACK, not a failure.
+                // Proven against a real-client capture (Z:/AbandonQuest.pcapng, 2026-08-20): the game client sends
+                // a byte-identical NC_QUEST_GIVE_UP_REQ {nQuestID=10} and receives NC_QUEST_GIVE_UP_ACK
+                // {nQuestID=10, ErrorCode=2881} -- and the quest is gone afterwards. Confirmed on our own side too:
+                // we sent 0x4407 for q31000, read 2881, kept the quest on the belief it had been refused, and after
+                // the next relog the SERVER's fresh quest list came back without it. The board went 40 -> 39.
+                // 0x0B41 is the BASE of the quest message table -- entry zero -- so it is not an error code at all.
+                // The "an unknown error has occurred" label belongs to the ACCEPT error path; assuming err == 0
+                // meant success here, by analogy with NC_QUEST_START_ACK, was never checked against this ack.
+                const int GiveUpOkAlt = 2881;
+                if (err == 0 || err == GiveUpOkAlt)
                 {
                     LastGiveUpResult = (qid, 0);
                     _activeQuests.TryRemove(qid, out _);
                     _questProgress.TryRemove(qid, out _);
                     for (var oi = 0; oi < 5; oi++) _questObjProgress.TryRemove((qid << 16) | oi, out _);
-                    _log?.Invoke($"[ZoneView] QUEST_GIVE_UP_ACK quest={QName(qid)} ACCEPTED - abandoned, removed from active");
+                    _log?.Invoke($"[ZoneView] QUEST_GIVE_UP_ACK quest={QName(qid)} ACCEPTED (err={err}) - abandoned, removed from active");
                 }
                 else
                 {
