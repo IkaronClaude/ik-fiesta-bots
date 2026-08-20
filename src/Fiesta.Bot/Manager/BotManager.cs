@@ -1190,6 +1190,35 @@ public sealed class BotManager : IAsyncDisposable
     /// <summary>Snapshot the gates the bot currently sees into the shared (auto-discovery): each in-view gate becomes an edge…</summary>
     private const long GateLearnSettleMs = 2500;
 
+    /// <summary>Confirm a completed travel hop WITHOUT overwriting what the server told us.
+    ///
+    /// This used to be an unconditional <c>SetCurrentMap(expected, null, "travel-hop-expected")</c>, described as
+    /// "belt-and-suspenders for the next hop's grid". It was the opposite. By the time this runs we have already
+    /// waited for InZone + a live ZoneSession + no handoff in flight, which means the map-change handler has already
+    /// resolved the real name from the real map id via MapInfo.shn. Stamping <c>expected</c> over that replaces a
+    /// SERVER-CONFIRMED identity with our INTENT, and passing a null map id leaves CurrentMapId pointing at the map
+    /// we just left, so the name and the id can disagree with nothing left to catch it: the mismatch guard lives in
+    /// the resolver, which has already run and will not run again for this arrival.
+    ///
+    /// Intent is only ever the fallback. It is used when nothing has resolved a name at all, and otherwise a
+    /// disagreement is REPORTED rather than papered over: if the server says we are somewhere other than where we
+    /// meant to go, the server is right and the ROUTE is what needs fixing.</summary>
+    private void ConfirmHopArrival(BotHandle handle, string expected)
+    {
+        var actual = handle.CurrentMap;
+        // No name at all, or only the unresolved "map#<id>" placeholder: intent is the best we have.
+        if (string.IsNullOrEmpty(actual) || actual.StartsWith("map#", StringComparison.Ordinal))
+        {
+            handle.SetCurrentMap(expected, ClientData?.MapId(expected), "travel-hop-expected");
+            return;
+        }
+        if (string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase)) return;   // agreed, nothing to do
+        handle.Log(BotLogLevel.Note,
+            $"⛔ TRAVEL ARRIVAL DISAGREEMENT: routed to '{expected}' but the server put us on '{actual}' " +
+            $"(mapId={handle.CurrentMapId?.ToString() ?? "?"}, via {handle.CurrentMapSource ?? "?"}). Keeping the " +
+            "server answer — the ROUTE is wrong, not the position.");
+    }
+
     public int ObserveGates(string id)
     {
         if (!_bots.TryGetValue(id, out var handle)) return 0;
@@ -1362,7 +1391,7 @@ public sealed class BotManager : IAsyncDisposable
                         handle.Log($"[travel] hop {hop + 1}: didn't re-enter zone after portal — aborting");
                         return;
                     }
-                    handle.SetCurrentMap(expected, null, "travel-hop-expected");
+                    ConfirmHopArrival(handle, expected);
                     ObserveGates(id);
                     handle.Log($"[travel] hop {hop + 1}/{route.Count}: arrived on {expected} (town portal)");
                     continue;
@@ -1423,7 +1452,7 @@ public sealed class BotManager : IAsyncDisposable
                     handle.Log($"[travel] hop {hop + 1}: didn't re-enter zone after handoff — aborting");
                     return;
                 }
-                handle.SetCurrentMap(expected, null, "travel-hop-expected"); // belt-and-suspenders for the next hop's grid
+                ConfirmHopArrival(handle, expected);
                 ObserveGates(id); // learn the new map's gates (next hop + future routing)
                 handle.Log($"[travel] hop {hop + 1}/{route.Count}: arrived on {expected}");
             }
