@@ -1171,23 +1171,6 @@ public static class BotEndpoints
             try { grid.AttachBdt(Fiesta.Bot.Pathfinding.BdtGrid.Load(Path.Combine(dir, m + ".bdt"))); }
             catch { /* no .bdt / malformed → no companion, unchanged */ }
 
-            // PRECOMPUTED CONNECTIVITY (tools/IslandMapBuilder). Optional: with no cache the pathfinder behaves
-            // exactly as before, so a pod without the files loses the optimisation and nothing else. Defaults to
-            // BLOCKINFO_DIR, but that tree is read-only reference data, so ISLANDMAP_DIR usually points elsewhere.
-            // The loader refuses a cache whose dimensions disagree with this .shbd rather than trusting it.
-            try
-            {
-                var idir = Environment.GetEnvironmentVariable("ISLANDMAP_DIR");
-                if (string.IsNullOrWhiteSpace(idir)) idir = dir;
-                var im = Fiesta.Bot.Pathfinding.IslandMap.Load(idir, m, grid.WidthTiles, grid.HeightTiles);
-                // Seed from cache if present; otherwise leave it to the grid's LAZY builder, so concurrent bots
-                // entering the same map share one build instead of racing several.
-                grid.AttachIslands(im);
-                if (im is null)
-                    Console.Error.WriteLine($"[nav] no island cache for '{m}' — will build once, lazily, shared by all bots");
-            }
-            catch { /* no cache / malformed -> search as before */ }
-
             // NAVMESH: seed from the cache when NAVMESH_DIR has one, otherwise the grid builds it lazily on first
             // use. Either way it lives on the SHARED per-map grid, so one decomposition serves every bot on the map.
             try

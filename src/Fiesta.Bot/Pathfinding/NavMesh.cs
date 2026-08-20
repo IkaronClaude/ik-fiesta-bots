@@ -38,14 +38,26 @@ public sealed class NavMesh
         public int MidA => (From + Until) / 2;
     }
 
+    /// <summary>For each region, the `.sbi` door that CLOSING removes it, or -1 when no door affects it.
+    ///
+    /// Doors are not walls and must not be carved out: a door's ground is perfectly walkable while the door is
+    /// open, and routing has to be able to use it. So the decomposition FILLS door boxes with their own rectangles
+    /// and forbids any rectangle from spanning a door boundary. A door state change is then a NODE toggle -- drop
+    /// these regions and every portal into them disappears with them -- rather than a guess about which portals a
+    /// door might have severed. It also removes the nastiest case by construction: no region can ever be half
+    /// inside a door, so none can be half-blocked.</summary>
+    public IReadOnlyList<int> RegionDoor { get; }
+
     public IReadOnlyList<Rect> Rects { get; }
     public IReadOnlyList<IReadOnlyList<Portal>> Portals { get; }
     public double Margin { get; }
     private readonly int[] _owner;      // tile -> rect id, -1 when not free space
     private readonly int _w, _h;
 
-    private NavMesh(int w, int h, double margin, int[] owner, List<Rect> rects, List<List<Portal>> portals)
-        => (_w, _h, Margin, _owner, Rects, Portals) = (w, h, margin, owner, rects, portals.Select(p => (IReadOnlyList<Portal>)p).ToList());
+    private NavMesh(int w, int h, double margin, int[] owner, List<Rect> rects, List<List<Portal>> portals,
+                    List<int> regionDoor)
+        => (_w, _h, Margin, _owner, Rects, Portals, RegionDoor) =
+           (w, h, margin, owner, rects, portals.Select(p => (IReadOnlyList<Portal>)p).ToList(), regionDoor);
 
     public int RegionAt(int tx, int ty)
         => (uint)tx >= (uint)_w || (uint)ty >= (uint)_h ? -1 : _owner[ty * _w + tx];
@@ -58,11 +70,12 @@ public sealed class NavMesh
         using var fs = File.Create(path);
         using var bw = new BinaryWriter(new DeflateStream(fs, CompressionLevel.Optimal));
         bw.Write(new[] { (byte)'F', (byte)'N', (byte)'A', (byte)'V' });
-        bw.Write((ushort)1);
+        bw.Write((ushort)2);                 // v2: carries per-region door tags
         bw.Write((ushort)_w); bw.Write((ushort)_h);
         bw.Write(Margin);
         bw.Write(Rects.Count);
         foreach (var r in Rects) { bw.Write((ushort)r.X); bw.Write((ushort)r.Y); bw.Write((ushort)r.W); bw.Write((ushort)r.H); }
+        foreach (var d in RegionDoor) bw.Write((short)d);
         // Portals are stored ONE-WAY (a < b) and mirrored on load; writing both directions would double the file
         // for no information.
         int edges = 0;
@@ -88,7 +101,8 @@ public sealed class NavMesh
             using var br = new BinaryReader(new DeflateStream(fs, CompressionMode.Decompress));
             var magic = br.ReadBytes(4);
             if (magic.Length != 4 || magic[0] != 'F' || magic[1] != 'N' || magic[2] != 'A' || magic[3] != 'V') return null;
-            if (br.ReadUInt16() != 1) return null;
+            // v1 caches carry no door tags. Refuse rather than load one and route through closed doors.
+            if (br.ReadUInt16() != 2) return null;
             int w = br.ReadUInt16(), h = br.ReadUInt16();
             double margin = br.ReadDouble();
             if (expectW > 0 && (w != expectW || h != expectH)) return null;
@@ -96,6 +110,8 @@ public sealed class NavMesh
             int nr = br.ReadInt32();
             var rects = new List<Rect>(nr);
             for (int i = 0; i < nr; i++) rects.Add(new Rect(br.ReadUInt16(), br.ReadUInt16(), br.ReadUInt16(), br.ReadUInt16()));
+            var regionDoor = new List<int>(nr);
+            for (int i = 0; i < nr; i++) regionDoor.Add(br.ReadInt16());
             var portals = new List<List<Portal>>(nr);
             for (int i = 0; i < nr; i++) portals.Add(new List<Portal>());
             int ne = br.ReadInt32();
@@ -116,14 +132,14 @@ public sealed class NavMesh
                     for (int xx = r.X; xx <= r.MaxX; xx++)
                         owner[yy * w + xx] = i;
             }
-            return new NavMesh(w, h, margin, owner, rects, portals);
+            return new NavMesh(w, h, margin, owner, rects, portals, regionDoor);
         }
         catch { return null; }
     }
 
     /// <summary>Greedy maximal rectangles. NOT a minimal partition -- a smarter decomposition yields fewer regions,
     /// so the counts above are an upper bound rather than the best achievable.</summary>
-    public static NavMesh Build(BlockGrid grid, double margin = PathFinder.DefaultMargin)
+    public static NavMesh Build(BlockGrid grid, double margin = PathFinder.DefaultMargin, DoorCollision? doors = null)
     {
         int W = grid.WidthTiles, H = grid.HeightTiles;
         var pass = new bool[W * H];
@@ -131,16 +147,46 @@ public sealed class NavMesh
             for (int x = 0; x < W; x++)
                 pass[y * W + x] = grid.IsPathable(x, y, margin);
 
+        // ZONE PER TILE, so rectangle growth stops exactly at door edges.
+        // -1 is ordinary ground. Otherwise the tile belongs to door d, and is separated further by whether CLOSING
+        // that door blocks it: a door box contains both the moving leaf and ground that is passable either way, and
+        // lumping them together would produce regions that are only partly removed when the door shuts.
+        // Encoding `d*2 + (blockedWhenClosed ? 1 : 0)` keeps those two apart with no extra bookkeeping.
+        var zone = new int[W * H];
+        Array.Fill(zone, -1);
+        if (doors is not null)
+        {
+            for (int di = 0; di < doors.Doors.Count; di++)
+            {
+                var d = doors.Doors[di];
+                for (int ly = 0; ly < d.Height; ly++)
+                for (int lx = 0; lx < d.Width; lx++)
+                {
+                    int tx = d.StartX + lx + BlockGrid.ShbdTileShiftPublic;
+                    int ty = d.StartY + ly + BlockGrid.ShbdTileShiftPublic;
+                    if ((uint)tx >= (uint)W || (uint)ty >= (uint)H) continue;
+                    bool blockedClosed = d.BlockedLocal(0, lx, ly);
+                    bool blockedOpen = d.BlockedLocal(1, lx, ly);
+                    // A tile blocked in BOTH states is just wall inside the box; leave it as ordinary ground so it
+                    // is excluded by `pass` like any other wall rather than becoming a phantom door region.
+                    if (blockedClosed && blockedOpen) continue;
+                    zone[ty * W + tx] = di * 2 + (blockedClosed ? 1 : 0);
+                }
+            }
+        }
+
         var owner = new int[W * H];
         Array.Fill(owner, -1);
         var rects = new List<Rect>();
+        var regionDoor = new List<int>();
         for (int y = 0; y < H; y++)
         for (int x = 0; x < W; x++)
         {
             int id = y * W + x;
             if (!pass[id] || owner[id] >= 0) continue;
+            int z0 = zone[id];
             int rw = 0;
-            while (x + rw < W && pass[y * W + x + rw] && owner[y * W + x + rw] < 0) rw++;
+            while (x + rw < W && pass[y * W + x + rw] && owner[y * W + x + rw] < 0 && zone[y * W + x + rw] == z0) rw++;
             int rh = 1;
             while (y + rh < H)
             {
@@ -148,7 +194,7 @@ public sealed class NavMesh
                 for (int k = 0; k < rw; k++)
                 {
                     int t = (y + rh) * W + x + k;
-                    if (!pass[t] || owner[t] >= 0) { ok = false; break; }
+                    if (!pass[t] || owner[t] >= 0 || zone[t] != z0) { ok = false; break; }
                 }
                 if (!ok) break;
                 rh++;
@@ -158,6 +204,8 @@ public sealed class NavMesh
                 for (int xx = 0; xx < rw; xx++)
                     owner[(y + yy) * W + x + xx] = rid;
             rects.Add(new Rect(x, y, rw, rh));
+            // Only the half of a door box that CLOSING blocks is tied to the door; the rest stays ordinary ground.
+            regionDoor.Add(z0 >= 0 && (z0 & 1) == 1 ? z0 >> 1 : -1);
         }
 
         // Portals: walk each rectangle's right and bottom boundary and group runs by the neighbour on the far side.
@@ -211,6 +259,6 @@ public sealed class NavMesh
                 if (run >= 0 && run != i) Link(i, run, false, ny, runFrom, r.MaxX);
             }
         }
-        return new NavMesh(W, H, margin, owner, rects, portals);
+        return new NavMesh(W, H, margin, owner, rects, portals, regionDoor);
     }
 }

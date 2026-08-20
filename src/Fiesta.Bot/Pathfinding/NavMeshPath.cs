@@ -7,9 +7,29 @@ public static class NavMeshPath
     /// <summary>Region path from the region containing (sx,sy) to the one containing (gx,gy), or null.
     /// Costs are centre-to-portal-to-centre, which is approximate -- it is the funnel afterwards that recovers the
     /// real geometry, so this only has to get the SEQUENCE of regions right.</summary>
-    private static List<int>? RegionRoute(NavMesh mesh, int startR, int goalR)
+    /// <summary>Is this region currently usable? A region tagged with a door disappears while that door is shut --
+    /// which is why doors are FILLED with their own rectangles rather than carved out: closing one is a node
+    /// toggle, and every portal into those nodes goes with them, so no portal bookkeeping is needed at all.</summary>
+    private static bool Usable(NavMesh mesh, int r, Func<int, bool>? doorClosed)
+        => doorClosed is null || mesh.RegionDoor[r] < 0 || !doorClosed(mesh.RegionDoor[r]);
+
+    /// <summary>Can these two tiles reach each other at all, honouring live door state?
+    ///
+    /// Replaces the separate IslandMap. At margin 0 the mesh covers exactly the walkable ground, so connected
+    /// components of the REGION graph answer the same question as a tile flood fill -- over 8-17k regions instead
+    /// of millions of tiles, and unlike a baked island plane it can account for a door being shut right now.</summary>
+    public static bool Reachable(NavMesh mesh, int sx, int sy, int gx, int gy, Func<int, bool>? doorClosed = null)
+    {
+        int a = mesh.RegionAt(sx, sy), b = mesh.RegionAt(gx, gy);
+        if (a < 0 || b < 0) return true;              // outside the mesh: cannot prove anything, so do not claim to
+        if (a == b) return Usable(mesh, a, doorClosed);
+        return RegionRoute(mesh, a, b, doorClosed) is not null;
+    }
+
+    private static List<int>? RegionRoute(NavMesh mesh, int startR, int goalR, Func<int, bool>? doorClosed)
     {
         if (startR < 0 || goalR < 0) return null;
+        if (!Usable(mesh, startR, doorClosed) || !Usable(mesh, goalR, doorClosed)) return null;
         if (startR == goalR) return new List<int> { startR };
         int n = mesh.Rects.Count;
         var dist = new int[n];
@@ -26,6 +46,7 @@ public static class NavMeshPath
             var rc = mesh.Rects[cur];
             foreach (var p in mesh.Portals[cur])
             {
+                if (!Usable(mesh, p.To, doorClosed)) continue;
                 var rn = mesh.Rects[p.To];
                 int dx = rc.CX - rn.CX, dy = rc.CY - rn.CY;
                 int step = (int)(Math.Sqrt((double)dx * dx + (double)dy * dy) * 10);
@@ -43,7 +64,7 @@ public static class NavMeshPath
     }
 
     /// <summary>Full path in TILE coordinates, or null when the goal is not reachable through the mesh.</summary>
-    public static List<(int X, int Y)>? Find(NavMesh mesh, int sx, int sy, int gx, int gy)
+    public static List<(int X, int Y)>? Find(NavMesh mesh, int sx, int sy, int gx, int gy, Func<int, bool>? doorClosed = null)
     {
         // SNAP ENDPOINTS INTO THE MESH FIRST.
         // The mesh excludes the clearance band, and the bot is very often standing IN it -- measured, the incumbent
@@ -56,7 +77,7 @@ public static class NavMeshPath
         if (mesh.RegionAt(gx, gy) < 0 && NearestRegion(mesh, gx, gy) is { } ng) { gx = ng.X; gy = ng.Y; }
 
         int sr = mesh.RegionAt(sx, sy), gr = mesh.RegionAt(gx, gy);
-        var route = RegionRoute(mesh, sr, gr);
+        var route = RegionRoute(mesh, sr, gr, doorClosed);
         if (route is null) return null;
         if (route.Count == 1) return Reattach(osx, osy, ogx, ogy, new List<(int, int)> { (sx, sy), (gx, gy) });
 

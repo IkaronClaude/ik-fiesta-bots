@@ -1308,9 +1308,9 @@ public sealed class BotApi
     /// cannot route it, so the caller falls back to the search rather than standing still.</summary>
     private static IReadOnlyList<(uint X, uint Y)>? PathFinder2Tiles(
         Fiesta.Bot.Pathfinding.BlockGrid grid, Fiesta.Bot.Pathfinding.NavMesh mesh,
-        int sx, int sy, int gx, int gy)
+        int sx, int sy, int gx, int gy, Func<int, bool>? doorClosed)
     {
-        var tiles = Fiesta.Bot.Pathfinding.NavMeshPath.Find(mesh, sx, sy, gx, gy);
+        var tiles = Fiesta.Bot.Pathfinding.NavMeshPath.Find(mesh, sx, sy, gx, gy, doorClosed);
         if (tiles is null || tiles.Count < 2) return null;
         var outp = new List<(uint X, uint Y)>(tiles.Count);
         foreach (var (tx, ty) in tiles) outp.Add(grid.TileToWorld(tx, ty));
@@ -1338,17 +1338,26 @@ public sealed class BotApi
         // A route that IS reachable on the poisoned grid but needs more than this simply falls into the same
         // clear-and-retry, which finds it. Slightly more eager about dropping learned blocks; enormously cheaper.
         const int PoisonedGridBudget = 300_000;
-        // ASK THE CACHE BEFORE SEARCHING. Precomputed connectivity answers "is this even reachable" with an integer
-        // compare; A* answers it by expanding the whole map, which is what turned a 511-unit walk into 357 seconds.
-        // One-way on purpose: different islands PROVES unreachable, same island proves nothing (see IslandMap).
+        // ASK BEFORE SEARCHING. A* answers "is this even reachable" by expanding the whole map, which is what
+        // turned a 511-unit walk into 357 seconds; the region graph answers it in a few thousand nodes.
         var (stx0, sty0) = grid.WorldToTile(pos.X, pos.Y);
         var (gtx0, gty0) = grid.WorldToTile(x, y);
-        if (grid.IslandsOrBuild() is { } isl && isl.DefinitelyUnreachable(stx0, sty0, gtx0, gty0))
+        // REACHABILITY FROM THE MESH, not a separate island plane. At margin 0 the mesh covers exactly the
+        // walkable ground, so region-graph connectivity answers the same question over 8-17k regions instead of
+        // millions of tiles -- and unlike a baked island map it accounts for a door being SHUT right now.
+        var doorClosed = grid.DoorClosedPredicate();
+        if (grid.RuntimeBlockedCount == 0)
         {
-            _handle.Log($"[nav] walkTo ({x},{y}) on {map}: UNREACHABLE by precomputed connectivity — "
-                + $"start island {isl.At(stx0, sty0)} != goal island {isl.At(gtx0, gty0)}. No search run "
-                + $"({sw.ElapsedMilliseconds}ms); the two are not joined on this map's .shbd at all.");
-            return false;
+            try
+            {
+                if (!Fiesta.Bot.Pathfinding.NavMeshPath.Reachable(grid.Mesh(), stx0, sty0, gtx0, gty0, doorClosed))
+                {
+                    _handle.Log($"[nav] walkTo ({x},{y}) on {map}: UNREACHABLE — no route through the region graph "
+                        + $"with current door state ({sw.ElapsedMilliseconds}ms). No search run.");
+                    return false;
+                }
+            }
+            catch { /* mesh unavailable -> fall through and let the search decide */ }
         }
         // Race both directions. The cost of a search is dominated by WHICH END it starts from, not by distance:
         // measured over 455 random reachable pairs on five maps, 226,449ms one-way against 42,816ms raced (5.3x),
@@ -1376,7 +1385,7 @@ public sealed class BotApi
                 // invisible on the pod.
                 if (swM.ElapsedMilliseconds > 50)
                     _handle.Log($"[nav] navmesh for {map} built in {swM.ElapsedMilliseconds}ms ({mesh.Rects.Count} regions) — shared by all bots on this map");
-                var tp = PathFinder2Tiles(grid, mesh, stx0, sty0, gtx0, gty0);
+                var tp = PathFinder2Tiles(grid, mesh, stx0, sty0, gtx0, gty0, doorClosed);
                 if (tp is { Count: > 1 }) path = tp;
             }
             catch (Exception ex)

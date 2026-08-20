@@ -7,6 +7,9 @@ public sealed class BlockGrid
 
     // SHBD 1-TILE ORIGIN SHIFT (operator + godmode wall-hug trace, 2026-07-22) ────────────────────────── The .shbd blocked-bit at array index (i,j) physically represents the world cell one tile OVER in eac…
     private const int ShbdTileShift = 1;
+    /// <summary>The same shift, for code outside this class that must place `.sbi` door boxes on the tile grid --
+    /// the door bitmaps are indexed like the .shbd and inherit its one-tile origin offset.</summary>
+    public const int ShbdTileShiftPublic = ShbdTileShift;
 
     private readonly byte[] _data;
     private readonly int _bytesPerRow;
@@ -60,26 +63,27 @@ public sealed class BlockGrid
     /// <summary>Attach this map's scenario-door collision (from its .sbi )</summary>
     public void AttachDoors(DoorCollision? doors) => _doorCol ??= doors;
 
-    /// <summary>Precomputed connectivity for this map (tools/IslandMapBuilder), or null when no cache is present --
-    /// in which case every caller simply searches as it always did.</summary>
-    // LAZY, for the same reason the mesh is. Without it every bot that enters a map builds its own copy: observed
-    // live at 19:06 as RouCos02 built twice (688ms and 693ms, one discarded), and again far worse after the navmesh
-    // landed -- five bots restarting together, each racing an island build against the others AND against the mesh
-    // builds, drove a single RouCos02 island build to 16,374ms and RouN to 5,884ms on a 1.5-core pod. One build per
-    // map, shared by the whole fleet.
-    private Lazy<IslandMap>? _islands;
-    public IslandMap? Islands => _islands?.Value;
-    public void AttachIslands(IslandMap? islands)
+    /// <summary>Which `.sbi` doors are shut RIGHT NOW, as a predicate over door index, or null when this map has no
+    /// doors. Reads the same live state `SetDoorStates` receives, so the mesh routes against what the server has
+    /// actually told us rather than against the all-doors-open `.shbd` it was carved from.
+    /// State 255 means "not yet heard"; treated as OPEN, since refusing to route through every unheard-of door
+    /// would strand the bot on entry to any instance before its door broadcasts arrive.</summary>
+    public Func<int, bool>? DoorClosedPredicate()
     {
-        if (islands is not null) _islands ??= new Lazy<IslandMap>(islands);
-    }
-    /// <summary>Ensure an island map exists, building it once for all callers if no cache seeded one.</summary>
-    public IslandMap IslandsOrBuild()
-    {
-        _islands ??= new Lazy<IslandMap>(() => IslandMap.Build(this), LazyThreadSafetyMode.ExecutionAndPublication);
-        return _islands.Value;
+        var col = _doorCol;
+        if (col is null) return null;
+        var states = _packetDoorStates;
+        return di =>
+        {
+            if ((uint)di >= (uint)col.Doors.Count) return false;
+            var name = col.Doors[di].Name;
+            if (states.TryGetValue(name, out var st)) return st == 0;
+            if (_learnedDoorStates.TryGetValue(name, out var ls)) return ls == 0;
+            return false;
+        };
     }
 
+    /// <summary>Dynamic door collision for this map, from its `.sbi`.</summary>
     /// <summary>This map's convex decomposition, built once and SHARED by every bot on the map -- the grid itself
     /// is cached per map, so hanging the mesh here means one decomposition serves the whole fleet rather than one
     /// per bot. Lazy so that two bots entering a map at the same moment cannot both build it (observed live with
@@ -90,7 +94,7 @@ public sealed class BlockGrid
         var l = _mesh;
         if (l is null || Math.Abs(l.Value.Margin - margin) > 1e-9)
         {
-            l = new Lazy<NavMesh>(() => NavMesh.Build(this, margin), LazyThreadSafetyMode.ExecutionAndPublication);
+            l = new Lazy<NavMesh>(() => NavMesh.Build(this, margin, _doorCol), LazyThreadSafetyMode.ExecutionAndPublication);
             _mesh = l;
         }
         return l.Value;

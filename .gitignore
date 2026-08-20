@@ -61,6 +61,5 @@ tools/__pycache__/
 pathcorpus*.json
 
 # Precomputed nav caches — derived from Z:/ServerSource .shbd, regenerate with tools/IslandMapBuilder
-tools/IslandMapBuilder/island-maps/
 tools/PathBudgetCalibrator/path-budgets.csv
 tools/NavMeshBuilder/navmeshes/

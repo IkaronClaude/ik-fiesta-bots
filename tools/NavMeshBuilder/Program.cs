@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Fiesta.Bot.Pathfinding;
 
 // Decompose every map into convex (rectangle) regions and cache the mesh.
@@ -19,7 +19,10 @@ Parallel.ForEach(files, new ParallelOptions { MaxDegreeOfParallelism = Environme
     BlockGrid g;
     try { g = BlockGrid.Load(f); } catch (Exception e) { Console.Error.WriteLine($"{name}: LOAD FAILED {e.GetType().Name}"); return; }
     var sw = Stopwatch.StartNew();
-    var mesh = NavMesh.Build(g, margin);
+    // Attach the map's .sbi so door boxes become their own regions and get tagged -- without this the cache would
+    // be door-blind and a closed door would be invisible to routing.
+    try { g.AttachDoors(DoorCollision.Load(Path.Combine(blockInfo, name + ".sbi"))); } catch { }
+    var mesh = g.Mesh(margin);
     sw.Stop();
     var path = Path.Combine(outDir, name + ".navmesh");
     mesh.Save(path);
