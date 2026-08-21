@@ -158,12 +158,13 @@ public static class BotEndpoints
                 id = bot.Id,
                 atUtc = DateTime.UtcNow,
                 live = LivePanel(bot, manager.ClientData, manager.Knowledge),
+                tickRate = TickRate(bot),
                 metrics = bot.Metrics.Snapshot(),
                 maps = bot.Trace.MapCounts(recentOnly: true),
                 tracePoints = bot.Trace.Count,
             });
         })
-        .WithSummary("All metrics for a bot, plus the live hp/sp/exp panel")
+        .WithSummary("All metrics for a bot, plus the live hp/sp/exp panel and the tick rate")
         .WithDescription("Each metric reports 1m/5m/10m windows: count, avg, stdDev, min, max, p95, p99, sum, perMinute. " +
             "p95/p99 follow the metric's DIRECTION — for HigherIsBetter (hp, exp) they are the LOW tail ('95% of the " +
             "time at least X'); for LowerIsBetter (damageTaken, deaths) the HIGH tail. Samples are batched (default " +
@@ -190,6 +191,7 @@ public static class BotEndpoints
                 {
                     atUtc = DateTime.UtcNow,
                     live = LivePanel(bot, manager.ClientData, manager.Knowledge),
+                    tickRate = TickRate(bot),
                     metrics = bot.Metrics.Snapshot(),
                     maps = bot.Trace.MapCounts(recentOnly: true),
                     tracePoints = bot.Trace.Count,
@@ -1221,6 +1223,24 @@ public static class BotEndpoints
     };
 
     /// <summary>The always-on vitals for the watch panel: what a human glances at first</summary>
+    /// <summary>Ticks per SECOND per window, handed over ready to read.
+    ///
+    /// The `tick` metric is a counter, so the store reports it as perMinute; dividing by 60 at the call site is
+    /// exactly the kind of small step that gets skipped or done twice. It is spelled out here because the whole
+    /// reason these metrics exist is that this number was misread: a 30s hand-poll of the tick counter gave 14.2/s
+    /// and 1.7/s on identical code hours apart, since the rate follows the workload. Windows make that visible
+    /// instead of hiding it behind whichever moment you happened to sample.</summary>
+    private static object TickRate(BotHandle bot)
+    {
+        var snap = bot.Metrics.Snapshot("tick");
+        if (snap is null) return new { note = "no ticks recorded yet (script not running?)" };
+        return new
+        {
+            perSecond = snap.Windows.ToDictionary(w => w.Window, w => Math.Round(w.PerMinute / 60.0, 2)),
+            note = "ticks/second per window. The loop is capped by the script's tickMs (50ms => 20/s).",
+        };
+    }
+
     private static object LivePanel(BotHandle bot) => LivePanel(bot, null, null);
 
     /// <summary>Overload that can also report SKILL COOLDOWNS</summary>

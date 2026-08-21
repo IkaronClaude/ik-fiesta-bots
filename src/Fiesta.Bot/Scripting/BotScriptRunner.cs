@@ -4,6 +4,8 @@ using Fiesta.Bot.Navigation;
 using Fiesta.Bot.Session;
 using MoonSharp.Interpreter;
 
+using Fiesta.Bot.Metrics;
+
 namespace Fiesta.Bot.Scripting;
 
 /// <summary>Debug view of a running script, returned by the status endpoint</summary>
@@ -221,6 +223,7 @@ public sealed class BotScriptRunner : IDisposable
         try
         {
             Setup();
+            DeclareTickMetrics();
             SafeCall("on_start");
             RefreshGlobalsSnapshot();
             _state = "running";
@@ -282,12 +285,28 @@ public sealed class BotScriptRunner : IDisposable
                     var gcN = (GC.CollectionCount(0) - gc0.Item1, GC.CollectionCount(1) - gc0.Item2,
                                GC.CollectionCount(2) - gc0.Item3);
                     _tickMsTotal += swTick.Elapsed.TotalMilliseconds;
+                    // RECORD EVERY TICK. LogMetric batches (500ms) and is a lock plus two adds, so this costs far
+                    // less than the work it measures -- and unlike the [prof] line it is NOT limited to slow ticks,
+                    // which is what made the old numbers so easy to misread.
+                    try
+                    {
+                        var met = _handle.Metrics;
+                        met.LogMetric("tick", 1);
+                        met.LogMetric("tickMs", swTick.Elapsed.TotalMilliseconds);
+                        met.LogMetric("tickEventMs", evtMsWin);
+                        met.LogMetric("tickGcMs", pauseMs);
+                        met.LogMetric("tickAllocKb", allocKb);
+                    }
+                    catch { /* metrics must never break the tick */ }
                     try
                     {
                         var p = SampleProfile(Interlocked.Read(ref _ticks), swTick.Elapsed.TotalMilliseconds);
                         if (p is not null)
                         {
                             _profile = p;
+                            // Crossings come from the snapshot rather than the stopwatch block above, because that
+                            // is where the count lives. Logged for EVERY tick, not just slow ones.
+                            try { _handle.Metrics.LogMetric("tickCrossings", p.Calls); } catch { }
                             if (swTick.ElapsedMilliseconds > SlowTickMs)
                                 ReportProfile(p, pauseMs, gcN, allocKb, evtMsWin, evtNWin);
                         }
@@ -558,6 +577,29 @@ end
 
     private double _evtMsSinceTick;
     private int _evtNSinceTick;
+
+    /// <summary>Declare the tick-health metrics up front, so they carry the right percentile tail from the first
+    /// sample instead of being auto-registered as HigherIsBetter gauges by the first LogMetric.
+    ///
+    /// WHY THESE SIX. Tick rate on its own tells you something is wrong but never what, and this session proved
+    /// how badly that misleads: a bot measured a 22ms tick body while turning 1.97 ticks/s, because ~450ms of the
+    /// cycle was event dispatch that the tick profile cannot see. Rate plus the four things that consume a cycle
+    /// -- the tick body, event dispatch, GC pause, and allocation -- makes that diagnosable from the metric alone.
+    ///
+    /// `tick` is a COUNTER on purpose: the store already reports perMinute per window, so ticks/second falls out
+    /// as perMinute/60 over 1m/5m/10m. That directly fixes the trap I hit measuring this by hand -- a 30s poll of
+    /// the tick counter gave 14.2/s and 1.7/s on identical code hours apart, because the rate follows the
+    /// workload. A windowed metric with p95/p99 cannot be misread that way.</summary>
+    private void DeclareTickMetrics()
+    {
+        var m = _handle.Metrics;
+        m.InitMetric("tick", MetricDirection.HigherIsBetter, MetricKind.Counter);
+        m.InitMetric("tickMs", MetricDirection.LowerIsBetter);
+        m.InitMetric("tickEventMs", MetricDirection.LowerIsBetter);
+        m.InitMetric("tickGcMs", MetricDirection.LowerIsBetter);
+        m.InitMetric("tickAllocKb", MetricDirection.LowerIsBetter);
+        m.InitMetric("tickCrossings", MetricDirection.LowerIsBetter);
+    }
 
     private void Dispatch(BotEvent ev)
     {
