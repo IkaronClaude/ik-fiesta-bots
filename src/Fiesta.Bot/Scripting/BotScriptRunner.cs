@@ -409,7 +409,15 @@ do
   -- every call (StampProgress), so skipping the call would freeze quest progress at whatever it was first read as.
   -- Also absent: anything returning live state (hp, x, y, now, drops, nearbyMobs, inventory) and anything the
   -- caller might mutate. Only scalars are cached, so no shared table can be written through.
-  local memoK = { mobMaxHp = true, mobLevel = true, mobGrade = true, questName = true }
+  -- skillInfo is the ONE table-returning entry allowed in here, and it earns the exception twice over:
+  --   1. It is pure client SHN data (ClientData.Skill(id)) with nothing live in it, so it cannot change for the
+  --      whole session -- forever is the correct lifetime, not one tick.
+  --   2. It was 54.6 crossings per tick, each minting a fresh table PLUS a nested abstates table, from only 7
+  --      call sites -- they sit inside loops over the skill list.
+  -- The scalars-only rule exists so no caller can write through a shared reference and poison the cache
+  -- permanently. Checked every `bot.skillInfo(...)` use in level_quest.lua: all seven bind it and read fields,
+  -- none assign into it. IF YOU ADD A CALLER THAT MUTATES THE RESULT, take it back out of this list or copy it.
+  local memoK = { mobMaxHp = true, mobLevel = true, mobGrade = true, questName = true, skillInfo = true }
   -- Enrolled here means: constant for the duration of ONE tick, and a SCALAR. Measured over 8,998 slow ticks the
   -- crossings break down as ticks=164/tick, map=79, questDone=57, level=51, invenCountOf=34, skillDamageAvg=33,
   -- and at ~11KB of garbage per crossing that is most of the 7.4MB a tick allocates -- which is why 55% of tick
@@ -427,9 +435,17 @@ do
   -- action; that fear had the causality backwards -- our action does not write these, the server does.)
   -- skillInfo stays out: it returns a TABLE, and the rule here is scalars only so no caller can write through a
   -- shared reference.
+  -- The three quest LISTS are here for the same reason skillInfo is in memoK: they return tables, and the cost
+  -- is the table, not the crossing. activeQuests alone is called from 17 places in a tick and marshals the whole
+  -- 40-entry board every time; eligibleQuests and availableQuests marshal a table PER QUEST with its objectives.
+  -- Same mutation audit as skillInfo: every call site iterates with ipairs(bot.xxx()) inline, not one binds the
+  -- list and writes into it, and there is no table.insert/remove/sort against them. They are server state, so a
+  -- tick is the right lifetime -- long enough to stop 17 rebuilds, short enough that a quest accepted or handed
+  -- in this tick is visible on the next one 50ms later.
   local tickK = { map = true, ticks = true, level = true, mounted = true, skillDamageAvg = true,
                   questDone = true, questStatus = true, questProgress = true,
-                  invenCountOf = true, invenCount = true, itemUseFails = true }
+                  invenCountOf = true, invenCount = true, itemUseFails = true,
+                  activeQuests = true, eligibleQuests = true, availableQuests = true }
   __prof.memo = {}
   __prof.tick = {}
   local memo, tickmemo = __prof.memo, __prof.tick
