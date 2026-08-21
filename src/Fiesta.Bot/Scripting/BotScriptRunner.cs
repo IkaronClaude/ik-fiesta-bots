@@ -159,7 +159,8 @@ public sealed class BotScriptRunner : IDisposable
     }
 
     /// <summary>Log where a slow tick went, worst-first.</summary>
-    private void ReportProfile(ProfileSnapshot p, double pauseMs, (int G0, int G1, int G2) gc, double allocKb)
+    private void ReportProfile(ProfileSnapshot p, double pauseMs, (int G0, int G1, int G2) gc, double allocKb,
+                               double evtMs, int evtN)
     {
         var top = string.Join("  ", p.Rows.Take(8)
             .Select(r => $"{r.Name}={r.InMs:F0}+{r.GapMs:F0}ms/{r.Calls}"));
@@ -168,6 +169,7 @@ public sealed class BotScriptRunner : IDisposable
         // and no amount of caching bot.* calls will move it.
         _handle.Log(BotLogLevel.Note,
             $"[prof] TICK {p.TickMs:F0}ms = {p.InMs:F0}ms in {p.Calls} bot.* calls (+{p.MemoHits} memo hits) + {p.GapMs:F0}ms lua | " +
+            $"evt={evtMs:F0}ms/{evtN} | " +
             $"gc={pauseMs:F0}ms/{gc.G0}/{gc.G1}/{gc.G2} alloc={allocKb:F0}KB | name=inCall+luaBefore/calls: {top}");
     }
 
@@ -254,6 +256,11 @@ public sealed class BotScriptRunner : IDisposable
                         continue;
                     }
                     Interlocked.Increment(ref _ticks);
+                    // TAKE the window, then clear it. Events are dispatched BEFORE the tick in each loop pass, so
+                    // the interesting number is what accumulated since the previous tick -- clearing first would
+                    // have reported zero every time and buried the very cost this is here to expose.
+                    var evtMsWin = _evtMsSinceTick; var evtNWin = _evtNSinceTick;
+                    _evtMsSinceTick = 0; _evtNSinceTick = 0;
                     ResetProfileWindow();
                     // WHAT THE TICK CLOCK ACTUALLY MEASURES. A stopwatch around the tick counts every reason the
                     // thread was not running, and the per-call profiler then blames whichever bot.* call happened to
@@ -281,7 +288,8 @@ public sealed class BotScriptRunner : IDisposable
                         if (p is not null)
                         {
                             _profile = p;
-                            if (swTick.ElapsedMilliseconds > SlowTickMs) ReportProfile(p, pauseMs, gcN, allocKb);
+                            if (swTick.ElapsedMilliseconds > SlowTickMs)
+                                ReportProfile(p, pauseMs, gcN, allocKb, evtMsWin, evtNWin);
                         }
                     }
                     catch { /* profiling must never break the tick */ }
@@ -536,31 +544,61 @@ do
 end
 ";
 
+    /// <summary>Is this handler actually defined by the running script?
+    ///
+    /// SafeCall already bails when the global is not a function, but by then C# has BUILT THE ARGUMENTS -- a ten
+    /// field table for on_hit or on_player, boxed DynValues for the rest -- because arguments are evaluated before
+    /// the call. level_quest.lua defines exactly two handlers (on_cast_fail, on_enter), so every hp tick, every
+    /// swing, every player entering AoI was minting a table for nobody. That work does not show up in the tick
+    /// profile at all: Dispatch runs BETWEEN ticks, on the same thread, so it silently eats the loop's budget.
+    /// That is where the missing ~450ms per cycle went -- Elfyra was measured with a 22ms tick body and still only
+    /// 1.97 ticks/s, and a fast tick body cannot explain a 500ms cycle.
+    /// A Globals lookup is a hash probe; building the table is not. Check first, build second.</summary>
+    private bool Handles(string fn) => _lua is not null && _lua.Globals.Get(fn).Type == DataType.Function;
+
+    private double _evtMsSinceTick;
+    private int _evtNSinceTick;
+
     private void Dispatch(BotEvent ev)
     {
         Interlocked.Increment(ref _eventsHandled);
+        var evtSw = System.Diagnostics.Stopwatch.StartNew();
+        try { DispatchCore(ev); }
+        finally { evtSw.Stop(); _evtMsSinceTick += evtSw.Elapsed.TotalMilliseconds; _evtNSinceTick++; }
+    }
+
+    /// <summary>Event handling runs BETWEEN ticks on the tick thread, so none of it appears in the tick profile --
+    /// which is exactly how it stayed invisible while capping the loop. Measure it next to the tick it competes
+    /// with, or the next person reads a 22ms tick body next to 2 ticks/s and has nowhere to look.</summary>
+    private void DispatchCore(BotEvent ev)
+    {
         switch (ev.Kind)
         {
             case BotEventKind.Chat when ev.Data is ChatMessage m:
-                SafeCall("on_chat", ChatTable(m)); break;
+                if (Handles("on_chat")) SafeCall("on_chat", ChatTable(m)); break;
             case BotEventKind.CastFail when ev.Data is ushort r:
+                // NOT guarded: the log line below is the point of this case, and it must survive whether or not the
+                // script cares to handle the event.
                 var reason = Session.ZoneView.CastFailReason.Describe(r);
                 _log($"[script:{_name}] cast failed: {reason} (0x{r:X4})");
                 SafeCall("on_cast_fail", DynValue.NewNumber(r), DynValue.NewString(reason)); break;
             case BotEventKind.PlayerAppeared when ev.Data is NearbyPlayer p:
-                SafeCall("on_player", PlayerTable(p)); break;
+                if (Handles("on_player")) SafeCall("on_player", PlayerTable(p)); break;
             case BotEventKind.PlayerLeft when ev.Data is ushort h:
-                SafeCall("on_player_left", DynValue.NewNumber(h)); break;
+                if (Handles("on_player_left")) SafeCall("on_player_left", DynValue.NewNumber(h)); break;
             case BotEventKind.MapChanged when ev.Data is MapHandoff:
-                SafeCall("on_map", DynValue.NewString(_handle.CurrentMap ?? "")); break;
+                if (Handles("on_map")) SafeCall("on_map", DynValue.NewString(_handle.CurrentMap ?? "")); break;
             case BotEventKind.MoveFailed when ev.Data is ValueTuple<uint, uint> pos:
-                SafeCall("on_move_fail", DynValue.NewNumber(pos.Item1), DynValue.NewNumber(pos.Item2)); break;
+                if (Handles("on_move_fail"))
+                    SafeCall("on_move_fail", DynValue.NewNumber(pos.Item1), DynValue.NewNumber(pos.Item2)); break;
             case BotEventKind.Hp when ev.Data is uint hp:
-                SafeCall("on_hp", DynValue.NewNumber(hp), DynValue.NewNumber(_handle.ZoneView?.MaxHp ?? 0)); break;
+                if (Handles("on_hp"))
+                    SafeCall("on_hp", DynValue.NewNumber(hp), DynValue.NewNumber(_handle.ZoneView?.MaxHp ?? 0)); break;
             case BotEventKind.Sp when ev.Data is uint sp:
-                SafeCall("on_sp", DynValue.NewNumber(sp), DynValue.NewNumber(_handle.ZoneView?.MaxSp ?? 0)); break;
+                if (Handles("on_sp"))
+                    SafeCall("on_sp", DynValue.NewNumber(sp), DynValue.NewNumber(_handle.ZoneView?.MaxSp ?? 0)); break;
             case BotEventKind.Hit when ev.Data is HitInfo hit:
-                SafeCall("on_hit", HitTable(hit)); break;
+                if (Handles("on_hit")) SafeCall("on_hit", HitTable(hit)); break;
         }
     }
 
