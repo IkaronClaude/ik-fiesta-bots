@@ -13,7 +13,8 @@ A case is:
     {"fn": "<roe_MinWC|roe_MaxWC|roe_AC|roe_MR|roe_TH|roe_TB|AttackPower|DefendPower|Damage>",
      "att": {"<Section>": {"<Field>": int, ...}, ...},     # attacker Container, sparse
      "def": {...},                                          # defender Container, sparse
-     "level": 61, "hp": 3562, "maxhp": 3562, "rate": 1000,
+     "level": 61, "hp": 3562, "maxhp": 3562, "rate": 1000, "damagerate": 1000,
+     "crirateadd": 0, "empower": 0, "attackloc": 0,
      "attack": <double>, "defend": <double>}                # Damage only
 Section is "PureCharParam" | "Item.plus" | "Item.rate" | ... | "Total".
 Unspecified `rate` halves default to 1000 (neutral); everything else defaults to 0.
@@ -130,6 +131,16 @@ class Oracle:
         for n in (r"?roe_CriticalStun@RulesOfEngagement@@QAEXPAUEngageArgument@@@Z",):
             if n in self.syms:
                 self.uc.mem_write(self.syms[n], b"\xC2\x04\x00")
+        # LevelGap_*::GetLevelCapRate reads the ITableBase `ms_pkTable` singleton, which is null here because
+        # nothing loaded the SHN. It therefore returned 0, roe_LevelGapDamageRevision multiplied the damage by
+        # 0/1000, and CalcDamage clamped the result to 1 -- for EVERY input, which is exactly the degenerate
+        # behaviour observed. The tables are DATA (DamageLvGapEVP/PVE/PVP), so like the angle table they are an
+        # oracle INPUT rather than something to emulate. `SAHHH` = static, __cdecl, caller-cleaned -> plain ret.
+        self._levelgap_syms = [n for n in (
+            r"?GetLevelCapRate@LevelGap_Monster_to_Player@@SAHHH@Z",
+            r"?GetLevelCapRate@LevelGap_Player_to_Monster@@SAHHH@Z",
+            r"?GetLevelCapRate@LevelGap_Player_to_Player@@SAHHH@Z") if n in self.syms]
+        self.set_level_gap_rate(1000)
         self.normalPY = self.syms.get("?roe_normalPY@@3VRulesOfEngagementNormalPY@@A", 0)
         self.att_c, self.def_c = HEAP + 0x40000, HEAP + 0x42000
         self.att_o, self.def_o = HEAP + 0x10000, HEAP + 0x14000
@@ -251,6 +262,13 @@ class Oracle:
         uc.mem_write(self.arg + 0x00, struct.pack("<I", self.att_o))
         uc.mem_write(self.arg + 0x04, struct.pack("<I", self.def_o))
         uc.mem_write(self.arg + 0x28, struct.pack("<i", int(case.get("rate", 1000))))
+        # ⚠️ damagerate (+0x1C) DEFAULTS TO 1000, NOT 0. Leaving it zero makes roe_CalcDamage compute a raw
+        # damage of 0, which the `test eax,eax / jg` at 0x5061CB then clamps to 1 -- for every input, which is
+        # exactly the degenerate all-1s behaviour that made CalcDamage look broken. It is a permille.
+        uc.mem_write(self.arg + 0x1C, struct.pack("<i", int(case.get("damagerate", 1000))))
+        uc.mem_write(self.arg + 0x20, struct.pack("<i", int(case.get("crirateadd", 0))))
+        uc.mem_write(self.arg + 0x0C, struct.pack("<h", int(case.get("empower", 0))))
+        uc.mem_write(self.arg + 0x18, struct.pack("<i", int(case.get("attackloc", 0))))
         result, ret = STUB + 0xE80, STUB + 0xE00
         uc.mem_write(ret, b"\xDD\x1D" + struct.pack("<I", result))
         uc.mem_write(result, b"\x00" * 8)
@@ -272,6 +290,16 @@ class Oracle:
             return v - (1 << 32) if v >= (1 << 31) else v
         uc.emu_start(va, ret + 6, count=5_000_000)
         return struct.unpack("<d", bytes(uc.mem_read(result, 8)))[0]
+
+    def set_level_gap_rate(self, rate):
+        """Force GetLevelCapRate to a constant permille (1000 = no change).
+
+        For Monster -> Player this is exactly right for every gap: DamageLvGapEVP is flat 1000 from -150 to
+        +150. For Player -> Monster it is only right at gap >= 0; use the DamageLvGapPVE value (up to 1500)
+        when modelling the bot's outgoing damage."""
+        self.level_gap_rate = int(rate)
+        for n in self._levelgap_syms:
+            self.uc.mem_write(self.syms[n], b"\xB8" + struct.pack("<I", int(rate) & 0xFFFFFFFF) + b"\xC3")
 
     def set_angle_table(self, rates_mob=None, rates_ply=None):
         """Fill DamageByAngle's uint16[91] globals. Index is angle_index(angle), NOT the raw angle.

@@ -843,25 +843,48 @@ It also confirms the asymmetries, e.g. `roe_MinWC` depends on `Upgrade.plus.WCma
 
 ### Still open
 
-**`roe_CalcDamage` now RUNS end to end, but returns a degenerate `1`.** Five separate blockers were found
-and fixed to get there, each worth keeping because each failed *silently* somewhere other than its cause:
+**`roe_CalcDamage` NOW WORKS.** Seven blockers, each of which failed *silently somewhere other than its
+cause* — which is the whole reason each is written down:
 
 | blocker | symptom | fix |
 |---|---|---|
 | IAT never populated | jumped to `0x34B69A` | stub all 182 imports. ⚠️ `pefile.PE(fast_load=True)` omits the import directory, so the stubbing silently no-ops unless you force `parse_data_directories` |
-| wrong stdcall arg counts | a **later** `ret` popped 0 | `DecodePointer`/`EncodePointer` are 1 arg **and must be IDENTITY** (returning 0 turns the next indirect call into a jump to null); `TlsSetValue` is 2 args |
-| CRT per-thread data | `__getptd_noexit` → `TlsGetValue` → `DecodePointer` → `call eax` on null | stub `__getptd_noexit` to return a zeroed `_ptiddata` |
-| `roe_CriticalStun` | applies a stun abnormal-state on a non-registered object → assert → `malloc`/`MessageBoxW`/`ExitProcess` took the emulator with it | `ret 4`. It is a `void` side effect; the damage number is unaffected |
-| vtable `+0xD2C` / `+0xD34` | `call edx` into real world-state code | `so_ply_JobChangeDamageUp(attacker, damage) -> int` is a damage MODIFIER hook and is identity for a mob defender: `mov eax,[esp+8]; ret 8` |
+| wrong stdcall arg counts | a **later** `ret` popped 0 | `DecodePointer`/`EncodePointer` are 1 arg **and must be IDENTITY** (returning 0 makes the next indirect call jump to null); `TlsSetValue` is 2 args |
+| CRT per-thread data | `__getptd_noexit` → `TlsGetValue` → `DecodePointer` → `call eax` on null | stub it to return a zeroed `_ptiddata` |
+| `roe_CriticalStun` | applies a stun abnormal-state on a non-registered object → assert → `malloc`/`MessageBoxW`/`ExitProcess` took the emulator with it | `ret 4`; it is a `void` side effect, damage unaffected |
+| vtable `+0xD2C` / `+0xD34` | `call edx` into world-state code | `so_ply_JobChangeDamageUp(attacker, damage)` is a damage MODIFIER hook, identity for a mob defender: `mov eax,[esp+8]; ret 8` |
+| `GetLevelCapRate` | read the null `ITableBase::ms_pkTable`, returned 0, so the level-gap step multiplied damage by 0/1000 | patched to a settable constant (`set_level_gap_rate`, default 1000). Exactly right for Monster→Player, whose table is flat 1000 |
+| **`EngageArgument.damagerate` (+0x1C) left 0** | **every** input returned 1 | it is a **permille and must default to 1000**. At 0 the raw damage is 0 and `test eax,eax / jg` at `0x5061CB` clamps to 1 — the degenerate all-1s behaviour |
 
-**But it is not yet a usable oracle for `CalcDamage`.** It returns `1` for every input tried — same-stat
-defender, `AC=0/TB=0`, `AC=1215`, `AC=535`, angle table all-1200, all give `1`. Since `AttackPower` (1569),
-`DefendPower` (242) and `roe_Damage` (401.975) are all correct in isolation, `CalcDamage` is short-circuiting
-to a minimum before the damage path — almost certainly a miss verdict from `roe_HitRate`, or
-`roe_IsDamageImmune`, driven by an `EngageArgument` that is **still zero** in the fields the upper layer
-reads: `attackcode`, `actionnumber`, `attackloc`, `sklinfo`, `damagerate`, `crirateadd` (Appendix A).
+### Verified against the closed form
 
-So the current honest position is unchanged from Appendix C in what is *proven*: `roe_Damage` and below are
-exact; the angle and level-gap stages are **read and now executed, but not yet validated**, because the one
-function that applies them does not yet produce a meaningful number. Next step is populating `EngageArgument`
-properly rather than assuming zeros are benign.
+`CalcDamage` executes the full sequence — `roe_IsDamageImmune`, `roe_CriticalRate`, `roe_FreeStatCriRate`,
+`roe_CriticalStun`, `roe_AttackPower` (`roe_MinWC`/`roe_MaxWC`), `roe_DefendPower` (`roe_AC`), `roe_Damage`,
+`roe_LevelGapDamageRevision` — and lands exactly where the closed form predicts:
+
+| defender | AttackPower | DefendPower | `(L+1)·A/D` | `CalcDamage` | ratio |
+|---|---|---|---|---|---|
+| AC 1215, Con 292 | 1569 | 1507 | 64.55 | **129** | 1.998 |
+| AC 1023, Con 292 | 1569 | 1315 | 73.98 | **147** | 1.987 |
+| AC 713, Con 262 | 1569 | 975 | 99.77 | **199** | 1.995 |
+| AC 535, Con 262 | 1569 | 797 | 122.06 | **244** | 1.999 |
+
+A constant **×2.0** across a 2× spread of defence, with the residual being integer rounding — that is the
+**critical hit** the call sequence shows firing (the WELL512 state is deterministic in the harness, so every
+call crits). `DefendPower = Con + AC` is confirmed directly (292+1215 = 1507).
+
+So the closed form is now validated *through the top-level function*, not just `roe_Damage`:
+
+```
+CalcDamage = round( (attackerLevel+1) * AttackPower / DefendPower * critMultiplier
+                    * damagerate/1000 * angleRate/1000 * levelGapRate/1000 )     , min 1
+```
+
+### Still open
+
+- **Angle is not yet exercised.** Setting the whole table to 1200 gives the same 129 as 1000, because the
+  angle is derived from `attackloc` (+0x18) and the two objects' positions, which are still zero. The table
+  and the index fold are known (§Appendix D); wiring the geometry is what remains.
+- **The RNG is deterministic** (zeroed WELL512 state), so crit fires every call and the attack roll always
+  lands on `MinWC`. Seeding it is needed to sample the distribution.
+- **`dt_Load`'s SHN → `uint16[91]` mapping** is still not established (see above).
