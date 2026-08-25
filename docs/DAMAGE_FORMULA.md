@@ -1014,3 +1014,46 @@ field give **4200** rather than the 2100 (own doubled) or 2200 (sum doubled) tha
 Something in those two is counted twice. `roe_AC` is `DefendPower`, so this must be resolved before the port
 can be trusted for damage. The next step is a third perturbation pass isolating that term, or reading
 `roe_AC`'s tail with `tools/roe_trace.py` (which names every offset as `Block.half.Field`).
+
+---
+
+## Appendix G — Fuzz results per accessor, and the two remaining defects
+
+Current agreement (40 random cases each, seed 5, `tools/fuzz_damage.py --fn <x>`):
+
+| accessor | agree | note |
+|---|---|---|
+| `roe_TH` | **40/40** | exact |
+| `roe_MR` | 39/40 | |
+| `roe_TB` | 37/40 | |
+| `roe_AC` / `DefendPower` | 35/40 | |
+| `roe_MaxWC` | 27/40 | own-half model wrong |
+| `roe_MinWC` | 22/40 | own-half model wrong |
+
+### Three defects the fuzz found and fixed
+
+1. **The trailing rates are applied TWICE.** `roe_AC`'s tail is
+   `fld own; fadd core; fmul AbnormalState.rate.AC; fdiv 1000; …; fmul ItemPowerRate.rate.AC` — those two
+   rates already appear *inside* the own chain and are then applied again to the sum. That is exactly why
+   `ItemPowerRate.rate.AC = 2000` yields 4200 rather than 2100: the own half doubles to 2000, then
+   `(100 + 2000) × 2`. `roe_MR` re-applies only `ItemPowerRate.rate.MR`; `roe_TH`/`roe_TB` re-apply nothing.
+2. **The intermediate is truncated to an integer between rate multiplies** (`fistp`/`fild` round-trip). The
+   port returned 3317.497 where the server returns 3317 — a half-unit error that only surfaces at the final
+   `floor()`.
+3. **Every accessor floors its RESULT at 1**, not just its core chain: `AbnormalState.plus.TB = -32768`
+   returns 1 from the server, not a negative number.
+
+### Rejected by measurement
+
+Truncating inside `Chain` (after the rate product, before the flat bonuses) was tried and **reverted** — it
+left `roe_TH` at 40/40 but did not move `roe_MinWC`/`roe_MaxWC` either, so it is not where the truncation
+lives. Recorded so it is not tried again.
+
+### Remaining
+
+`roe_MinWC`/`roe_MaxWC` are the irregular pair and their own-half model is still wrong. Their tail is genuinely
+different from the other four — from `tools/roe_trace.py` it builds an intermediate
+`(WeaponTitle.rate.WCmin × Item.plus.WCmin / 1000) × PassiveSkill.rate.PhisycalWeaponMastery`, adds
+`Upgrade.plus.WCmax`, `AbnormalState.plus.WCmax`, `PureCharParam.WCmin` and
+`PassiveSkill.plus.PhisycalWeaponMastery`, and only then applies the sum rates. Transcribing that tail
+term-by-term (rather than fitting it) is the next step; the fuzz will confirm or refute it immediately.

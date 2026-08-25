@@ -106,8 +106,8 @@ public static class DamageFormula
     public static double Chain(ParamContainer c, ParamField f)
     {
         var v = (double)c.PureCharParam[f] + c.ItemPlus[f];
-        v = v * c.ItemPowerRateRate[f] * c.PassiveSkillRate[f] * c.AbnormalStateRate[f] * c.LastTuneRate[f]
-            / RateDivisor;
+        v = v * c.ItemPowerRateRate[f] * c.PassiveSkillRate[f] * c.AbnormalStateRate[f]
+            * c.LastTuneRate[f] / RateDivisor;
         v += c.UpgradePlus[f] + c.WeaponTitlePlus[f] + c.PassiveSkillPlus[f]
              + c.AbnormalStatePlus[f] + c.LastTunePlus[f];
         return v;
@@ -126,15 +126,65 @@ public static class DamageFormula
     /// <summary>Each accessor reads a FIXED side of the engagement, taken from the binary
     /// (`[esi]`/`[edi]` = attacker, `[esi+4]` = defender):
     /// attacker supplies MinWC / MaxWC / TH; defender supplies AC / TB / MR. Semantically exactly right —
-    /// your weapon and your accuracy, their armour, block and magic resist.</summary>
-    public static double Stat(ParamContainer c, ParamField core, ParamField own) => CoreChain(c, core) + Chain(c, own);
+    /// your weapon and your accuracy, their armour, block and magic resist.
+    ///
+    /// The shape is `(coreChain + ownChain) * <a few rates applied AGAIN to the sum> / 1000 each`.
+    /// Those trailing rates are the subtle part: they already appear inside the own chain, and the server
+    /// multiplies by them a SECOND time on the sum. That is why `roe_AC` with `ItemPowerRate.rate.AC = 2000`
+    /// returns 4200 and not 2100 — the own half doubles to 2000, then `(100 + 2000) * 2`. Read straight off
+    /// `roe_AC`'s tail: `fld own; fadd core; fmul AbnormalState.rate.AC; fdiv 1000; ... fmul
+    /// ItemPowerRate.rate.AC`.</summary>
+    /// <summary>⚠️ The intermediate is TRUNCATED TO AN INTEGER between rate multiplies.
+    ///
+    /// `roe_AC`'s tail does `fmul rate; fdiv 1000; fistp [int]; fild [int]; fmul rate2` — that `fistp`/`fild`
+    /// round-trip through an integer is not decoration, it discards the fraction. Without it the port
+    /// returned 3317.497 where the server returns 3317, which is the kind of half-unit error that only ever
+    /// shows up at the floor() at the end of CalcDamage.</summary>
+    private static double SumRate(ParamContainer c, double v, params (ParamBlock Block, ParamField F)[] rates)
+    {
+        foreach (var (b, f) in rates)
+            v = Math.Truncate(v * b[f] / 1000.0);
+        return Clamp1(v);
+    }
 
-    public static double MinWc(ParamContainer attacker) => Stat(attacker, ParamField.Str, ParamField.WCmin);
-    public static double MaxWc(ParamContainer attacker) => Stat(attacker, ParamField.Str, ParamField.WCmax);
-    public static double Th(ParamContainer attacker) => Stat(attacker, ParamField.Dex, ParamField.TH);
-    public static double Ac(ParamContainer defender) => Stat(defender, ParamField.Con, ParamField.AC);
-    public static double Tb(ParamContainer defender) => Stat(defender, ParamField.Dex, ParamField.TB);
-    public static double Mr(ParamContainer defender) => Stat(defender, ParamField.Men, ParamField.MR);
+    /// <summary>Every accessor floors its RESULT at 1, not just its core chain. A large negative plus-term
+    /// (e.g. `AbnormalState.plus.TB = -32768`) returns 1 from the server, not a negative number.</summary>
+    private static double Clamp1(double v) => v <= 0 ? 1.0 : v;
+
+    public static double Ac(ParamContainer d) =>
+        SumRate(d, CoreChain(d, ParamField.Con) + Chain(d, ParamField.AC),
+            (d.AbnormalStateRate, ParamField.AC), (d.ItemPowerRateRate, ParamField.AC));
+
+    public static double Mr(ParamContainer d) =>
+        SumRate(d, CoreChain(d, ParamField.Men) + Chain(d, ParamField.MR),
+            (d.ItemPowerRateRate, ParamField.MR));
+
+    // TH / TB apply no second-pass rate: every rate on the own field showed up as doubling the own half
+    // alone (2100), never the sum (2200).
+    public static double Th(ParamContainer a) => Clamp1(CoreChain(a, ParamField.Dex) + Chain(a, ParamField.TH));
+    public static double Tb(ParamContainer d) => Clamp1(CoreChain(d, ParamField.Dex) + Chain(d, ParamField.TB));
+
+    /// <summary>MinWC/MaxWC are the irregular pair. Their own half does NOT carry the ItemPowerRate or
+    /// PassiveSkill rate (those are applied once, to the sum), and their Upgrade/AbnormalState plus-terms
+    /// plus the AbnormalState rate read **WCmax even for MinWC** — asymmetric, and almost certainly a
+    /// copy-paste slip in the original server, but it is the behaviour so the port reproduces it.</summary>
+    private static double WcChain(ParamContainer a, ParamField own)
+    {
+        var v = (double)a.PureCharParam[own] + a.ItemPlus[own];
+        v += a.UpgradePlus[ParamField.WCmax] + a.AbnormalStatePlus[ParamField.WCmax]
+             + a.PassiveSkillPlus[ParamField.PhisycalWeaponMastery];
+        return v;
+    }
+
+    public static double MinWc(ParamContainer a) =>
+        SumRate(a, CoreChain(a, ParamField.Str) + WcChain(a, ParamField.WCmin),
+            (a.ItemPowerRateRate, ParamField.WCmin), (a.PassiveSkillRate, ParamField.WCmin),
+            (a.AbnormalStateRate, ParamField.WCmax));
+
+    public static double MaxWc(ParamContainer a) =>
+        SumRate(a, CoreChain(a, ParamField.Str) + WcChain(a, ParamField.WCmax),
+            (a.ItemPowerRateRate, ParamField.WCmax), (a.PassiveSkillRate, ParamField.WCmax),
+            (a.AbnormalStateRate, ParamField.WCmax));
 
     /// <summary>Normal physical attack power: a roll between MinWC and MaxWC.
     ///
