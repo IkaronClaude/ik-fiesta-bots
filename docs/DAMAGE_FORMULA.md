@@ -119,8 +119,8 @@ edi = attacker->so_MaxHP()               ; vtable +0x4F0
 ecx = attacker->so_GetHP()               ; vtable +0x4E8
 eax = ((MaxHP - HP) * 1000) / MaxHP      ; permille of MISSING HP (so_MaxHP / so_GetHP)
 obj = attacker->so_parameter()           ; vtable +0x430 -> Parameter::Container
-lo += ChangeByConditionParam::cbcp_GetValue(obj + 0xCE0, eax)   ; bonus added to the LOW bound
-hi += ChangeByConditionParam::cbcp_GetValue(obj + 0xCFC, eax)   ; bonus added to the HIGH bound
+lo += cbcp_GetValue(obj->PassiveHPDownRateWCMin, eax)   ; +0x0CE0 -- name confirmed by offset
+hi += cbcp_GetValue(obj->PassiveHPDownRateWCMax, eax)   ; +0x0CFC
 ```
 
 So both bounds get a bonus indexed by *how much HP is missing* — the "stronger as it gets hurt"
@@ -234,11 +234,82 @@ implies: **two blocks summed** (base + one source), **four blocks multiplied** a
 blocks added** as flat bonuses. `HitRate` and `EvaRate` are adjacent in the member list, which matches
 `roe_TH` / `roe_TB` diverging by exactly one adjacent field (`+0xEC` vs `+0xF0`).
 
-> ⚠️ [OPEN] The *precise* field↔offset table is **not** pinned down. `roe_MinMA`/`roe_MaxMA` start from
-> `0x790`, which does not decompose the same way as the WC/AC/TH/TB/MR group, so the accessors do not all
-> read the same block set. Naming an individual offset requires either parsing the PDB type stream for
-> `Parameter::Container`'s real member offsets, or dumping a live `Container` and matching values against a
-> known character sheet. Do not assume the mapping above is field-exact.
+### 3c. The exact layout, from the PDB type stream [BIN, field-exact]
+
+Recovered with `tools/pdb_members.py`, which scans CodeView `LF_MEMBER` records (`0x150D`:
+`leaf, attr, typeIndex, <numeric leaf> offset, name`) — the same linear-scan trick as `S_PUB32`, so no MSF
+container parsing and **no live process** is needed. These are the compiler's real offsets, not inferences.
+
+**One parameter block — 51 ints, `0xCC` bytes** (exactly the stride measured in §3a):
+
+| off | field | off | field | off | field |
+|---|---|---|---|---|---|
+| `+0x00` | **Str** | `+0x28` | MAmin | `+0x88` | AttSpeed |
+| `+0x04` | **Con** | `+0x2C` | MAmax | `+0x8C` | MaxHP |
+| `+0x08` | **Dex** | `+0x30` | **MR** | `+0x90` | MaxHP_2 |
+| `+0x0C` | **Int** | `+0x34` | MH | `+0x94` | MaxSP |
+| `+0x10` | **Men** | `+0x38` | MB | `+0x98..0xA4` | HP/SP Absorption ×4 |
+| `+0x14` | **WCmin** | `+0x3C..0x48` | Absolute Attack/Defend/Hit/Block | `+0xA8` | CriticalTB |
+| `+0x18` | **WCmax** | `+0x4C..0x5C` | MoveSpeed, HPRecover, SPRecover, CastingTime, Critical | `+0xAC..0xC0` | RegistNone, Resist×5 |
+| `+0x1C` | **AC** | `+0x60..0x68` | Phisycal/MagicalWeaponMastery, ShieldAC | `+0xC4` | MaxLP |
+| `+0x20` | **TH** | `+0x6C` | HitRate | `+0xC8` | LPRecover |
+| `+0x24` | **TB** | `+0x70..0x84` | EvaRate, MACri, CriDam, MagCriDam, CriDamRate, MagCriDamRate | | |
+
+**`Parameter::Container` — the blocks:**
+
+| off | member | size | role |
+|---|---|---|---|
+| `+0x0000` | `PureCharParam` | `0xCC` | the character's own stats |
+| `+0x00CC` | `Item` | `0x198` | **a PAIR of blocks**: `+0x00` plus, `+0xCC` rate |
+| `+0x0264` | `ItemPowerRate` | `0x198` | pair |
+| `+0x03FC` | `Upgrade` | `0x198` | pair |
+| `+0x0594` | `WeaponTitle` | `0x198` | pair |
+| `+0x072C` | `PassiveSkill` | `0x198` | pair |
+| `+0x08C4` | `AbnormalState` | `0x198` | pair |
+| `+0x0A5C` | `LastTune` | `0x198` | pair |
+| `+0x0BF4` | `Total` | `0xCC` | the cached result (`c_MakeTotal`) |
+| `+0x0CC0` | `DotDamagePlus` … | | loose members |
+| `+0x0CE0` | `PassiveHPDownRateWCMin` | | ← `roe_AttackPower`'s low-bound bonus |
+| `+0x0CFC` | `PassiveHPDownRateWCMax` | | ← its high-bound bonus |
+| `+0x0D18..0x0D6C` | `PassiveHPDownRate` MAMin/MAMax/AC/MR | | the same mechanic for magic and defence |
+
+The `0x198` sections are **two 0xCC blocks**: a *plus* half at `+0x00` and a *rate* half at `+0xCC`. That is
+what §3a's shape actually is — every offset now decomposes exactly:
+
+```
+roe_<stat> =
+    ( PureCharParam.<stat>            @ 0x0000            // base
+    + Item.plus.<stat>                @ 0x00CC )          // gear
+  * ItemPowerRate.rate.<stat>         @ 0x0330            // 0x0264 + 0xCC
+  * PassiveSkill.rate.<stat>          @ 0x07F8            // 0x072C + 0xCC
+  * AbnormalState.rate.<stat>         @ 0x0990            // 0x08C4 + 0xCC
+  * LastTune.rate.<stat>              @ 0x0B28            // 0x0A5C + 0xCC
+  / 1e12                                                  // == 1000^4
+  + Upgrade.plus.<stat>               @ 0x03FC
+  + WeaponTitle.plus.<stat>           @ 0x0594
+  + PassiveSkill.plus.<stat>          @ 0x072C
+  + AbnormalState.plus.<stat>         @ 0x08C4
+  + LastTune.plus.<stat>              @ 0x0A5C
+```
+
+**Each accessor runs that chain twice** — once on the governing CORE STAT, once on the named stat itself:
+
+| accessor | core-stat field | own field | classic mapping |
+|---|---|---|---|
+| `roe_MinWC` / `roe_MaxWC` | `+0x00` **Str** | `+0x14` / `+0x18` WCmin/WCmax | STR → weapon damage |
+| `roe_AC` | `+0x04` **Con** | `+0x1C` AC | END → defence |
+| `roe_TH` | `+0x08` **Dex** | `+0x20` TH | DEX → accuracy |
+| `roe_TB` | `+0x08` **Dex** | `+0x24` TB | DEX → evasion |
+| `roe_MR` | `+0x10` **Men** | `+0x30` MR | SPR → magic resist |
+
+This resolves the two loose ends from §3a exactly:
+- `roe_TH` vs `roe_TB` diverge at `0xEC` vs `0xF0` = `Item.TH` (`0xCC+0x20`) vs `Item.TB` (`0xCC+0x24`).
+- `roe_MinMA`/`roe_MaxMA` starting at `0x790` is **not** an anomaly: `0x790 = 0x72C + 0x64`, i.e.
+  `PassiveSkill.plus.MagicalWeaponMastery` — the magic accessors run the same chain over the MA fields
+  (`+0x28`/`+0x2C`) and the *magical* mastery, where the physical ones use `+0x60`.
+
+**No live memory dump was required** — the type stream is authoritative and reading it cannot perturb the
+running game. The offsets above are the compiler's own.
 
 ---
 
@@ -428,12 +499,10 @@ The residual is expected: `DefendPower ≠ AC` exactly (§3), and the **angle ta
    whose sibling `roe_LevelGapDamageRevision` does exactly that, but it was not traced to its writer.
 5. The **angle** of each recorded hit is not in the capture analysis, so the 20% angle band is currently
    folded into the ±8% residual rather than removed from it.
-6. ~~Which object each `call edx` returns is not resolved.~~ **RESOLVED** — it is
-   `so_parameter()` returning `Parameter::Container const*` (§3b), and the container's block names and
-   field names are recovered. What remains open is the **field-exact offset table** within a block:
-   `roe_MinMA`/`roe_MaxMA` start at `0x790` and do not decompose like the WC/AC/TH/TB/MR group, so the
-   accessors read different block sets. Closing it needs the PDB type stream (real member offsets) or a
-   live `Container` dump matched against a known character sheet.
+6. ~~Which object each `call edx` returns / the field-exact offsets.~~ **FULLY RESOLVED** (§3b, §3c) —
+   `so_parameter()` returns `Parameter::Container const*`, and every member offset is now read from the
+   PDB type stream (`tools/pdb_members.py`). Every offset in §3a decomposes exactly, including the two
+   that looked anomalous (`roe_TH`/`roe_TB` at `0xEC`/`0xF0`, and `roe_MinMA` at `0x790`).
 
 ## Where the fit went wrong
 
