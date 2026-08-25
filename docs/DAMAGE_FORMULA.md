@@ -777,3 +777,75 @@ level and defence on the wire, and solve for a mob's `MobWeapon` / `MobInfoServe
 learn `MinWC/MaxWC/Str/AC/TB/MR` for any mob it fights, rather than needing the server tables — which is
 exactly the "fit MobInfoServer + MobWeapon from combat data" goal. `roe_emu.py` is the oracle that makes
 each candidate fit checkable against ground truth.
+
+---
+
+## Appendix D — Closing the oracle's gaps (in progress)
+
+`tools/roe_oracle.py` is the reusable oracle: arbitrary `Parameter::Container` fields, a batch JSON protocol
+on stdin/stdout (so a fuzz driver in any language can call it), and a `--probe` mode.
+
+### Closed
+
+**1. Where the angle multiplier is applied [BIN].** Scanning `.text` for calls to
+`DamageByAngle::DamageTable::operator[]` (`0x45C9A0`) finds exactly **two** call sites:
+
+```
+0x504994  inside  RulesOfEngagement::roe_AttackPowerCalcDamage
+0x506161  inside  RulesOfEngagement::roe_CalcDamage
+```
+
+So **`roe_CalcDamage` is the true top-level** — it applies AttackPower/DefendPower/roe_Damage, then the angle
+rate, the level gap, and crit/block/miss, and returns the final **integer** damage. Appendix C's use of
+`roe_Damage` was one layer too low.
+
+**2. The angle table's real shape and index [BIN, exact].** `dt_Load` zero-fills `rep stosd (0x2D)` + `stosw`
+= 182 bytes = **`uint16[91]`**, and `operator[]` is:
+
+```c
+if (i < 0) i = -i;
+if (i > 90) i = i - 180 - ((i - 91) / 180) * 180;      // fold
+if (i < 0) i = -i;
+if (i > 90) { log error; return 1000; }
+return table[i];
+```
+
+Derived empirically by running `operator[]` against an identity table over 0..360 and both signs:
+
+```
+index(angle) = abs(((abs(angle) + 90) % 180) - 90)
+```
+verified at 0→0, 45→45, 90→90, 91→89, 100→80, 135→45, 170→10, 179→1, 180→0, 181→1, 225→45, 270→90,
+315→45, 359→1, 360→0, −45→45, −135→45.
+
+⚠️ **This does not map onto `DamageByAngle_Mob`'s `DamagedAngle` column directly** — index 0 is reached by
+both 0° and 180°, yet the table lists 0→1000 and 180→1200. `dt_Load` therefore transforms the rows on load,
+and **how it does so is not yet established.** The oracle takes the 91-entry array as an *input*
+(`set_angle_table`, default neutral 1000) rather than guessing the mapping.
+
+**3. The missing-HP attack bonus is NOT the capture gap [BIN, measured].** Appendix C listed it as a likely
+cause. Testing it directly in the oracle — same mob at full HP vs 10% HP:
+
+```
+AttackPower @ 3562/3562 HP = 1569.0
+AttackPower @  356/3562 HP = 1569.0     delta 0.0
+```
+
+It contributes **nothing**, because the bonus comes from `PassiveHPDownRateWCMin/WCMax` in the container and a
+plain field mob's are zero — `MobInfoServer`/`MobWeapon` have no such column. **That hypothesis is dead**; the
+remaining capture discrepancy must be angle and/or `DefendPower`, not this.
+
+**4. `--probe` derives dependencies empirically.** Perturbing one container field at a time confirms the
+accessor structure from the outside, and surfaced the clamp directly: with an all-zero container every
+accessor returns **1**, not 0 — that is `if (v <= 0) v = 1` (§2) firing in the accessors too.
+It also confirms the asymmetries, e.g. `roe_MinWC` depends on `Upgrade.plus.WCmax` and
+`AbnormalState.plus.WCmax` (WCmax, not WCmin).
+
+### Still open
+
+**`roe_CalcDamage` does not yet run under the oracle.** Progress so far: the 182-entry IAT is stubbed
+(`GetSystemTimeAsFileTime` is reached for RNG seeding, and with `fast_load=True` pefile silently omits the
+import directory, so the stubbing must force `parse_data_directories`). It still faults on further
+environment — the `ITableBase::ms_pkTable` singletons (level gap) are null, and more object state is
+required. Until it runs, the angle and level-gap stages are **read** but not **executed**, so Appendix C's
+proven result stands only for `roe_Damage` and below.

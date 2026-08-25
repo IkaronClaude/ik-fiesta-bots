@@ -1,0 +1,298 @@
+#!/usr/bin/env python
+"""Ground-truth oracle: run the REAL RulesOfEngagement code from Zone.exe on arbitrary inputs.
+
+Batch protocol (one JSON object per line on stdin, one result per line on stdout) so a driver in any
+language can fuzz against it without paying process startup per case:
+
+    echo '{"fn":"roe_MinWC","att":{"PureCharParam":{"Str":822,"WCmin":747}},"def":{}}' \
+        | python tools/roe_oracle.py --serve
+
+    python tools/roe_oracle.py --probe          # derive each accessor's field dependencies empirically
+
+A case is:
+    {"fn": "<roe_MinWC|roe_MaxWC|roe_AC|roe_MR|roe_TH|roe_TB|AttackPower|DefendPower|Damage>",
+     "att": {"<Section>": {"<Field>": int, ...}, ...},     # attacker Container, sparse
+     "def": {...},                                          # defender Container, sparse
+     "level": 61, "hp": 3562, "maxhp": 3562, "rate": 1000,
+     "attack": <double>, "defend": <double>}                # Damage only
+Section is "PureCharParam" | "Item.plus" | "Item.rate" | ... | "Total".
+Unspecified `rate` halves default to 1000 (neutral); everything else defaults to 0.
+
+Why an oracle rather than a transcription: the accessors are ~200 instructions of interleaved FPU chains.
+Reading them is how you form a hypothesis; running them is how you know. See docs/DAMAGE_FORMULA.md App. C.
+"""
+import argparse, json, struct, sys, os
+
+IMAGE = 0x400000
+STACK = 0x00200000
+HEAP = 0x30000000
+STUB = 0x70000000
+BLOCK = 0xCC
+CONTAINER_SIZE = 0x0E00
+
+SECTION_BASE = {"PureCharParam": 0x0000, "Item": 0x00CC, "ItemPowerRate": 0x0264, "Upgrade": 0x03FC,
+                "WeaponTitle": 0x0594, "PassiveSkill": 0x072C, "AbnormalState": 0x08C4,
+                "LastTune": 0x0A5C, "Total": 0x0BF4}
+PAIRED = {"Item", "ItemPowerRate", "Upgrade", "WeaponTitle", "PassiveSkill", "AbnormalState", "LastTune"}
+FIELDS = ["Str", "Con", "Dex", "Int", "Men", "WCmin", "WCmax", "AC", "TH", "TB", "MAmin", "MAmax",
+          "MR", "MH", "MB", "AbsoluteAttack", "AbsoluteDefend", "AbsoluteHit", "AbsoluteBlock",
+          "MoveSpeed", "HPRecover", "SPRecover", "CastingTime", "Critical", "PhisycalWeaponMastery",
+          "MagicalWeaponMastery", "ShieldAC", "HitRate", "EvaRate", "MACri", "CriDam", "MagCriDam",
+          "CriDamRate", "MagCriDamRate", "AttSpeed", "MaxHP", "MaxHP_2", "MaxSP", "HPAbsorption_Hitted",
+          "SPAbsorption_Hitted", "HPAbsorption_Hit", "SPAbsorption_Hit", "CriticalTB", "RegistNone",
+          "ResistPoison", "ResistDeaseas", "ResistCurse", "ResistMoveSpdDown", "ResistGTI",
+          "MaxLP", "LPRecover"]
+FIDX = {n: i * 4 for i, n in enumerate(FIELDS)}
+
+SYM = {
+    "roe_MinWC": ("?roe_MinWC@RulesOfEngagement@@QAENPAUEngageArgument@@@Z", None),
+    "roe_MaxWC": ("?roe_MaxWC@RulesOfEngagement@@QAENPAUEngageArgument@@@Z", None),
+    "roe_MinMA": ("?roe_MinMA@RulesOfEngagement@@QAENPAUEngageArgument@@@Z", None),
+    "roe_MaxMA": ("?roe_MaxMA@RulesOfEngagement@@QAENPAUEngageArgument@@@Z", None),
+    "roe_AC": ("?roe_AC@RulesOfEngagement@@QAENPAUEngageArgument@@@Z", None),
+    "roe_MR": ("?roe_MR@RulesOfEngagement@@QAENPAUEngageArgument@@@Z", None),
+    "roe_TH": ("?roe_TH@RulesOfEngagement@@QAENPAUEngageArgument@@@Z", None),
+    "roe_TB": ("?roe_TB@RulesOfEngagement@@QAENPAUEngageArgument@@@Z", None),
+    "AttackPower": ("?roe_AttackPower@RulesOfEngagementNormalPY@@MAENPAUEngageArgument@@@Z", "normalPY"),
+    "DefendPower": ("?roe_DefendPower@RulesOfEngagementNormalPY@@MAENPAUEngageArgument@@@Z", "normalPY"),
+    "Damage": ("?roe_Damage@RulesOfEngagement@@MAENPAUEngageArgument@@NN@Z", "normalPY"),
+    # The TOP-LEVEL entry: applies AttackPower/DefendPower/roe_Damage, then the DamageByAngle multiplier,
+    # the level gap, crit/block/miss -- and returns the final INTEGER damage. This is the whole pipeline.
+    "CalcDamage": ("?roe_CalcDamage@RulesOfEngagement@@UAEHPAUEngageArgument@@@Z", "normalPY"),
+    "AttackPowerCalcDamage": ("?roe_AttackPowerCalcDamage@RulesOfEngagement@@QAEHPAUEngageArgument@@HE@Z", "normalPY"),
+}
+INT_RETURNING = {"CalcDamage", "AttackPowerCalcDamage"}
+
+# DamageByAngle::DamageTable is uint16[91]. The index fold was derived by running operator[] against an
+# identity table over 0..360 and both signs:
+#     index(angle) = abs(((abs(angle) + 90) % 180) - 90)
+# a symmetric triangle wave, so 0 and 180 share index 0, and 90/270 share index 90.
+ANGLE_ENTRIES = 91
+
+
+def angle_index(angle):
+    return abs(((abs(int(angle)) + 90) % 180) - 90)
+
+
+def publics(pdb, segrva):
+    out = {}
+    import re
+    for m in re.finditer(rb"[?_][ -~]{4,220}", pdb):
+        i = m.start()
+        if i < 14 or struct.unpack_from("<H", pdb, i - 12)[0] != 0x110E:
+            continue
+        off, seg = struct.unpack_from("<IH", pdb, i - 6)
+        if seg in segrva:
+            out.setdefault(pdb[i:pdb.find(b"\x00", i)].decode("latin-1"), IMAGE + segrva[seg] + off)
+    return out
+
+
+class Oracle:
+    def __init__(self, exe=r"Z:/ServerSource/Zone00/Zone.exe", pdb=r"Z:/ServerSource/Zone00/Zone.pdb"):
+        from unicorn import Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_MEM_UNMAPPED
+        import pefile
+        self.uc = Uc(UC_ARCH_X86, UC_MODE_32)
+        pe = pefile.PE(exe, fast_load=True)
+        # fast_load skips the data directories, so DIRECTORY_ENTRY_IMPORT would be absent and the IAT
+        # stubbing below would silently no-op (the failure mode that sent CalcDamage to 0x34B69A).
+        pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_IMPORT']])
+        data = open(exe, "rb").read()
+        self.uc.mem_map(IMAGE, (pe.OPTIONAL_HEADER.SizeOfImage + 0xFFF) & ~0xFFF)
+        self.uc.mem_write(IMAGE, data[:pe.OPTIONAL_HEADER.SizeOfHeaders])
+        for s in pe.sections:
+            raw = data[s.PointerToRawData:s.PointerToRawData + s.SizeOfRawData]
+            if raw:
+                self.uc.mem_write(IMAGE + s.VirtualAddress, raw)
+        self.uc.mem_map(STACK, 0x200000)
+        self.uc.mem_map(HEAP, 0x100000)
+        self.uc.mem_map(STUB, 0x8000)
+        segrva = {i + 1: sec.VirtualAddress for i, sec in enumerate(pe.sections)}
+        self.syms = publics(open(pdb, "rb").read(), segrva)
+        self.uc.hook_add(UC_HOOK_MEM_UNMAPPED, lambda uc, a, addr, sz, v, u: (self._map(addr), True)[1])
+        for n in (r"?pr_Entrance@PerformanceRecorder@FunctionProfiler@@QAEXPAD@Z",
+                  r"?pr_Exit@PerformanceRecorder@FunctionProfiler@@QAEXPAD@Z"):
+            if n in self.syms:
+                self.uc.mem_write(self.syms[n], b"\xC2\x04\x00")
+        self.normalPY = self.syms.get("?roe_normalPY@@3VRulesOfEngagementNormalPY@@A", 0)
+        self.att_c, self.def_c = HEAP + 0x40000, HEAP + 0x42000
+        self.att_o, self.def_o = HEAP + 0x10000, HEAP + 0x14000
+        self.arg = HEAP + 0x30000
+        vt = bytes(self.uc.mem_read(self.syms["??_7ShineMob@ShineObjectClass@@6B@"], 0xA00))
+        self.stub_n = 0
+        self.raw_n = 0
+        self._stub_imports(pe)
+        self.s_par_a = self._stub(self.att_c)
+        self.s_par_d = self._stub(self.def_c)
+        self.s_lvl = self._stub(61)
+        self.s_hp = self._stub(1)
+        self.s_mhp = self._stub(1)
+        for o, v, par in ((self.att_o, HEAP + 0x20000, self.s_par_a), (self.def_o, HEAP + 0x22000, self.s_par_d)):
+            self.uc.mem_write(o, struct.pack("<I", v))
+            self.uc.mem_write(o + 4, b"\x00" * 0x1000)
+            self.uc.mem_write(v, vt)
+            for slot, t in ((0x430, par), (0x4D8, self.s_lvl), (0x4E8, self.s_hp), (0x4F0, self.s_mhp)):
+                self.uc.mem_write(v + slot, struct.pack("<I", t))
+
+    def _stub_imports(self, pe):
+        """Point every IAT entry at a stub, so a Win32 call cannot jump into unresolved garbage.
+
+        roe_CalcDamage reaches KERNEL32!GetSystemTimeAsFileTime (clock, for RNG seeding). Without an import
+        table the thunk holds the on-disk value and control lands at 0x34B69A. Each stub is stdcall-correct:
+        `xor eax,eax; ret <argbytes>`, with argbytes from a small table and 0 assumed otherwise. APIs that
+        write through an out-pointer get a bespoke stub that zeroes the buffer first."""
+        ARGS = {"GetSystemTimeAsFileTime": 4, "QueryPerformanceCounter": 4, "QueryPerformanceFrequency": 4,
+                "GetTickCount": 0, "GetCurrentThreadId": 0, "GetCurrentProcessId": 0,
+                "InitializeCriticalSection": 4, "EnterCriticalSection": 4, "LeaveCriticalSection": 4,
+                "DeleteCriticalSection": 4, "TlsGetValue": 4, "GetLastError": 0, "SetLastError": 4}
+        OUTPTR = {"GetSystemTimeAsFileTime": 8, "QueryPerformanceCounter": 8, "QueryPerformanceFrequency": 8}
+        self.import_names = {}
+        try:
+            dirs = pe.DIRECTORY_ENTRY_IMPORT
+        except AttributeError:
+            return
+        for d in dirs:
+            for imp in d.imports:
+                nm = (imp.name or b"").decode("latin-1") or ("ord%d" % imp.ordinal)
+                self.import_names[imp.address] = nm
+                argb = ARGS.get(nm, 0)
+                if nm in OUTPTR:
+                    n = OUTPTR[nm]
+                    code = b"\x8B\x44\x24\x04"                      # mov eax,[esp+4]  (the out pointer)
+                    for k in range(0, n, 4):
+                        code += b"\xC7\x40" + bytes([k]) + b"\x00\x00\x00\x00"   # mov [eax+k],0
+                    code += b"\x31\xC0"                             # xor eax,eax
+                    code += b"\xC2" + struct.pack("<H", argb)
+                else:
+                    code = b"\x31\xC0" + (b"\xC2" + struct.pack("<H", argb) if argb else b"\xC3")
+                addr = self._stub_raw(code)
+                self.uc.mem_write(imp.address, struct.pack("<I", addr))
+
+    def _stub_raw(self, code):
+        addr = STUB + 0x1000 + self.raw_n * 0x20
+        self.raw_n += 1
+        self.uc.mem_write(addr, code)
+        return addr
+
+    def _map(self, addr):
+        try:
+            self.uc.mem_map(addr & ~0xFFF, 0x1000)
+        except Exception:
+            pass
+
+    def _stub(self, value):
+        addr = STUB + self.stub_n * 0x10
+        self.stub_n += 1
+        self.uc.mem_write(addr, b"\xB8" + struct.pack("<I", value & 0xFFFFFFFF) + b"\xC3")
+        return addr
+
+    def _set_const(self, stub_addr, value):
+        self.uc.mem_write(stub_addr + 1, struct.pack("<I", value & 0xFFFFFFFF))
+
+    def _container(self, addr, spec):
+        self.uc.mem_write(addr, b"\x00" * CONTAINER_SIZE)
+        for name, base in SECTION_BASE.items():           # neutral permille in every rate half
+            if name in PAIRED:
+                self.uc.mem_write(addr + base + BLOCK, struct.pack("<i", 1000) * len(FIELDS))
+        for sect, fields in (spec or {}).items():
+            if "." in sect:
+                nm, half = sect.split(".", 1)
+            else:
+                nm, half = sect, "plus"
+            base = SECTION_BASE[nm] + (BLOCK if (nm in PAIRED and half == "rate") else 0)
+            for f, v in fields.items():
+                self.uc.mem_write(addr + base + FIDX[f], struct.pack("<i", int(v)))
+
+    def call(self, case):
+        from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_ECX
+        uc = self.uc
+        fn = case["fn"]
+        sym, this = SYM[fn]
+        va = self.syms[sym]
+        self._container(self.att_c, case.get("att"))
+        self._container(self.def_c, case.get("def"))
+        self._set_const(self.s_lvl, int(case.get("level", 61)))
+        self._set_const(self.s_hp, int(case.get("hp", 1)))
+        self._set_const(self.s_mhp, int(case.get("maxhp", 1)))
+        uc.mem_write(self.arg, b"\x00" * 0x40)
+        uc.mem_write(self.arg + 0x00, struct.pack("<I", self.att_o))
+        uc.mem_write(self.arg + 0x04, struct.pack("<I", self.def_o))
+        uc.mem_write(self.arg + 0x28, struct.pack("<i", int(case.get("rate", 1000))))
+        result, ret = STUB + 0xE80, STUB + 0xE00
+        uc.mem_write(ret, b"\xDD\x1D" + struct.pack("<I", result))
+        uc.mem_write(result, b"\x00" * 8)
+        esp = STACK + 0x100000 - 0x80
+        frame = struct.pack("<I", ret) + struct.pack("<I", self.arg)
+        if fn == "Damage":
+            frame += struct.pack("<d", float(case["attack"])) + struct.pack("<d", float(case["defend"]))
+        uc.mem_write(esp, frame)
+        uc.reg_write(UC_X86_REG_ESP, esp)
+        uc.reg_write(UC_X86_REG_ECX, self.normalPY if this else 0)
+        if fn in INT_RETURNING:
+            # Returns int in EAX, so no fstp thunk -- stop at a bare `ret` landing pad instead.
+            from unicorn.x86_const import UC_X86_REG_EAX
+            pad = STUB + 0xD00
+            uc.mem_write(pad, b"\xC3")
+            uc.mem_write(esp, struct.pack("<I", pad) + frame[4:])
+            uc.emu_start(va, pad, count=5_000_000)
+            v = uc.reg_read(UC_X86_REG_EAX)
+            return v - (1 << 32) if v >= (1 << 31) else v
+        uc.emu_start(va, ret + 6, count=5_000_000)
+        return struct.unpack("<d", bytes(uc.mem_read(result, 8)))[0]
+
+    def set_angle_table(self, rates_mob=None, rates_ply=None):
+        """Fill DamageByAngle's uint16[91] globals. Index is angle_index(angle), NOT the raw angle.
+
+        These are loaded from a shinetable at server start by dt_Load (file I/O we do not emulate), so the
+        oracle takes them as an INPUT -- exactly like a MobWeapon row. Default is neutral 1000 everywhere."""
+        for sym, rates in ((r"?damagebyangle_Mob@@3VDamageTable@DamageByAngle@@A", rates_mob),
+                           (r"?damagebyangle_Ply@@3VDamageTable@DamageByAngle@@A", rates_ply)):
+            addr = self.syms.get(sym)
+            if addr is None:
+                continue
+            vals = rates if rates else [1000] * ANGLE_ENTRIES
+            self.uc.mem_write(addr, b"".join(struct.pack("<H", int(v) & 0xFFFF) for v in vals[:ANGLE_ENTRIES]))
+
+
+def probe(o):
+    """Empirically derive which container fields each accessor depends on, and with what weight."""
+    print("Deriving field dependencies by single-field perturbation (value 1000, baseline all-zero).")
+    for fn in ("roe_MinWC", "roe_MaxWC", "roe_AC", "roe_MR", "roe_TH", "roe_TB", "roe_MinMA", "roe_MaxMA"):
+        base = o.call({"fn": fn, "att": {}, "def": {}})
+        deps = []
+        for sect in SECTION_BASE:
+            halves = ["plus", "rate"] if sect in PAIRED else ["plus"]
+            for half in halves:
+                for f in FIELDS:
+                    key = "%s.%s" % (sect, half) if sect in PAIRED else sect
+                    v = o.call({"fn": fn, "att": {key: {f: 1000}}, "def": {key: {f: 1000}}})
+                    if abs(v - base) > 1e-9:
+                        deps.append(("%s.%s" % (key, f), v - base, v))
+        print("\n%s  baseline=%g" % (fn, base))
+        for name, delta, val in deps:
+            print("   %-42s delta=%+12.4f  value=%g" % (name, delta, val))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--serve", action="store_true")
+    ap.add_argument("--probe", action="store_true")
+    a = ap.parse_args()
+    o = Oracle()
+    if a.probe:
+        probe(o)
+        return
+    if a.serve:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                print(json.dumps({"ok": True, "v": o.call(json.loads(line))}), flush=True)
+            except Exception as e:
+                print(json.dumps({"ok": False, "err": "%s: %s" % (type(e).__name__, e)}), flush=True)
+        return
+    print(o.call({"fn": "roe_MinWC", "att": {"PureCharParam": {"Str": 822, "WCmin": 747}}}))
+
+
+if __name__ == "__main__":
+    main()
