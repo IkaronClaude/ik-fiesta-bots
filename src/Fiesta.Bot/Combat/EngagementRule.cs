@@ -58,4 +58,15 @@ public static class EngagementRuleExtensions
 
     /// <summary>Whether the rule forces every hit to be a critical, regardless of the rolled chance.</summary>
     public static bool AlwaysCriticals(this EngagementRule rule) => rule == EngagementRule.AlwaysCritical;
+
+    /// <summary>Whether attack power is scaled by weapon mastery.
+    ///
+    /// <para>Every rule does EXCEPT <see cref="EngagementRule.MagicalSkill"/>, which ignores it entirely.
+    /// Measured with both mastery rates swept 0 to 4000 over the same weapon bounds: normal physical,
+    /// physical skill and normal magic all scale linearly (0 gives 0, 2000 doubles), while a magical skill
+    /// stays flat at 151.0 throughout. So a mage with no mastery still lands full skill damage, but their
+    /// plain attack does nothing.</para>
+    ///
+    /// <para>The asymmetry is real and was measured, not inferred from the symmetry of the other three.</para></summary>
+    public static bool AppliesWeaponMastery(this EngagementRule rule) => rule != EngagementRule.MagicalSkill;
 }

@@ -175,8 +175,12 @@ public static class DamageCalculator
     /// from the MAX slot's weapon-title rate even when computing the minimum.</para></summary>
     private static double MagicAttack(CombatStats s, Stat bound)
     {
-        var scaledItem = (double)s.Rate(StatModifier.WeaponTitle)[Stat.MAmax] * s.Plus(StatModifier.Item)[bound] / 1000.0;
-        scaledItem = ApplyRate(scaledItem, s.Rate(StatModifier.PassiveSkill)[Stat.MagicalWeaponMastery]);
+        // ONE divide by 1e6, not two by 1000 -- the physical equivalent divides after each multiply and
+        // magic does not. Mathematically identical, one ULP apart in doubles, and the ULP shows: scored
+        // 300/300 exact against the server where each two-divide grouping scored 295-296.
+        var scaledItem = (double)s.Rate(StatModifier.WeaponTitle)[Stat.MAmax]
+                         * s.Plus(StatModifier.Item)[bound]
+                         * s.Rate(StatModifier.PassiveSkill)[Stat.MagicalWeaponMastery] / 1_000_000.0;
 
         var value = GoverningChain(s, Stat.Int);
         value += Chain(s, bound);
@@ -213,7 +217,10 @@ public static class DamageCalculator
         var range = (long)Ftol32(high - low);
         var draw = range * rollPermille / 1000;
 
-        return ApplyRate(low + draw, s.Rate(StatModifier.PassiveSkill)[
+        var value = low + draw;
+        if (!rule.AppliesWeaponMastery())
+            return value;
+        return ApplyRate(value, s.Rate(StatModifier.PassiveSkill)[
             magical ? Stat.MagicalWeaponMastery : Stat.PhisycalWeaponMastery]);
     }
 

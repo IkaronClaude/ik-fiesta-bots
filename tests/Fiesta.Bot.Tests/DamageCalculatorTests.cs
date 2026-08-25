@@ -340,6 +340,76 @@ public class DamageCalculatorTests
         outcome.DefendPower.ShouldBe(DamageCalculator.DefendPower(defender));
     }
 
+    // ---- magic and the engagement rules ---------------------------------------------------------------
+
+    /// <summary>Magic draws on Int + MAmin/MAmax and is defended by magic resistance; physical draws on
+    /// Str + WCmin/WCmax and is defended by armour. Values read from the oracle.</summary>
+    [Fact]
+    public void MagicAndPhysical_DrawOnDifferentStats()
+    {
+        var attacker = With(s =>
+        {
+            s.Base[Stat.Str] = 300; s.Base[Stat.Int] = 250;
+            s.Base[Stat.WCmin] = 400; s.Base[Stat.WCmax] = 600;
+            s.Base[Stat.MAmin] = 350; s.Base[Stat.MAmax] = 550;
+        });
+        var defender = With(s =>
+        {
+            s.Base[Stat.Con] = 150; s.Base[Stat.Men] = 170;
+            s.Base[Stat.AC] = 120; s.Base[Stat.MR] = 110;
+        });
+
+        DamageCalculator.MinWeaponDamage(attacker).ShouldBe(700.0);   // Str 300 + WCmin 400
+        DamageCalculator.MaxWeaponDamage(attacker).ShouldBe(900.0);
+        DamageCalculator.MinMagicAttack(attacker).ShouldBe(600.0);    // Int 250 + MAmin 350
+        DamageCalculator.MaxMagicAttack(attacker).ShouldBe(800.0);
+
+        DamageCalculator.AttackPower(attacker, 500, EngagementRule.NormalPhysical).ShouldBe(800.0);
+        DamageCalculator.AttackPower(attacker, 500, EngagementRule.NormalMagic).ShouldBe(700.0);
+        DamageCalculator.DefendPower(defender, EngagementRule.NormalPhysical).ShouldBe(270.0);  // Con + AC
+        DamageCalculator.DefendPower(defender, EngagementRule.NormalMagic).ShouldBe(280.0);     // Men + MR
+
+        DamageCalculator.ResolveDamage(attacker, defender,
+            new AttackModifiers { RollPermille = 500, ForceCritical = false },
+            null, EngagementRule.NormalPhysical).ShouldBe(183);
+        DamageCalculator.ResolveDamage(attacker, defender,
+            new AttackModifiers { RollPermille = 500, ForceCritical = false },
+            null, EngagementRule.NormalMagic).ShouldBe(155);
+    }
+
+    /// <summary>Every rule scales attack power by weapon mastery EXCEPT a magical skill, which ignores it.
+    /// A mage with no mastery still lands full skill damage but their plain attack does nothing.</summary>
+    [Theory]
+    [InlineData(EngagementRule.NormalPhysical, 0, 0.0)]
+    [InlineData(EngagementRule.PhysicalSkill, 0, 0.0)]
+    [InlineData(EngagementRule.NormalMagic, 0, 0.0)]
+    [InlineData(EngagementRule.MagicalSkill, 0, 151.0)]      // unaffected
+    [InlineData(EngagementRule.NormalPhysical, 2000, 302.0)]
+    [InlineData(EngagementRule.NormalMagic, 2000, 302.0)]
+    [InlineData(EngagementRule.MagicalSkill, 2000, 151.0)]   // still unaffected
+    public void WeaponMastery_ScalesEveryRuleExceptMagicalSkill(
+        EngagementRule rule, int masteryRate, double expected)
+    {
+        var attacker = With(s =>
+        {
+            s.Base[Stat.MAmin] = 100; s.Base[Stat.MAmax] = 200;
+            s.Base[Stat.WCmin] = 100; s.Base[Stat.WCmax] = 200;
+            s.Rate(StatModifier.PassiveSkill)[Stat.MagicalWeaponMastery] = masteryRate;
+            s.Rate(StatModifier.PassiveSkill)[Stat.PhisycalWeaponMastery] = masteryRate;
+        });
+        DamageCalculator.AttackPower(attacker, 500, rule).ShouldBe(expected);
+    }
+
+    [Fact]
+    public void AlwaysCritical_CritsWithoutBeingAsked()
+    {
+        var attacker = With(s => { s.Base[Stat.WCmin] = 400; s.Base[Stat.WCmax] = 400; });
+        var outcome = DamageCalculator.Resolve(attacker, Blank(),
+            new AttackModifiers { RollPermille = 500, ForceCritical = false, CriticalChancePermille = 0 },
+            null, EngagementRule.AlwaysCritical);
+        outcome.WasCritical.ShouldBeTrue();
+    }
+
     // ---- level and the level gap --------------------------------------------------------------------
 
     /// <summary>Damage scales with the ATTACKER's level + 1, and the defender's level does not enter the
