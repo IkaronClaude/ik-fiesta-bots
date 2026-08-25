@@ -32,7 +32,7 @@ crit and block are computed; the base decides how they combine.
 | `RulesOfEngagementNormalMA` | normal **magical** attack |
 | `RulesOfEngagementPhisycalSkill` | physical **skill** |
 | `RulesOfEngagementMagicalSkill` | magical **skill** |
-| `RulesOfEngagementHealAttack` | heal-as-damage (undead) |
+| `RuleOfEngagementHealAttack` (note: `Rule`, not `Rules`) | heal-as-damage (undead) — overrides `roe_CalcDamage` |
 | `RulesOfEngagementCureSkill` | cures — overrides hit rate only |
 | `RulesOfEngagementAlwaysHit` | overrides `roe_HitRate` |
 | `RulesOfEngagementAlwaysCritical` | overrides `roe_CriticalRate` / `roe_CriticalStunRate` |
@@ -92,8 +92,18 @@ tuning constant.
 
 - `arg->rate` is a **permille** — the `/1000` normalises it. It carries the level-gap `DamageRate`
   (§5), which is why every one of those tables stores `1000` for "no change".
-- `X` is a byte from the **attacker's** vtable slot `+0x4D8`. `X+1` is a multiplier of order ~60 for a level-61
-  mob, so attacker level is the natural candidate — **but see [OPEN] in §8, it is not proven.**
+- **`X` is the attacker's LEVEL** [BIN, proven]. Vtable slot `+0x4D8` was resolved by reading the function
+  pointer out of every `??_7Shine*` vftable in `.rdata`: for `ShineMob`, `ShinePlayer`, `ShineNPC`,
+  `ShinePet`, `ShineBandit`, `ShineMover` and `ShineServant` it is `so_GetLevel` (mangled return type `E` =
+  `unsigned char`, matching the `movzx eax, al` at the call site).
+
+So the complete normal-attack damage formula is:
+
+```
+damage = (attackerLevel + 1) * AttackPower * (levelGapRate / 1000) / DefendPower
+```
+
+then multiplied by the **angle** rate (§5) and adjusted by crit / block.
 
 ---
 
@@ -109,8 +119,8 @@ edi = attacker->vtable[0x4F0]()          ; a MAX  (resource)
 ecx = attacker->vtable[0x4E8]()          ; a CUR  (resource)
 eax = ((edi - ecx) * 1000) / edi         ; permille of the resource MISSING
 obj = attacker->vtable[0x430]()
-lo += table_lookup(obj + 0xCE0, eax)     ; bonus added to the LOW bound
-hi += table_lookup(obj + 0xCFC, eax)     ; bonus added to the HIGH bound
+lo += ChangeByConditionParam::cbcp_GetValue(obj + 0xCE0, eax)   ; bonus added to the LOW bound
+hi += ChangeByConditionParam::cbcp_GetValue(obj + 0xCFC, eax)   ; bonus added to the HIGH bound
 ```
 
 So both bounds get a bonus from a table indexed by *how much of a resource is missing* — the
@@ -142,6 +152,33 @@ v += field[0x3FC] + field[0x594] + field[0x72C] + field[0x8C4] + field[0xA5C]   
 gear and the missing-resource bonus all layer on top. A measured hit will **not** fall inside the raw
 `MinWC..MaxWC` from the table, and it is not supposed to.
 
+### 3a. Every stat accessor is the SAME function shape [BIN]
+
+`roe_AC`, `roe_MR`, `roe_TH`, `roe_TB`, `roe_MinWC`, `roe_MaxWC` are all one pattern — a base plus a
+change, four permille multipliers, then a run of additive bonus slots:
+
+```c
+stat = (base + change)
+     * mul1 * mul2 * mul3 * mul4 / 1000000000000.0     // 1e12 == 1000^4, four permille factors
+     + add1 + add2 + add3 + add4 + add5 ...            // flat bonus slots
+```
+
+The `1e12` divisor (`CONST @0x6CFE28`) is the tell: **four multiplicative permille modifiers**, exactly
+like every other rate in this engine. The slots are the buff / abnormal-state / gear / socket layers.
+
+Field offsets read off each accessor (all fetched via a virtual getter, so the object differs per fetch):
+
+| accessor | base | change | the four multipliers | additive slots |
+|---|---|---|---|---|
+| `roe_AC` | `+0xD0` | `+0x04` | `0x994, 0x7FC, 0x334, 0xB2C` | … |
+| `roe_TH` | `+0xD4` | `+0x08` | `0x998, 0x800, 0x338, 0xB30` | `0x404, 0x59C, 0x734, 0x8CC, 0xA64`, then `+0xEC` |
+| `roe_TB` | `+0xD4` | `+0x08` | `0x998, 0x800, 0x338, 0xB30` | `0x404, 0x59C, 0x734, 0x8CC, 0xA64`, then `+0xF0` |
+| `roe_MR` | `+0xDC` | `+0x10` | `0x9A0, 0x808, 0x340, 0xB38` | … |
+| `roe_MinWC` | `+0xCC` | `+0x00` | `0x990, 0x7F8, 0x330, 0xB28` | `0x3FC, 0x594, 0x72C, 0x8C4, 0xA5C` |
+
+`roe_TH` and `roe_TB` are **byte-identical** through the whole chain and diverge only at the very last
+field (`+0xEC` vs `+0xF0`) — aim and block share one accumulator and differ by a single term.
+
 ---
 
 ## 4. Hit, block, critical [BIN]
@@ -155,6 +192,42 @@ gear and the missing-resource bonus all layer on top. A measured hit will **not*
 | `roe_LevelGapDamageRevision` | fetches both levels, calls `LevelGap_*::GetLevelCapRate`, then `imul` by the damage and adds the rounding term — i.e. `damage = damage * rate / 1000`. |
 
 `RulesOfEngagementAlwaysHit` / `AlwaysCritical` / `CureSkill` exist purely to override these.
+
+### 4a. Full per-subclass override table [BIN]
+
+Which subclass overrides what. Everything not listed falls through to `RulesOfEngagement`'s implementation,
+so a blank cell means "base behaviour", not "absent".
+
+| | AttackPower | DefendPower | Damage | HitRate | CriticalRate | ShieldBlock | IsDamageImmune | FreeState A/D |
+|---|---|---|---|---|---|---|---|---|
+| `NormalPY` (physical auto) | ✓ MinWC/MaxWC | ✓ AC | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ / ✓ |
+| `NormalMA` (magic auto) | ✓ MinMA/MaxMA | ✓ MR | ✓ | ✓ | ✓ | — | ✓ | ✓ / ✓ |
+| `PhisycalSkill` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
+| `MagicalSkill` | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
+| `HealAttack` | — | — | — | — | — | — | — | — (overrides `roe_CalcDamage` instead) |
+| `CureSkill` | — | — | — | ✓ | — | — | — | — |
+| `AlwaysHit` | — | — | — | ✓ | — | — | — | — |
+| `AlwaysCritical` | — | — | — | — | ✓ + `CriticalStunRate` | — | — | — |
+
+Notes (all call targets below were resolved from the binary, not assumed):
+- **Physical vs magical is a class swap, not a branch.** Verified by resolving each subclass's calls:
+  - `NormalPY::roe_AttackPower` → `roe_MinWC` + `roe_MaxWC`; `NormalPY::roe_DefendPower` → `roe_AC`
+  - `NormalMA::roe_AttackPower` → `roe_MinMA` + `roe_MaxMA`; `NormalMA::roe_DefendPower` → `roe_MR`
+  - `MagicalSkill::roe_AttackPower` → `roe_MinMA` + `roe_MaxMA` (same pair as `NormalMA`)
+  - `PhisycalSkill::roe_DefendPower` → **calls `NormalPY::roe_DefendPower` directly** — physical skills
+    are defended by exactly the same AC path as auto-attacks.
+
+  Identical structure, different accessors — which is why "magic damage appears unchanged" while armour came
+  off is exactly the expected behaviour: armour moves `AC` (0x08), not `MR` (0x0D).
+- **Only the two `Normal*` classes override `roe_Damage`**, and both merely call the base and then log —
+  the arithmetic in §2 is shared by *every* attack type in the game.
+- **Only `NormalPY` has a shield block.** Magic and skills cannot be shield-blocked.
+- `roe_CriticalStunRate` is a flat `200` on the base and is only overridden by `AlwaysCritical`.
+- Every `*ByGlobalAction` variant (`roe_HitRateByGlobalAction`, `roe_CriticalRateByGlobalAction`,
+  `roe_ShieldBlockByGlobalAction`) exists per subclass as a parallel path for globally-scripted actions.
+- `roe_FreeStat*` (`FreeStateAttackPower`, `FreeStateDefendPower`, `FreeStatHitRate`, `FreeStatCriRate`)
+  are the free-stat-point contribution, split out so the "free stat" bonus can be applied independently —
+  the debug log in `roe_Damage` prints `    After FreeStatBonus = ` right after applying it.
 
 ---
 
@@ -281,16 +354,21 @@ The residual is expected: `DefendPower ≠ AC` exactly (§3), and the **angle ta
 
 ## 8. What is NOT established [OPEN]
 
-1. **`X` (vtable+0x4D8) is not proven to be attacker level.** In `damage = (X+1)·attack/defend`, `X` and
-   `attack` are *multiplicatively confounded* — only their product is observable on the wire. Solving for
-   one requires assuming the other. To separate them: capture the same character being hit by mobs of
-   **different levels with comparable weapon stats**, or read `AttackPower` off the client UI.
+1. ~~`X` is not proven to be attacker level.~~ **RESOLVED** — vtable `+0x4D8` is `so_GetLevel` on every
+   combat class (§2). Method: read the pointer out of each `??_7Shine*` vftable rather than trying to infer
+   it from the wire, where `X` and `attack` are multiplicatively confounded and can never be separated.
 2. **`DefendPower`'s non-AC terms** are unidentified (`defender->vtable[0x4F0]` and following).
-3. **The missing-resource bonus tables** at `obj+0xCE0` / `obj+0xCFC` (§3) are not decoded.
+3. ~~The missing-resource bonus tables are not decoded.~~ **PARTLY RESOLVED** — the lookup is
+   `ChangeByConditionParam::cbcp_GetValue`, i.e. the ChangeByCondition system (cf.
+   `PROTO_NC_CHAR_CHANGEBYCONDITION_PARAM_CMD { nSkillID, nChangeRate, nParamNum, aParam[] }`). The two
+   instances at `obj+0xCE0` / `obj+0xCFC` are its low-bound and high-bound parameter sets. The contents of
+   those parameter sets are still not dumped.
 4. **`arg->rate` is assumed to be the level-gap DamageRate.** It is an int divided by 1000 in a function
    whose sibling `roe_LevelGapDamageRevision` does exactly that, but it was not traced to its writer.
 5. The **angle** of each recorded hit is not in the capture analysis, so the 20% angle band is currently
    folded into the ±8% residual rather than removed from it.
+6. **Which object each `call edx` returns** in the stat accessors (§3a) is not resolved, so the field
+   offsets are positions in an unnamed layout rather than named stats.
 
 ## Where the fit went wrong
 
