@@ -340,6 +340,51 @@ public class DamageCalculatorTests
         outcome.DefendPower.ShouldBe(DamageCalculator.DefendPower(defender));
     }
 
+    // ---- level and the level gap --------------------------------------------------------------------
+
+    /// <summary>Damage scales with the ATTACKER's level + 1, and the defender's level does not enter the
+    /// core damage at all. Both read from the oracle with the defender held at 61.</summary>
+    [Theory]
+    [InlineData(1, 1002)]
+    [InlineData(10, 5511)]
+    [InlineData(61, 31062)]
+    [InlineData(100, 50601)]
+    [InlineData(255, 128256)]
+    public void Damage_ScalesWithAttackerLevelPlusOne(int attackerLevel, int expected)
+    {
+        var attacker = With(s => { s.Base[Stat.WCmin] = 500; s.Base[Stat.WCmax] = 500; }, attackerLevel);
+        DamageCalculator.ResolveDamage(attacker, Blank(61),
+            new AttackModifiers { RollPermille = 500, ForceCritical = false }).ShouldBe(expected);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(10)]
+    [InlineData(255)]
+    public void Damage_IgnoresTheDefendersLevel(int defenderLevel)
+    {
+        var attacker = With(s => { s.Base[Stat.WCmin] = 500; s.Base[Stat.WCmax] = 500; }, 61);
+        DamageCalculator.ResolveDamage(attacker, Blank(defenderLevel),
+            new AttackModifiers { RollPermille = 500, ForceCritical = false }).ShouldBe(31062);
+    }
+
+    /// <summary>The level gap runs AFTER the integer conversion as <c>(rate * damage) / 1000</c> with a
+    /// 32-BIT multiply, so the product WRAPS. With a post-conversion damage of 31062 the server returns
+    /// these — a double multiply would give 3106200, 6212400 and 31062000 instead.</summary>
+    [Theory]
+    [InlineData(1000, 31062)]
+    [InlineData(100000, 1)]          // wraps negative, then floors to 1
+    [InlineData(200000, 1917432)]
+    [InlineData(1000000, 997228)]
+    public void LevelGap_MultipliesWithA32BitWrap(int ratePermille, int expected)
+    {
+        var attacker = With(s => { s.Base[Stat.WCmin] = 500; s.Base[Stat.WCmax] = 500; }, 61);
+        DamageCalculator.ResolveDamage(attacker, Blank(61), new AttackModifiers
+        {
+            RollPermille = 500, ForceCritical = false, LevelGapRatePermille = ratePermille
+        }).ShouldBe(expected);
+    }
+
     // ---- angle table --------------------------------------------------------------------------------
 
     /// <summary>The table index is a fold of the DIRECTION-UNIT delta (2 degrees per unit), so a full

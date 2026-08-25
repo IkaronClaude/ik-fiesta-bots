@@ -231,23 +231,29 @@ public static class DamageCalculator
         damage = ApplyRate(damage, mods.AngleRatePermille);
         damage = ApplyRate(damage, mods.DamageRatePermille);
 
-        // ⚠️ The LEVEL GAP IS NOT APPLIED HERE ON THE SERVER. It runs AFTER the integer conversion, as
-        // roe_LevelGapDamageRevision(attacker, defender, damage) taking and returning an int
-        // (roe_CalcDamage+0x5C1), together with two so_ply_JobChangeDamageUp hooks (+0x59E, +0x5B2) that
-        // are pass-throughs for a mob and overridden by ShinePlayer.
-        //
-        // Applying it as a double here is therefore an APPROXIMATION, and the differential fuzz cannot
-        // see the difference because it has only ever run this at the neutral 1000. It is exact at 1000
-        // and an estimate otherwise; anything that depends on a real level gap should be pinned against
-        // the server before it is trusted.
-        damage = ApplyRate(damage, mods.LevelGapRatePermille);
+        // The LEVEL GAP is deliberately NOT applied here: on the server it runs AFTER the integer
+        // conversion, as an integer function. See below.
 
         // The final conversion is the same wrapping _ftol as the accessors use, NOT a saturating cast: a
         // damage of 8.5e12 comes back as its low 32 bits, which is negative and so floors to 1. A plain
         // (int)Math.Floor gave 2147483647 -- "maximum possible hit" where the server deals the minimum.
         var final = (int)Ftol32(damage);
+        final = ApplyLevelGap(final, mods.LevelGapRatePermille);
         return new AttackOutcome(final > 0 ? final : 1, isCritical, rollPermille, attackPower, defendPower);
     }
+
+    /// <summary>`roe_LevelGapDamageRevision` — the level-difference multiplier, applied to the INTEGER
+    /// damage after the conversion, not to the double before it.
+    ///
+    /// <para>The server does <c>imul ecx, damage</c> (a 32-bit multiply, so it WRAPS) followed by a signed
+    /// divide by 1000 truncating toward zero — the <c>0x10624DD3</c> / <c>sar 6</c> magic sequence at
+    /// <c>roe_LevelGapDamageRevision+0x62</c>. C#'s <c>int * int</c> wraps and <c>/</c> truncates toward
+    /// zero, so this is the same operation, not an approximation of it.</para>
+    ///
+    /// <para>The server only reaches this for specific combatant-type pairs (player attacking a monster
+    /// selects <c>LevelGap_Player_to_Monster</c>); other pairings leave the damage untouched, which is a
+    /// rate of 1000 here.</para></summary>
+    private static int ApplyLevelGap(int damage, int ratePermille) => unchecked(ratePermille * damage) / 1000;
 
     /// <summary>Convenience for the common question: how much damage, ignoring the breakdown.</summary>
     public static int ResolveDamage(ICombatant attacker, ICombatant defender,

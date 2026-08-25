@@ -102,8 +102,9 @@ while ((line = Console.ReadLine()) != null) {{
     try {{
         var c = JsonDocument.Parse(line).RootElement;
         int level = c.TryGetProperty("level", out var l) ? l.GetInt32() : 61;
+        int defLevel = c.TryGetProperty("deflevel", out var dl) ? dl.GetInt32() : level;
         var attacker = Build(c.GetProperty("att"), level);
-        var defender = Build(c.GetProperty("def"), level);
+        var defender = Build(c.GetProperty("def"), defLevel);
         string fn = c.GetProperty("fn").GetString();
         double v;
         switch (fn) {{
@@ -122,6 +123,7 @@ while ((line = Console.ReadLine()) != null) {{
                         RollPermille = c.GetProperty("roll").GetInt32(),
                         ForceCritical = c.GetProperty("crit").GetBoolean(),
                         DamageRatePermille = c.TryGetProperty("damagerate", out var dr) ? dr.GetInt32() : 1000,
+                        LevelGapRatePermille = c.TryGetProperty("levelgaprate", out var lg) ? lg.GetInt32() : 1000,
                     }});
                 break;
             default: throw new Exception("fn " + fn);

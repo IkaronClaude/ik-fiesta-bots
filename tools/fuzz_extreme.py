@@ -72,12 +72,23 @@ def gen_case(rng, mag, density, edge_p):
             "att": gen_container(rng, mag, density, edge_p),
             "def": gen_container(rng, mag, density, edge_p),
             "level": rng.choice([0, 1, 2, 61, 100, 200, 255, rng.randint(0, 255)]),
+            "deflevel": rng.choice([0, 1, 61, 255, rng.randint(0, 255)]),
+            # Player attacking a monster, so roe_LevelGapDamageRevision actually reaches
+            # LevelGap_Player_to_Monster. Any other pairing leaves the damage untouched, which is what a
+            # rate of 1000 means on the C# side.
+            "atttype": 2, "deftype": 5,
             "hp": rng.choice([1, 1000, 32767]), "maxhp": rng.choice([1, 1000, 32767])}
     if fn in ("CalcDamage", "AttackPower"):
         case["roll"] = rng.choice([0, 1, 250, 500, 750, 999, 1000, rng.randint(0, 1000)])
     if fn == "CalcDamage":
         case["crit"] = rng.random() < 0.5
         case["damagerate"] = rng.choice([0, 1, 500, 1000, 1000, 2000, 10000])
+        # Large rates on purpose: roe_LevelGapDamageRevision multiplies rate by damage with a 32-BIT imul,
+        # so the product WRAPS. Without values big enough to overflow, an integer model and a double model
+        # of that step agree, and the fuzz has no power to tell them apart -- confirmed by sabotage.
+        case["levelgaprate"] = rng.choice([1000, 1000, 0, 1, 500, 1500, 2000, 10000, -1000,
+                                           70000, 100000, 200000, 1000000, -100000,
+                                           rng.randint(-5000, 5000), rng.randint(-2**31, 2**31 - 1)])
     return case
 
 

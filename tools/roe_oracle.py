@@ -31,6 +31,8 @@ STUB = 0x70000000
 # Data slots for the getter stubs. MUST live outside the stub CODE pages: Unicorn caches
 # translated blocks, so a value baked into an instruction can never be changed again.
 CONST_SLOTS = 0x78000000
+# Data slot for the forced GetLevelCapRate return value (see set_level_gap_rate).
+LEVELGAP_SLOT = 0x78001000
 BLOCK = 0xCC
 CONTAINER_SIZE = 0x0E00
 
@@ -172,7 +174,17 @@ class Oracle:
         self._stub_imports(pe)
         self.s_par_a = self._stub(self.att_c)
         self.s_par_d = self._stub(self.def_c)
-        self.s_lvl = self._stub(61)
+        # SEPARATE level stubs per object. Each combatant gets its own vtable copy below, so attacker and
+        # defender levels can differ -- which they must, or roe_LevelGapDamageRevision always sees a gap of
+        # zero and the level-gap path can never be fuzzed.
+        self.s_lvl = self._stub(61)          # attacker
+        self.s_lvl_def = self._stub(61)      # defender
+        # so_GetObjectType, overridable per object. roe_LevelGapDamageRevision DISPATCHES ON IT:
+        # attacker 2 (player) + defender 5 (monster) selects LevelGap_Player_to_Monster, and any other
+        # combination returns the damage untouched. Both objects use the ShineMob vtable, so without this
+        # the level-gap path was unreachable and the rate silently did nothing.
+        self.s_type_a = self._stub(5)
+        self.s_type_d = self._stub(5)
         self.s_hp = self._stub(1)
         self.s_mhp = self._stub(1)
         # vtable +0xD34 = so_ply_JobChangeDamageUp(ShineObject* attacker, int damage) -> int.
@@ -180,11 +192,12 @@ class Oracle:
         # player concept -- for a mob defender it is identity. `mov eax,[esp+8]; ret 8` returns the
         # damage argument unchanged (__thiscall: this in ecx, then attacker and damage on the stack).
         self.s_jobdmg = self._stub_raw(bytes([0x8B, 0x44, 0x24, 0x08, 0xC2, 0x08, 0x00]))
-        for o, v, par in ((self.att_o, HEAP + 0x20000, self.s_par_a), (self.def_o, HEAP + 0x22000, self.s_par_d)):
+        for o, v, par, lvl, oty in ((self.att_o, HEAP + 0x20000, self.s_par_a, self.s_lvl, self.s_type_a),
+                               (self.def_o, HEAP + 0x22000, self.s_par_d, self.s_lvl_def, self.s_type_d)):
             self.uc.mem_write(o, struct.pack("<I", v))
             self.uc.mem_write(o + 4, b"\x00" * 0x1000)
             self.uc.mem_write(v, vt)
-            for slot, t in ((0x430, par), (0x4D8, self.s_lvl), (0x4E8, self.s_hp), (0x4F0, self.s_mhp),
+            for slot, t in ((0x430, par), (0x4D8, lvl), (0x4D0, oty), (0x4E8, self.s_hp), (0x4F0, self.s_mhp),
                             (0xD2C, self.s_jobdmg), (0xD34, self.s_jobdmg)):
                 self.uc.mem_write(v + slot, struct.pack("<I", t))
 
@@ -290,6 +303,11 @@ class Oracle:
         self._container(self.att_c, case.get("att"))
         self._container(self.def_c, case.get("def"))
         self._set_const(self.s_lvl, int(case.get("level", 61)))
+        self._set_const(self.s_lvl_def, int(case.get("deflevel", case.get("level", 61))))
+        self._set_const(self.s_type_a, int(case.get("atttype", 5)))
+        self._set_const(self.s_type_d, int(case.get("deftype", 5)))
+        if "levelgaprate" in case:
+            self.set_level_gap_rate(case["levelgaprate"])
         self._set_const(self.s_hp, int(case.get("hp", 1)))
         self._set_const(self.s_mhp, int(case.get("maxhp", 1)))
         uc.mem_write(self.arg, b"\x00" * 0x40)
@@ -464,9 +482,17 @@ class Oracle:
         For Monster -> Player this is exactly right for every gap: DamageLvGapEVP is flat 1000 from -150 to
         +150. For Player -> Monster it is only right at gap >= 0; use the DamageLvGapPVE value (up to 1500)
         when modelling the bot's outgoing damage."""
+        # Read from a DATA SLOT. The first version baked the rate into a `mov eax,<imm32>` and rewrote the
+        # immediate per call -- the Unicorn code-cache trap, for the third time in this file: once the
+        # function has executed, later writes to its BYTES do nothing, so every case after the first would
+        # silently have used the first case's rate.
         self.level_gap_rate = int(rate)
+        self._map(LEVELGAP_SLOT)
+        self.uc.mem_write(LEVELGAP_SLOT, struct.pack('<i', int(rate)))
+        code = bytes([0xA1]) + struct.pack('<I', LEVELGAP_SLOT) + bytes([0xC3])   # mov eax,[slot] ; ret
         for n in self._levelgap_syms:
-            self.uc.mem_write(self.syms[n], b"\xB8" + struct.pack("<I", int(rate) & 0xFFFFFFFF) + b"\xC3")
+            if bytes(self.uc.mem_read(self.syms[n], len(code))) != code:
+                self.uc.mem_write(self.syms[n], code)
 
     def set_angle_table(self, rates_mob=None, rates_ply=None):
         """Fill DamageByAngle's uint16[91] globals. Index is angle_index(angle), NOT the raw angle.
