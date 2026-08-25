@@ -115,16 +115,16 @@ then multiplied by the **angle** rate (§5) and adjusted by crit / block.
 call RulesOfEngagement::roe_MinWC   -> lo
 call RulesOfEngagement::roe_MaxWC   -> hi
 ; then, if the attacker object exists:
-edi = attacker->vtable[0x4F0]()          ; a MAX  (resource)
-ecx = attacker->vtable[0x4E8]()          ; a CUR  (resource)
-eax = ((edi - ecx) * 1000) / edi         ; permille of the resource MISSING
-obj = attacker->vtable[0x430]()
+edi = attacker->so_MaxHP()               ; vtable +0x4F0
+ecx = attacker->so_GetHP()               ; vtable +0x4E8
+eax = ((MaxHP - HP) * 1000) / MaxHP      ; permille of MISSING HP (so_MaxHP / so_GetHP)
+obj = attacker->so_parameter()           ; vtable +0x430 -> Parameter::Container
 lo += ChangeByConditionParam::cbcp_GetValue(obj + 0xCE0, eax)   ; bonus added to the LOW bound
 hi += ChangeByConditionParam::cbcp_GetValue(obj + 0xCFC, eax)   ; bonus added to the HIGH bound
 ```
 
-So both bounds get a bonus from a table indexed by *how much of a resource is missing* — the
-"stronger as it gets hurt" mob mechanic. Then a roll is taken between `lo` and `hi`
+So both bounds get a bonus indexed by *how much HP is missing* — the "stronger as it gets hurt"
+mechanic (`PassiveHPDownRateWCMin` / `PassiveHPDownRateWCMax` are members of the container, §3b). Then a roll is taken between `lo` and `hi`
 (RNG = `cWell512Random::well512_GetRandom`, WELL512).
 
 ### `RulesOfEngagementNormalPY::roe_DefendPower` (VA `0x501FA0`)
@@ -178,6 +178,67 @@ Field offsets read off each accessor (all fetched via a virtual getter, so the o
 
 `roe_TH` and `roe_TB` are **byte-identical** through the whole chain and diverge only at the very last
 field (`+0xEC` vs `+0xF0`) — aim and block share one accumulator and differ by a single term.
+
+### 3b. What those offsets are reading: `Parameter::Container` [BIN]
+
+Every `call edx` in the accessors is the **same** virtual, re-called per field (the compiler does not cache
+it). Resolved by reading the pointer out of each `??_7Shine*` vftable:
+
+| vtable slot | function | returns |
+|---|---|---|
+| `+0x430` | `ShineMobileObject::so_parameter` / `ShineObject::so_parameter` | **`Parameter::Container const*`** |
+| `+0x4E8` | `so_GetHP` (`ShineMob` / `ShinePlayer` / `ShineMover`) | current HP |
+| `+0x4F0` | `so_MaxHP` (`ShineMob` / `ShinePlayer` / `ShineMover` / `ShinePet`) | max HP |
+| `+0x4D8` | `so_GetLevel` | level |
+
+So the `((max - cur) * 1000) / max` in `roe_AttackPower` (§3) is **permille of MISSING HP** — confirmed,
+not a generic resource. And `arg+0x00` / `arg+0x04` are attacker / defender: `roe_AC` reads `[esi+4]`,
+the **defender**.
+
+`Parameter::Container` is not a flat stat block — it holds **parallel blocks of the same shape**, one per
+source of modification, named in the PDB:
+
+```
+PureCharParam   Item   ItemPowerRate   Upgrade   WeaponTitle
+PassiveSkill    AbnormalState   LastTune   Total
+```
+
+plus loose members: `DotDamagePlus, SPRate, RangeEvasion, flag, MissPercentFix, DamageReflection,
+ChangeAbilityInfo, HealRate, PassiveBuffKeepTimeUPRate, PassiveHealRate, PassiveCriDamageRatePlus,
+PassiveHPDownRate{WCMin,WCMax,MAMin,MAMax,AC,MR}, PassiveMovingTBPlus, PhysicalImmuneRate,
+MagicalImmuneRate, RangeOver, DMGMinusRate` and the methods `c_clear, c_StoreMob, c_Storepure,
+c_MakeTotal, c_TotalPram_MinusCheck, c_StoreMover, IsNoAttack, IsNoAttacOrNoMove`.
+
+**One block's field order** (from the PDB member list, in order):
+
+```
+Str  Con  Dex  Int  Men
+WCmin  WCmax  MAmin  MAmax
+AbsoluteAttack  AbsoluteDefend  AbsoluteHit  AbsoluteBlock
+MoveSpeed  HPRecover  SPRecover  CastingTime  Critical
+PhisycalWeaponMastery  MagicalWeaponMastery  ShieldAC
+HitRate  EvaRate  MACri  CriDam  MagCriDam  CriDamRate  MagCriDamRate
+AttSpeed  MaxHP  MaxHP_2  MaxSP
+HPAbsorption_Hitted  SPAbsorption_Hitted  HPAbsorption_Hit  SPAbsorption_Hit
+CriticalTB  RegistNone  ResistPoison  ResistDeaseas  ResistCurse
+ResistMoveSpdDown  ResistGTI  MaxLP  LPRecover
+```
+
+That is 45 names. **The observed block stride is `0xCC` = 204 bytes = 51 ints**, so six fields are not in
+the visible name run — and the six the accessors demonstrably use but the list omits are exactly
+**AC, TH, TB, MR, MH, MB**.
+
+The offsets in §3a decompose as `blockIndex * 0xCC + fieldOffset`. The blocks touched by `roe_AC`/`roe_TH`/
+`roe_TB`/`roe_MR`/`roe_MinWC` are indices `0, 1, 4, 5, 7, 9, 10, 11, 12, 13, 14`, in the roles the chain
+implies: **two blocks summed** (base + one source), **four blocks multiplied** as permille rates, **five
+blocks added** as flat bonuses. `HitRate` and `EvaRate` are adjacent in the member list, which matches
+`roe_TH` / `roe_TB` diverging by exactly one adjacent field (`+0xEC` vs `+0xF0`).
+
+> ⚠️ [OPEN] The *precise* field↔offset table is **not** pinned down. `roe_MinMA`/`roe_MaxMA` start from
+> `0x790`, which does not decompose the same way as the WC/AC/TH/TB/MR group, so the accessors do not all
+> read the same block set. Naming an individual offset requires either parsing the PDB type stream for
+> `Parameter::Container`'s real member offsets, or dumping a live `Container` and matching values against a
+> known character sheet. Do not assume the mapping above is field-exact.
 
 ---
 
@@ -367,8 +428,12 @@ The residual is expected: `DefendPower ≠ AC` exactly (§3), and the **angle ta
    whose sibling `roe_LevelGapDamageRevision` does exactly that, but it was not traced to its writer.
 5. The **angle** of each recorded hit is not in the capture analysis, so the 20% angle band is currently
    folded into the ±8% residual rather than removed from it.
-6. **Which object each `call edx` returns** in the stat accessors (§3a) is not resolved, so the field
-   offsets are positions in an unnamed layout rather than named stats.
+6. ~~Which object each `call edx` returns is not resolved.~~ **RESOLVED** — it is
+   `so_parameter()` returning `Parameter::Container const*` (§3b), and the container's block names and
+   field names are recovered. What remains open is the **field-exact offset table** within a block:
+   `roe_MinMA`/`roe_MaxMA` start at `0x790` and do not decompose like the WC/AC/TH/TB/MR group, so the
+   accessors read different block sets. Closing it needs the PDB type stream (real member offsets) or a
+   live `Container` dump matched against a known character sheet.
 
 ## Where the fit went wrong
 
