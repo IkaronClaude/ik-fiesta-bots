@@ -106,17 +106,29 @@ while ((line = Console.ReadLine()) != null) {{
         var attacker = Build(c.GetProperty("att"), level);
         var defender = Build(c.GetProperty("def"), defLevel);
         string fn = c.GetProperty("fn").GetString();
+        var rule = c.TryGetProperty("rule", out var rl) ? rl.GetString() switch {{
+            "normalMA" => EngagementRule.NormalMagic,
+            "magicalSkill" => EngagementRule.MagicalSkill,
+            "physicalSkill" => EngagementRule.PhysicalSkill,
+            "cureSkill" => EngagementRule.CureSkill,
+            "alwaysHit" => EngagementRule.AlwaysHit,
+            "alwaysCritical" => EngagementRule.AlwaysCritical,
+            "healAttack" => EngagementRule.HealAttack,
+            _ => EngagementRule.NormalPhysical,
+        }} : EngagementRule.NormalPhysical;
         double v;
         switch (fn) {{
             case "roe_MinWC":   v = DamageCalculator.MinWeaponDamage(attacker); break;
+            case "roe_MinMA":   v = DamageCalculator.MinMagicAttack(attacker);  break;
+            case "roe_MaxMA":   v = DamageCalculator.MaxMagicAttack(attacker);  break;
             case "roe_MaxWC":   v = DamageCalculator.MaxWeaponDamage(attacker); break;
             case "roe_AC":      v = DamageCalculator.ArmourClass(defender);     break;
             case "roe_TH":      v = DamageCalculator.ToHitRating(attacker);     break;
             case "roe_TB":      v = DamageCalculator.ToBlockRating(defender);   break;
             case "roe_MR":      v = DamageCalculator.MagicResistance(defender); break;
-            case "DefendPower": v = DamageCalculator.DefendPower(defender);     break;
+            case "DefendPower": v = DamageCalculator.DefendPower(defender, rule); break;
             case "AttackPower":
-                v = DamageCalculator.AttackPower(attacker, c.GetProperty("roll").GetInt32());
+                v = DamageCalculator.AttackPower(attacker, c.GetProperty("roll").GetInt32(), rule);
                 break;
             case "CalcDamage":
                 v = DamageCalculator.ResolveDamage(attacker, defender, new AttackModifiers {{
@@ -124,7 +136,7 @@ while ((line = Console.ReadLine()) != null) {{
                         ForceCritical = c.GetProperty("crit").GetBoolean(),
                         DamageRatePermille = c.TryGetProperty("damagerate", out var dr) ? dr.GetInt32() : 1000,
                         LevelGapRatePermille = c.TryGetProperty("levelgaprate", out var lg) ? lg.GetInt32() : 1000,
-                    }});
+                    }}, null, rule);
                 break;
             default: throw new Exception("fn " + fn);
         }}

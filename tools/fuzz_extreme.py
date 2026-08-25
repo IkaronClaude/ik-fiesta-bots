@@ -29,8 +29,11 @@ BLOCKS_PLUS = ["PureCharParam", "Item.plus", "ItemPowerRate.plus", "Upgrade.plus
 BLOCKS_RATE = ["Item.rate", "ItemPowerRate.rate", "Upgrade.rate", "WeaponTitle.rate",
                "PassiveSkill.rate", "AbnormalState.rate", "LastTune.rate"]
 ONLY_FN = None
-FNS = ["roe_MinWC", "roe_MaxWC", "roe_AC", "roe_TH", "roe_TB", "roe_MR",
+FNS = ["roe_MinWC", "roe_MaxWC", "roe_MinMA", "roe_MaxMA", "roe_AC", "roe_TH", "roe_TB", "roe_MR",
        "AttackPower", "DefendPower", "CalcDamage"]
+# Only the rules the C# side models end-to-end. cureSkill / alwaysHit / healAttack change hit
+# handling rather than the damage maths and are not ported yet.
+FUZZ_RULES = ["normalPY", "physicalSkill", "normalMA", "magicalSkill", "alwaysCritical"]
 
 I32_MIN, I32_MAX = -2147483648, 2147483647
 EDGE = [0, 1, -1, 2, -2, 1000, 999, 1001, -1000, 32767, -32768, 65535, 65536,
@@ -68,7 +71,7 @@ def gen_container(rng, mag, density, edge_p):
 
 def gen_case(rng, mag, density, edge_p):
     fn = ONLY_FN or rng.choice(FNS)
-    case = {"fn": fn,
+    case = {"fn": fn, "rule": rng.choice(FUZZ_RULES),
             "att": gen_container(rng, mag, density, edge_p),
             "def": gen_container(rng, mag, density, edge_p),
             "level": rng.choice([0, 1, 2, 61, 100, 200, 255, rng.randint(0, 255)]),

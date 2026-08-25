@@ -155,6 +155,41 @@ public static class DamageCalculator
         return ApplyRate(scaled, s.Rate(StatModifier.PassiveSkill)[Stat.PhisycalWeaponMastery]);
     }
 
+    /// <summary>Bottom of the magic attack range. The server's <c>roe_MinMA</c>.</summary>
+    public static double MinMagicAttack(ICombatant attacker) => MagicAttack(attacker.CombatStats, Stat.MAmin);
+
+    /// <summary>Top of the magic attack range. The server's <c>roe_MaxMA</c>.</summary>
+    public static double MaxMagicAttack(ICombatant attacker) => MagicAttack(attacker.CombatStats, Stat.MAmax);
+
+    /// <summary>The magic attack accessors.
+    ///
+    /// <para>⚠️ These are NOT the mirror image of <see cref="WeaponDamage"/>, which is the natural
+    /// assumption and is wrong. Probing which fields each accessor actually reads shows two structural
+    /// differences: the magic pair takes a FULL <see cref="Chain"/> over its own bound — including
+    /// <c>WeaponTitle.plus</c> and <c>LastTune.plus</c>, which the weapon pair does not read at all — and
+    /// it reads <c>Upgrade.plus</c> / <c>AbnormalState.plus</c> at its OWN bound rather than at the max
+    /// slot the way the weapon pair does. The weapon pair's flat-bonus-at-WCmax behaviour is specific to
+    /// enhancement; magic does not share it.</para>
+    ///
+    /// <para>What does carry over: the item bonus is scaled rather than added raw, and the scale is taken
+    /// from the MAX slot's weapon-title rate even when computing the minimum.</para></summary>
+    private static double MagicAttack(CombatStats s, Stat bound)
+    {
+        var scaledItem = (double)s.Rate(StatModifier.WeaponTitle)[Stat.MAmax] * s.Plus(StatModifier.Item)[bound] / 1000.0;
+        scaledItem = ApplyRate(scaledItem, s.Rate(StatModifier.PassiveSkill)[Stat.MagicalWeaponMastery]);
+
+        var value = GoverningChain(s, Stat.Int);
+        value += Chain(s, bound);
+        value += scaledItem;
+        value += s.Plus(StatModifier.PassiveSkill)[Stat.MagicalWeaponMastery];
+
+        // ONE trailing rate, where the weapon pair has three. Isolated by flooring the governing chain to
+        // 1 with an empty own half and setting each rate alone: only ItemPowerRate.rate on the bound moves
+        // the result, while the weapon pair also answers to PassiveSkill.rate[bound] and
+        // AbnormalState.rate[WCmax].
+        return FloorAtOne(ApplyRate(value, s.Rate(StatModifier.ItemPowerRate)[bound]));
+    }
+
     // ---- attack / defend power -------------------------------------------------------------------------
 
     /// <summary>Physical attack power: a point in the weapon's damage range, scaled by weapon mastery.
@@ -166,21 +201,26 @@ public static class DamageCalculator
     /// <para><b>The mastery multiplier is not floored.</b> With a physical-weapon-mastery rate of 0 this
     /// returns exactly 0 even though both bounds are floored at 1 — no mastery means no damage, and the
     /// floors on the bounds do not rescue it.</para></summary>
-    public static double AttackPower(ICombatant attacker, int rollPermille)
+    public static double AttackPower(ICombatant attacker, int rollPermille,
+                                    EngagementRule rule = EngagementRule.NormalPhysical)
     {
         var s = attacker.CombatStats;
-        var low = MinWeaponDamage(attacker);
-        var high = MaxWeaponDamage(attacker);
+        var magical = rule.School() == DamageSchool.Magical;
+        var low = magical ? MinMagicAttack(attacker) : MinWeaponDamage(attacker);
+        var high = magical ? MaxMagicAttack(attacker) : MaxWeaponDamage(attacker);
 
         // The range goes through _ftol because the server's RNG takes an int.
         var range = (long)Ftol32(high - low);
         var draw = range * rollPermille / 1000;
 
-        return ApplyRate(low + draw, s.Rate(StatModifier.PassiveSkill)[Stat.PhisycalWeaponMastery]);
+        return ApplyRate(low + draw, s.Rate(StatModifier.PassiveSkill)[
+            magical ? Stat.MagicalWeaponMastery : Stat.PhisycalWeaponMastery]);
     }
 
-    /// <summary>Physical defend power. The server's <c>NormalPY::roe_DefendPower</c> IS <c>roe_AC</c>.</summary>
-    public static double DefendPower(ICombatant defender) => ArmourClass(defender);
+    /// <summary>Defend power. <c>NormalPY::roe_DefendPower</c> IS <c>roe_AC</c>; the magical rules use
+    /// <c>roe_MR</c> instead.</summary>
+    public static double DefendPower(ICombatant defender, EngagementRule rule = EngagementRule.NormalPhysical)
+        => rule.School() == DamageSchool.Magical ? MagicResistance(defender) : ArmourClass(defender);
 
     // ---- the damage pipeline ---------------------------------------------------------------------------
 
@@ -209,16 +249,18 @@ public static class DamageCalculator
     /// taken from <paramref name="rng"/> unless <paramref name="modifiers"/> pins them. Pass a seeded
     /// <see cref="Random"/> for a reproducible simulation, or pin both for a bounding question.</para></summary>
     public static AttackOutcome Resolve(ICombatant attacker, ICombatant defender,
-                                        AttackModifiers? modifiers = null, Random? rng = null)
+                                        AttackModifiers? modifiers = null, Random? rng = null,
+                                        EngagementRule rule = EngagementRule.NormalPhysical)
     {
         var mods = modifiers ?? AttackModifiers.Default;
         rng ??= Random.Shared;
 
         var rollPermille = mods.RollPermille ?? rng.Next(0, 1001);
-        var isCritical = mods.ForceCritical ?? rng.Next(0, 1000) < mods.CriticalChancePermille;
+        var isCritical = rule.AlwaysCriticals()
+                         || (mods.ForceCritical ?? rng.Next(0, 1000) < mods.CriticalChancePermille);
 
-        var attackPower = AttackPower(attacker, rollPermille);
-        var defendPower = DefendPower(defender);
+        var attackPower = AttackPower(attacker, rollPermille, rule);
+        var defendPower = DefendPower(defender, rule);
 
         var damage = CoreDamage(attackPower, defendPower, attacker.Level, mods.BaseDamageRatePermille);
         if (isCritical) damage *= 2.0;
@@ -257,8 +299,9 @@ public static class DamageCalculator
 
     /// <summary>Convenience for the common question: how much damage, ignoring the breakdown.</summary>
     public static int ResolveDamage(ICombatant attacker, ICombatant defender,
-                                    AttackModifiers? modifiers = null, Random? rng = null)
-        => Resolve(attacker, defender, modifiers, rng).Damage;
+                                    AttackModifiers? modifiers = null, Random? rng = null,
+                                    EngagementRule rule = EngagementRule.NormalPhysical)
+        => Resolve(attacker, defender, modifiers, rng, rule).Damage;
 
     /// <summary>Two degrees per direction unit. The server never works in degrees: <c>ddt_Initialize</c>
     /// builds its direction table with <c>atan(...) * 90 / PI</c>, and degrees would be <c>* 180 / PI</c>,
