@@ -67,6 +67,23 @@ SYM = {
     "CalcDamage": ("?roe_CalcDamage@RulesOfEngagement@@UAEHPAUEngageArgument@@@Z", "normalPY"),
     "AttackPowerCalcDamage": ("?roe_AttackPowerCalcDamage@RulesOfEngagement@@QAEHPAUEngageArgument@@HE@Z", "normalPY"),
 }
+# The eight RulesOfEngagement singletons. roe_CalcDamage is NOT overridden by any subclass -- it lives on
+# the base class and is virtual, so the SAME pipeline drives every rule and only the components it calls
+# (AttackPower / DefendPower / Damage / HitRate / CriticalRate) differ. That means selecting a rule is
+# purely a matter of which `this` goes in ECX.
+#
+# roe_MinWC / MaxWC / AC / MR / TH / TB are NON-virtual base methods, shared by every rule.
+RULES = {
+    "normalPY":       ("?roe_normalPY@@3VRulesOfEngagementNormalPY@@A",           "RulesOfEngagementNormalPY"),
+    "normalMA":       ("?roe_normalMA@@3VRulesOfEngagementNormalMA@@A",           "RulesOfEngagementNormalMA"),
+    "physicalSkill":  ("?roe_physical@@3VRulesOfEngagementPhisycalSkill@@A",      "RulesOfEngagementPhisycalSkill"),
+    "magicalSkill":   ("?roe_magical@@3VRulesOfEngagementMagicalSkill@@A",        "RulesOfEngagementMagicalSkill"),
+    "cureSkill":      ("?roe_cure@@3VRulesOfEngagementCureSkill@@A",              "RulesOfEngagementCureSkill"),
+    "alwaysHit":      ("?roe_always@@3VRulesOfEngagementAlwaysHit@@A",            "RulesOfEngagementAlwaysHit"),
+    "alwaysCritical": ("?roe_alwaysCritical@@3VRulesOfEngagementAlwaysCritical@@A","RulesOfEngagementAlwaysCritical"),
+    "healAttack":     ("?roe_alwaysHealAttack@@3VRuleOfEngagementHealAttack@@A",  "RuleOfEngagementHealAttack"),
+}
+
 INT_RETURNING = {"CalcDamage", "AttackPowerCalcDamage"}
 
 # DamageByAngle::DamageTable is uint16[91]. The argument is a DIRECTION-UNIT delta, NOT degrees: one unit
@@ -163,6 +180,7 @@ class Oracle:
             r"?GetLevelCapRate@LevelGap_Player_to_Player@@SAHHH@Z") if n in self.syms]
         self.set_level_gap_rate(1000)
         self.normalPY = self.syms.get("?roe_normalPY@@3VRulesOfEngagementNormalPY@@A", 0)
+        self.rule_this = {r: self.syms.get(sym, 0) for r, (sym, _) in RULES.items()}
         self.att_c, self.def_c = HEAP + 0x40000, HEAP + 0x42000
         self.att_o, self.def_o = HEAP + 0x10000, HEAP + 0x14000
         self.arg = HEAP + 0x30000
@@ -299,6 +317,18 @@ class Oracle:
         uc = self.uc
         fn = case["fn"]
         sym, this = SYM[fn]
+        # If the selected rule OVERRIDES this method, call the override directly. Virtual dispatch through
+        # roe_CalcDamage handles itself, but a direct AttackPower/DefendPower call needs the right symbol.
+        rule_name = case.get("rule", "normalPY")
+        if rule_name != "normalPY":
+            # Swap the DECLARING CLASS in the mangled name for the selected rule's, and use it if that
+            # override exists. Works for both a base-class symbol (roe_Damage@RulesOfEngagement) and a
+            # NormalPY one, because the class token is always between the first "@" and the following "@@".
+            head, _, rest = sym.partition("@")
+            _, _, tail = rest.partition("@@")
+            cand = "%s@%s@@%s" % (head, RULES[rule_name][1], tail)
+            if cand in self.syms:
+                sym = cand
         va = self.syms[sym]
         self._container(self.att_c, case.get("att"))
         self._container(self.def_c, case.get("def"))
@@ -323,7 +353,7 @@ class Oracle:
         uc.mem_write(self.arg + 0x18, struct.pack("<i", int(case.get("attackloc", 0))))
         for k in ("crit", "hit", "block", "critstun"):
             if k in case:
-                self.set_override(k, case[k])
+                self.set_override(k, case[k], case.get("rule", "normalPY"))
         if "immune" in case:
             self.set_immune(case["immune"])
         if "roll" in case:
@@ -337,7 +367,8 @@ class Oracle:
             frame += struct.pack("<d", float(case["attack"])) + struct.pack("<d", float(case["defend"]))
         uc.mem_write(esp, frame)
         uc.reg_write(UC_X86_REG_ESP, esp)
-        uc.reg_write(UC_X86_REG_ECX, self.normalPY if this else 0)
+        rule = case.get("rule", "normalPY")
+        uc.reg_write(UC_X86_REG_ECX, self.rule_this.get(rule, self.normalPY) if this else 0)
         if fn in INT_RETURNING:
             # Returns int in EAX, so no fstp thunk -- stop at a bare `ret` landing pad instead.
             from unicorn.x86_const import UC_X86_REG_EAX
@@ -379,9 +410,19 @@ class Oracle:
         if sym in self._saved:
             self.uc.mem_write(self.syms[sym], self._saved[sym])
 
-    def set_override(self, what, value):
+    def set_override(self, what, value, rule="normalPY"):
         """what in {crit, hit, block, critstun}; value True=always, False=never, None=random."""
         sym = self.RATE_SYMS[what]
+        # Resolve the override onto the SELECTED RULE's class. These symbols name NormalPY, so patching
+        # them only ever stubbed NormalPY -- every other rule ran its real, unstubbed crit/hit/block code
+        # and its CalcDamage numbers were meaningless. Found by surveying the rules and getting a magic
+        # CalcDamage of exactly 2x the physical one, which was an unsuppressed critical, not a formula.
+        if rule != "normalPY":
+            head, _, rest = sym.partition("@")
+            _, _, tail = rest.partition("@@")
+            cand = "%s@%s@@%s" % (head, RULES[rule][1], tail)
+            if cand in self.syms:
+                sym = cand
         if sym not in self.syms:
             return False
         self._orig(sym)
