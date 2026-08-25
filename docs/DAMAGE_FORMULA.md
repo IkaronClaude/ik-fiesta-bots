@@ -687,3 +687,93 @@ damage ∝ (attackerLevel + 1) x roll(MinWC..MaxWC) / DefendPower x angleRate
 ```
 
 with the roll ratio confirmed to 0.5% and the level term proven from `so_GetLevel`.
+
+---
+
+## Appendix C — 1:1 reproduction: executing the real code [BIN, EXACT]
+
+`tools/roe_emu.py` maps `Zone.exe` into a Unicorn x86 emulator, builds a `Parameter::Container` from a mob's
+`MobInfoServer` + `MobWeapon` row, and **calls the real `RulesOfEngagement` functions**. Nothing is
+transcribed by hand, so there is nothing to get wrong.
+
+### Harness
+
+- Whole image mapped at `0x400000`; unmapped pages auto-map zero-filled, so every global reads 0 and the
+  debug-log blocks are skipped exactly as in production.
+- `FunctionProfiler::pr_Entrance` / `pr_Exit` patched to `ret 4` (`__thiscall void f(char*)`). They are pure
+  instrumentation; left running they executed 1.5M instructions and walked into the stack.
+- The **real `ShineMob` vftable** is copied out of `.rdata` and only four slots are replaced
+  (`so_parameter`, `so_GetLevel`, `so_GetHP`, `so_MaxHP`). A synthetic zero vtable is not safe —
+  `roe_MinWC` also calls slot `+0x938`, and a zero there is a call to address 0.
+- Fakes are emitted as real machine code (`mov eax, imm32; ret`), not Unicorn hooks — writing EIP from
+  inside a `UC_HOOK_CODE` callback returned into the stack.
+- The result is captured by returning into a `fstp qword ptr [mem]` thunk rather than decoding the 80-bit
+  `FP0` register, which silently yielded 0.0.
+
+### Result — mob 84 "Orc" (level 61), neutral modifiers
+
+```
+PureCharParam: Str 822  Con 140  Dex 147  Int 135  Men 112
+               WCmin 747  WCmax 1137  AC 102  TB 179  MR 127  TH 267
+```
+
+| call | returned | equals |
+|---|---|---|
+| `roe_MinWC` | **1569.0** | `822 Str + 747 WCmin` |
+| `roe_MaxWC` | **1959.0** | `822 Str + 1137 WCmax` |
+| `roe_AC` | **242.0** | `140 Con + 102 AC` |
+| `roe_MR` | **239.0** | `112 Men + 127 MR` |
+| `roe_TH` | **414.0** | `147 Dex + 267 TH` |
+| `roe_TB` | **326.0** | `147 Dex + 179 TB` |
+| `NormalPY::roe_AttackPower` | **1569.0** | `= roe_MinWC` (the WELL512 state is zeroed, so the roll lands on its floor) |
+| `NormalPY::roe_DefendPower` | **242.0** | `= roe_AC` exactly |
+
+So with neutral modifiers **every accessor is exactly `coreStat + ownStat`**, confirming §3c's
+"runs the chain twice" reading with real numbers rather than inference.
+
+### The formula, proven
+
+```
+roe_Damage(attack=1569.0, defend=242.0) = 401.9752197265625      <- the real server code
+(61 + 1) * 1569 / 242                   = 401.9752197265625      <- our closed form
+```
+
+**Identical.** The damage law is therefore exactly:
+
+```
+damage = (attackerLevel + 1) * AttackPower * (nBMPDamageRate / 1000) / DefendPower
+AttackPower = roll(roe_MinWC .. roe_MaxWC)        // WELL512
+DefendPower = roe_AC                              // for a normal physical hit
+roe_<stat>  = (coreStat chain) + (ownStat chain)  // each chain per 3a/3c
+```
+
+then the **angle** rate (§5), then crit / block / miss.
+
+### Reproducing
+
+```bash
+pip install unicorn
+python tools/roe_emu.py --mob 84            # any mob id; reads its real MobInfoServer + MobWeapon row
+```
+
+### Remaining gap against the capture, and what it is
+
+Predicted attack band for the Orc is `1569..1959`. The capture's implied band (§ Appendix B, using
+`defend = wire AC + Con`) is `~1726..2601` — the floor is close, the ceiling overshoots. Two known, named
+effects are still unmodelled per hit, and both push the ceiling up:
+
+1. **Angle** — up to ×1.200 (§5), not recoverable from the capture.
+2. **The missing-HP attack bonus** — `PassiveHPDownRateWCMin/WCMax` through `cbcp_GetValue`, indexed by
+   permille of missing HP (§3). The operator was *killing* these mobs, so their HP fell throughout, and this
+   term grows as it does. It is reconstructible: our outgoing `SWING_DAMAGE` carries `resthp` per mob handle,
+   so each incoming hit can be dated against that mob's HP at that instant.
+
+Neither is a discrepancy in the formula — both are inputs the capture does not directly carry.
+
+### Why this matters for the bot (future goal)
+
+With the forward function exactly executable, the **inverse** becomes tractable: observe damage, angle,
+level and defence on the wire, and solve for a mob's `MobWeapon` / `MobInfoServer` row. The bot can then
+learn `MinWC/MaxWC/Str/AC/TB/MR` for any mob it fights, rather than needing the server tables — which is
+exactly the "fit MobInfoServer + MobWeapon from combat data" goal. `roe_emu.py` is the oracle that makes
+each candidate fit checkable against ground truth.
