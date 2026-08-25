@@ -843,9 +843,25 @@ It also confirms the asymmetries, e.g. `roe_MinWC` depends on `Upgrade.plus.WCma
 
 ### Still open
 
-**`roe_CalcDamage` does not yet run under the oracle.** Progress so far: the 182-entry IAT is stubbed
-(`GetSystemTimeAsFileTime` is reached for RNG seeding, and with `fast_load=True` pefile silently omits the
-import directory, so the stubbing must force `parse_data_directories`). It still faults on further
-environment — the `ITableBase::ms_pkTable` singletons (level gap) are null, and more object state is
-required. Until it runs, the angle and level-gap stages are **read** but not **executed**, so Appendix C's
-proven result stands only for `roe_Damage` and below.
+**`roe_CalcDamage` now RUNS end to end, but returns a degenerate `1`.** Five separate blockers were found
+and fixed to get there, each worth keeping because each failed *silently* somewhere other than its cause:
+
+| blocker | symptom | fix |
+|---|---|---|
+| IAT never populated | jumped to `0x34B69A` | stub all 182 imports. ⚠️ `pefile.PE(fast_load=True)` omits the import directory, so the stubbing silently no-ops unless you force `parse_data_directories` |
+| wrong stdcall arg counts | a **later** `ret` popped 0 | `DecodePointer`/`EncodePointer` are 1 arg **and must be IDENTITY** (returning 0 turns the next indirect call into a jump to null); `TlsSetValue` is 2 args |
+| CRT per-thread data | `__getptd_noexit` → `TlsGetValue` → `DecodePointer` → `call eax` on null | stub `__getptd_noexit` to return a zeroed `_ptiddata` |
+| `roe_CriticalStun` | applies a stun abnormal-state on a non-registered object → assert → `malloc`/`MessageBoxW`/`ExitProcess` took the emulator with it | `ret 4`. It is a `void` side effect; the damage number is unaffected |
+| vtable `+0xD2C` / `+0xD34` | `call edx` into real world-state code | `so_ply_JobChangeDamageUp(attacker, damage) -> int` is a damage MODIFIER hook and is identity for a mob defender: `mov eax,[esp+8]; ret 8` |
+
+**But it is not yet a usable oracle for `CalcDamage`.** It returns `1` for every input tried — same-stat
+defender, `AC=0/TB=0`, `AC=1215`, `AC=535`, angle table all-1200, all give `1`. Since `AttackPower` (1569),
+`DefendPower` (242) and `roe_Damage` (401.975) are all correct in isolation, `CalcDamage` is short-circuiting
+to a minimum before the damage path — almost certainly a miss verdict from `roe_HitRate`, or
+`roe_IsDamageImmune`, driven by an `EngageArgument` that is **still zero** in the fields the upper layer
+reads: `attackcode`, `actionnumber`, `attackloc`, `sklinfo`, `damagerate`, `crirateadd` (Appendix A).
+
+So the current honest position is unchanged from Appendix C in what is *proven*: `roe_Damage` and below are
+exact; the angle and level-gap stages are **read and now executed, but not yet validated**, because the one
+function that applies them does not yet produce a meaningful number. Next step is populating `EngageArgument`
+properly rather than assuming zeros are benign.

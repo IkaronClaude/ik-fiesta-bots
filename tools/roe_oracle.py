@@ -113,6 +113,23 @@ class Oracle:
                   r"?pr_Exit@PerformanceRecorder@FunctionProfiler@@QAEXPAD@Z"):
             if n in self.syms:
                 self.uc.mem_write(self.syms[n], b"\xC2\x04\x00")
+        # CRT per-thread data. __getptd_noexit walks TlsGetValue -> DecodePointer -> `call eax` on an
+        # ENCODED function pointer held in a global. That global is zero here, so the decode yields 0 and the
+        # call lands on null. There is no per-thread state worth emulating for a pure arithmetic function, so
+        # return a zeroed _ptiddata block directly. The auto-mapper covers whatever field the caller reads.
+        self.ptd = HEAP + 0x70000
+        self.uc.mem_write(self.ptd, b"\x00" * 0x800)
+        for n in ("__getptd_noexit", "__getptd"):
+            if n in self.syms:
+                self.uc.mem_write(self.syms[n], b"\xB8" + struct.pack("<I", self.ptd) + b"\xC3")
+        # roe_CriticalStun APPLIES a stun abnormal-state (so_AbnormalState_Set -> asl_AbstateSet). It is a
+        # `void` SIDE EFFECT on world state, not part of the damage number, and our synthetic object is not a
+        # registered world object -- so it asserts, and the CRT assert path runs malloc/MessageBoxW/ExitProcess
+        # and takes the emulator with it. Neutralised (`__thiscall void f(arg)` -> `ret 4`). The returned
+        # damage is unaffected; what is lost is only whether a stun would have been inflicted.
+        for n in (r"?roe_CriticalStun@RulesOfEngagement@@QAEXPAUEngageArgument@@@Z",):
+            if n in self.syms:
+                self.uc.mem_write(self.syms[n], b"\xC2\x04\x00")
         self.normalPY = self.syms.get("?roe_normalPY@@3VRulesOfEngagementNormalPY@@A", 0)
         self.att_c, self.def_c = HEAP + 0x40000, HEAP + 0x42000
         self.att_o, self.def_o = HEAP + 0x10000, HEAP + 0x14000
@@ -126,11 +143,17 @@ class Oracle:
         self.s_lvl = self._stub(61)
         self.s_hp = self._stub(1)
         self.s_mhp = self._stub(1)
+        # vtable +0xD34 = so_ply_JobChangeDamageUp(ShineObject* attacker, int damage) -> int.
+        # It is a damage MODIFIER hook (a job-change bonus), not the damage application, and it is a
+        # player concept -- for a mob defender it is identity. `mov eax,[esp+8]; ret 8` returns the
+        # damage argument unchanged (__thiscall: this in ecx, then attacker and damage on the stack).
+        self.s_jobdmg = self._stub_raw(bytes([0x8B, 0x44, 0x24, 0x08, 0xC2, 0x08, 0x00]))
         for o, v, par in ((self.att_o, HEAP + 0x20000, self.s_par_a), (self.def_o, HEAP + 0x22000, self.s_par_d)):
             self.uc.mem_write(o, struct.pack("<I", v))
             self.uc.mem_write(o + 4, b"\x00" * 0x1000)
             self.uc.mem_write(v, vt)
-            for slot, t in ((0x430, par), (0x4D8, self.s_lvl), (0x4E8, self.s_hp), (0x4F0, self.s_mhp)):
+            for slot, t in ((0x430, par), (0x4D8, self.s_lvl), (0x4E8, self.s_hp), (0x4F0, self.s_mhp),
+                            (0xD2C, self.s_jobdmg), (0xD34, self.s_jobdmg)):
                 self.uc.mem_write(v + slot, struct.pack("<I", t))
 
     def _stub_imports(self, pe):
@@ -143,8 +166,16 @@ class Oracle:
         ARGS = {"GetSystemTimeAsFileTime": 4, "QueryPerformanceCounter": 4, "QueryPerformanceFrequency": 4,
                 "GetTickCount": 0, "GetCurrentThreadId": 0, "GetCurrentProcessId": 0,
                 "InitializeCriticalSection": 4, "EnterCriticalSection": 4, "LeaveCriticalSection": 4,
-                "DeleteCriticalSection": 4, "TlsGetValue": 4, "GetLastError": 0, "SetLastError": 4}
+                "DeleteCriticalSection": 4, "GetLastError": 0, "SetLastError": 4,
+                # These four are the ones roe_CalcDamage actually reaches. Getting an arg count wrong here
+                # does not fault at the call -- it silently leaks stack, and a LATER `ret` pops the wrong
+                # word. That is what returned to address 0 with the crit-stun path half finished.
+                "TlsGetValue": 4, "TlsSetValue": 8, "DecodePointer": 4, "EncodePointer": 4}
         OUTPTR = {"GetSystemTimeAsFileTime": 8, "QueryPerformanceCounter": 8, "QueryPerformanceFrequency": 8}
+        # DecodePointer/EncodePointer must be IDENTITY, not 0: the CRT round-trips real function pointers
+        # through them, and returning 0 turns the next indirect call into a jump to null.
+        IDENTITY = {"DecodePointer", "EncodePointer"}
+        RETVAL = {"TlsSetValue": 1}
         self.import_names = {}
         try:
             dirs = pe.DIRECTORY_ENTRY_IMPORT
@@ -155,7 +186,9 @@ class Oracle:
                 nm = (imp.name or b"").decode("latin-1") or ("ord%d" % imp.ordinal)
                 self.import_names[imp.address] = nm
                 argb = ARGS.get(nm, 0)
-                if nm in OUTPTR:
+                if nm in IDENTITY:
+                    code = b"\x8B\x44\x24\x04" + b"\xC2" + struct.pack("<H", argb)   # mov eax,[esp+4]; ret n
+                elif nm in OUTPTR:
                     n = OUTPTR[nm]
                     code = b"\x8B\x44\x24\x04"                      # mov eax,[esp+4]  (the out pointer)
                     for k in range(0, n, 4):
@@ -163,7 +196,8 @@ class Oracle:
                     code += b"\x31\xC0"                             # xor eax,eax
                     code += b"\xC2" + struct.pack("<H", argb)
                 else:
-                    code = b"\x31\xC0" + (b"\xC2" + struct.pack("<H", argb) if argb else b"\xC3")
+                    rv = RETVAL.get(nm, 0)
+                    code = (b"\xB8" + struct.pack("<I", rv)) + (b"\xC2" + struct.pack("<H", argb) if argb else b"\xC3")
                 addr = self._stub_raw(code)
                 self.uc.mem_write(imp.address, struct.pack("<I", addr))
 
