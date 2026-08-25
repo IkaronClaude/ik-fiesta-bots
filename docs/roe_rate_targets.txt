@@ -1,0 +1,52 @@
+### roe_MinWC core=Str(100) own=WCmin(1000) baseline=1100   (core-only=100, own-only=1001)
+    ItemPowerRate.rate     Str                    -> 1200        core(100)
+    ItemPowerRate.rate     WCmin                  -> 2200        SUM
+    PassiveSkill.rate      Str                    -> 1200        core(100)
+    PassiveSkill.rate      WCmin                  -> 2200        SUM
+    AbnormalState.rate     Str                    -> 1200        core(100)
+    AbnormalState.rate     WCmax                  -> 2200        SUM
+    LastTune.rate          Str                    -> 1200        core(100)
+### roe_MaxWC core=Str(100) own=WCmax(1000) baseline=1100   (core-only=100, own-only=1001)
+    ItemPowerRate.rate     Str                    -> 1200        core(100)
+    ItemPowerRate.rate     WCmax                  -> 2200        SUM
+    PassiveSkill.rate      Str                    -> 1200        core(100)
+    PassiveSkill.rate      WCmax                  -> 2200        SUM
+    AbnormalState.rate     Str                    -> 1200        core(100)
+    AbnormalState.rate     WCmax                  -> 2200        SUM
+    LastTune.rate          Str                    -> 1200        core(100)
+### roe_TH core=Dex(100) own=TH(1000) baseline=1100   (core-only=100, own-only=1001)
+    ItemPowerRate.rate     Dex                    -> 1200        core(100)
+    ItemPowerRate.rate     TH                     -> 2100        own(1000)
+    PassiveSkill.rate      Dex                    -> 1200        core(100)
+    PassiveSkill.rate      TH                     -> 2100        own(1000)
+    AbnormalState.rate     Dex                    -> 1200        core(100)
+    AbnormalState.rate     TH                     -> 2100        own(1000)
+    LastTune.rate          Dex                    -> 1200        core(100)
+    LastTune.rate          TH                     -> 2100        own(1000)
+### roe_AC core=Con(100) own=AC(1000) baseline=1100   (core-only=100, own-only=1001)
+    ItemPowerRate.rate     Con                    -> 1200        core(100)
+    ItemPowerRate.rate     AC                     -> 4200        gain=3100
+    PassiveSkill.rate      Con                    -> 1200        core(100)
+    PassiveSkill.rate      AC                     -> 2100        own(1000)
+    AbnormalState.rate     Con                    -> 1200        core(100)
+    AbnormalState.rate     AC                     -> 4200        gain=3100
+    LastTune.rate          Con                    -> 1200        core(100)
+    LastTune.rate          AC                     -> 2100        own(1000)
+### roe_TB core=Dex(100) own=TB(1000) baseline=1100   (core-only=100, own-only=1001)
+    ItemPowerRate.rate     Dex                    -> 1200        core(100)
+    ItemPowerRate.rate     TB                     -> 2100        own(1000)
+    PassiveSkill.rate      Dex                    -> 1200        core(100)
+    PassiveSkill.rate      TB                     -> 2100        own(1000)
+    AbnormalState.rate     Dex                    -> 1200        core(100)
+    AbnormalState.rate     TB                     -> 2100        own(1000)
+    LastTune.rate          Dex                    -> 1200        core(100)
+    LastTune.rate          TB                     -> 2100        own(1000)
+### roe_MR core=Men(100) own=MR(1000) baseline=1100   (core-only=100, own-only=1001)
+    ItemPowerRate.rate     Men                    -> 1200        core(100)
+    ItemPowerRate.rate     MR                     -> 4200        gain=3100
+    PassiveSkill.rate      Men                    -> 1200        core(100)
+    PassiveSkill.rate      MR                     -> 2100        own(1000)
+    AbnormalState.rate     Men                    -> 1200        core(100)
+    AbnormalState.rate     MR                     -> 2100        own(1000)
+    LastTune.rate          Men                    -> 1200        core(100)
+    LastTune.rate          MR                     -> 2100        own(1000)

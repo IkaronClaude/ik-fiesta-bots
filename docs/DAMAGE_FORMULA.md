@@ -965,3 +965,52 @@ exhaustively controllable over `roll x crit x stats`, which is what makes differ
   and **never `roe_HitRate` or `roe_ShieldBlock`**. Those are evaluated by a layer *above* `CalcDamage`
   (`roe_AttackPowerCalcDamage` is the other angle-table caller and the likely home). So the overrides are
   wired but untested until that layer is driven.
+
+---
+
+## Appendix F — The C# port and the differential fuzz workflow
+
+- `src/Fiesta.Bot/Combat/DamageFormula.cs` — the port (`ParamField`, `ParamBlock`, `ParamContainer`,
+  `DamageFormula`).
+- `tools/fuzz_damage.py` — drives the C# and the Unicorn oracle on identical random inputs and requires
+  exact agreement. Any mismatch is a bug in the port *by construction*: the oracle is the server.
+- `docs/roe_field_dependencies.txt`, `docs/roe_rate_targets.txt` — the machine-derived structure (below).
+
+The generator deliberately includes all-zero containers (to exercise the clamps), single-field spikes,
+rate halves at 0/1/500/2000/5000, negatives, `int16` extremes, and roll/crit at both ends.
+
+### What the fuzz caught immediately
+
+First run: **5/60 agreement.** Two systematic bugs, neither of which a code review would have found:
+
+1. **Each accessor reads a FIXED side.** From the binary (`[esi]`/`[edi]` = attacker, `[esi+4]` = defender):
+   **attacker** supplies `MinWC`/`MaxWC`/`TH`; **defender** supplies `AC`/`TB`/`MR`. Semantically exactly
+   right — your weapon and accuracy, their armour, block and resist.
+2. **The clamp applies to the CORE chain only.** Clamping both halves makes an all-zero container return 2;
+   the real accessors return 1.
+
+Fixing both took it to **42/60**.
+
+### The remaining structure, derived not guessed
+
+Perturbing one field at a time against the oracle (`--probe`, then a second pass with the own-field
+non-zero to tell "rate multiplies the sum" from "rate multiplies a zero own-part"):
+
+| accessor | core chain | own base | own pluses | rate targets |
+|---|---|---|---|---|
+| `roe_MinWC` | Str | `PCP.WCmin + Item.plus.WCmin` | `Upgrade.plus.`**`WCmax`**, `AbnormalState.plus.`**`WCmax`**, `PassiveSkill.plus.PhisycalWeaponMastery` | ItemPowerRate/PassiveSkill `.WCmin` + AbnormalState `.WCmax` multiply the **SUM** |
+| `roe_MaxWC` | Str | `PCP.WCmax + Item.plus.WCmax` | same, all `WCmax` | same three, all `WCmax`, on the **SUM** |
+| `roe_TH` / `roe_TB` | Dex | `PCP.X + Item.plus.X` | all five `.plus.X` | all four rates multiply the **own part only** |
+| `roe_AC` / `roe_MR` | Con / Men | `PCP.X + Item.plus.X` | all five `.plus.X` | PassiveSkill/LastTune hit **own**; ItemPowerRate/AbnormalState show a larger gain — **unresolved** |
+
+⚠️ **`roe_MinWC` genuinely reads `WCmax` for its Upgrade and AbnormalState plus-terms and for one rate.**
+That is asymmetric and looks like a copy-paste slip in the original server, but it is the behaviour, so the
+port must reproduce it. This is exactly the sort of thing that is invisible to reading and obvious to fuzzing.
+
+### Open
+
+`roe_AC` / `roe_MR`: with core=100 and own=1000, `ItemPowerRate.rate` and `AbnormalState.rate` on the own
+field give **4200** rather than the 2100 (own doubled) or 2200 (sum doubled) that every other accessor shows.
+Something in those two is counted twice. `roe_AC` is `DefendPower`, so this must be resolved before the port
+can be trusted for damage. The next step is a third perturbation pass isolating that term, or reading
+`roe_AC`'s tail with `tools/roe_trace.py` (which names every offset as `Block.half.Field`).
