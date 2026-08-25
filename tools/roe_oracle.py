@@ -28,6 +28,9 @@ IMAGE = 0x400000
 STACK = 0x00200000
 HEAP = 0x30000000
 STUB = 0x70000000
+# Data slots for the getter stubs. MUST live outside the stub CODE pages: Unicorn caches
+# translated blocks, so a value baked into an instruction can never be changed again.
+CONST_SLOTS = 0x78000000
 BLOCK = 0xCC
 CONTAINER_SIZE = 0x0E00
 
@@ -110,6 +113,17 @@ class Oracle:
         segrva = {i + 1: sec.VirtualAddress for i, sec in enumerate(pe.sections)}
         self.syms = publics(open(pdb, "rb").read(), segrva)
         self.uc.hook_add(UC_HOOK_MEM_UNMAPPED, lambda uc, a, addr, sz, v, u: (self._map(addr), True)[1])
+        # x87 PRECISION CONTROL. Unicorn boots the FPU with FPCW = 0x0000, whose PC field is 00 =
+        # 24-bit SINGLE precision, so every fmul/fdiv here was rounding to float32. A real MSVC process
+        # runs 0x027F (all exceptions masked, PC = 10 = 53-bit double). The difference is ~1e-7 relative --
+        # small enough to look like a harmless last-digit wobble, and it was the ONLY thing separating the
+        # C# port from the oracle on 4 of 120 fuzz cases. The accessors contain no `fstp dword` (no float
+        # temporaries), which is what proved the rounding came from the emulator and not from the game.
+        try:
+            from unicorn.x86_const import UC_X86_REG_FPCW
+            self.uc.reg_write(UC_X86_REG_FPCW, 0x027F)
+        except Exception:
+            pass
         for n in (r"?pr_Entrance@PerformanceRecorder@FunctionProfiler@@QAEXPAD@Z",
                   r"?pr_Exit@PerformanceRecorder@FunctionProfiler@@QAEXPAD@Z"):
             if n in self.syms:
@@ -149,6 +163,7 @@ class Oracle:
         self.stub_n = 0
         self._saved = {}
         self.raw_n = 0
+        self._const_slot = {}
         self._stub_imports(pe)
         self.s_par_a = self._stub(self.att_c)
         self.s_par_d = self._stub(self.def_c)
@@ -226,13 +241,26 @@ class Oracle:
             pass
 
     def _stub(self, value):
+        """A getter stub that reads its value from a DATA slot: `mov eax,[slot]; ret`.
+
+        WARNING: the first version emitted `mov eax,<imm32>; ret` and `_set_const` rewrote the immediate.
+        That is the Unicorn code-cache trap -- once a block has been translated, later writes to its BYTES
+        are invisible -- and it silently pinned the character level for the whole process. Every
+        `CalcDamage` case came back computed at level 1 no matter what the caller asked for, which showed
+        up in the fuzz as C# being too large by exactly (level+1)/2 and read convincingly like a C# bug.
+        The same trap had already been found and documented for the `rb_largerandom` roll patch; it was
+        not generalised to here. Keep the CODE fixed and vary DATA -- for every stub, without exception."""
         addr = STUB + self.stub_n * 0x10
+        slot = CONST_SLOTS + self.stub_n * 4
         self.stub_n += 1
-        self.uc.mem_write(addr, b"\xB8" + struct.pack("<I", value & 0xFFFFFFFF) + b"\xC3")
+        self._map(slot)
+        self.uc.mem_write(slot, struct.pack("<I", value & 0xFFFFFFFF))
+        self.uc.mem_write(addr, bytes([0xA1]) + struct.pack("<I", slot) + bytes([0xC3]))
+        self._const_slot[addr] = slot
         return addr
 
     def _set_const(self, stub_addr, value):
-        self.uc.mem_write(stub_addr + 1, struct.pack("<I", value & 0xFFFFFFFF))
+        self.uc.mem_write(self._const_slot[stub_addr], struct.pack("<I", value & 0xFFFFFFFF))
 
     def _container(self, addr, spec):
         self.uc.mem_write(addr, b"\x00" * CONTAINER_SIZE)
@@ -375,11 +403,17 @@ class Oracle:
         # once and varying only the operands sidesteps the cache entirely.
         slot = HEAP + 0x7C000
         self.uc.mem_write(slot, struct.pack("<II", int(permille) & 0xFFFFFFFF, 1000))
+        # SIGNED division. The first cut used `xor edx,edx` + `div ecx`, which is fine for the ranges the
+        # real game produces (MaxWC >= MinWC always) but wrong for anything the fuzzer generates where the
+        # range goes negative: -3 wrapped to 0xFFFFFFFD and the "damage" came out at ~4.3e6. That looked
+        # exactly like a C# port bug and wasted a round of investigation. `imul` above is already signed,
+        # so the divide has to be too, or the patch contradicts itself.
         code = (b"\x8B\x44\x24\x04"                                  # mov eax,[esp+4]  ; n = MaxWC-MinWC
                 b"\x0F\xAF\x05" + struct.pack("<I", slot) +          # imul eax, [slot]     ; * permille
-                b"\x31\xD2"                                          # xor edx,edx
                 b"\x8B\x0D" + struct.pack("<I", slot + 4) +          # mov ecx,[slot+4]     ; 1000
-                b"\xF7\xF1"                                          # div ecx
+                b"\x99"                                              # cdq              ; sign-extend eax
+                b"\x90"                                              # nop              ; keep length equal
+                b"\xF7\xF9"                                          # idiv ecx
                 b"\xC2\x04\x00")                                     # ret 4
         if bytes(self.uc.mem_read(self.syms[sym], len(code))) != code:
             self.uc.mem_write(self.syms[sym], code)

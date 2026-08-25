@@ -9,4 +9,7 @@
     <Project Path="src/Fiesta.Bot.Host/Fiesta.Bot.Host.csproj" />
     <Project Path="src/Fiesta.Bot/Fiesta.Bot.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Fiesta.Bot.Tests/Fiesta.Bot.Tests.csproj" />
+  </Folder>
 </Solution>

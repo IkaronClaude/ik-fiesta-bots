@@ -11,7 +11,7 @@ The generator deliberately includes the awkward cases as well as random ones -- 
 exercise the `<= 0 -> 1` clamps), single-field spikes, rate halves at 0 and at extremes, negative values,
 and roll/crit at both ends -- because the integer boundary is where a "close enough" port stops matching.
 """
-import argparse, json, os, random, subprocess, sys
+import argparse, json, os, random, subprocess, sys, tempfile, shutil, atexit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -149,12 +149,16 @@ def main():
     o = Oracle()
     o.set_angle_table()
 
-    # ⚠️ UNIQUE FILENAME PER RUN. dotnet-script caches compiled scripts BY FILENAME, so reusing one
-    # silently keeps running the previous build -- a corrected DamageFormula.cs appeared to change
-    # nothing at all until this was fixed.
     import hashlib, time
+    # UNIQUE FILENAME PER RUN, in a throwaway directory. dotnet-script caches compiled scripts BY
+    # FILENAME, so reusing one name silently keeps running the PREVIOUS build -- a corrected
+    # DamageFormula.cs appeared to change nothing at all until this was found, and three real fixes
+    # were wrongly recorded as ineffective. The name is derived from the DLL mtime so a rebuild always
+    # gets a fresh compile.
+    tmpdir = tempfile.mkdtemp(prefix="fiesta_dmg_")
+    atexit.register(lambda: shutil.rmtree(tmpdir, ignore_errors=True))
     tag = hashlib.md5(("%s%s" % (time.time(), os.path.getmtime(a.dll))).encode()).hexdigest()[:10]
-    csx = os.path.join(HERE, "_fuzz_cs_%s.csx" % tag)
+    csx = os.path.join(tmpdir, "_fuzz_cs_%s.csx" % tag)
     with open(csx, "w", encoding="utf-8") as fh:
         fh.write(CSX.format(dll=os.path.abspath(a.dll).replace("\\", "/")))
     proc = subprocess.Popen([r"dotnet-script", csx], stdin=subprocess.PIPE, stdout=subprocess.PIPE,

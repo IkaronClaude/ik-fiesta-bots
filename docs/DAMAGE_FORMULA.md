@@ -734,9 +734,14 @@ So with neutral modifiers **every accessor is exactly `coreStat + ownStat`**, co
 ### The formula, proven
 
 ```
-roe_Damage(attack=1569.0, defend=242.0) = 401.9752197265625      <- the real server code
-(61 + 1) * 1569 / 242                   = 401.9752197265625      <- our closed form
+roe_Damage(attack=1569.0, defend=242.0) = 401.97520661157023     <- the real server code
+(61 + 1) * 1569 / 242                   = 401.97520661157023     <- our closed form
 ```
+
+> Both figures read `401.9752197265625` when this section was first written. That was **not** the server's
+> value: Unicorn boots the x87 at `FPCW = 0x0000` (24-bit single precision), so the oracle was rounding
+> every FPU operation to float32. With `FPCW = 0x027F` (53-bit double, what a real MSVC process runs) the
+> emulated code reproduces the closed form **bit-exactly**. See Appendix G, trap 2.
 
 **Identical.** The damage law is therefore exactly:
 
@@ -1017,89 +1022,100 @@ can be trusted for damage. The next step is a third perturbation pass isolating 
 
 ---
 
-## Appendix G — Fuzz results, and a trap that invalidated three earlier conclusions
+## Appendix G — Reaching a 1:1 match, and the four traps on the way
 
-Current agreement, 40 random cases per accessor (`tools/fuzz_damage.py --fn <x> --seed 5`), and 120 mixed:
+**Final state: the C# port agrees with the real Zone.exe code on every case tested.**
 
-| accessor | agree |
-|---|---|
-| `roe_TH` | **40/40** |
-| `roe_MinWC` | 39/40 |
-| `roe_MaxWC` | 39/40 |
-| `roe_AC` / `DefendPower` | 39/40 |
-| `roe_MR` | 39/40 |
-| `roe_TB` | 38/40 |
-| **mixed, all functions** | **104/120** |
+| run | cases | agree | mismatch |
+|---|---|---|---|
+| mixed, seeds 3 / 5 / 13 / 42 / 777 / 12345 | 6 × 1000 | **6000** | **0** |
+| mixed, seeds 1 / 7 / 11 / 23 / 99 / 2026 | 6 × 500 | **3000** | **0** |
+| per-function, seed 31 (9 functions × 400) | 3600 | **3600** | **0** |
+| **total** | **12 600** | **12 600** | **0** |
 
-### ⚠️ `dotnet-script` caches compiled scripts BY FILENAME
+Plus 21 deterministic edge cases in `tests/Fiesta.Bot.Tests/DamageFormulaTests.cs`, which encode each law
+below so it can be regression-checked without Windows, Zone.exe or Unicorn.
 
-This invalidated three conclusions before it was spotted. The harness reused one `_fuzz_cs.csx`, so after
-every `DamageFormula.cs` fix the fuzz **re-ran the previous build** and reported no change. On that basis I
-had recorded that the clamp fix "didn't help", that the MinWC/MaxWC transcription "didn't help", and that
-`roe_MinWC` was stuck at 22/40. All three were measuring a stale binary. With a unique filename per run the
-same code jumps to 39/40, 39/40 and 39/40.
+Reproduce:
 
-**A measurement harness that silently serves cached results is worse than no harness**, because it produces
-confident negative findings. The fuzzer now derives its script name from the DLL's mtime.
+```bash
+python tools/fuzz_damage.py --n 1000 --seed 42          # differential, needs the oracle
+python tools/fuzz_damage.py --n 400 --fn roe_AC         # one accessor
+python tools/minimise_case.py "$(cat failing-case.json)" # shrink a failure to its minimal fields
+dotnet test tests/Fiesta.Bot.Tests                       # the edge cases alone
+```
 
-### Defects the fuzz found (all confirmed against the binary, not fitted)
+### The laws, as measured
 
-1. **Each accessor reads a fixed side** — attacker gives `MinWC`/`MaxWC`/`TH`, defender gives `AC`/`TB`/`MR`.
-2. **The clamp is on the CORE chain**, not both halves (all-zero returns 1, not 2).
-3. **The trailing rates are applied twice** — inside the own chain and again on the sum (`roe_AC`: two,
-   `roe_MR`: one, `roe_TH`/`roe_TB`: none).
-4. **The intermediate is truncated to an integer between rate multiplies** in `roe_AC` (`fistp`/`fild`).
-5. **The result floor is `&lt; 1`, not `&lt;= 0`.** Minimised case: sum 600 with `AbnormalState.rate.WCmax = 1`
-   gives 0.6 and the server returns **1.0**; at rate 2 it gives 1.2 and the server returns **1.2**. The core
-   chain's clamp and `roe_Damage`'s really are `&lt;= 0` (they compare against zero via `fldz`); this one
-   compares against one via `fld1`.
-6. **`Item.plus.WCmin` is scaled, not added raw** — by `WeaponTitle.rate.WCmin` and
-   `PassiveSkill.rate.PhisycalWeaponMastery`, per `roe_MinWC`'s tail.
+1. **The chain** is `(PureCharParam + Item.plus) × four rate halves ÷ 1e12 + five plus halves`. The divisor
+   is a single `fdiv` by the constant at `0x6CFE28`, which really is `1e12` — four `fmul` then one divide,
+   not a divide per rate. The multiply **order** is `AbnormalState, PassiveSkill, ItemPowerRate, LastTune`,
+   read off the `fild` sequence at the head of every accessor.
+2. **The core chain is floored at 1, and the threshold is `< 1`** — not `<= 0`, which is what this document
+   claimed for weeks. Feed core = 0.5 and own = 10: every accessor returns **11.0**. `roe_TH` is decisive
+   because it does not truncate its sum, so 11.0 cannot be a rounded 10.5.
+3. **The result is floored at 1** by the same `< 1` test. With `WCmax = 600` (plus the clamped core = 601)
+   and `AbnormalState.rate.WCmax` at 1 / 2 / 3, the server returns **1.0 / 1.202 / 1.803**.
+4. **The clamp belongs to the core half only.** Clamping both halves returns 2 for an all-zero container
+   where the server returns 1.
+5. **Three of six accessors truncate their summed value; three do not.** Feeding a sum of exactly 2001.2:
 
-### Rejected by (fair) measurement
+   | truncated → 2001.0 | not truncated → 2001.2 |
+   |---|---|
+   | `roe_AC`, `roe_MR`, `roe_TB` | `roe_TH`, `roe_MinWC`, `roe_MaxWC` |
 
-Truncating inside `Chain`, after the rate product: **104/120 with and without**, so it is not evidenced and
-was removed. Recorded so it is not re-litigated.
+   There is **no `fistp` anywhere in any accessor** — an earlier note here asserted `roe_AC` did a
+   `fistp`/`fild` round-trip, and that was simply wrong. The truncation is real but arrives another way.
+6. **AC and MR place the truncation differently.** With a sum of 1000.6 and a rate of 3000, AC returns
+   **3001** (rate inside the truncation) and MR returns **3000** (rate outside it). Asymmetric, but
+   measured at four rate pairs each. This is also why `roe_AC` can return a non-integer: at
+   `(abn, ipr) = (500, 7)` it returns **3.5**.
+7. **`Item.plus.WCmin` is scaled, not added raw** — by `WeaponTitle.rate.WCmin` and
+   `PassiveSkill.rate.PhisycalWeaponMastery`.
+8. **`roe_Damage` scales with `level + 1`**: `roe_Damage(1569, 242)` at level 61 returns
+   `401.97520661157023`, which is `62 × 1569 ÷ 242` **to the last bit**.
 
-### Remaining ~13%
+### Four traps, each of which produced a confident wrong conclusion
 
-The visible failures are extreme-value cases — e.g. `AttackPower` with `MaxWC < MinWC`, where the roll range
-is negative. That is at least partly an **oracle artefact**: the `rb_largerandom` override divides unsigned,
-so a negative range wraps to ~4.3e6, which the real function would not do. Constrain the generator to sane
-WC ordering, or make the override use `cdq`/`idiv`, before reading anything into those.
+Every one of these looked like a bug in the C# port. None of them was.
 
----|---|---|
-| `roe_TH` | **40/40** | exact |
-| `roe_MR` | 39/40 | |
-| `roe_TB` | 37/40 | |
-| `roe_AC` / `DefendPower` | 35/40 | |
-| `roe_MaxWC` | 27/40 | own-half model wrong |
-| `roe_MinWC` | 22/40 | own-half model wrong |
+**1. `dotnet-script` caches compiled scripts by filename.** The fuzz harness reused one `_fuzz_cs.csx`, so
+after each fix to `DamageFormula.cs` it re-ran the *previous* build and reported no change. On that evidence
+three fixes were recorded as "didn't help" and one accessor as "stuck at 22/40". All three were correct
+fixes measured against a stale binary; with a unique filename per run they give 39/40. *A harness that
+silently serves cached results is worse than no harness — it manufactures confident negative findings.*
 
-### Three defects the fuzz found and fixed
+**2. Unicorn boots the x87 at `FPCW = 0x0000`, which is 24-bit SINGLE precision.** A real MSVC process runs
+`0x027F` (53-bit double). Every FPU operation in the oracle was silently rounding to float32. The error is
+~1e-7 relative — small enough to read as harmless last-digit noise, and it was the only thing separating the
+port from the oracle on four of 120 cases. What settled it: the accessors contain **no `fstp dword`**, so
+there are no float temporaries in the game code and the rounding had to be the emulator's. This also means
+the value `401.9752197265625` recorded in Appendix C as ground truth was a single-precision artifact; the
+true value is `401.97520661157023`.
 
-1. **The trailing rates are applied TWICE.** `roe_AC`'s tail is
-   `fld own; fadd core; fmul AbnormalState.rate.AC; fdiv 1000; …; fmul ItemPowerRate.rate.AC` — those two
-   rates already appear *inside* the own chain and are then applied again to the sum. That is exactly why
-   `ItemPowerRate.rate.AC = 2000` yields 4200 rather than 2100: the own half doubles to 2000, then
-   `(100 + 2000) × 2`. `roe_MR` re-applies only `ItemPowerRate.rate.MR`; `roe_TH`/`roe_TB` re-apply nothing.
-2. **The intermediate is truncated to an integer between rate multiplies** (`fistp`/`fild` round-trip). The
-   port returned 3317.497 where the server returns 3317 — a half-unit error that only surfaces at the final
-   `floor()`.
-3. **Every accessor floors its RESULT at 1**, not just its core chain: `AbnormalState.plus.TB = -32768`
-   returns 1 from the server, not a negative number.
+**3. Unicorn caches translated blocks, so a value baked into an instruction can never be changed.** The
+getter stubs were `mov eax, <imm32>; ret` with the immediate rewritten per call. After the first execution
+those writes did nothing, which **pinned the character level for the whole process**: every `CalcDamage`
+case was computed at level 1 regardless of the level asked for. In the fuzz this appeared as C# being too
+large by exactly `(level + 1) / 2` — a clean, convincing, entirely fictitious "port bug". The trap had
+already been found and documented for the `rb_largerandom` roll patch and was simply not generalised. All
+stubs now read from a data slot (`mov eax, [slot]; ret`).
+
+**4. The roll override divided unsigned.** `imul` is signed, so a negative roll range (`MaxWC < MinWC`)
+wrapped to ~4.3e6 and produced "damage" of 4 299 643 against the port's 4 677. Fixed with `cdq`/`idiv`.
+
+The common shape: **three of the four were defects in the measuring instrument, and each one presented as a
+defect in the thing being measured.** When a differential test disagrees, the harness is a suspect too.
 
 ### Rejected by measurement
 
-Truncating inside `Chain` (after the rate product, before the flat bonuses) was tried and **reverted** — it
-left `roe_TH` at 40/40 but did not move `roe_MinWC`/`roe_MaxWC` either, so it is not where the truncation
-lives. Recorded so it is not tried again.
+Truncating inside `Chain` after the rate product: 104/120 with **and** without, so it is not evidenced.
+Recorded so it is not re-litigated.
 
-### Remaining
+### Next
 
-`roe_MinWC`/`roe_MaxWC` are the irregular pair and their own-half model is still wrong. Their tail is genuinely
-different from the other four — from `tools/roe_trace.py` it builds an intermediate
-`(WeaponTitle.rate.WCmin × Item.plus.WCmin / 1000) × PassiveSkill.rate.PhisycalWeaponMastery`, adds
-`Upgrade.plus.WCmax`, `AbnormalState.plus.WCmax`, `PureCharParam.WCmin` and
-`PassiveSkill.plus.PhisycalWeaponMastery`, and only then applies the sum rates. Transcribing that tail
-term-by-term (rather than fitting it) is the next step; the fuzz will confirm or refute it immediately.
+The inverse direction the operator asked for — the bot collecting combat observations and fitting
+`MobInfoServer` / `MobWeapon` / `DamageByAngle` — now has an exact forward model to invert. Still untested
+because `roe_CalcDamage` never reaches them: the hit/block/immune overrides (they live in
+`roe_AttackPowerCalcDamage`), the angle table (needs `attackloc` plus positions), and `dt_Load`'s
+SHN → `uint16[91]` mapping.

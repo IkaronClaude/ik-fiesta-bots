@@ -106,48 +106,33 @@ public static class DamageFormula
     public static double Chain(ParamContainer c, ParamField f)
     {
         var v = (double)c.PureCharParam[f] + c.ItemPlus[f];
-        v = v * c.ItemPowerRateRate[f] * c.PassiveSkillRate[f] * c.AbnormalStateRate[f]
+        // MULTIPLY ORDER MATTERS. The binary loads the four rate halves in the order AbnormalState,
+        // PassiveSkill, ItemPowerRate, LastTune (the `fild` sequence at the head of every accessor) and
+        // multiplies them in that order before the single `fdiv` by 1e12 at 0x6CFE28. Floating-point
+        // multiplication is not associative, so a different order is off by an ulp -- invisible almost
+        // everywhere, but AC/MR/TB truncate their sum, and an ulp on the wrong side of an integer boundary
+        // becomes a whole point of armour. That is exactly how it was found: one case in 500 where the
+        // oracle said 3604 and this said 3603.
+        v = v * c.AbnormalStateRate[f] * c.PassiveSkillRate[f] * c.ItemPowerRateRate[f]
             * c.LastTuneRate[f] / RateDivisor;
         v += c.UpgradePlus[f] + c.WeaponTitlePlus[f] + c.PassiveSkillPlus[f]
              + c.AbnormalStatePlus[f] + c.LastTunePlus[f];
         return v;
     }
 
-    /// <summary>The chain over the governing CORE stat, clamped so a non-positive result becomes 1.
+    /// <summary>The chain over the governing CORE stat, floored at 1 -- and the threshold is `&lt; 1`,
+    /// exactly like the result clamp, NOT `&lt;= 0`.
     ///
-    /// ⚠️ The clamp belongs HERE and nowhere else. With an all-zero container the real accessors return
-    /// exactly 1 — clamping both halves would give 2, which is precisely how the first fuzz run caught it.</summary>
-    public static double CoreChain(ParamContainer c, ParamField core)
-    {
-        var v = Chain(c, core);
-        return v <= 0 ? 1.0 : v;
-    }
-
-    /// <summary>Each accessor reads a FIXED side of the engagement, taken from the binary
-    /// (`[esi]`/`[edi]` = attacker, `[esi+4]` = defender):
-    /// attacker supplies MinWC / MaxWC / TH; defender supplies AC / TB / MR. Semantically exactly right —
-    /// your weapon and your accuracy, their armour, block and magic resist.
+    /// The clamp belongs HERE and not on the own half. With an all-zero container the real accessors
+    /// return exactly 1; clamping both halves would give 2, which is how the first fuzz run caught it.
     ///
-    /// The shape is `(coreChain + ownChain) * <a few rates applied AGAIN to the sum> / 1000 each`.
-    /// Those trailing rates are the subtle part: they already appear inside the own chain, and the server
-    /// multiplies by them a SECOND time on the sum. That is why `roe_AC` with `ItemPowerRate.rate.AC = 2000`
-    /// returns 4200 and not 2100 — the own half doubles to 2000, then `(100 + 2000) * 2`. Read straight off
-    /// `roe_AC`'s tail: `fld own; fadd core; fmul AbnormalState.rate.AC; fdiv 1000; ... fmul
-    /// ItemPowerRate.rate.AC`.</summary>
-    /// <summary>⚠️ The intermediate is TRUNCATED TO AN INTEGER between rate multiplies.
-    ///
-    /// `roe_AC`'s tail does `fmul rate; fdiv 1000; fistp [int]; fild [int]; fmul rate2` — that `fistp`/`fild`
-    /// round-trip through an integer is not decoration, it discards the fraction. Without it the port
-    /// returned 3317.497 where the server returns 3317, which is the kind of half-unit error that only ever
-    /// shows up at the floor() at the end of CalcDamage.</summary>
-    private static double SumRate(ParamContainer c, double v, params (ParamBlock Block, ParamField F)[] rates)
-    {
-        foreach (var (b, f) in rates)
-            v = Math.Truncate(v * b[f] / 1000.0);
-        return Clamp1(v);
-    }
-
-    /// <summary>Every accessor floors its RESULT at 1 — and it is `&lt; 1`, NOT `&lt;= 0`.
+    /// The `&lt; 1` threshold was measured, after a documented claim that this one was `&lt;= 0` while only
+    /// the result clamp was `&lt; 1`. Feed core = 0.5 and own = 10: every accessor returns **11.0**, so the
+    /// fractional core was raised to 1 rather than left at 0.5. `roe_TH` makes it decisive because it does
+    /// not truncate its sum, so 11.0 cannot be confused with a rounded 10.5. It was found from a minimised
+    /// `roe_MR` case (core 0.999, own 1.0) where the server returned 2 and this returned 1.</summary>
+    public static double CoreChain(ParamContainer c, ParamField core) => Clamp1(Chain(c, core));
+    /// <summary>Every accessor floors its RESULT at 1 -- and it is `&lt; 1`, NOT `&lt;= 0`.
     ///
     /// Pinned by a minimised case: with the sum at 600 and `AbnormalState.rate.WCmax = 1` the result is
     /// 0.6 and the server returns **1.0**; at rate 2 it is 1.2 and the server returns **1.2**. So a
@@ -156,18 +141,37 @@ public static class DamageFormula
     /// `&lt;= 0` (they compare against zero via `fldz`, this one against one via `fld1`).</summary>
     private static double Clamp1(double v) => v < 1.0 ? 1.0 : v;
 
-    public static double Ac(ParamContainer d) =>
-        SumRate(d, CoreChain(d, ParamField.Con) + Chain(d, ParamField.AC),
-            (d.AbnormalStateRate, ParamField.AC), (d.ItemPowerRateRate, ParamField.AC));
+    // ---- integer truncation of the summed value -------------------------------------------------------
+    // Three of the six accessors discard the fraction of their sum and three do not. This is NOT a guess
+    // and NOT a `fistp` (there is no `fistp` anywhere in any of them -- an earlier comment here claimed
+    // roe_AC did `fistp/fild` and that was simply wrong). It was measured: feed a sum of exactly 2001.2
+    // and read the return value.
+    //
+    //     roe_TB, roe_AC, roe_MR  -> 2001.0     truncated
+    //     roe_TH, roe_MinWC, roe_MaxWC -> 2001.2     not truncated
+    //
+    // The POSITION of the truncation relative to the trailing rates differs between AC and MR, which is
+    // asymmetric but is what the binary does -- with a sum of 1000.6 and rate 3000, AC returns 3001
+    // (rate applied INSIDE the truncation) while MR returns 3000 (rate applied OUTSIDE it).
 
+    /// <summary>`AC` = clamp( trunc(sum x AbnormalState.rate.AC / 1000) x ItemPowerRate.rate.AC / 1000 ).
+    /// Verified at (abn,ipr) = (1000,1) -> 1.0, (3000,3000) -> 9003.0, (1000,1000) -> 1000.0,
+    /// (500,7) -> 3.5. The last one is why the result is NOT always an integer.</summary>
+    public static double Ac(ParamContainer d) =>
+        Clamp1(Math.Truncate((CoreChain(d, ParamField.Con) + Chain(d, ParamField.AC))
+                             * d.AbnormalStateRate[ParamField.AC] / 1000.0)
+               * d.ItemPowerRateRate[ParamField.AC] / 1000.0);
+
+    /// <summary>`MR` = clamp( trunc(sum) x ItemPowerRate.rate.MR / 1000 ) -- rate OUTSIDE the truncation,
+    /// unlike AC. Verified at rate 1000 -> 1000.0, 3000 -> 3000.0 (not 3001), 1 -> 1.0.</summary>
     public static double Mr(ParamContainer d) =>
-        SumRate(d, CoreChain(d, ParamField.Men) + Chain(d, ParamField.MR),
-            (d.ItemPowerRateRate, ParamField.MR));
+        Clamp1(Math.Truncate(CoreChain(d, ParamField.Men) + Chain(d, ParamField.MR))
+               * d.ItemPowerRateRate[ParamField.MR] / 1000.0);
 
     // TH / TB apply no second-pass rate: every rate on the own field showed up as doubling the own half
-    // alone (2100), never the sum (2200).
+    // alone (2100), never the sum (2200). TB truncates its sum; TH does not.
     public static double Th(ParamContainer a) => Clamp1(CoreChain(a, ParamField.Dex) + Chain(a, ParamField.TH));
-    public static double Tb(ParamContainer d) => Clamp1(CoreChain(d, ParamField.Dex) + Chain(d, ParamField.TB));
+    public static double Tb(ParamContainer d) => Clamp1(Math.Truncate(CoreChain(d, ParamField.Dex) + Chain(d, ParamField.TB)));
 
     /// <summary>MinWC/MaxWC are the irregular pair. Their own half does NOT carry the ItemPowerRate or
     /// PassiveSkill rate (those are applied once, to the sum), and their Upgrade/AbnormalState plus-terms
