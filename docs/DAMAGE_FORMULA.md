@@ -928,15 +928,37 @@ DefendPower = roe_AC                       = coreStat(Con) chain + AC chain
 
 `DefendPower = Con + AC` is confirmed directly (292 + 1215 = 1507; 262 + 535 = 797).
 
+### The roll override — and a Unicorn trap worth knowing
+
+The attack roll is **not** any `well512` overload. `NormalPY::roe_AttackPower` computes `MaxWC - MinWC`,
+converts it with `__ftol2_sse`, calls **`RandomBox::rb_largerandom(int)`** (`0x63CCC0`), and adds `MinWC`
+back. Patching the `well512` overloads changed nothing precisely because they only feed `rb_largerandom`.
+
+⚠️ **Unicorn caches translated blocks.** Once `rb_largerandom` has executed, rewriting its bytes has no
+effect — the stale translation keeps running. That is why an early version appeared to work on the first
+permille of a process and then returned `MinWC` forever, while the crit override worked every time: crit
+rewrites a *double slot* and leaves the code identical, so there is nothing to re-translate. The fix is the
+same discipline — **write the code once, vary only the operands in a data slot** (`imul eax,[slot]` /
+`mov ecx,[slot+4]`), with `ctl_remove_cache` as a belt-and-braces.
+
+With that, every value is exact (mob 84 Orc, level 61, defender AC 1215 + Con 292 → `DefendPower` 1507):
+
+| roll | AttackPower | expected `MinWC + (MaxWC-MinWC)·roll/1000` | `crit=False` | `floor(62·A/D)` | `crit=True` | `floor(2·62·A/D)` |
+|---|---|---|---|---|---|---|
+| 0 | 1569 | 1569 | **64** | 64 | **129** | 129 |
+| 100 | 1608 | 1608 | **66** | 66 | **132** | 132 |
+| 250 | 1666 | 1666 | **68** | 68 | **137** | 137 |
+| 500 | 1764 | 1764 | **72** | 72 | **145** | 145 |
+| 750 | 1861 | 1861 | **76** | 76 | **153** | 153 |
+| 900 | 1920 | 1920 | **78** | 78 | **157** | 157 |
+| 1000 | 1959 | 1959 | **80** | 80 | **161** | 161 |
+
+Every cell matches — the roll, the floor, and the crit doubling. **The oracle is deterministic and
+exhaustively controllable over `roll x crit x stats`, which is what makes differential fuzzing possible.**
+
 ### What the overrides do NOT yet cover
 
-- **`roll` is not implemented, and raises rather than lying.** Two attempts, both rejected by evidence:
-  patching `well512_GetRandom(unsigned)` to `n·permille/1000` left `AttackPower` pinned at 1569.0 for every
-  permille 0..1000, so that overload is not the interpolator; patching the `double f(void)` overload with a
-  naive `fld qword[k]; ret` faults `UC_ERR_INSN_INVALID`, so the caller's x87 discipline is not what a
-  constant return provides. **The attack roll therefore always lands on MinWC**, which is why every table
-  above uses `AttackPower = 1569`. Resolving it needs `NormalPY::roe_AttackPower`'s tail disassembled to find
-  which draw actually interpolates.
+
 - **`hit` / `block` / `immune` have no observable effect on this path** — and the call trace says why:
   `roe_CalcDamage` invokes `roe_IsDamageImmune`, `roe_CriticalRate`, `roe_FreeStatCriRate`,
   `roe_CriticalStun`, `roe_AttackPower`, `roe_DefendPower`, `roe_Damage`, `roe_LevelGapDamageRevision` —

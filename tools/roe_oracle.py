@@ -314,7 +314,10 @@ class Oracle:
         "critstun": r"?roe_CriticalStunRate@RulesOfEngagement@@MAENPAUEngageArgument@@@Z",
     }
     IMMUNE_SYM = r"?roe_IsDamageImmune@RulesOfEngagementNormalPY@@MAEEPAUEngageArgument@@@Z"
-    ROLL_SYM = r"?well512_GetRandom@cWell512Random@@QAEII@Z"
+    # The attack roll is NOT any well512 overload. NormalPY::roe_AttackPower computes (MaxWC - MinWC),
+    # converts it with __ftol2_sse, calls `RandomBox::rb_largerandom(int)` at 0x63CCC0, and adds MinWC back.
+    # Patching the well512 overloads changed nothing for exactly this reason -- they feed rb_largerandom.
+    ROLL_SYM = r"?rb_largerandom@RandomBox@@QAEHH@Z"
 
     def _orig(self, sym, n=16):
         if sym not in self._saved:
@@ -364,17 +367,27 @@ class Oracle:
         if permille is None:
             self._restore(sym)
             return True
-        raise NotImplementedError(
-            "roll override is NOT implemented -- do not use it, it would silently return MinWC.\n"
-            "  Two attempts, both rejected by evidence rather than assumed to work:\n"
-            "   * patching well512_GetRandom(unsigned) -> n*permille/1000 left AttackPower pinned at MinWC\n"
-            "     (1569.0 for every permille from 0 to 1000), so that overload is not the interpolator.\n"
-            "   * patching well512_GetRandom(void) -> double with `fld qword[k]; ret` faults with\n"
-            "     UC_ERR_INSN_INVALID, so the caller's x87 stack discipline is not what a naive constant\n"
-            "     return provides.\n"
-            "  The attack roll therefore still always lands on MinWC. Crit/hit/block overrides DO work and\n"
-            "  are unaffected. Resolve by disassembling NormalPY::roe_AttackPower's tail to find which draw\n"
-            "  actually interpolates MinWC..MaxWC before wiring this.")
+        # ⚠️ THE PERMILLE MUST LIVE IN DATA, NOT AS AN IMMEDIATE IN THE CODE.
+        # Unicorn caches translated blocks. Once rb_largerandom has been executed, rewriting its bytes has
+        # no effect -- the stale translation keeps running. That is why an earlier version "worked" only on
+        # the very first permille of a process and then returned MinWC forever, while the crit override
+        # (which rewrites a *double slot* and leaves the code identical) worked every time. Writing the code
+        # once and varying only the operands sidesteps the cache entirely.
+        slot = HEAP + 0x7C000
+        self.uc.mem_write(slot, struct.pack("<II", int(permille) & 0xFFFFFFFF, 1000))
+        code = (b"\x8B\x44\x24\x04"                                  # mov eax,[esp+4]  ; n = MaxWC-MinWC
+                b"\x0F\xAF\x05" + struct.pack("<I", slot) +          # imul eax, [slot]     ; * permille
+                b"\x31\xD2"                                          # xor edx,edx
+                b"\x8B\x0D" + struct.pack("<I", slot + 4) +          # mov ecx,[slot+4]     ; 1000
+                b"\xF7\xF1"                                          # div ecx
+                b"\xC2\x04\x00")                                     # ret 4
+        if bytes(self.uc.mem_read(self.syms[sym], len(code))) != code:
+            self.uc.mem_write(self.syms[sym], code)
+            try:
+                self.uc.ctl_remove_cache(self.syms[sym], self.syms[sym] + len(code))
+            except Exception:
+                pass
+        return True
 
     def set_seed(self, seed):
         """Seed the server's own WELL512 generator, so crit/hit/roll outcomes are controllable and repeatable.
