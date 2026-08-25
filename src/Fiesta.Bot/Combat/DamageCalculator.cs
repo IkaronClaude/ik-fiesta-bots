@@ -223,8 +223,23 @@ public static class DamageCalculator
         var damage = CoreDamage(attackPower, defendPower, attacker.Level, mods.BaseDamageRatePermille);
         if (isCritical) damage *= 2.0;
 
-        damage = ApplyRate(damage, mods.DamageRatePermille);
+        // ANGLE FIRST, THEN DAMAGE RATE -- the order the binary uses at roe_CalcDamage+0x572..+0x585:
+        //     fild angleRate; fmul damage; fdiv 1000; fild damagerate; fmulp; fdivp
+        // Both are doubles applied BEFORE the integer conversion, so this ordering is the only thing that
+        // separates the port from the server here, and it is at most an ULP -- but ULPs on the wrong side
+        // of the conversion have already cost a whole point of armour once in this file.
         damage = ApplyRate(damage, mods.AngleRatePermille);
+        damage = ApplyRate(damage, mods.DamageRatePermille);
+
+        // ⚠️ The LEVEL GAP IS NOT APPLIED HERE ON THE SERVER. It runs AFTER the integer conversion, as
+        // roe_LevelGapDamageRevision(attacker, defender, damage) taking and returning an int
+        // (roe_CalcDamage+0x5C1), together with two so_ply_JobChangeDamageUp hooks (+0x59E, +0x5B2) that
+        // are pass-throughs for a mob and overridden by ShinePlayer.
+        //
+        // Applying it as a double here is therefore an APPROXIMATION, and the differential fuzz cannot
+        // see the difference because it has only ever run this at the neutral 1000. It is exact at 1000
+        // and an estimate otherwise; anything that depends on a real level gap should be pinned against
+        // the server before it is trusted.
         damage = ApplyRate(damage, mods.LevelGapRatePermille);
 
         // The final conversion is the same wrapping _ftol as the accessors use, NOT a saturating cast: a

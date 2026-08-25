@@ -1233,10 +1233,31 @@ So the overkill bug has two faces, both from the same wrap: when the low 32 bits
 that garbage figure, and when they land at or below zero the `test eax,eax / jg` at `+0x5C9` floors it to
 1 (`mov dword [ebp-0x10], 1` at `+0x5CD`). Saturating at the `+0x587` call site fixes both.
 
-One thing the fuzz still cannot see, because it stubs both to identity: **the angle and level-gap
-revisions are applied AFTER the integer conversion**, as integer calls (`+0x59E`, `+0x5B2`, `+0x5C1` →
-`roe_LevelGapDamageRevision`), and only then does the floor at `+0x5C9` run. The C# port applies them as
-doubles *before* the conversion. Identical at 1000, unverified otherwise.
+### What is applied before the conversion, and what after
+
+Read off `roe_CalcDamage` directly, because an earlier note here got this half wrong by saying the angle
+rate was applied after:
+
+```
++0x561  call DamageByAngle::operator[]     -> AX = angle rate (permille)
++0x572  fild angleRate ; fmul damage ; fdiv 1000      <- angle, as a DOUBLE
++0x580  fild damagerate ; fmulp ; fdivp              <- damagerate, as a DOUBLE
++0x587  call __ftol2_sse                             <- the integer conversion
++0x59E  call [vtbl+0xD34]  so_ply_JobChangeDamageUp   <- int in, int out
++0x5B2  call [vtbl+0xD2C]  so_ply_JobChangeDamageUp   <- int in, int out
++0x5C1  call roe_LevelGapDamageRevision               <- int in, int out
++0x5C9  test eax,eax / jg  -> else 1                  <- the floor
+```
+
+So the angle rate and the damage rate are **both** doubles applied before the conversion, in that order,
+which is what the port does. `so_ply_JobChangeDamageUp` on `ShineObject` is literally `return arg2`, a
+pass-through — which is why stubbing it in the oracle was correct — but `ShinePlayer` overrides it.
+
+**The one approximation left in the port** is therefore the level gap: it applies
+`LevelGapRatePermille` as a double before the conversion, where the server applies
+`roe_LevelGapDamageRevision` as an int-in/int-out function after it. Exact at the neutral 1000, an
+estimate at anything else — and the differential fuzz cannot tell, because it has only ever run this at
+1000. The job-change hooks are not modelled at all, which is identity for a mob and not for a player.
 
 ### The inverse direction
 

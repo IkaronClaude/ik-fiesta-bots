@@ -37,15 +37,24 @@ public sealed record AttackModifiers
     /// <see cref="DamageCalculator.AngleDamageIndexFromDegrees"/> (degrees). Behind is index 90, the top
     /// of the table — not index 0.</para>
     ///
-    /// <para>⚠️ <b>Application order here is NOT verified.</b> This applies the angle and level-gap rates
-    /// to the damage as a double, before the final integer conversion. The server converts to an integer
-    /// FIRST (the <c>_ftol</c> at <c>roe_CalcDamage+0x587</c>) and then applies both revisions as integer
-    /// calls. With both at 1000 the two are identical, which is why the differential fuzz agrees — it has
-    /// never exercised a non-neutral value. Treat a non-1000 rate as an estimate until that is pinned.</para></summary>
+    /// <para>Applied as a double before the integer conversion, matching the server
+    /// (<c>roe_CalcDamage+0x572</c>, ahead of the <c>_ftol</c> at <c>+0x587</c>), and applied BEFORE
+    /// <see cref="DamageRatePermille"/> as the binary does.</para></summary>
     public int AngleRatePermille { get; init; } = 1000;
 
     /// <summary>Level-difference multiplier from <c>DamageLvGap</c>: flat 1000 for monster → player, up to
-    /// 1500 for player → monster.</summary>
+    /// 1500 for player → monster.
+    ///
+    /// <para>⚠️ <b>This is the one approximation in the pipeline.</b> The server does not apply it as a
+    /// rate at all: it converts the damage to an integer first and then calls
+    /// <c>roe_LevelGapDamageRevision(attacker, defender, damage)</c>, an int-in/int-out function
+    /// (<c>roe_CalcDamage+0x5C1</c>). Applying it as a double beforehand is exact at the neutral 1000 and
+    /// an estimate at any other value — and the differential fuzz cannot tell, because it has only ever
+    /// run this at 1000. Pin it against the server before trusting a real level gap.</para>
+    ///
+    /// <para>Not modelled at all: the two <c>so_ply_JobChangeDamageUp</c> hooks that run alongside it
+    /// (<c>+0x59E</c>, <c>+0x5B2</c>). <c>ShineObject</c>'s base implementation is a pass-through, so they
+    /// are identity for a mob, but <c>ShinePlayer</c> overrides them.</para></summary>
     public int LevelGapRatePermille { get; init; } = 1000;
 
     /// <summary>The server's <c>EngageArgument.nBMPDamageRate</c>, applied to attack power inside the core
