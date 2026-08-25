@@ -42,7 +42,13 @@ internal static class ServerArithmetic
     /// disagrees with all three.</para>
     ///
     /// <para>Beyond int64 range the x87 stores the 64-bit integer indefinite (0x8000000000000000), whose
-    /// low dword is zero.</para></summary>
+    /// low dword is zero.</para>
+    ///
+    /// <para><b>The wrap is confirmed in the running game</b>, not just under emulation: damage past
+    /// ~4.2e9 comes back round to small positive numbers. That matters because `__ftol2_sse` has a second
+    /// branch — it tests <c>__sse2_available</c> and, when set, uses <c>cvttsd2si</c>, which SATURATES an
+    /// out-of-range value to 0x80000000 instead of wrapping. The live server takes the x87 branch, so this
+    /// is the right model; do not "modernise" it to a saturating cast.</para></summary>
     internal static double Ftol32(double value)
     {
         if (double.IsNaN(value) || value >= 9.2233720368547758E18 || value <= -9.2233720368547758E18)

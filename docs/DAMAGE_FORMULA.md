@@ -1211,21 +1211,32 @@ harder than head-on); no amount of re-reading `operator[]` would have caught it,
 correct in isolation and the error was in what its argument *means*. Use
 `DamageCalculator.AngleDamageIndexFromDegrees` if you hold degrees.
 
-### Two open items in the CalcDamage tail
+### The overkill wrap, and the CalcDamage tail
 
-Reading `roe_CalcDamage` around the `_ftol` (`+0x587`, file offset `0x105587`) turned up two things the
-fuzz cannot see, because it stubs both to identity:
+`roe_CalcDamage` converts its damage to an integer at `+0x587` (file offset `0x105587`,
+`call __ftol2_sse`), and that conversion **wraps modulo 2^32** — confirmed in play: damage past ~4.2e9
+comes back round to small positive numbers again.
 
-1. **The angle and level-gap revisions are applied AFTER the integer conversion**, as integer calls
-   (`+0x59E`, `+0x5B2`, `+0x5C1` → `roe_LevelGapDamageRevision`), then `test eax,eax / jg` floors at 1
-   (`+0x5C9`). The C# port applies them as doubles *before* the conversion. Identical at 1000, unverified
-   otherwise.
-2. **`__ftol2_sse` has two paths** and the oracle took the wrong one. It branches on `__sse2_available`:
-   zero falls through to `__ftol2` (x87 `fistp qword`, caller keeps the low 32 bits — a modular wrap),
-   non-zero uses `cvttsd2si` (out-of-int32 gives `0x80000000`). Nothing initialised that global under
-   emulation, so every measurement — including law 6 above — is the **x87** path. Real hardware has SSE2,
-   so the live server saturates to `INT_MIN` and the overkill floors to 1, which is the observed bug.
-   `ServerArithmetic.Ftol32` therefore models the wrong branch for out-of-range values.
+`__ftol2_sse` branches on `__sse2_available`. Zero falls through to `__ftol2`, the x87 path
+(`fistp qword`, caller keeps the low 32 bits — a modular wrap); non-zero uses `cvttsd2si`, which would
+saturate an out-of-int32 value to `0x80000000`. **The live server takes the x87 path**, so
+`ServerArithmetic.Ftol32` models the right branch and law 6 above holds as written.
+
+> Recorded because the reasoning nearly went the other way: on finding the branch I argued that real
+> hardware has SSE2 and therefore the live server must saturate, making every overkill deal 1. That is an
+> inference about which branch runs, presented as if it were a reading of the code — and it was wrong.
+> The operator's observation that damage wraps to positive settles it directly. The emulator having the
+> global at zero turned out to match live, which was luck rather than design; the check that mattered was
+> the one against the running game.
+
+So the overkill bug has two faces, both from the same wrap: when the low 32 bits land positive you take
+that garbage figure, and when they land at or below zero the `test eax,eax / jg` at `+0x5C9` floors it to
+1 (`mov dword [ebp-0x10], 1` at `+0x5CD`). Saturating at the `+0x587` call site fixes both.
+
+One thing the fuzz still cannot see, because it stubs both to identity: **the angle and level-gap
+revisions are applied AFTER the integer conversion**, as integer calls (`+0x59E`, `+0x5B2`, `+0x5C1` →
+`roe_LevelGapDamageRevision`), and only then does the floor at `+0x5C9` run. The C# port applies them as
+doubles *before* the conversion. Identical at 1000, unverified otherwise.
 
 ### The inverse direction
 
