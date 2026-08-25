@@ -1022,100 +1022,170 @@ can be trusted for damage. The next step is a third perturbation pass isolating 
 
 ---
 
-## Appendix G — Reaching a 1:1 match, and the four traps on the way
+## Appendix G — Exact agreement, the C# API, and six traps on the way
 
-**Final state: the C# port agrees with the real Zone.exe code on every case tested.**
+**Final state: the C# port agrees with the real Zone.exe code on every case tested, at EXACT bitwise
+equality — no tolerance.**
 
 | run | cases | agree | mismatch |
 |---|---|---|---|
-| mixed, seeds 3 / 5 / 13 / 42 / 777 / 12345 | 6 × 1000 | **6000** | **0** |
-| mixed, seeds 1 / 7 / 11 / 23 / 99 / 2026 | 6 × 500 | **3000** | **0** |
-| per-function, seed 31 (9 functions × 400) | 3600 | **3600** | **0** |
-| **total** | **12 600** | **12 600** | **0** |
+| extreme fuzz, 3 × (100 random sets × 100 cases) | 30 000 | **30 000** | **0** |
+| per-regime sweep (6 regimes × 1500) | 9 000 | **9 000** | **0** |
+| tame fuzz, seeds 11 / 23 / 42 | 1 500 | **1 500** | **0** |
 
-Plus 21 deterministic edge cases in `tests/Fiesta.Bot.Tests/DamageFormulaTests.cs`, which encode each law
-below so it can be regression-checked without Windows, Zone.exe or Unicorn.
-
-Reproduce:
+Plus 33 deterministic edge cases in `tests/Fiesta.Bot.Tests/DamageCalculatorTests.cs`, which encode each
+law below so it regresses without Windows, Zone.exe or Unicorn.
 
 ```bash
-python tools/fuzz_damage.py --n 1000 --seed 42          # differential, needs the oracle
-python tools/fuzz_damage.py --n 400 --fn roe_AC         # one accessor
-python tools/minimise_case.py "$(cat failing-case.json)" # shrink a failure to its minimal fields
-dotnet test tests/Fiesta.Bot.Tests                       # the edge cases alone
+python tools/fuzz_extreme.py --sets 100 --cases 100      # 100 random sets, exact comparison
+python tools/fuzz_extreme.py --sets 20 --regime dense     # one magnitude regime
+python tools/fuzz_extreme.py --sets 20 --only-fn roe_AC   # one accessor
+python tools/minimise_case.py failing-case.json           # shrink a failure to its minimal fields
+dotnet test tests/Fiesta.Bot.Tests                        # the edge cases alone
 ```
+
+### Why "extreme" mattered
+
+The first harness (`fuzz_damage.py`) reported 12 600/12 600 and was not wrong — it was **narrow**. It
+touched 10 of the 51 stat fields, kept containers sparse, and capped magnitudes around 3000. Widening it
+to all 51 fields, all 15 blocks, full int32 magnitudes and dense containers dropped agreement to
+**121/180 immediately**, and every one of the failures was a real defect.
+
+The lesson is about coverage, not arithmetic: **an untouched input is not a passing input.**
+`PhisycalWeaponMastery` had never been set by the generator, and it gates *all* physical attack power.
 
 ### The laws, as measured
 
-1. **The chain** is `(PureCharParam + Item.plus) × four rate halves ÷ 1e12 + five plus halves`. The divisor
-   is a single `fdiv` by the constant at `0x6CFE28`, which really is `1e12` — four `fmul` then one divide,
-   not a divide per rate. The multiply **order** is `AbnormalState, PassiveSkill, ItemPowerRate, LastTune`,
-   read off the `fild` sequence at the head of every accessor.
-2. **The core chain is floored at 1, and the threshold is `< 1`** — not `<= 0`, which is what this document
-   claimed for weeks. Feed core = 0.5 and own = 10: every accessor returns **11.0**. `roe_TH` is decisive
-   because it does not truncate its sum, so 11.0 cannot be a rounded 10.5.
-3. **The result is floored at 1** by the same `< 1` test. With `WCmax = 600` (plus the clamped core = 601)
-   and `AbnormalState.rate.WCmax` at 1 / 2 / 3, the server returns **1.0 / 1.202 / 1.803**.
-4. **The clamp belongs to the core half only.** Clamping both halves returns 2 for an all-zero container
-   where the server returns 1.
-5. **Three of six accessors truncate their summed value; three do not.** Feeding a sum of exactly 2001.2:
-
-   | truncated → 2001.0 | not truncated → 2001.2 |
-   |---|---|
-   | `roe_AC`, `roe_MR`, `roe_TB` | `roe_TH`, `roe_MinWC`, `roe_MaxWC` |
-
-   There is **no `fistp` anywhere in any accessor** — an earlier note here asserted `roe_AC` did a
-   `fistp`/`fild` round-trip, and that was simply wrong. The truncation is real but arrives another way.
-6. **AC and MR place the truncation differently.** With a sum of 1000.6 and a rate of 3000, AC returns
-   **3001** (rate inside the truncation) and MR returns **3000** (rate outside it). Asymmetric, but
-   measured at four rate pairs each. This is also why `roe_AC` can return a non-integer: at
-   `(abn, ipr) = (500, 7)` it returns **3.5**.
-7. **`Item.plus.WCmin` is scaled, not added raw** — by `WeaponTitle.rate.WCmin` and
+1. **The chain** is `(Base + Item.plus) × four rate halves ÷ 1e12 + five plus halves`. Rates multiply in
+   the order `AbnormalState, PassiveSkill, ItemPowerRate, LastTune` before a **single** divide by the
+   constant at `0x6CFE28` (which really is 1e12). Scored **500/500 exact**; the next best ordering scored
+   496 and the next divisor grouping 482.
+2. **The five plus halves are added SEPARATELY**, each rounding. Folding them into one sum is wrong twice:
+   with `int` operands it overflows int32 before promoting, and even in `double` it re-associates — above
+   2^53, where the gap between doubles is 2, pre-summing lands one ULP out (1841195746 vs 1841195744).
+3. **The governing chain is floored at 1, threshold `< 1`** — not `<= 0`. Feed governing = 0.5 and own =
+   10: every accessor returns **11.0**. `roe_TH` is decisive because it does not truncate.
+4. **The result is floored at 1** by the same `< 1` test (601 scaled by 1/2/3 permille → 1.0/1.202/1.803).
+5. **`roe_AC`, `roe_MR`, `roe_TB` truncate their summed value; `roe_TH`, `roe_MinWC`, `roe_MaxWC` do not.**
+6. **The truncation is `_ftol`: truncate toward zero into int64, keep the LOW 32 BITS, signed.** It WRAPS.
+   4294967302 → **6.0**, 4294967395 → **99.0**, −2148557388.824 → **2146409908.0**. There is no `fistp` in
+   any accessor because the conversion is a `call` into the CRT helper — an earlier note concluded from
+   that absence that there was no integer conversion at all, which was exactly backwards.
+7. **AC and MR place their trailing rate differently** — sum 1000.6 at rate 3000 gives AC **3001** (rate
+   inside the truncation) and MR **3000** (outside). This is also why `roe_AC` can return a non-integer:
+   at (500, 7) it returns **3.5**.
+8. **MinWC/MaxWC accumulate the Str chain and their five own terms in ONE running total** — a single `fld`
+   plus five `fadd`s. Computing the own half separately and adding the Str chain last gives
+   7732.317384936001 where the server gives 7732.317384936. One ULP, which then fed attack power and an
+   integer damage and became a **256-point** difference.
+9. **`Item.plus.WCmin` is scaled, not added raw** — by `WeaponTitle.rate` for the slot, then by
    `PassiveSkill.rate.PhisycalWeaponMastery`.
-8. **`roe_Damage` scales with `level + 1`**: `roe_Damage(1569, 242)` at level 61 returns
-   `401.97520661157023`, which is `62 × 1569 ÷ 242` **to the last bit**.
+10. **Attack power is scaled by physical weapon mastery, and that multiplier is NOT floored.** With a
+    mastery rate of 0 the server returns an attack power of exactly **0**, even though MinWC and MaxWC are
+    both floored at 1. No mastery, no damage.
+11. **`roe_Damage` scales with `level + 1`**: `roe_Damage(1569, 242)` at level 61 returns
+    `401.97520661157023`, which is `62 × 1569 ÷ 242` **to the last bit**.
 
-### Four traps, each of which produced a confident wrong conclusion
+### Six traps, each of which produced a confident wrong conclusion
 
-Every one of these looked like a bug in the C# port. None of them was.
+Five of the six were defects in the **measuring instrument**, and each presented as a defect in the code
+under test. When a differential test disagrees, the harness is a suspect too.
 
-**1. `dotnet-script` caches compiled scripts by filename.** The fuzz harness reused one `_fuzz_cs.csx`, so
-after each fix to `DamageFormula.cs` it re-ran the *previous* build and reported no change. On that evidence
-three fixes were recorded as "didn't help" and one accessor as "stuck at 22/40". All three were correct
-fixes measured against a stale binary; with a unique filename per run they give 39/40. *A harness that
-silently serves cached results is worse than no harness — it manufactures confident negative findings.*
+1. **`dotnet-script` caches compiled scripts by filename.** Reusing one `.csx` re-ran the *previous* build
+   after every fix, so three correct fixes were recorded as "didn't help".
+2. **Unicorn boots the x87 at `FPCW = 0x0000` — 24-bit SINGLE precision.** A real MSVC process runs
+   `0x027F` (53-bit). Every FPU op was silently rounding to float32. Settled by the absence of any
+   `fstp dword` in the accessors: no float temporaries in the game code, so the rounding was the
+   emulator's. The `401.9752197265625` recorded in Appendix C as ground truth was this artifact.
+3. **Unicorn caches translated blocks**, so a value baked into an instruction can never be changed. The
+   getter stubs were `mov eax, <imm32>` rewritten per call, which **pinned the character level at 1** for
+   the whole process. In the fuzz this looked like C# being too large by exactly `(level+1)/2`: clean,
+   convincing and entirely fictitious. The trap was already documented for the roll patch and simply not
+   generalised — all stubs now read from a data slot.
+4. **The roll override's `imul` was 32-bit and truncated the product.** With `MaxWC < MinWC` the range
+   reached −1.4e10, wrapped, and the oracle reported an attack power ~275 million short of the port. The
+   port was right. (An earlier version divided *unsigned*, with the same shape of error.)
+5. **`System.Text.Json` prints a large double with no decimal point** (`4.028110698197033e+16` →
+   `"40281106981970330"`), Python's `json` reads it as an `int`, and `int == float` compares exactly — so
+   bit-identical results were reported as mismatches.
+6. **A 1e-9 relative tolerance hid eight ULPs at 1e17.** It let accessor-level disagreements through and
+   only failed once `CalcDamage` amplified them, which made the cause look like it lived in CalcDamage.
+   The comparison is now exact.
 
-**2. Unicorn boots the x87 at `FPCW = 0x0000`, which is 24-bit SINGLE precision.** A real MSVC process runs
-`0x027F` (53-bit double). Every FPU operation in the oracle was silently rounding to float32. The error is
-~1e-7 relative — small enough to read as harmless last-digit noise, and it was the only thing separating the
-port from the oracle on four of 120 cases. What settled it: the accessors contain **no `fstp dword`**, so
-there are no float temporaries in the game code and the rounding had to be the emulator's. This also means
-the value `401.9752197265625` recorded in Appendix C as ground truth was a single-precision artifact; the
-true value is `401.97520661157023`.
+### Method note: fit vs law
 
-**3. Unicorn caches translated blocks, so a value baked into an instruction can never be changed.** The
-getter stubs were `mov eax, <imm32>; ret` with the immediate rewritten per call. After the first execution
-those writes did nothing, which **pinned the character level for the whole process**: every `CalcDamage`
-case was computed at level 1 regardless of the level asked for. In the fuzz this appeared as C# being too
-large by exactly `(level + 1) / 2` — a clean, convincing, entirely fictitious "port bug". The trap had
-already been found and documented for the `rb_largerandom` roll patch and was simply not generalised. All
-stubs now read from a data slot (`mov eax, [slot]; ret`).
+Twice a single failing case was minimised and every candidate formula variant was scored against it — and
+twice several variants matched by chance at 1-ULP granularity. Both times, scoring the candidates across
+**hundreds** of cases picked a different winner, and in both cases the winner was the implementation
+already in place. A single data point cannot distinguish a law from a coincidence; the deciding evidence
+was always the population, or the disassembly, never the one case.
 
-**4. The roll override divided unsigned.** `imul` is signed, so a negative roll range (`MaxWC < MinWC`)
-wrapped to ~4.3e6 and produced "damage" of 4 299 643 against the port's 4 677. Fixed with `cdq`/`idiv`.
+---
 
-The common shape: **three of the four were defects in the measuring instrument, and each one presented as a
-defect in the thing being measured.** When a differential test disagrees, the harness is a suspect too.
+## Appendix H — The C# API
 
-### Rejected by measurement
+The engine is `Fiesta.Bot.Combat`. Nothing in it knows about the fuzzing harness, which is a thin adapter
+in `tools/fuzz_damage.py` over the same public API and can be deleted without touching production code.
 
-Truncating inside `Chain` after the rate product: 104/120 with **and** without, so it is not evidenced.
-Recorded so it is not re-litigated.
+| type | role |
+|---|---|
+| `Stat` | one of the 51 stat slots; the ordinal IS the slot index, so it cannot be renumbered |
+| `StatModifier` | where a modification came from: `Item`, `ItemPowerRate`, `Upgrade`, `WeaponTitle`, `PassiveSkill`, `AbnormalState`, `LastTune` |
+| `StatBlock` | one block: a value per `Stat` |
+| `CombatStats` | a `Base` block plus a `Plus` and a `Rate` block per `StatModifier` |
+| `ICombatant` | `Level` + `CombatStats` — the whole input surface |
+| `AttackModifiers` | per-swing situational rates, and overrides for the two random draws |
+| `AttackOutcome` | damage plus the intermediates worth logging |
+| `DamageCalculator` | the engine |
+| `ServerArithmetic` | internal bit-exact primitives (`Ftol32`, `FloorAtOne`, `ApplyRate`) |
 
-### Next
+### Integrating
 
-The inverse direction the operator asked for — the bot collecting combat observations and fitting
-`MobInfoServer` / `MobWeapon` / `DamageByAngle` — now has an exact forward model to invert. Still untested
-because `roe_CalcDamage` never reaches them: the hit/block/immune overrides (they live in
-`roe_AttackPowerCalcDamage`), the angle table (needs `attackloc` plus positions), and `dt_Load`'s
-SHN → `uint16[91]` mapping.
+Implement `ICombatant` on whatever already models the entity:
+
+```csharp
+public sealed partial class MobRow : ICombatant
+{
+    public int Level => _level;
+    public CombatStats CombatStats => _stats ??= CombatStats.FromBaseStats(new Dictionary<Stat, int>
+    {
+        [Stat.Str] = Str, [Stat.Con] = Con, [Stat.Dex] = Dex,
+        [Stat.WCmin] = MinWc, [Stat.WCmax] = MaxWc, [Stat.AC] = Ac, [Stat.TH] = Th, [Stat.TB] = Tb,
+    });
+}
+```
+
+A mob needs nothing else: its `MobInfoServer` / `MobWeapon` row **is** the base block. A player also
+populates the `Plus` / `Rate` layers from gear, buffs and passives. Cache the container — it is not
+memoised for you.
+
+**Why not a flat `IDictionary<Stat, double>`?** Because the layers are inputs to the formula, not a
+presentation detail. `AttackPower` reads `PassiveSkill.rate[PhisycalWeaponMastery]` on its own, *after*
+the weapon bounds are computed and *without* the floor those bounds get — a pre-combined "effective
+WCmin" cannot express that, and collapsing the layers silently changes the answer. `FromBaseStats` gives
+the dictionary ergonomics wherever a flat table genuinely is the whole input.
+
+### Asking questions
+
+```csharp
+// Worst case this mob can hit me for — a bound, not a simulation.
+int worst = DamageCalculator.ResolveDamage(mob, me,
+    new AttackModifiers { RollPermille = 1000, ForceCritical = true });
+
+// A reproducible simulated swing.
+AttackOutcome hit = DamageCalculator.Resolve(me, mob,
+    new AttackModifiers { CriticalChancePermille = 150 }, new Random(seed));
+// hit.Damage, hit.WasCritical, hit.RollPermille, hit.AttackPower, hit.DefendPower
+```
+
+`ForceCritical` is `bool?`: `true` always crits, `false` never, `null` rolls against
+`CriticalChancePermille`. `RollPermille` is `int?` on the same pattern. Every `*RatePermille` defaults to
+1000 = unchanged; **0 is a real value**, not "unset" — a `DamageRatePermille` of 0 produces a raw damage
+of 0 which the final floor turns into 1.
+
+### The inverse direction
+
+The forward model being exact is what makes the operator's goal — the bot observing combat and fitting
+`MobInfoServer` / `MobWeapon` / `DamageByAngle` by inverting it — tractable. Still unexercised, because
+`roe_CalcDamage` never reaches them: hit/block/immune (they live in `roe_AttackPowerCalcDamage`), the
+angle table (needs `attackloc` plus positions), and `dt_Load`'s SHN → `uint16[91]` mapping.

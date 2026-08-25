@@ -64,36 +64,36 @@ def gen_case(rng, fn):
 
 
 # ---- the C# side ------------------------------------------------------------------------------------
-CSX = r'''
+# This is a THIN ADAPTER over the library's public API and nothing more: it maps the oracle's wire names
+# ("Item.plus", "roe_MinWC") onto Fiesta.Bot.Combat and prints the result. The library knows nothing about
+# it, so the whole fuzzing layer can be deleted without touching production code.
+CSX = r"""
 #r "{dll}"
 using System;
 using System.Text.Json;
 using Fiesta.Bot.Combat;
 
-static readonly string[] SectPlus = {{"PureCharParam","Item.plus","ItemPowerRate.plus","Upgrade.plus",
-    "WeaponTitle.plus","PassiveSkill.plus","AbnormalState.plus","LastTune.plus"}};
+// The oracle names blocks the way the server's PDB does; the library names them by intent.
+static StatBlock Block(CombatStats stats, string wireName) {{
+    if (wireName == "PureCharParam") return stats.Base;
+    var dot = wireName.IndexOf('.');
+    if (dot < 0) throw new Exception("section " + wireName);
+    var source = Enum.Parse<StatModifier>(wireName.Substring(0, dot));
+    var half = wireName.Substring(dot + 1);
+    return half == "plus" ? stats.Plus(source)
+         : half == "rate" ? stats.Rate(source)
+         : throw new Exception("half " + half);
+}}
 
-static ParamBlock Pick(ParamContainer c, string s) => s switch {{
-    "PureCharParam" => c.PureCharParam,
-    "Item.plus" => c.ItemPlus, "Item.rate" => c.ItemRate,
-    "ItemPowerRate.plus" => c.ItemPowerRatePlus, "ItemPowerRate.rate" => c.ItemPowerRateRate,
-    "Upgrade.plus" => c.UpgradePlus, "Upgrade.rate" => c.UpgradeRate,
-    "WeaponTitle.plus" => c.WeaponTitlePlus, "WeaponTitle.rate" => c.WeaponTitleRate,
-    "PassiveSkill.plus" => c.PassiveSkillPlus, "PassiveSkill.rate" => c.PassiveSkillRate,
-    "AbnormalState.plus" => c.AbnormalStatePlus, "AbnormalState.rate" => c.AbnormalStateRate,
-    "LastTune.plus" => c.LastTunePlus, "LastTune.rate" => c.LastTuneRate,
-    "Total" => c.Total, _ => throw new Exception("section " + s)
-}};
-
-static ParamContainer Build(JsonElement e) {{
-    var c = ParamContainer.Neutral();
-    if (e.ValueKind != JsonValueKind.Object) return c;
-    foreach (var sect in e.EnumerateObject()) {{
-        var b = Pick(c, sect.Name);
-        foreach (var f in sect.Value.EnumerateObject())
-            b[Enum.Parse<ParamField>(f.Name)] = f.Value.GetInt32();
-    }}
-    return c;
+static ICombatant Build(JsonElement spec, int level) {{
+    var stats = CombatStats.Unmodified();
+    if (spec.ValueKind == JsonValueKind.Object)
+        foreach (var section in spec.EnumerateObject()) {{
+            var block = Block(stats, section.Name);
+            foreach (var field in section.Value.EnumerateObject())
+                block[Enum.Parse<Stat>(field.Name)] = field.Value.GetInt32();
+        }}
+    return new Combatant(level, stats);
 }}
 
 string line;
@@ -101,24 +101,28 @@ while ((line = Console.ReadLine()) != null) {{
     if (line.Length == 0) continue;
     try {{
         var c = JsonDocument.Parse(line).RootElement;
-        var att = Build(c.GetProperty("att"));
-        var def = Build(c.GetProperty("def"));
-        int lvl = c.TryGetProperty("level", out var l) ? l.GetInt32() : 61;
+        int level = c.TryGetProperty("level", out var l) ? l.GetInt32() : 61;
+        var attacker = Build(c.GetProperty("att"), level);
+        var defender = Build(c.GetProperty("def"), level);
         string fn = c.GetProperty("fn").GetString();
         double v;
         switch (fn) {{
-            case "roe_MinWC": v = DamageFormula.MinWc(att); break;
-            case "roe_MaxWC": v = DamageFormula.MaxWc(att); break;
-            case "roe_AC":    v = DamageFormula.Ac(def);    break;
-            case "roe_TH":    v = DamageFormula.Th(att);    break;
-            case "roe_TB":    v = DamageFormula.Tb(def);    break;
-            case "roe_MR":    v = DamageFormula.Mr(def);    break;
-            case "AttackPower": v = DamageFormula.AttackPower(att, c.GetProperty("roll").GetInt32()); break;
-            case "DefendPower": v = DamageFormula.DefendPower(def); break;
+            case "roe_MinWC":   v = DamageCalculator.MinWeaponDamage(attacker); break;
+            case "roe_MaxWC":   v = DamageCalculator.MaxWeaponDamage(attacker); break;
+            case "roe_AC":      v = DamageCalculator.ArmourClass(defender);     break;
+            case "roe_TH":      v = DamageCalculator.ToHitRating(attacker);     break;
+            case "roe_TB":      v = DamageCalculator.ToBlockRating(defender);   break;
+            case "roe_MR":      v = DamageCalculator.MagicResistance(defender); break;
+            case "DefendPower": v = DamageCalculator.DefendPower(defender);     break;
+            case "AttackPower":
+                v = DamageCalculator.AttackPower(attacker, c.GetProperty("roll").GetInt32());
+                break;
             case "CalcDamage":
-                v = DamageFormula.CalcDamage(att, def, lvl,
-                        c.GetProperty("roll").GetInt32(), c.GetProperty("crit").GetBoolean(),
-                        c.TryGetProperty("damagerate", out var dr) ? dr.GetInt32() : 1000);
+                v = DamageCalculator.ResolveDamage(attacker, defender, new AttackModifiers {{
+                        RollPermille = c.GetProperty("roll").GetInt32(),
+                        ForceCritical = c.GetProperty("crit").GetBoolean(),
+                        DamageRatePermille = c.TryGetProperty("damagerate", out var dr) ? dr.GetInt32() : 1000,
+                    }});
                 break;
             default: throw new Exception("fn " + fn);
         }}
@@ -128,7 +132,7 @@ while ((line = Console.ReadLine()) != null) {{
     }}
     Console.Out.Flush();
 }}
-'''
+"""
 
 
 def main():

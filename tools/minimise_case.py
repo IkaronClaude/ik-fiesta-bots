@@ -12,7 +12,12 @@ from roe_oracle import Oracle
 
 
 def main():
-    case = json.loads(sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read())
+    # Accept a FILE PATH as well as inline JSON: a dense extreme-fuzz case is tens of kilobytes and
+    # blows the command-line length limit ("Argument list too long").
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    if arg and os.path.exists(arg):
+        arg = open(arg, encoding="utf-8").read()
+    case = json.loads(arg if arg else sys.stdin.read())
     dll = os.path.join(HERE, "..", "src", "Fiesta.Bot", "bin", "Release", "net10.0", "Fiesta.Bot.dll")
     # UNIQUE FILENAME PER RUN, in a throwaway directory. dotnet-script caches compiled scripts BY
     # FILENAME, so reusing one name silently keeps running the PREVIOUS build -- a corrected
@@ -38,7 +43,11 @@ def main():
             r = json.loads(proc.stdout.readline())
         except Exception:
             return False
-        return bool(r.get("ok")) and abs(r["v"] - go) > 1e-9 * max(1.0, abs(go))
+        # EXACT, matching tools/fuzz_extreme.py. A relative tolerance here would shrink the case until the
+        # difference dropped under it and then report "does not reproduce" on the real bug.
+        # float() BOTH sides: System.Text.Json prints a big double without a decimal point and
+        # Python json reads it as an int, which then compares unequal to the identical float.
+        return bool(r.get("ok")) and float(r["v"]) != float(go)
 
     assert bad(case), "case does not reproduce"
     # 1. drop whole sections, 2. drop single fields, 3. shrink values

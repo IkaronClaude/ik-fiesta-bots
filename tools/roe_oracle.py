@@ -403,18 +403,18 @@ class Oracle:
         # once and varying only the operands sidesteps the cache entirely.
         slot = HEAP + 0x7C000
         self.uc.mem_write(slot, struct.pack("<II", int(permille) & 0xFFFFFFFF, 1000))
-        # SIGNED division. The first cut used `xor edx,edx` + `div ecx`, which is fine for the ranges the
-        # real game produces (MaxWC >= MinWC always) but wrong for anything the fuzzer generates where the
-        # range goes negative: -3 wrapped to 0xFFFFFFFD and the "damage" came out at ~4.3e6. That looked
-        # exactly like a C# port bug and wasted a round of investigation. `imul` above is already signed,
-        # so the divide has to be too, or the patch contradicts itself.
-        code = (b"\x8B\x44\x24\x04"                                  # mov eax,[esp+4]  ; n = MaxWC-MinWC
-                b"\x0F\xAF\x05" + struct.pack("<I", slot) +          # imul eax, [slot]     ; * permille
-                b"\x8B\x0D" + struct.pack("<I", slot + 4) +          # mov ecx,[slot+4]     ; 1000
-                b"\x99"                                              # cdq              ; sign-extend eax
-                b"\x90"                                              # nop              ; keep length equal
-                b"\xF7\xF9"                                          # idiv ecx
-                b"\xC2\x04\x00")                                     # ret 4
+        # 64-BIT signed multiply, then signed divide. Two earlier versions of this patch were wrong and
+        # each cost a round of investigation, because a broken patch looks exactly like a broken port:
+        #   * xor edx,edx + div (UNSIGNED) turned a negative range into ~4.3e6.
+        #   * imul eax,[slot] (two-operand, 32-BIT result) silently TRUNCATED the product. With
+        #     MaxWC < MinWC the range reached -1.4e10, the 32-bit product wrapped, and the oracle
+        #     reported an attack power ~275 million short of the port. The PORT was right.
+        # One-operand imul puts the full 64-bit product in edx:eax, which idiv then consumes -- so no
+        # intermediate is ever truncated. This matches the C# side, which does the same in `long`.
+        code = (bytes([0x8B, 0x44, 0x24, 0x04])                  # mov eax,[esp+4]   ; n = MaxWC-MinWC
+                + bytes([0xF7, 0x2D]) + struct.pack("<I", slot)      # imul dword [slot]   ; edx:eax = n*pm
+                + bytes([0xF7, 0x3D]) + struct.pack("<I", slot + 4)  # idiv dword [slot+4] ; eax = /1000
+                + bytes([0xC2, 0x04, 0x00]))                         # ret 4
         if bytes(self.uc.mem_read(self.syms[sym], len(code))) != code:
             self.uc.mem_write(self.syms[sym], code)
             try:
