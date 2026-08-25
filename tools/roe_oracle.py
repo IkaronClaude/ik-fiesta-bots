@@ -147,6 +147,7 @@ class Oracle:
         self.arg = HEAP + 0x30000
         vt = bytes(self.uc.mem_read(self.syms["??_7ShineMob@ShineObjectClass@@6B@"], 0xA00))
         self.stub_n = 0
+        self._saved = {}
         self.raw_n = 0
         self._stub_imports(pe)
         self.s_par_a = self._stub(self.att_c)
@@ -269,6 +270,13 @@ class Oracle:
         uc.mem_write(self.arg + 0x20, struct.pack("<i", int(case.get("crirateadd", 0))))
         uc.mem_write(self.arg + 0x0C, struct.pack("<h", int(case.get("empower", 0))))
         uc.mem_write(self.arg + 0x18, struct.pack("<i", int(case.get("attackloc", 0))))
+        for k in ("crit", "hit", "block", "critstun"):
+            if k in case:
+                self.set_override(k, case[k])
+        if "immune" in case:
+            self.set_immune(case["immune"])
+        if "roll" in case:
+            self.set_roll_permille(case["roll"])
         result, ret = STUB + 0xE80, STUB + 0xE00
         uc.mem_write(ret, b"\xDD\x1D" + struct.pack("<I", result))
         uc.mem_write(result, b"\x00" * 8)
@@ -290,6 +298,113 @@ class Oracle:
             return v - (1 << 32) if v >= (1 << 31) else v
         uc.emu_start(va, ret + 6, count=5_000_000)
         return struct.unpack("<d", bytes(uc.mem_read(result, 8)))[0]
+
+    # ---- deterministic overrides -------------------------------------------------------------------
+    # The engine is random by nature: the caller draws from WELL512 and compares against a RATE returned by
+    # roe_CriticalRate / roe_HitRate / roe_ShieldBlock. So forcing the *rate* forces the decision without
+    # touching the RNG -- a huge rate always wins the comparison, a zero rate always loses. Each override is
+    # tri-state: True = always, False = never, None = leave the real code alone and let the RNG decide.
+    # The attack roll is separate: it comes from well512_GetRandom(n), so `roll_permille` rewrites that to a
+    # fixed fraction of its range (0 = MinWC, 1000 = MaxWC), leaving every other draw irrelevant because the
+    # rates above already decided those branches.
+    RATE_SYMS = {
+        "crit": r"?roe_CriticalRate@RulesOfEngagementNormalPY@@MAENPAUEngageArgument@@@Z",
+        "hit": r"?roe_HitRate@RulesOfEngagementNormalPY@@UAENPAUEngageArgument@@@Z",
+        "block": r"?roe_ShieldBlock@RulesOfEngagementNormalPY@@MAENPAUEngageArgument@@@Z",
+        "critstun": r"?roe_CriticalStunRate@RulesOfEngagement@@MAENPAUEngageArgument@@@Z",
+    }
+    IMMUNE_SYM = r"?roe_IsDamageImmune@RulesOfEngagementNormalPY@@MAEEPAUEngageArgument@@@Z"
+    ROLL_SYM = r"?well512_GetRandom@cWell512Random@@QAEII@Z"
+
+    def _orig(self, sym, n=16):
+        if sym not in self._saved:
+            self._saved[sym] = bytes(self.uc.mem_read(self.syms[sym], n))
+        return self._saved[sym]
+
+    def _restore(self, sym):
+        if sym in self._saved:
+            self.uc.mem_write(self.syms[sym], self._saved[sym])
+
+    def set_override(self, what, value):
+        """what in {crit, hit, block, critstun}; value True=always, False=never, None=random."""
+        sym = self.RATE_SYMS[what]
+        if sym not in self.syms:
+            return False
+        self._orig(sym)
+        if value is None:
+            self._restore(sym)
+            return True
+        # `fld qword ptr [const]; ret 4` -- a double-returning __thiscall with one stack arg.
+        slot = HEAP + 0x7A000 + (list(self.RATE_SYMS).index(what) * 8)
+        self.uc.mem_write(slot, struct.pack("<d", 1e18 if value else 0.0))
+        self.uc.mem_write(self.syms[sym], b"\xDD\x05" + struct.pack("<I", slot) + b"\xC2\x04\x00")
+        return True
+
+    def set_immune(self, value):
+        """True = always immune (damage suppressed), False = never, None = real code."""
+        sym = self.IMMUNE_SYM
+        if sym not in self.syms:
+            return False
+        self._orig(sym)
+        if value is None:
+            self._restore(sym)
+        else:
+            self.uc.mem_write(self.syms[sym], b"\xB8" + struct.pack("<I", 1 if value else 0) + b"\xC2\x04\x00")
+        return True
+
+    def set_roll_permille(self, permille):
+        """Force the attack roll to a fixed fraction of its range. None restores the real RNG draw.
+
+        well512_GetRandom(unsigned n) returns 0..n; rewriting it to `n * permille / 1000` makes AttackPower
+        land on MinWC at 0 and MaxWC at 1000, deterministically and without disturbing the generator."""
+        sym = self.ROLL_SYM
+        if sym not in self.syms:
+            return False
+        self._orig(sym, 24)
+        if permille is None:
+            self._restore(sym)
+            return True
+        raise NotImplementedError(
+            "roll override is NOT implemented -- do not use it, it would silently return MinWC.\n"
+            "  Two attempts, both rejected by evidence rather than assumed to work:\n"
+            "   * patching well512_GetRandom(unsigned) -> n*permille/1000 left AttackPower pinned at MinWC\n"
+            "     (1569.0 for every permille from 0 to 1000), so that overload is not the interpolator.\n"
+            "   * patching well512_GetRandom(void) -> double with `fld qword[k]; ret` faults with\n"
+            "     UC_ERR_INSN_INVALID, so the caller's x87 stack discipline is not what a naive constant\n"
+            "     return provides.\n"
+            "  The attack roll therefore still always lands on MinWC. Crit/hit/block overrides DO work and\n"
+            "  are unaffected. Resolve by disassembling NormalPY::roe_AttackPower's tail to find which draw\n"
+            "  actually interpolates MinWC..MaxWC before wiring this.")
+
+    def set_seed(self, seed):
+        """Seed the server's own WELL512 generator, so crit/hit/roll outcomes are controllable and repeatable.
+
+        `cWell512Random::well512_InitState(unsigned int* state)` takes a 16-word seed array (WELL512's STATE),
+        and the singleton is `rb_well512random`. Without this the state is all zeroes, which makes the harness
+        deterministic in a *degenerate* way: crit fires on every call and the attack roll always lands exactly
+        on MinWC. Seeding is what lets a fuzzer reach the other branches."""
+        init = self.syms.get(r"?well512_InitState@cWell512Random@@QAEXPAI@Z")
+        glob = self.syms.get(r"?rb_well512random@@3VcWell512Random@@A")
+        if init is None or glob is None:
+            return False
+        from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_ECX
+        buf = HEAP + 0x78000
+        x = seed & 0xFFFFFFFF
+        words = []
+        for _ in range(16):                       # xorshift expansion; any spread of bits will do
+            x ^= (x << 13) & 0xFFFFFFFF
+            x ^= x >> 17
+            x ^= (x << 5) & 0xFFFFFFFF
+            words.append(x or 0x9E3779B9)
+        self.uc.mem_write(buf, b"".join(struct.pack("<I", w) for w in words))
+        pad = STUB + 0xD00
+        self.uc.mem_write(pad, b"\xC3")
+        esp = STACK + 0x100000 - 0x100
+        self.uc.mem_write(esp, struct.pack("<II", pad, buf))
+        self.uc.reg_write(UC_X86_REG_ESP, esp)
+        self.uc.reg_write(UC_X86_REG_ECX, glob)
+        self.uc.emu_start(init, pad, count=200000)
+        return True
 
     def set_level_gap_rate(self, rate):
         """Force GetLevelCapRate to a constant permille (1000 = no change).

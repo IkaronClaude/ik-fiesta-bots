@@ -888,3 +888,58 @@ CalcDamage = round( (attackerLevel+1) * AttackPower / DefendPower * critMultipli
 - **The RNG is deterministic** (zeroed WELL512 state), so crit fires every call and the attack roll always
   lands on `MinWC`. Seeding it is needed to sample the distribution.
 - **`dt_Load`'s SHN → `uint16[91]` mapping** is still not established (see above).
+
+---
+
+## Appendix E — Deterministic overrides, and the exact integer law
+
+The engine is stochastic: the caller draws from WELL512 and compares against a **rate** returned by
+`roe_CriticalRate` / `roe_HitRate` / `roe_ShieldBlock`. So the oracle does not seed the RNG — it forces the
+*rate*, which forces the decision without perturbing the generator. Each override is tri-state:
+**True = always, False = never, None = leave the real code and let the RNG decide.** Restoring `None` puts
+the original bytes back, so a run can mix forced and free branches.
+
+```python
+o.call({"fn": "CalcDamage", "att": ..., "def": ..., "crit": False})   # never crit
+o.call({... , "crit": True})                                          # always crit
+o.set_override("hit", False); o.set_immune(True)                      # or set them directly
+```
+
+### The exact law
+
+With `crit` forced both ways against four defence values (mob 84 Orc, level 61, `AttackPower = 1569`):
+
+| defender | DefendPower | `crit=False` | `crit=True` | `(L+1)·A/D` |
+|---|---|---|---|---|
+| AC 1215, Con 292 | 1507 | **64** | **129** | 64.55 |
+| AC 1023, Con 292 | 1315 | **73** | **147** | 73.98 |
+| AC 713, Con 262 | 975 | **99** | **199** | 99.77 |
+| AC 535, Con 262 | 797 | **122** | **244** | 122.06 |
+
+Every non-crit value is **`floor()` of the closed form** — 64.55→64, 73.98→73, 99.77→99, 122.06→122 — and
+every crit value is `floor(2 × closed)`: 129.1→129, 147.96→147, 199.5→199, 244.1→244. So:
+
+```
+damage = floor( (attackerLevel + 1) * AttackPower / DefendPower
+                * (crit ? 2 : 1) * damagerate/1000 * angleRate/1000 * levelGapRate/1000 ),  min 1
+AttackPower = roll(roe_MinWC .. roe_MaxWC)
+DefendPower = roe_AC                       = coreStat(Con) chain + AC chain
+```
+
+`DefendPower = Con + AC` is confirmed directly (292 + 1215 = 1507; 262 + 535 = 797).
+
+### What the overrides do NOT yet cover
+
+- **`roll` is not implemented, and raises rather than lying.** Two attempts, both rejected by evidence:
+  patching `well512_GetRandom(unsigned)` to `n·permille/1000` left `AttackPower` pinned at 1569.0 for every
+  permille 0..1000, so that overload is not the interpolator; patching the `double f(void)` overload with a
+  naive `fld qword[k]; ret` faults `UC_ERR_INSN_INVALID`, so the caller's x87 discipline is not what a
+  constant return provides. **The attack roll therefore always lands on MinWC**, which is why every table
+  above uses `AttackPower = 1569`. Resolving it needs `NormalPY::roe_AttackPower`'s tail disassembled to find
+  which draw actually interpolates.
+- **`hit` / `block` / `immune` have no observable effect on this path** — and the call trace says why:
+  `roe_CalcDamage` invokes `roe_IsDamageImmune`, `roe_CriticalRate`, `roe_FreeStatCriRate`,
+  `roe_CriticalStun`, `roe_AttackPower`, `roe_DefendPower`, `roe_Damage`, `roe_LevelGapDamageRevision` —
+  and **never `roe_HitRate` or `roe_ShieldBlock`**. Those are evaluated by a layer *above* `CalcDamage`
+  (`roe_AttackPowerCalcDamage` is the other angle-table caller and the likely home). So the overrides are
+  wired but untested until that layer is driven.
