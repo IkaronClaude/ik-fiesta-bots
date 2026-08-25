@@ -239,9 +239,39 @@ public static class DamageCalculator
                                     AttackModifiers? modifiers = null, Random? rng = null)
         => Resolve(attacker, defender, modifiers, rng).Damage;
 
-    /// <summary>Fold an attack angle into the 0..90 index that <c>DamageByAngle</c>'s table expects.
+    /// <summary>Two degrees per direction unit. The server never works in degrees: <c>ddt_Initialize</c>
+    /// builds its direction table with <c>atan(...) * 90 / PI</c>, and degrees would be <c>* 180 / PI</c>,
+    /// so one unit is half a degree's worth — a full turn is <see cref="DirectionUnitsPerTurn"/>.</summary>
+    public const int DegreesPerDirectionUnit = 2;
+
+    /// <summary>A full turn in direction units (360 degrees / 2).</summary>
+    public const int DirectionUnitsPerTurn = 180;
+
+    /// <summary>Fold a facing difference, <b>in direction units</b>, into the 0..90 index that
+    /// <c>DamageByAngle</c>'s 91-entry table expects.
     ///
-    /// <para>A symmetric triangle wave: 0 and 180 share index 0, 90 and 270 share index 90. Derived by
-    /// running the real <c>operator[]</c> against an identity table over 0..360 in both signs.</para></summary>
-    public static int AngleDamageIndex(int angleDegrees) => Math.Abs(((Math.Abs(angleDegrees) + 90) % 180) - 90);
+    /// <para>The server computes the argument as <c>defenderFacing - directionFromDefenderToAttacker</c>,
+    /// both direction bytes, then indexes the table with it. So the index is a measure of how far round
+    /// the defender the attacker is:</para>
+    ///
+    /// <list type="table">
+    ///   <item><term>index 0</term><description>0 degrees — attacked from the FRONT</description></item>
+    ///   <item><term>index 45</term><description>90 degrees — from the SIDE</description></item>
+    ///   <item><term>index 90</term><description>180 degrees — from BEHIND, the largest multiplier</description></item>
+    /// </list>
+    ///
+    /// <para>⚠️ This takes DIRECTION UNITS, not degrees. Passing degrees folds 180 to index 0 and makes a
+    /// backstab read as a frontal hit — which is the inverse of the truth, and is what this method did
+    /// while its parameter was misnamed <c>angleDegrees</c>. Use
+    /// <see cref="AngleDamageIndexFromDegrees"/> if you are holding degrees.</para></summary>
+    public static int AngleDamageIndex(int directionUnitDelta)
+    {
+        var folded = Math.Abs(directionUnitDelta) % DirectionUnitsPerTurn;
+        return Math.Abs(((folded + 90) % DirectionUnitsPerTurn) - 90);
+    }
+
+    /// <summary>As <see cref="AngleDamageIndex"/>, for a caller holding real degrees (0 = front,
+    /// 180 = behind).</summary>
+    public static int AngleDamageIndexFromDegrees(int degrees)
+        => AngleDamageIndex(degrees / DegreesPerDirectionUnit);
 }

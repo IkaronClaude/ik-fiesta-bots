@@ -342,17 +342,40 @@ public class DamageCalculatorTests
 
     // ---- angle table --------------------------------------------------------------------------------
 
+    /// <summary>The table index is a fold of the DIRECTION-UNIT delta (2 degrees per unit), so a full
+    /// turn is 180 units and the 0..90 index spans 0..180 degrees.</summary>
     [Theory]
-    [InlineData(0, 0)]
-    [InlineData(45, 45)]
-    [InlineData(90, 90)]
-    [InlineData(180, 0)]
-    [InlineData(270, 90)]
+    [InlineData(0, 0)]        // front
+    [InlineData(45, 45)]      // 90 degrees, side
+    [InlineData(90, 90)]      // 180 degrees, behind -- the largest multiplier
+    [InlineData(135, 45)]
+    [InlineData(180, 0)]      // a full turn, back to the front
+    [InlineData(-45, 45)]     // sign does not matter, left and right are symmetric
+    [InlineData(-90, 90)]
+    public void AngleDamageIndex_FoldsDirectionUnitsToATriangleWave(int units, int expected)
+        => DamageCalculator.AngleDamageIndex(units).ShouldBe(expected);
+
+    /// <summary>The gameplay-visible ordering the operator confirmed: from behind hits hardest, then the
+    /// side, then head-on. If this ever inverts, the degrees/units confusion is back.</summary>
+    [Theory]
+    [InlineData(0, 0)]        // front
+    [InlineData(90, 45)]      // side
+    [InlineData(180, 90)]     // behind
+    [InlineData(270, 45)]
     [InlineData(360, 0)]
-    [InlineData(-45, 45)]
-    [InlineData(-135, 45)]
-    public void AngleDamageIndex_FoldsToASymmetricTriangleWave(int angle, int expected)
-        => DamageCalculator.AngleDamageIndex(angle).ShouldBe(expected);
+    [InlineData(-180, 90)]
+    public void AngleDamageIndexFromDegrees_PutsBehindAtTheTopOfTheTable(int degrees, int expected)
+        => DamageCalculator.AngleDamageIndexFromDegrees(degrees).ShouldBe(expected);
+
+    [Fact]
+    public void AngleDamageIndex_RanksBehindAboveSideAboveFront()
+    {
+        var front = DamageCalculator.AngleDamageIndexFromDegrees(0);
+        var side = DamageCalculator.AngleDamageIndexFromDegrees(90);
+        var behind = DamageCalculator.AngleDamageIndexFromDegrees(180);
+        behind.ShouldBeGreaterThan(side);
+        side.ShouldBeGreaterThan(front);
+    }
 
     // ---- the model itself ---------------------------------------------------------------------------
 

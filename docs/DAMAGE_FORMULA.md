@@ -1188,6 +1188,45 @@ AttackOutcome hit = DamageCalculator.Resolve(me, mob,
 1000 = unchanged; **0 is a real value**, not "unset" — a `DamageRatePermille` of 0 produces a raw damage
 of 0 which the final floor turns into 1.
 
+### The angle table takes DIRECTION UNITS, not degrees
+
+`DamageByAngle::DamageTable::operator[]` is indexed by `defenderFacing - directionFromDefenderToAttacker`,
+both **direction bytes** from `ddt_DirectSR`. One unit is **2 degrees**: `ddt_Initialize` builds its table
+with `atan(...) * 90 / PI`, where degrees would be `* 180 / PI`. So a full turn is 180 units and the
+91-entry table's 0..90 index spans 0..180 degrees.
+
+| index | units | degrees | |
+|---|---|---|---|
+| 0 | 0 | 0 | attacked from the **front** |
+| 45 | 45 | 90 | from the **side** |
+| **90** | **90** | **180** | from **behind** — the largest multiplier |
+
+Confirmed by running the real `operator[]` against an identity table across 19 points including both
+signs and past a full turn.
+
+**This corrects an earlier error here.** The fold itself was right, but it was documented and exposed as
+taking *degrees* — which folds 180 to index 0 and makes a backstab read as a frontal hit, the exact
+inverse of the truth. The operator caught it from gameplay (behind hits harder than the side, which hits
+harder than head-on); no amount of re-reading `operator[]` would have caught it, because `operator[]` is
+correct in isolation and the error was in what its argument *means*. Use
+`DamageCalculator.AngleDamageIndexFromDegrees` if you hold degrees.
+
+### Two open items in the CalcDamage tail
+
+Reading `roe_CalcDamage` around the `_ftol` (`+0x587`, file offset `0x105587`) turned up two things the
+fuzz cannot see, because it stubs both to identity:
+
+1. **The angle and level-gap revisions are applied AFTER the integer conversion**, as integer calls
+   (`+0x59E`, `+0x5B2`, `+0x5C1` → `roe_LevelGapDamageRevision`), then `test eax,eax / jg` floors at 1
+   (`+0x5C9`). The C# port applies them as doubles *before* the conversion. Identical at 1000, unverified
+   otherwise.
+2. **`__ftol2_sse` has two paths** and the oracle took the wrong one. It branches on `__sse2_available`:
+   zero falls through to `__ftol2` (x87 `fistp qword`, caller keeps the low 32 bits — a modular wrap),
+   non-zero uses `cvttsd2si` (out-of-int32 gives `0x80000000`). Nothing initialised that global under
+   emulation, so every measurement — including law 6 above — is the **x87** path. Real hardware has SSE2,
+   so the live server saturates to `INT_MIN` and the overkill floors to 1, which is the observed bug.
+   `ServerArithmetic.Ftol32` therefore models the wrong branch for out-of-range values.
+
 ### The inverse direction
 
 The forward model being exact is what makes the operator's goal — the bot observing combat and fitting

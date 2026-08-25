@@ -31,8 +31,17 @@ public sealed record AttackModifiers
     /// an error, and not "unset". It defaults to 1000, never to 0.</para></summary>
     public int DamageRatePermille { get; init; } = 1000;
 
-    /// <summary>Positional multiplier from <c>DamageByAngle</c>: 1000 head-on, up to 1200 from behind.
-    /// Index the table with <see cref="DamageCalculator.AngleDamageIndex"/>.</summary>
+    /// <summary>Positional multiplier from <c>DamageByAngle</c>: 1000 head-on, larger from behind.
+    ///
+    /// <para>Index the table with <see cref="DamageCalculator.AngleDamageIndex"/> (direction units) or
+    /// <see cref="DamageCalculator.AngleDamageIndexFromDegrees"/> (degrees). Behind is index 90, the top
+    /// of the table — not index 0.</para>
+    ///
+    /// <para>⚠️ <b>Application order here is NOT verified.</b> This applies the angle and level-gap rates
+    /// to the damage as a double, before the final integer conversion. The server converts to an integer
+    /// FIRST (the <c>_ftol</c> at <c>roe_CalcDamage+0x587</c>) and then applies both revisions as integer
+    /// calls. With both at 1000 the two are identical, which is why the differential fuzz agrees — it has
+    /// never exercised a non-neutral value. Treat a non-1000 rate as an estimate until that is pinned.</para></summary>
     public int AngleRatePermille { get; init; } = 1000;
 
     /// <summary>Level-difference multiplier from <c>DamageLvGap</c>: flat 1000 for monster → player, up to

@@ -67,10 +67,15 @@ SYM = {
 }
 INT_RETURNING = {"CalcDamage", "AttackPowerCalcDamage"}
 
-# DamageByAngle::DamageTable is uint16[91]. The index fold was derived by running operator[] against an
-# identity table over 0..360 and both signs:
-#     index(angle) = abs(((abs(angle) + 90) % 180) - 90)
-# a symmetric triangle wave, so 0 and 180 share index 0, and 90/270 share index 90.
+# DamageByAngle::DamageTable is uint16[91]. The argument is a DIRECTION-UNIT delta, NOT degrees: one unit
+# is 2 degrees (ddt_Initialize builds its table with atan(...) * 90 / PI, where degrees would be * 180 / PI),
+# so a full turn is 180 units and the 0..90 index spans 0..180 degrees.
+#     index(units) = abs(((abs(units) % 180 + 90) % 180) - 90)
+# Confirmed by running the real operator[] against an identity table:
+#     0 units =    0 deg -> index  0   attacked from the FRONT
+#    45 units =   90 deg -> index 45   from the SIDE
+#    90 units =  180 deg -> index 90   from BEHIND, the largest multiplier
+# Reading the argument as degrees folds 180 to index 0 and makes a backstab read as a frontal hit.
 ANGLE_ENTRIES = 91
 
 
