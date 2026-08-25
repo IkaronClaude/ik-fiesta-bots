@@ -147,9 +147,14 @@ public static class DamageFormula
         return Clamp1(v);
     }
 
-    /// <summary>Every accessor floors its RESULT at 1, not just its core chain. A large negative plus-term
-    /// (e.g. `AbnormalState.plus.TB = -32768`) returns 1 from the server, not a negative number.</summary>
-    private static double Clamp1(double v) => v <= 0 ? 1.0 : v;
+    /// <summary>Every accessor floors its RESULT at 1 — and it is `&lt; 1`, NOT `&lt;= 0`.
+    ///
+    /// Pinned by a minimised case: with the sum at 600 and `AbnormalState.rate.WCmax = 1` the result is
+    /// 0.6 and the server returns **1.0**; at rate 2 it is 1.2 and the server returns **1.2**. So a
+    /// positive-but-fractional result is raised to 1, which `v &lt;= 0` would have let through.
+    /// Note this differs from the CORE chain's clamp and from roe_Damage's, both of which really are
+    /// `&lt;= 0` (they compare against zero via `fldz`, this one against one via `fld1`).</summary>
+    private static double Clamp1(double v) => v < 1.0 ? 1.0 : v;
 
     public static double Ac(ParamContainer d) =>
         SumRate(d, CoreChain(d, ParamField.Con) + Chain(d, ParamField.AC),
@@ -170,21 +175,32 @@ public static class DamageFormula
     /// copy-paste slip in the original server, but it is the behaviour so the port reproduces it.</summary>
     private static double WcChain(ParamContainer a, ParamField own)
     {
-        var v = (double)a.PureCharParam[own] + a.ItemPlus[own];
-        v += a.UpgradePlus[ParamField.WCmax] + a.AbnormalStatePlus[ParamField.WCmax]
-             + a.PassiveSkillPlus[ParamField.PhisycalWeaponMastery];
-        return v;
+        // Transcribed from roe_MinWC's tail, not inferred. `Item.plus.WCmin` is NOT added raw: it is scaled
+        // by WeaponTitle's rate for the field and by PassiveSkill's PHYSICAL WEAPON MASTERY rate first --
+        //     fld WeaponTitle.rate.WCmin; fmul Item.plus.WCmin; fdiv 1000; fmul PassiveSkill.rate.Mastery
+        // which is why treating it as a flat bonus left MinWC/MaxWC at 22/40 and 27/40.
+        var scaledItem = (double)a.WeaponTitleRate[own] * a.ItemPlus[own] / 1000.0
+                         * a.PassiveSkillRate[ParamField.PhisycalWeaponMastery] / 1000.0;
+        return a.UpgradePlus[ParamField.WCmax]
+               + a.AbnormalStatePlus[ParamField.WCmax]
+               + a.PureCharParam[own]
+               + scaledItem
+               + a.PassiveSkillPlus[ParamField.PhisycalWeaponMastery];
     }
 
+    /// <summary>The WC pair applies its three sum-rates in the binary's order
+    /// (AbnormalState.WCmax, then ItemPowerRate, then PassiveSkill) with NO integer truncation between them
+    /// -- unlike roe_AC, whose tail round-trips through `fistp`/`fild`.</summary>
+    private static double WcSum(double v, ParamContainer a, ParamField own) =>
+        Clamp1(v * a.AbnormalStateRate[ParamField.WCmax] / 1000.0
+                 * a.ItemPowerRateRate[own] / 1000.0
+                 * a.PassiveSkillRate[own] / 1000.0);
+
     public static double MinWc(ParamContainer a) =>
-        SumRate(a, CoreChain(a, ParamField.Str) + WcChain(a, ParamField.WCmin),
-            (a.ItemPowerRateRate, ParamField.WCmin), (a.PassiveSkillRate, ParamField.WCmin),
-            (a.AbnormalStateRate, ParamField.WCmax));
+        WcSum(CoreChain(a, ParamField.Str) + WcChain(a, ParamField.WCmin), a, ParamField.WCmin);
 
     public static double MaxWc(ParamContainer a) =>
-        SumRate(a, CoreChain(a, ParamField.Str) + WcChain(a, ParamField.WCmax),
-            (a.ItemPowerRateRate, ParamField.WCmax), (a.PassiveSkillRate, ParamField.WCmax),
-            (a.AbnormalStateRate, ParamField.WCmax));
+        WcSum(CoreChain(a, ParamField.Str) + WcChain(a, ParamField.WCmax), a, ParamField.WCmax);
 
     /// <summary>Normal physical attack power: a roll between MinWC and MaxWC.
     ///

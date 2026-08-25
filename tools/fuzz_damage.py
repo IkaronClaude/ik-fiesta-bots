@@ -149,7 +149,12 @@ def main():
     o = Oracle()
     o.set_angle_table()
 
-    csx = os.path.join(HERE, "_fuzz_cs.csx")
+    # ⚠️ UNIQUE FILENAME PER RUN. dotnet-script caches compiled scripts BY FILENAME, so reusing one
+    # silently keeps running the previous build -- a corrected DamageFormula.cs appeared to change
+    # nothing at all until this was fixed.
+    import hashlib, time
+    tag = hashlib.md5(("%s%s" % (time.time(), os.path.getmtime(a.dll))).encode()).hexdigest()[:10]
+    csx = os.path.join(HERE, "_fuzz_cs_%s.csx" % tag)
     with open(csx, "w", encoding="utf-8") as fh:
         fh.write(CSX.format(dll=os.path.abspath(a.dll).replace("\\", "/")))
     proc = subprocess.Popen([r"dotnet-script", csx], stdin=subprocess.PIPE, stdout=subprocess.PIPE,

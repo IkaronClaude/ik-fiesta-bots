@@ -1017,12 +1017,58 @@ can be trusted for damage. The next step is a third perturbation pass isolating 
 
 ---
 
-## Appendix G — Fuzz results per accessor, and the two remaining defects
+## Appendix G — Fuzz results, and a trap that invalidated three earlier conclusions
 
-Current agreement (40 random cases each, seed 5, `tools/fuzz_damage.py --fn <x>`):
+Current agreement, 40 random cases per accessor (`tools/fuzz_damage.py --fn <x> --seed 5`), and 120 mixed:
 
-| accessor | agree | note |
-|---|---|---|
+| accessor | agree |
+|---|---|
+| `roe_TH` | **40/40** |
+| `roe_MinWC` | 39/40 |
+| `roe_MaxWC` | 39/40 |
+| `roe_AC` / `DefendPower` | 39/40 |
+| `roe_MR` | 39/40 |
+| `roe_TB` | 38/40 |
+| **mixed, all functions** | **104/120** |
+
+### ⚠️ `dotnet-script` caches compiled scripts BY FILENAME
+
+This invalidated three conclusions before it was spotted. The harness reused one `_fuzz_cs.csx`, so after
+every `DamageFormula.cs` fix the fuzz **re-ran the previous build** and reported no change. On that basis I
+had recorded that the clamp fix "didn't help", that the MinWC/MaxWC transcription "didn't help", and that
+`roe_MinWC` was stuck at 22/40. All three were measuring a stale binary. With a unique filename per run the
+same code jumps to 39/40, 39/40 and 39/40.
+
+**A measurement harness that silently serves cached results is worse than no harness**, because it produces
+confident negative findings. The fuzzer now derives its script name from the DLL's mtime.
+
+### Defects the fuzz found (all confirmed against the binary, not fitted)
+
+1. **Each accessor reads a fixed side** — attacker gives `MinWC`/`MaxWC`/`TH`, defender gives `AC`/`TB`/`MR`.
+2. **The clamp is on the CORE chain**, not both halves (all-zero returns 1, not 2).
+3. **The trailing rates are applied twice** — inside the own chain and again on the sum (`roe_AC`: two,
+   `roe_MR`: one, `roe_TH`/`roe_TB`: none).
+4. **The intermediate is truncated to an integer between rate multiplies** in `roe_AC` (`fistp`/`fild`).
+5. **The result floor is `&lt; 1`, not `&lt;= 0`.** Minimised case: sum 600 with `AbnormalState.rate.WCmax = 1`
+   gives 0.6 and the server returns **1.0**; at rate 2 it gives 1.2 and the server returns **1.2**. The core
+   chain's clamp and `roe_Damage`'s really are `&lt;= 0` (they compare against zero via `fldz`); this one
+   compares against one via `fld1`.
+6. **`Item.plus.WCmin` is scaled, not added raw** — by `WeaponTitle.rate.WCmin` and
+   `PassiveSkill.rate.PhisycalWeaponMastery`, per `roe_MinWC`'s tail.
+
+### Rejected by (fair) measurement
+
+Truncating inside `Chain`, after the rate product: **104/120 with and without**, so it is not evidenced and
+was removed. Recorded so it is not re-litigated.
+
+### Remaining ~13%
+
+The visible failures are extreme-value cases — e.g. `AttackPower` with `MaxWC < MinWC`, where the roll range
+is negative. That is at least partly an **oracle artefact**: the `rb_largerandom` override divides unsigned,
+so a negative range wraps to ~4.3e6, which the real function would not do. Constrain the generator to sane
+WC ordering, or make the override use `cdq`/`idiv`, before reading anything into those.
+
+---|---|---|
 | `roe_TH` | **40/40** | exact |
 | `roe_MR` | 39/40 | |
 | `roe_TB` | 37/40 | |
