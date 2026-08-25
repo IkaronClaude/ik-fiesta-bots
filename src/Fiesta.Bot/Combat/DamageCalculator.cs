@@ -120,8 +120,14 @@ public static class DamageCalculator
         // 7732.317384936. One ULP -- which then feeds attack power and an integer damage, where it became
         // a 256-point difference.
         //
-        // Note Upgrade.plus and AbnormalState.plus are read at WCmax even when computing WCmin. Not a
-        // typo: it is what roe_MinWC does.
+        // Upgrade.plus and AbnormalState.plus are read at WCmax even when computing WCmin, and that is
+        // not a quirk of the code -- it is what the stat MEANS. An enhanced weapon reads in the client as
+        //
+        //     1000~2000 (+3000)
+        //
+        // one flat bonus that shifts BOTH ends of the range, not a separate bump to each end. So the
+        // enhancement and buff layers store that single figure once, in the WCmax slot, and both bounds
+        // read it from there. Only the weapon's own base range is per-bound.
         var value = GoverningChain(s, Stat.Str);
         value += s.Plus(StatModifier.Upgrade)[Stat.WCmax];
         value += s.Plus(StatModifier.AbnormalState)[Stat.WCmax];

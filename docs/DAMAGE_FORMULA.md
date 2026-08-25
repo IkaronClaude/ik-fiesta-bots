@@ -1078,12 +1078,17 @@ The lesson is about coverage, not arithmetic: **an untouched input is not a pass
    plus five `fadd`s. Computing the own half separately and adding the Str chain last gives
    7732.317384936001 where the server gives 7732.317384936. One ULP, which then fed attack power and an
    integer damage and became a **256-point** difference.
-9. **`Item.plus.WCmin` is scaled, not added raw** — by `WeaponTitle.rate` for the slot, then by
+9. **`Upgrade.plus` and `AbnormalState.plus` are read at `WCmax` for BOTH bounds** — and that is the
+   stat's meaning, not a quirk. An enhanced weapon reads in the client as `1000~2000 (+3000)`: one flat
+   bonus shifting both ends of the range, not a separate bump per end. So the enhancement and buff layers
+   store that single figure once, in the `WCmax` slot, and MinWC and MaxWC both read it from there. Only
+   the weapon's own base range is per-bound.
+10. **`Item.plus.WCmin` is scaled, not added raw** — by `WeaponTitle.rate` for the slot, then by
    `PassiveSkill.rate.PhisycalWeaponMastery`.
-10. **Attack power is scaled by physical weapon mastery, and that multiplier is NOT floored.** With a
+11. **Attack power is scaled by physical weapon mastery, and that multiplier is NOT floored.** With a
     mastery rate of 0 the server returns an attack power of exactly **0**, even though MinWC and MaxWC are
     both floored at 1. No mastery, no damage.
-11. **`roe_Damage` scales with `level + 1`**: `roe_Damage(1569, 242)` at level 61 returns
+12. **`roe_Damage` scales with `level + 1`**: `roe_Damage(1569, 242)` at level 61 returns
     `401.97520661157023`, which is `62 × 1569 ÷ 242` **to the last bit**.
 
 ### Six traps, each of which produced a confident wrong conclusion

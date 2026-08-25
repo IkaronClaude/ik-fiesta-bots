@@ -206,6 +206,47 @@ public class DamageCalculatorTests
         DamageCalculator.AttackPower(c, 1000).ShouldBe(0.0);   // ...but the attack power is not
     }
 
+    /// <summary>An enhancement bonus shifts the WHOLE range, keeping its spread — which is why the
+    /// enhancement and buff layers store it once in the WCmax slot and both bounds read it from there.
+    ///
+    /// A weapon reads in the client as <c>1000~2000 (+3000)</c>: one flat bonus on both ends, not a
+    /// separate bump per end. All values read from the oracle.</summary>
+    [Theory]
+    [InlineData(StatModifier.Upgrade, 3000, 4001.0, 5001.0)]
+    [InlineData(StatModifier.Upgrade, 500, 1501.0, 2501.0)]
+    [InlineData(StatModifier.AbnormalState, 750, 1751.0, 2751.0)]
+    public void FlatWeaponBonus_ShiftsBothBounds_AndPreservesTheSpread(
+        StatModifier layer, int bonus, double expectedMin, double expectedMax)
+    {
+        var c = With(s =>
+        {
+            s.Base[Stat.WCmin] = 1000;
+            s.Base[Stat.WCmax] = 2000;
+            s.Plus(layer)[Stat.WCmax] = bonus;      // stored once, read by BOTH bounds
+        });
+
+        DamageCalculator.MinWeaponDamage(c).ShouldBe(expectedMin);
+        DamageCalculator.MaxWeaponDamage(c).ShouldBe(expectedMax);
+        // The unenhanced weapon is 1001~2001, so the spread must be untouched.
+        (DamageCalculator.MaxWeaponDamage(c) - DamageCalculator.MinWeaponDamage(c)).ShouldBe(1000.0);
+    }
+
+    /// <summary>The control for the test above: a genuinely per-bound layer moves ONE end only.
+    /// Without this, "both bounds moved" could just mean every WCmax value leaks into MinWC.</summary>
+    [Fact]
+    public void PerBoundItemBonus_MovesOnlyItsOwnEnd_AndWidensTheSpread()
+    {
+        var c = With(s =>
+        {
+            s.Base[Stat.WCmin] = 1000;
+            s.Base[Stat.WCmax] = 2000;
+            s.Plus(StatModifier.Item)[Stat.WCmax] = 400;
+        });
+
+        DamageCalculator.MinWeaponDamage(c).ShouldBe(1001.0);   // unchanged
+        DamageCalculator.MaxWeaponDamage(c).ShouldBe(2401.0);   // +400
+    }
+
     [Theory]
     [InlineData(0, 101.0)]
     [InlineData(500, 151.0)]
