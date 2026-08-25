@@ -517,3 +517,173 @@ against a table range of 747..1137, overflowing both ends. Three compounding mis
   level-gap tables were all absent.
 
 Lesson: **the formula is code. Read the code.** `tools/pdb_disasm.py` makes that a one-liner.
+
+---
+
+## Appendix A — Structures, in full [BIN, field-exact]
+
+All recovered with `tools/pdb_members.py` (CodeView `LF_MEMBER` scan). These are the compiler's offsets.
+
+### `EngageArgument` — the context passed to every `roe_*`
+
+| off | field | | off | field |
+|---|---|---|---|---|
+| `+0x00` | `att` — **attacker** object | | `+0x13` | `isshieldblock` |
+| `+0x04` | `def` — **defender** object | | `+0x14` | `isresist` |
+| `+0x08` | `sklinfo` | | `+0x15` | `isDamege2Heal` |
+| `+0x0C` | `empower` | | `+0x16` | `isImmune` |
+| `+0x0E` | `actionnumber` | | `+0x18` | `attackloc` |
+| `+0x0F` | `attackcode` | | `+0x1C` | `damagerate` |
+| `+0x10` | `iscritical` | | `+0x20` | `crirateadd` |
+| `+0x11` | `ismiss` | | `+0x24` | `pMultiHitArg` |
+| `+0x12` | `isdead` | | `+0x28` | **`nBMPDamageRate`** ← the rate in `roe_Damage` |
+
+⚠️ `roe_Damage` divides by 1000 the field at `+0x28`, which is **`nBMPDamageRate`** — *not* `damagerate`
+(`+0x1C`). The earlier assumption that `+0x28` carried the level-gap `DamageRate` is **wrong**; level gap is
+applied separately by `roe_LevelGapDamageRevision`.
+
+### `Parameter::Container`
+
+| off | member | size | | off | member |
+|---|---|---|---|---|---|
+| `+0x0000` | `PureCharParam` | `0xCC` | | `+0x0CC0` | `DotDamagePlus` |
+| `+0x00CC` | `Item` | `0x198` (pair) | | `+0x0CCA` | `SPRate` |
+| `+0x0264` | `ItemPowerRate` | `0x198` (pair) | | `+0x0CCC` | `RangeEvasion` |
+| `+0x03FC` | `Upgrade` | `0x198` (pair) | | `+0x0CCE` | `flag` |
+| `+0x0594` | `WeaponTitle` | `0x198` (pair) | | `+0x0CD0` | `MissPercentFix` |
+| `+0x072C` | `PassiveSkill` | `0x198` (pair) | | `+0x0CD2` | `DamageReflection` |
+| `+0x08C4` | `AbnormalState` | `0x198` (pair) | | `+0x0CD4` | `ChangeAbilityInfo` |
+| `+0x0A5C` | `LastTune` | `0x198` (pair) | | `+0x0CD6` | `HealRate` |
+| `+0x0BF4` | `Total` | `0xCC` | | `+0x0CD8` | `PassiveBuffKeepTimeUPRate` |
+| | | | | `+0x0CDA` | `PassiveHealRate` |
+| | | | | `+0x0CDC` | `PassiveCriDamageRatePlus` |
+| | | | | `+0x0CE0` | `PassiveHPDownRateWCMin` |
+| | | | | `+0x0CFC` | `PassiveHPDownRateWCMax` |
+| | | | | `+0x0D18` | `PassiveHPDownRateMAMin` |
+| | | | | `+0x0D34` | `PassiveHPDownRateMAMax` |
+| | | | | `+0x0D50` | `PassiveHPDownRateAC` |
+| | | | | `+0x0D6C` | `PassiveHPDownRateMR` |
+| | | | | `+0x0D88` | `PassiveMovingTBPlus` |
+| | | | | `+0x0DA4` | `PhysicalImmuneRate` |
+| | | | | `+0x0DA6` | `MagicalImmuneRate` |
+| | | | | `+0x0DA8` | `RangeOver` |
+
+Methods: `c_clear, c_clearplus, c_clearrate, c_compare, c_compareelement, c_WC, c_MA, c_StoreMob,
+c_Storepure, c_StoreMover, c_MakeTotal, c_TotalPram_MinusCheck, IsNoAttack, IsNoAttacOrNoMove`.
+
+Each `0x198` section is **two `0xCC` blocks**: *plus* at `+0x00`, *rate* at `+0xCC`.
+
+### One parameter block — 51 ints, `0xCC` bytes
+
+| off | field | off | field | off | field |
+|---|---|---|---|---|---|
+| `+0x00` | Str | `+0x38` | MB | `+0x84` | MagCriDamRate |
+| `+0x04` | Con | `+0x3C` | AbsoluteAttack | `+0x88` | AttSpeed |
+| `+0x08` | Dex | `+0x40` | AbsoluteDefend | `+0x8C` | MaxHP |
+| `+0x0C` | Int | `+0x44` | AbsoluteHit | `+0x90` | MaxHP_2 |
+| `+0x10` | Men | `+0x48` | AbsoluteBlock | `+0x94` | MaxSP |
+| `+0x14` | WCmin | `+0x4C` | MoveSpeed | `+0x98` | HPAbsorption_Hitted |
+| `+0x18` | WCmax | `+0x50` | HPRecover | `+0x9C` | SPAbsorption_Hitted |
+| `+0x1C` | AC | `+0x54` | SPRecover | `+0xA0` | HPAbsorption_Hit |
+| `+0x20` | TH | `+0x58` | CastingTime | `+0xA4` | SPAbsorption_Hit |
+| `+0x24` | TB | `+0x5C` | Critical | `+0xA8` | CriticalTB |
+| `+0x28` | MAmin | `+0x60` | PhisycalWeaponMastery | `+0xAC` | RegistNone |
+| `+0x2C` | MAmax | `+0x64` | MagicalWeaponMastery | `+0xB0` | ResistPoison |
+| `+0x30` | MR | `+0x68` | ShieldAC | `+0xB4` | ResistDeaseas |
+| `+0x34` | MH | `+0x6C` | HitRate | `+0xB8` | ResistCurse |
+| | | `+0x70` | EvaRate | `+0xBC` | ResistMoveSpdDown |
+| | | `+0x74` | MACri | `+0xC0` | ResistGTI |
+| | | `+0x78` | CriDam | `+0xC4` | MaxLP |
+| | | `+0x7C` | MagCriDam | `+0xC8` | LPRecover |
+| | | `+0x80` | CriDamRate | | |
+
+### `CHAR_PARAMCHANGE_CMD` / `PROTO_NC_CHAR_BASEPARAMCHANGE_CMD` (wire)
+
+```c
+struct CHAR_PARAMCHANGE_CMD { uint8 flag; uint32 value; };            // SizeOf 5
+struct PROTO_NC_CHAR_BASEPARAMCHANGE_CMD { uint8 changenum; CHAR_PARAMCHANGE_CMD param[]; };
+```
+
+### `ChangeByConditionParam`
+
+`cbcp_nID, cbcp_nCondition, cbcp_nChange, cbcp_nChangeParam, cbcp_nCharged, cbcp_nMaxValueNum, cbcp_pValue`
+with `cbcp_Clear, cbcp_SetCondition, cbcp_MakeParam, cbcp_MakeParam_Plus, cbcp_SendBuffer, cbcp_GetValue,
+cbcp_GetValue_Index`. Wire form: `PROTO_NC_CHAR_CHANGEBYCONDITION_PARAM_CMD { nSkillID u16, nChangeRate u16,
+nParamNum u16, aParam[] }`.
+
+### `MobWeapon` / `MobInfoServer` (the mob's `PureCharParam` inputs) [TBL]
+
+`MobWeapon`: `ID, InxName, Skill, AtkSpd, BlastRate, AtkDly, SwingTime, HitTime, AtkType, MinWC, MaxWC, TH,
+MinMA, MaxMA, MH, Range, MopAttackTarget, HitType, StaName, StaStrength, StaRate, AggroInitialize`
+
+`MobInfoServer`: `ID, InxName, Visible, AC, TB, MR, MB, EnemyDetectType, MobKillInx, MonEXP, EXPRange,
+DetectCha, ResetInterval, CutInterval, CutNonAT, FollowCha, PceHPRcvDly, PceHPRcv, AtkHPRcvDly, AtkHPRcv,
+Str, Dex, Con, Int, Men, MobRaceType, Rank, FamilyArea, …, MaxSP, BroadAtDead, TurnSpeed, WalkChase,
+AllCanLoot, DmgByHealMin, DmgByHealMax, RegenInterval`
+
+Note the mob tables carry **exactly** the parameter-block fields: `Str/Dex/Con/Int/Men`, `AC/TB/MR/MB`,
+`MinWC/MaxWC/TH`, `MinMA/MaxMA/MH` — i.e. a mob's `PureCharParam` is these two rows.
+
+---
+
+## Appendix B — Simulating the captured stream against the formula [WIRE + BIN]
+
+`tools/damage_sim.py` replays `Z:/Damage.pcapng` hit by hit. It does **not** fit anything: it inverts the
+formula read from the binary and asks whether the results agree.
+
+```
+impliedAttack = damage * AC / (attackerLevel + 1)          // level+1 = 62 for the Orc
+```
+
+For a plain field mob every `plus` block is 0 and every `rate` block neutral, so `AttackPower` must be a
+roll over **one fixed band** — every hit from the same mob type must map into the same band regardless of
+what the character's defence was at the time. Result over 164 normal hits from mob 84 (69 missed, 22
+blocked, **0 critical**):
+
+| AC | n | damage | impliedAttack | band width |
+|---|---|---|---|---|
+| 1230 | 22 | 55..84 | 1091..1666 | **×1.527** |
+| 1215 | 121 | 71..107 | 1391..2097 | **×1.507** |
+| 1212 | 2 | 84..88 | 1642..1720 | ×1.048 (n=2) |
+| 535 | 19 | 168..213 | 1450..1838 | ×1.268 |
+
+### What matches — the shape, to within 0.5%
+
+`MaxWC / MinWC = 1137 / 747 = ` **×1.522**. The two well-sampled cells give **×1.527** (n=22) and
+**×1.507** (n=121). So within a single defence value the damage spread reproduces the weapon roll ratio
+almost exactly. That confirms, independently of any fitting:
+
+- `AttackPower` really is a **roll between MinWC and MaxWC**, and
+- damage is **linear** in that roll — no exponent, no additive offset inside the roll.
+
+### What does not match — the absolute scale
+
+The effective band is `1391..2097` against a raw table band of `747..1137` — a consistent
+**×1.86 / ×1.84** on both ends. And the cells do not align with each other: `AC=1230` implies a band
+centred on ~1379 while `AC=1215` implies ~1744, a 26% disagreement between two nearly identical defence
+values. **So the answer to "does it match the ranges exactly" is: the shape does, the absolute values do
+not.**
+
+Both discrepancies have the same, already-documented cause and neither is a contradiction of §2:
+
+1. **`roe_MinWC`/`roe_MaxWC` are accumulators, not the table value** (§3a/§3c). They run the chain over
+   `Str` *and* `WCmin` *and* `PhisycalWeaponMastery`. The raw `MobWeapon` row is only `PureCharParam.WCmin`
+   — one input of several — so a ×1.85 gap between raw and effective is expected, not anomalous.
+2. **`DefendPower` is not the wire `AC`.** `NormalPY::roe_DefendPower` calls `roe_AC` and then adds further
+   terms (§3). Using the wire `AC` as the divisor is what makes cells with near-identical AC disagree.
+
+### What would close it
+
+- Decode `roe_MinWC`'s full expression (~200 instructions, three interleaved chains) to get the exact
+  Str/WCmin/Mastery combination, and `roe_DefendPower`'s non-AC terms. Both are pure disassembly work.
+- Or capture **one mob type against a character whose AC is changed while nothing else moves, with the
+  facing held fixed**, and enough landed hits per state (30+) to pin each band's endpoints. That isolates
+  `DefendPower` empirically without needing the full expression.
+
+Until one of those lands, the usable, verified result is the **relative** law:
+
+```
+damage ∝ (attackerLevel + 1) x roll(MinWC..MaxWC) / DefendPower x angleRate
+```
+
+with the roll ratio confirmed to 0.5% and the level term proven from `so_GetLevel`.
