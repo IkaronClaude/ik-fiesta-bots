@@ -49,21 +49,38 @@ def decode(pcap):
 
 
 def frames(path):
-    """Yield (dir, opcode, name, payload) in FILE order, which is timestamp order."""
-    cur, hexb = None, []
+    """Yield (conv, dir, opcode, name, payload).
+
+    ⛔ THE FILE IS NOT ONE STREAM. pcap_decode emits each TCP conversation separately, under its own
+    `==== server IP:PORT <-> client IP:PORT ====` header, and a relog mid-capture opens NEW conversations
+    (each with its own 0x0807 handshake). Z:/Damage.pcapng has TWELVE.
+
+    This matters more than it looks, because YOUR OWN HANDLE CHANGES ON RELOG. Reading the file as one
+    linear stream and deriving a single self handle silently drops every hit in every later conversation:
+    on this capture that discarded the entire armour-swap phase and produced the confident, wrong
+    conclusion "the armour phase has zero incoming hits, so the capture cannot answer the question". The
+    capture was fine. The parser was not. Self is therefore resolved PER CONVERSATION.
+    """
+    cur, hexb, conv = None, [], -1
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
+            if line.startswith("==== server"):
+                if cur:
+                    yield (conv,) + cur + (bytes(hexb),)
+                cur, hexb = None, []
+                conv += 1
+                continue
             m = FRAME.match(line)
             if m:
                 if cur:
-                    yield cur + (bytes(hexb),)
+                    yield (conv,) + cur + (bytes(hexb),)
                 cur, hexb = (m.group(1), int(m.group(3), 16), m.group(4)), []
                 continue
             h = HEXLINE.match(line)
             if h and cur:
                 hexb.extend(int(x, 16) for x in h.group(1).split())
     if cur:
-        yield cur + (bytes(hexb),)
+        yield (conv,) + cur + (bytes(hexb),)
 
 
 def parse_params(b):
@@ -93,23 +110,27 @@ def main():
 
     fs = list(frames(path))
 
-    # self-identification: SWING_DAMAGE.resthp == hp of the following HPCHANGE
-    me = Counter()
-    for i, (d, op, name, b) in enumerate(fs):
+    # Self-identification, PER CONVERSATION: a SWING_DAMAGE whose resthp equals the hp of the next
+    # HPCHANGE landed on us. Done per conversation because a relog gives us a new handle (see frames()).
+    votes = defaultdict(Counter)
+    for i, (conv, d, op, name, b) in enumerate(fs):
         if name == "NC_BAT_SWING_DAMAGE_CMD" and len(b) >= 12:
             resthp = struct.unpack_from("<I", b, 8)[0]
             for j in range(i + 1, min(i + 6, len(fs))):
-                if fs[j][2] == "NC_BAT_HPCHANGE_CMD" and len(fs[j][3]) >= 4:
-                    if struct.unpack_from("<I", fs[j][3], 0)[0] == resthp:
-                        me[struct.unpack_from("<H", b, 2)[0]] += 1
+                if fs[j][3] == "NC_BAT_HPCHANGE_CMD" and len(fs[j][4]) >= 4:
+                    if struct.unpack_from("<I", fs[j][4], 0)[0] == resthp:
+                        votes[conv][struct.unpack_from("<H", b, 2)[0]] += 1
                     break
-    self_h = me.most_common(1)[0][0] if me else None
-    print("self handle = 0x%04X (paired %d SWING_DAMAGE resthp -> HPCHANGE hp)" % (self_h, me[self_h])
-          if self_h is not None else "could not identify self handle")
+    self_of = {c: v.most_common(1)[0][0] for c, v in votes.items() if v}
+    nconv = 1 + max((f[0] for f in fs), default=-1)
+    print("conversations=%d, self handle resolved in %d of them: %s"
+          % (nconv, len(self_of),
+             ", ".join("conv%d=0x%04X(%d)" % (c, h, votes[c][h]) for c, h in sorted(self_of.items()))))
 
     params, hits, events = {}, [], []
     changed = defaultdict(list)
-    for idx, (d, op, name, b) in enumerate(fs):
+    for idx, (conv, d, op, name, b) in enumerate(fs):
+        self_h = self_of.get(conv)
         if name == "NC_CHAR_CHANGEPARAMCHANGE_CMD":
             p = parse_params(b)
             if p:
@@ -187,6 +208,18 @@ def main():
             if len(parts) >= 2:
                 print("    mob 0x%04X  %s" % (atk, "  |  ".join(parts)))
 
+    # THE FIT. Run it on the whole set and again with END pinned, so the difference between an
+    # uncontrolled fit and a controlled one is visible side by side rather than taken on trust.
+    print("\n=== FIT: damage vs defense (param 0x08) ===")
+    print("  [uncontrolled — every cell, including ones where other stats moved too]")
+    fit_defense(hits)
+    ends = sorted({h["params"].get(0x19) for h in hits if h["params"].get(0x19) is not None})
+    for e in ends:
+        n = sum(1 for h in hits if h["params"].get(0x19) == e and h["dmg"] > 0)
+        if n >= 20:
+            print("  [controlled — END (0x19) pinned at %d, so defense is the only moving input]" % e)
+            fit_defense(hits, pin={0x19: e})
+
     # A param that MITIGATES must move damage when it moves, with the attacker held fixed.
     print("\n=== CANDIDATE MITIGATION PARAMS (damage vs param value, per attacker) ===")
     movers = [k for k in changed if len(changed[k]) >= 2]
@@ -208,6 +241,65 @@ def main():
                 continue
             print("     param 0x%02X: %s   [spread %.1f]"
                   % (k, "  ".join("%d->%.1f(n=%d)" % (v, m, n) for v, m, n in pts), spread))
+
+
+def fit_defense(hits, pin=None):
+    """Fit damage against defense (param 0x08), optionally pinning another param to hold it still.
+
+    RESULT ON Z:/Damage.pcapng (pin={0x19: 50}, i.e. END held at 50 so armour is the only moving input):
+
+        damage = K_mob / (DEF - 141)        worst residual 2.65% over 8 cells, 3 mobs,
+                                            DEF 535..1230, damage 69..188 (a 2.7x range)
+
+    The form is confirmed by something the fit does not get to choose: the recovered per-mob constants
+    come out 74228 / 73430 / 74984 for three INDEPENDENT mob handles -- within 2% of each other -- so K
+    behaves exactly like a per-mob-type attack value. Linear mitigation (a - b*DEF) cannot do better than
+    12.8% and is ruled out. A power law K/DEF^1.245 fits comparably (2.18%); three defense values cannot
+    separate the two, and both say the same practical thing: mitigation is roughly INVERSE in defense,
+    not flat subtraction, so each point of defense is worth less than the last.
+
+    ⛔ PIN SOMETHING, OR THE FIT IS MEANINGLESS. Fitting the whole capture at once gives C=289 and 18.7%
+    residuals, because the END 20->50 cells move 0x08 by only 15 points while damage moves 14-28% -- no
+    function of DEF can do that. Those cells are confounded (0x13/0x19/0x1A all moved with END) and tiny
+    (n=5,6). Restricting to cells where ONE input moved is the whole difference between a 2.65% fit and
+    a meaningless one.
+    """
+    cells = defaultdict(list)
+    for h in hits:
+        p = h["params"]
+        if h["dmg"] <= 0 or 0x08 not in p:
+            continue
+        if pin and any(p.get(k) != v for k, v in pin.items()):
+            continue
+        cells[(h["atk"], p[0x08])].append(h["dmg"])
+    bymob = defaultdict(dict)
+    for (m, dv), d in cells.items():
+        if len(d) >= 5:
+            bymob[m][dv] = (sum(d) / len(d), len(d))
+    multi = {m: d for m, d in bymob.items() if len(d) >= 2}
+    if not multi:
+        print("  not enough controlled cells to fit (need a mob seen at 2+ defense values, n>=5 each)")
+        return
+
+    def score(c):
+        worst, ks = 0.0, {}
+        for m, d in multi.items():
+            k = sum(mn * (dv - c) for dv, (mn, _) in d.items()) / len(d)
+            ks[m] = k
+            for dv, (mn, _) in d.items():
+                worst = max(worst, abs(k / (dv - c) - mn) / mn)
+        return worst, ks
+
+    err, c = min(((score(x / 4)[0], x / 4) for x in range(-800, 2000)), key=lambda t: t[0])
+    _, ks = score(c)
+    print("  dmg = K_mob / (DEF - %.1f)   worst residual %.2f%%" % (c, err * 100))
+    for m, d in sorted(multi.items()):
+        for dv, (mn, n) in sorted(d.items()):
+            pr = ks[m] / (dv - c)
+            print("    mob 0x%04X DEF=%4d n=%2d  actual=%7.2f pred=%7.2f  %+5.1f%%"
+                  % (m, dv, n, mn, pr, (pr - mn) / mn * 100))
+    print("  per-mob K: " + "  ".join("0x%04X=%.0f" % (m, k) for m, k in sorted(ks.items()))
+          + "   (should agree if they are the same mob type)")
 
 
 if __name__ == "__main__":
