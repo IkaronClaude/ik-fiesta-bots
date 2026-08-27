@@ -776,7 +776,7 @@ public sealed class BotApi
                 // ACTIVE on the character but absent from QuestData. Reported rather than skipped -- swallowing it here
                 // would hide a decode gap the Lua already knows how to complain about.
                 e["missing"] = true;
-                outT[id] = DynValue.NewTable(e);
+                SetById(outT, id, DynValue.NewTable(e));
                 continue;
             }
             e["missing"] = false;
@@ -849,7 +849,7 @@ public sealed class BotApi
                 mobs[mi++] = mv;
             }
             e["mobs"] = DynValue.NewTable(mobs);
-            outT[id] = DynValue.NewTable(e);
+            SetById(outT, id, DynValue.NewTable(e));
         }
         return DynValue.NewTable(outT);
     }
@@ -898,7 +898,7 @@ public sealed class BotApi
                     e["objProg"] = DynValue.NewTable(op);
                     if (q.ObjectiveMob > 0) wantMobs.Add(q.ObjectiveMob);
                 }
-                quests[id] = DynValue.NewTable(e);
+                SetById(quests, id, DynValue.NewTable(e));
             }
             // Only the mobs and items the active board actually references -- the filter is the whole point.
             foreach (var mobId in wantMobs)
@@ -912,7 +912,7 @@ public sealed class BotApi
                 mt["hitSamples"] = v.MobHitSamples(mobId);
                 var mhp = v.MaxHp;
                 mt["hitsToKillUs"] = (hitMax <= 0 || mhp <= 0) ? -1 : (int)Math.Ceiling((double)mhp / hitMax);
-                mobs[mobId] = DynValue.NewTable(mt);
+                SetById(mobs, mobId, DynValue.NewTable(mt));
             }
             if (wantItems.Count > 0)
             {
@@ -921,14 +921,15 @@ public sealed class BotApi
                 foreach (var (slot, itemId) in v.Inventory)
                     if (wantItems.Contains(itemId))
                         have[itemId] = have.TryGetValue(itemId, out var c) ? c + v.ItemCount(slot) : v.ItemCount(slot);
-                foreach (var itemId in wantItems) items[itemId] = have.TryGetValue(itemId, out var c) ? c : 0;
+                foreach (var itemId in wantItems)
+                    SetById(items, itemId, DynValue.NewNumber(have.TryGetValue(itemId, out var c) ? c : 0));
             }
         }
         // The COMPLETED set, so questDone(id) can be answered without a crossing. It is a plain id->true map; a quest
         // absent from it is simply not done. Rebuilt per pulse because completions land mid-session -- that is the
         // whole reason it cannot live in the static cache.
         var done = NewTable();
-        if (v is not null) foreach (var id in v.DoneQuests) done[id] = true;
+        if (v is not null) foreach (var id in v.DoneQuests) SetById(done, id, DynValue.True);
         root["done"] = DynValue.NewTable(done);
         root["quests"] = DynValue.NewTable(quests);
         root["mobs"] = DynValue.NewTable(mobs);
@@ -1890,6 +1891,23 @@ public sealed class BotApi
         row["mode"] = p.Mode; row["type"] = p.Type; row["kqTeam"] = p.KQTeamType;
         return DynValue.NewTable(row);
     }
+
+    /// <summary>Write an ID-KEYED entry into a Lua table.
+    ///
+    /// <para>⚠️ <b>Never use MoonSharp's <c>Table[int]</c> indexer for an id.</b> It does not store the key
+    /// you asked for when the id is zero or negative: <c>t[0] = v</c> leaves <c>t[0]</c> reading back as
+    /// <c>nil</c> from Lua, AND poisons the table so that <c>pairs(t)</c> throws
+    /// <c>"invalid key to 'next'"</c> — for the whole table, not just that entry. A table built the same way
+    /// in Lua source (<c>{[0]=v}</c>) is fine; it is the C# indexer path that is broken.</para>
+    ///
+    /// <para>That cost the level-1 leveller entirely: <c>questPulse</c>'s <c>mobs</c> map is keyed by mob id
+    /// and <b>0 is a real mob id</b> (the objective decoder says so in as many words), so a starter quest
+    /// referencing mob 0 made every tick throw at the first <c>pairs(snap.mobs)</c>. Bots already past those
+    /// quests were unaffected, which is why it looked like new characters specifically were broken.</para>
+    ///
+    /// <para><c>Table.Set(DynValue.NewNumber(id), v)</c> stores and iterates correctly for every id,
+    /// including 0 and negatives. Use this for anything whose key is a game id.</para></summary>
+    private static void SetById(Table t, int id, DynValue value) => t.Set(DynValue.NewNumber(id), value);
 
     private Table NewTable() => new(_lua);
     private static double Sq(double a) => a * a;
