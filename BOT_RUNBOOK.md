@@ -4,8 +4,24 @@ Operational cheat-sheet so a session doesn't re-derive how to run, observe, and 
 bot. **Protocol/data facts live in `PROJECT_PLAN.md` and the agent memory; this is the
 "how do I drive and inspect it" file.** Read this first when resuming bot work.
 
-Current standing goal: level a fresh **Fighter "Bot1208"** (account `fighter1`/`fighter1`)
-from 1→20 on the LIVE server, driven by `scripts/level_quest.lua`. Never log out mid-quest
+Current standing goal (operator, 2026-08-27): level **four fresh level-1 characters, one per base
+class**, on the LIVE server, driven by `scripts/level_quest.lua`. They run on the CLUSTER host
+(`https://bots.ikaron.uk`), not a local one:
+
+| bot           | account    | class          |
+|---------------|------------|----------------|
+| `FighterZero` | `zfighter` | Fighter (1)    |
+| `ClericZero`  | `zcleric`  | Cleric/Priest (6) |
+| `ArcherZero`  | `zarcher`  | Archer (11)    |
+| `MageZero`    | `zmage`    | Mage (16)      |
+
+The previous set (`FighterFresh`, `ClericFresh`, `Elfyra`, `MageFresh` on the `jcq*` accounts) was
+stopped and removed on the operator's instruction.
+
+**Cluster host auth:** every call needs `Authorization: Bearer <token>`, where the token is
+`kubectl get secret bot-secrets -n fiesta -o jsonpath='{.data.bot-api-token}' | base64 -d`.
+Spawn with `"Host":"fiesta-proxy"` (the in-cluster service) and `"Create":true` + `"Class":"Fighter"`
+to make the character in-band; `Class` for a cleric is spelled **`Priest`**. Never log out mid-quest
 (logout-at-progress glitches the quest via the FreeTDS varbinary bug — see memory
 `fiesta-quest-persist-bug`). Zone handovers are safe; full relog re-grinds from 0.
 
