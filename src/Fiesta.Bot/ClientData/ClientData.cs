@@ -559,7 +559,7 @@ public sealed class ClientData
     {
         var m = Mob(mobId);
         if (m is null) return true; // no data — don't filter out a potential mob
-        return !m.IsNpc && !m.IsPlayerSide && m.Type != ResourceNodeType;
+        return !m.IsNpc && !m.IsPlayerSide && !NonCombatMobTypes.Contains(m.Type);
     }
 
     /// <summary>Look up a quest definition by its (wire) quest id from the bespoke QuestData.shn — StartNPC, level/class gate,…</summary>
@@ -828,8 +828,39 @@ public sealed class ClientData
         return outp;
     }
 
-    /// <summary>MobInfo Type value for a gatherable resource node (herb/wood/mushroom)</summary>
-    public const int ResourceNodeType = 9;
+    /// <summary>`MobInfo.Type` — the game's own `MobType` enum, which is what separates enemies from
+    /// gather nodes and scenery. Values from the Zone PDB; verified against `MobInfo.shn`.</summary>
+    public static class MobTypes
+    {
+        public const int Human = 0, MagicLife = 1, Spirit = 2, Beast = 3, Elemental = 4, Undead = 5;
+        public const int Npc = 6, Object = 7, Mine = 8, Herb = 9, Wood = 10, NoName = 11;
+        public const int NoTarget = 12, NoTarget2 = 13, GldItem = 14, Flag = 15;
+        public const int Devil = 16, Meta = 17, NoDamage = 18, NoDamage2 = 19;
+    }
+
+    /// <summary>⛔ **NOT huntable**: gather nodes and untargetable scenery.
+    ///
+    /// <para>⚠️ This used to be the SINGLE value 9 (<see cref="MobTypes.Herb"/>), which filtered herbs and
+    /// let every ore and log through — `MINE1`/`MINE2` "Copper Ore" are <see cref="MobTypes.Mine"/> (8)
+    /// and `WOOD3` "Wood" is <see cref="MobTypes.Wood"/> (10). Neither is `IsNPC` nor `IsPlayerSide`, so
+    /// nothing else caught them and the bots attacked them forever: MageZero cast `IceBolt01` at a Copper
+    /// Ore 111 times for zero damage, and the leveller's UN-KILLABLE crutch burned 30s per node.</para>
+    ///
+    /// <para>Counts in `MobInfo.shn`: Mine 29 (all "Gold Hill Ore"-type), Herb 115, Wood 12, Object 2
+    /// (a KQ gate and an egg), NoTarget 32, NoTarget2 66 (gates, quiz fields). Flag/NoName/GldItem are
+    /// all `IsNPC` already and need no entry here.</para>
+    ///
+    /// <para>Unknown types are deliberately NOT excluded — `MobInfo.shn` carries values above 19 that the
+    /// PDB enum does not name, and defaulting those to huntable keeps a real monster attackable rather
+    /// than silently invisible to the bot.</para></summary>
+    public static readonly IReadOnlySet<int> NonCombatMobTypes = new HashSet<int>
+    {
+        MobTypes.Object, MobTypes.Mine, MobTypes.Herb, MobTypes.Wood,
+        MobTypes.NoTarget, MobTypes.NoTarget2,
+    };
+
+    /// <summary>Kept for callers that only mean "a herb". Prefer <see cref="NonCombatMobTypes"/>.</summary>
+    public const int ResourceNodeType = MobTypes.Herb;
 
     private static int GetInt(IReadOnlyDictionary<string, object?> row, string col)
         => row.TryGetValue(col, out var v) && ShnTable.TryToLong(v, out var l) ? (int)l : 0;
