@@ -1024,7 +1024,17 @@ public sealed class BotApi
             // ACCEPT GATE = the StartCondition Needs* flags, NOT a bare StartNpc
             if (!q.NeedsNpc || q.StartNpc == 0 || q.NeedsItem) continue;
             // CLASS GATE (@62 NeedsClass / @63 Class): the starter quests come in one copy PER CLASS (q1 "Baby Steps" Fighte…
-            if (q.NeedsClass && q.Class != 0 && _handle.Class != 0 && ClassLine(q.Class) != ClassLine(_handle.Class)) continue;
+            // A NAMED CLASS IS A FLOOR, NOT JUST A LINE. ClassLine() alone collapses all five classes of a
+            // line, so a BASE-class character was offered its own FIRST JOB's quests -- q30000 asks for class
+            // 2 (CleverFighter) and a class-1 Fighter passed the gate. Those are questType==2, so they sort
+            // ahead of everything non-epic, and acceptCandidates breaks epic ties by ASCENDING ID: 30000 <
+            // 60006, so "Fighter's New Power 1" permanently outranked "Road to Promotion". The bot committed
+            // every tick to a quest it cannot take until AFTER it promotes, and so never promoted. Same shape
+            // on all four classes (30000/30003/30006/30009 want class 2/7/12/17).
+            // Classes ascend within a line (1 Fighter -> 2 CleverFighter -> 3 Warrior), so require the
+            // character to be at least as far along as the quest asks.
+            if (q.NeedsClass && q.Class != 0 && _handle.Class != 0
+                && (ClassLine(q.Class) != ClassLine(_handle.Class) || _handle.Class < q.Class)) continue;
             if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
             // Accept ALL NPC-startable, level-appropriate quests: kill (Type 1), item-collect (Type 2), find/visit (Type 3)…
             // NO LEVEL CONDITION IS NOT A FAILED ONE. This was `if (!q.IsNeedLevel) continue;`, which
