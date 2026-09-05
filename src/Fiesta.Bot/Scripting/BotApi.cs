@@ -1027,8 +1027,12 @@ public sealed class BotApi
             if (q.NeedsClass && q.Class != 0 && _handle.Class != 0 && ClassLine(q.Class) != ClassLine(_handle.Class)) continue;
             if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
             // Accept ALL NPC-startable, level-appropriate quests: kill (Type 1), item-collect (Type 2), find/visit (Type 3)…
-            if (!q.IsNeedLevel) continue;
-            if (q.MinLevel > _handle.Level || _handle.Level > q.MaxLevel) continue;
+            // NO LEVEL CONDITION IS NOT A FAILED ONE. This was `if (!q.IsNeedLevel) continue;`, which
+            // dropped every quest whose StartCondition has no level gate -- 37 of the 2118 NPC-startable
+            // quests, and 11 of those are questType==2 job-change quests (the 50001/60001/60005 chains,
+            // one per class line). The commit that added it (1cb6b4b, 2026-06-24) says what it meant:
+            // "level window only when IsNeedLevel". It applied the window unconditionally instead.
+            if (q.IsNeedLevel && (q.MinLevel > _handle.Level || _handle.Level > q.MaxLevel)) continue;
             if (q.PrereqQuest != 0 && !v.IsQuestDone(q.PrereqQuest)) continue; // prerequisite quest not done (@58)
             var e = NewTable();
             e["id"] = q.Id; e["startNpc"] = q.StartNpc; e["turnInNpc"] = q.TurnInNpc;
