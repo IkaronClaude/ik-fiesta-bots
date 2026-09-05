@@ -1307,6 +1307,52 @@ public sealed class BotApi
         return grid.IsWalkableTile(tx, ty);
     }
 
+    /// <summary>Walkable route length in world units from where the bot stands to (x,y) on the current map.
+    /// -1 when the region graph cannot route it; 0 when it is already there.
+    ///
+    /// <para>The bot has computed this inside walkTo since the navmesh landed and never exposed it, so every
+    /// script that had to choose between two targets compared STRAIGHT-LINE distance instead. That is wrong
+    /// wherever there is geometry: measured in ValDn01, level_quest.lua's own walks routed x1.8, x2.1, x2.5,
+    /// x2.7, x2.9 and x3.9 of their straight line, and it committed to a mob 278u away down a 1083u corridor
+    /// while being shot.</para>
+    ///
+    /// <para>Mesh only and synchronous, unlike walkTo: the mesh answers in about a millisecond (827ms over
+    /// 649 pairs on five maps) where A* is 390x slower, so a target picker can afford to ask it per
+    /// candidate. It does NOT consult learned MOVEFAIL blocks -- it is carved from the static .shbd -- so
+    /// treat it as the cost of the route the map allows, not a promise walkTo will issue that exact
+    /// path.</para></summary>
+    public double routeLength(double x, double y)
+    {
+        var grid = _handle.CurrentMap is { } map ? _mgr.GridProvider?.Invoke(map) : null;
+        if (grid is null) return -1;
+        if (_handle.Position is not { } pos) return -1;
+
+        var (sx, sy) = grid.WorldToTile(pos.X, pos.Y);
+        var (gx, gy) = grid.WorldToTile((uint)Math.Max(0, x), (uint)Math.Max(0, y));
+
+        List<(int X, int Y)>? tiles;
+        try
+        {
+            tiles = Fiesta.Bot.Pathfinding.NavMeshPath.Find(
+                grid.Mesh(), sx, sy, gx, gy, grid.DoorClosedPredicate());
+        }
+        catch { return -1; }        // mesh unavailable: no answer, and -1 is the script's "not known"
+        if (tiles is null || tiles.Count == 0) return -1;
+
+        double total = 0;
+        double px = pos.X, py = pos.Y;
+        for (var i = 1; i < tiles.Count; i++)
+        {
+            var (wx, wy) = grid.TileToWorld(tiles[i].X, tiles[i].Y);
+            total += Math.Sqrt((wx - px) * (wx - px) + (wy - py) * (wy - py));
+            px = wx;
+            py = wy;
+        }
+        // Finish at the point the caller asked about rather than at the last tile centre.
+        total += Math.Sqrt((x - px) * (x - px) + (y - py) * (y - py));
+        return total;
+    }
+
     /// <summary>True while a pathfind for this bot is still running, so a script can wait instead of re-asking.</summary>
     public bool pathPending() => _handle.NavPlanner?.Busy ?? false;
 
