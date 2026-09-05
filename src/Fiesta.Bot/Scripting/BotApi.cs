@@ -1023,14 +1023,10 @@ public sealed class BotApi
         {
             // ACCEPT GATE = the StartCondition Needs* flags, NOT a bare StartNpc
             if (!q.NeedsNpc || q.StartNpc == 0 || q.NeedsItem) continue;
-            // A HIDDEN QUEST IS NOT AN OFFERED QUEST. IsWaitListView (@24) is "may be displayed in the
-            // acceptable-quest tab"; false means the client would never show it to a player, so the bot
-            // must not pick it up either. 55 of the 2,118 NPC-startable quests are hidden, and 36 of
-            // those carry no level gate at all -- including q60208/60209/60210 "Call of the * Guardian
-            // Stone [Job Change Quest]", the level-100 third job change, which a level-24 Fighter
-            // targeted the moment the IsNeedLevel gate below stopped accidentally hiding them.
-            // The 19 hidden-but-level-gated ones (q2, q8, q944..) are excluded on the same grounds.
-            if (!q.IsWaitListView) continue;
+            // NOT gated on IsWaitListView. Hidden only means a PLAYER cannot browse it in the
+            // acceptable-quest tab; the bot can see it and should do it (operator, 2026-09-05). The
+            // level-100 job change that made this look attractive is handled where it belongs, as a
+            // correction to the bad row -- see QuestData.KnownBadMinLevel.
             // CLASS GATE (@62 NeedsClass / @63 Class): the starter quests come in one copy PER CLASS (q1 "Baby Steps" Fighte…
             // A NAMED CLASS IS A FLOOR, NOT JUST A LINE. ClassLine() alone collapses all five classes of a
             // line, so a BASE-class character was offered its own FIRST JOB's quests -- q30000 asks for class

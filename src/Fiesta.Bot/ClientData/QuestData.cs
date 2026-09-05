@@ -16,6 +16,32 @@ public static class QuestData
         EucKr = Encoding.GetEncoding(949);
     }
 
+    /// <summary>QUESTS WHOSE StartCondition IS WRONG IN THE SHIPPED FILE, and the level gate they should
+    /// carry.
+    ///
+    /// <para>This is a data correction, not a behaviour rule: the parser applies it so every consumer
+    /// sees the row the file should have contained. On a server whose files are correct these entries are
+    /// simply redundant -- the row already carries the gate and we overwrite it with the same value.</para>
+    ///
+    /// <para>Added only on the operator's say-so, one quest at a time, with the reason written down.
+    /// Do not grow this speculatively.</para>
+    ///
+    /// <list type="bullet">
+    ///   <item><b>60208 / 60209 / 60210</b> "Call of the Tree / Earth / Water Guardian Stone
+    ///   [Job Change Quest]" -- the LEVEL-100 third job change (operator, 2026-09-05). The shipped rows
+    ///   carry no level, class or prerequisite gate at all, so a level-24 Fighter ranked one as its accept
+    ///   target. 60208 is the one the operator named; 60209 and 60210 are the same tier by name, giver
+    ///   (npc 27), region (98) and script shape, and are corrected with it.
+    ///   <b>Still unmodelled:</b> it also requires the level-60 job change to be done first, and no
+    ///   prerequisite quest id is recorded in the file to express that.</item>
+    /// </list></summary>
+    private static readonly Dictionary<int, int> KnownBadMinLevel = new()
+    {
+        [60208] = 100,
+        [60209] = 100,
+        [60210] = 100,
+    };
+
     public static IReadOnlyDictionary<int, QuestDef> Load(string path)
     {
         var map = new Dictionary<int, QuestDef>();
@@ -123,6 +149,15 @@ public static class QuestData
             string start = sLen > 0 ? EucKr.GetString(b, ss, sLen).TrimEnd('\0') : "";
             string action2 = dLen > 0 ? EucKr.GetString(b, ss + sLen, dLen).TrimEnd('\0') : "";
             string finish = eLen > 0 ? EucKr.GetString(b, ss + sLen + dLen, eLen).TrimEnd('\0') : "";
+
+            // Correct a row the file gets wrong before anything reads it. MaxLevel goes to the same
+            // 250 the real job-change rows use, so the window is a floor rather than a single level.
+            if (KnownBadMinLevel.TryGetValue(id, out var floor))
+            {
+                needsLevel = true;
+                minLevel = floor;
+                maxLevel = 250;
+            }
 
             map[id] = new QuestDef(id, title, startNpc, needsLevel, minLevel, maxLevel, reqClass,
                 npcs, objectives, rewards, start, action2, finish,
