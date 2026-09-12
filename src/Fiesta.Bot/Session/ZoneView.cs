@@ -132,7 +132,20 @@ public sealed class ZoneView : IDisposable
             0x0FCC      => "target is in Fear state (0x0FCC)",
             0x0FCD      => "skill did not finish normally (0x0FCD)",
             0x0FCE      => "skill use is prohibited in this area (0x0FCE)",
-            0x0FD1 or 0x0FD2 or 0x0FD3 or 0x0FD5 or 0x0FD6 => $"failed to cast the skill (0x{code:X4})",
+            0x0FD1 or 0x0FD2 or 0x0FD3 or 0x0FD6 => $"failed to cast the skill (0x{code:X4})",
+            // 0x0FD5 / 0x0FDC are NOT in the client's jump table (it stops at 0x0FD8) — they are read out
+            // of Zone.exe. sp_NC_BAT_SKILLBASH_OBJ_CAST_REQ runs csl_SPCheck and, when that fails, works
+            // out WHICH resource was short:
+            //   so_GetHP()         > flat + so_MaxHP()*rate/1000  else 0x0FD5   (HP cost)
+            //   so_ply_Sen_GetLP() > flat LP cost                 else 0x0FDC   (Sentinel soul/LP cost)
+            //   otherwise                                              0x0FC9   (SP)
+            0x0FD5      => "not enough HP for the skill's HP cost (0x0FD5)",
+            // ⚠️ ON A NON-SENTINEL THIS IS THE OUT-OF-SP CODE. so_ply_Sen_GetLP is a bare field read
+            // (`return this->[0x2AB20]`) with no class check, so it reads 0 for everyone but a Sentinel,
+            // and the compare is a STRICT `>`. With LP 0 and an LP cost of 0, `0 > 0` is false, so the LP
+            // arm fires and 0x0FC9 can never be reached. The logs agree: 0x0FDC appears, 0x0FC9 never has.
+            0x0FDC      => "not enough SP (0x0FDC) — reported through the Sentinel soul/LP arm; on a "
+                         + "non-Sentinel this IS out-of-SP, NOT a range failure (range is 0x0FCA)",
             0x0FD4      => "a higher-level effect is already active (0x0FD4)",
             0x0FD7      => "target cannot be healed at this time (0x0FD7) — are we aiming a heal at a MOB?",
             0x0FD8      => "target is under Blessing of Teva (0x0FD8)",
@@ -1825,7 +1838,10 @@ public sealed class ZoneView : IDisposable
                     $"[castfail] 0x{reason:X4} {CastFailReason.Describe(reason)} — skill={_castAtSkill} h={_castAtTarget} " +
                     $"dist@cast={(dAtCast < 0 ? "?" : dAtCast.ToString("F0"))}u dist@fail={(dNow < 0 ? "?" : dNow.ToString("F0"))}u " +
                     $"mobMoved={(mobMoved < 0 ? "?" : mobMoved.ToString("F0"))}u weMoved={(meMoved < 0 ? "?" : meMoved.ToString("F0"))}u " +
-                    $"after={ageMs:F0}ms inCombat={InCombat} aggro={Aggressors.Count}");
+                    $"after={ageMs:F0}ms inCombat={InCombat} aggro={Aggressors.Count} " +
+                    // sp/hp are HERE because 0x0FD5 and 0x0FDC are RESOURCE codes: without them the one
+                    // log line that could settle a resource refusal did not carry the resource.
+                    $"sp={(Sp?.ToString() ?? "?")}/{MaxSp} hp={(Hp?.ToString() ?? "?")}/{MaxHp}");
             }
             _log?.Invoke($"[ZoneView] cast FAILED — {CastFailReason.Describe(reason)} (0x{reason:X4})" +
                          (known ? "" : $" — UNMAPPED code, {pkt.Payload.Length}b payload") +
