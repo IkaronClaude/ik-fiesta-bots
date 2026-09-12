@@ -236,6 +236,7 @@ public sealed class BotManager : IAsyncDisposable
                         if (!_bots.TryGetValue(id, out var nh)) break;        // handle gone (external stop) — abort
                         if (nh.Phase == BotPhase.InZone)
                         {
+                            nh.LoginFailStreak = 0;
                             if (ssrc is not null) ApplyScript(id, sname ?? "level_quest", ssrc, stick <= 0 ? 400 : stick);
                             reachedZone = true; break;
                         }
@@ -3089,6 +3090,31 @@ public sealed class BotManager : IAsyncDisposable
             handle.SetError($"{ex.GetType().Name}: {ex.Message}");
             handle.SetPhase(BotPhase.Failed);
             Log($"[FAIL] {handle.Error}");
+
+            // ⭐ A FAILED LOGIN RECOVERS ITSELF. This used to end here: the bot sat in `Failed` until a
+            // human noticed and ran stop + respawn by hand, which is how four bots stayed down after a
+            // host restart. The usual cause is not a fault at all -- `CHAR_LOGINFAIL err=0` right after a
+            // restart is the SERVER STILL HOLDING the previous session, and it clears on its own within
+            // about a minute. The same reasoning is already applied to a short-lived session further up;
+            // it simply was not applied to the login chain.
+            //
+            // Backoff climbs and then caps, so a genuinely bad credential keeps retrying slowly and stays
+            // visible in the log rather than silently giving up -- a bot that has quietly stopped is the
+            // worse failure, because nothing is levelling and nothing says so.
+            if (!handle.Cts.IsCancellationRequested)
+            {
+                handle.LoginFailStreak++;
+                var waitS = handle.LoginFailStreak switch { 1 => 15, 2 => 30, 3 => 60, _ => 120 };
+                Log($"⛔ AUTO-RECOVER: login failed ({handle.Error}) — retry {handle.LoginFailStreak} in {waitS}s. " +
+                    "Right after a host restart this is the server still holding the old session, not a bad account.");
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(waitS));
+                    if (_bots.TryGetValue(handle.Id, out var still)
+                        && still.Phase == BotPhase.Failed && !still.Cts.IsCancellationRequested)
+                        Relog(handle.Id);      // stop -> respawn -> wait for zone -> RE-APPLY THE SCRIPT
+                });
+            }
         }
         finally
         {

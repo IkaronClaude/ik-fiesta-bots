@@ -92,6 +92,10 @@ public sealed class BotHandle
     public DateTime LastRelogUtc { get; internal set; } = DateTime.MinValue;
     public int ShortSessionStreak { get; internal set; }
 
+    /// <summary>Consecutive failures of the LOGIN CHAIN itself (as opposed to a dropped session). Drives
+    /// the backoff in `BotManager`'s auto-recovery; reset the moment the bot reaches a zone.</summary>
+    public int LoginFailStreak { get; internal set; }
+
     // WHERE THE HOURS ACTUALLY GO ────────────────────────────────────────────────────────────── Operator 2026-08-12…
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, double> _phaseSeconds = new();
     private string? _currentPhase;
