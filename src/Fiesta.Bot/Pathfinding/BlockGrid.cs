@@ -5,8 +5,36 @@ public sealed class BlockGrid
     /// <summary>World units per tile (50 world per map-unit ÷ 8 tiles per map-unit)</summary>
     public const double WorldPerTile = 6.25;
 
-    // SHBD 1-TILE ORIGIN SHIFT (operator + godmode wall-hug trace, 2026-07-22) ────────────────────────── The .shbd blocked-bit at array index (i,j) physically represents the world cell one tile OVER in eac…
-    private const int ShbdTileShift = 1;
+    // SHBD ORIGIN SHIFT -- REMOVED 2026-09-12, because `Zone.exe` does not have one.
+    //
+    // This was 1, on the reading that "the .shbd blocked-bit at array index (i,j) physically represents
+    // the world cell one tile OVER in each axis". `MapBlock::MapBlockInformation::mbi_IsMoveBlock`
+    // (0x0049DF70) is the server's own answer and it is four instructions long:
+    //
+    //     tile = (v * 8) * 0x51EB851F >> 32 >> 4          ; == floor(v / 6.25)
+    //     if (tileX >= blockxsize || tileY >= blockysize) return BLOCKED
+    //     return MoveBlockBuffer[xbyte * tileY + (tileX >> 3)] & (1 << (tileX & 7))
+    //
+    // No +1, no -1, on either axis. Everything else in this class already matches it exactly -- the
+    // 6.25, the row stride, the `tx >> 3` byte, the `1 << (tx & 7)` bit, set-bit-means-blocked and
+    // out-of-bounds-means-blocked -- and `(int)(v / 6.25)` equals the binary's integer form for every
+    // coordinate 0..199,999, zero differences. The shift was the only divergence.
+    //
+    // MEASURED against the ported `mbi_IsMoveBlock`, one sample per 4 tiles across whole maps:
+    //
+    //     map        disagreements   refuses walkable ground   walks INTO a wall
+    //     RouN        963 (0.367%)          475                      488
+    //     ValDn01    1502 (0.573%)          747                      755
+    //     RouVal02   1988 (0.758%)          979                     1009
+    //
+    // At 0 it is 0 disagreements out of 1,048,576 on RouVal02 -- bit for bit identical to the server.
+    // Half of that error made the bot refuse ground it was allowed to stand on; the other half made it
+    // walk at walls, which is a MOVEFAIL.
+    //
+    // ⚠️ The note this replaces claimed the +1 FIXED a hilly-map MOVEFAIL wedge. The arithmetic says it
+    // cannot have been the cause, so that fix was compensating for something still unidentified -- watch
+    // for the wedge returning rather than assuming it is gone.
+    private const int ShbdTileShift = 0;
     /// <summary>The same shift, for code outside this class that must place `.sbi` door boxes on the tile grid --
     /// the door bitmaps are indexed like the .shbd and inherit its one-tile origin offset.</summary>
     public const int ShbdTileShiftPublic = ShbdTileShift;
