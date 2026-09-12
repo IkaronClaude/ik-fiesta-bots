@@ -1517,6 +1517,11 @@ public sealed class ZoneView : IDisposable
     /// <summary>Raised when the SERVER's target selection is (or may be) gone — the target died, we died, or the map changed</summary>
     public Action<string>? TargetInvalidated { get; set; }
 
+    /// <summary>Raised when a REVIVE re-runs the spawn handshake. The server refuses movement until the
+    /// spawn lands, and 63% of every MOVEFAIL measured on the live bots was a walk issued inside that
+    /// window -- see `BotManager.SpawnSettleMs`.</summary>
+    public Action? SpawnRequested { get; set; }
+
     /// <summary>What the manager currently believes it has targeted, so death handling can tell whether the entity that just d…</summary>
     public ushort CurrentTargetHandle { get; set; }
 
@@ -1994,6 +1999,9 @@ public sealed class ZoneView : IDisposable
             if (Navigation.MapHandoff.ParseLinkSame(pkt.Payload.Span) is { } h)
             {
                 _log?.Invoke($"[ZoneView] revived (same-server) -> mapId={h.MapId} @({h.X},{h.Y}) — re-spawning via LOGINCOMPLETE");
+                // The revive re-runs the spawn handshake, so the same settle applies: 63% of all
+                // MOVEFAILs were walks issued inside this window.
+                SpawnRequested?.Invoke();
                 CurrentMapId = h.MapId;
                 _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _npcSeedAll.Clear(); _nearby.Clear(); _drops.Clear();
                 // TELEPORTING DROPS THE SERVER-SIDE SELECTION (operator 2026-08-13: "Teleportation in general untargets" — and s…

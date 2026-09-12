@@ -2245,6 +2245,20 @@ public sealed class BotManager : IAsyncDisposable
         // 35u from a mob the client showed 144u away, a 108u error, and every cast was refused 0x0FCA.
         if (!_bots.TryGetValue(id, out var mh)) return ActionResult.NotFound;
         if (mh.Phase != BotPhase.InZone || mh.ZoneSession is null) return ActionResult.NotInZone;
+
+        // A WALK INSIDE THE SPAWN WINDOW IS REFUSED BY THE SERVER -- see SpawnSettleMs. Suppress it the
+        // way an open cast bar is suppressed, so the caller does not read MOVEFAIL as blocked ground.
+        var sinceSpawn = DateTime.UtcNow - mh.LastSpawnUtc;
+        if (sinceSpawn < TimeSpan.FromMilliseconds(SpawnSettleMs))
+        {
+            if (DateTime.UtcNow - mh.LastSpawnWalkLogUtc > TimeSpan.FromMilliseconds(900))
+            {
+                mh.LastSpawnWalkLogUtc = DateTime.UtcNow;
+                mh.Log($"[nav] walk SUPPRESSED — only {sinceSpawn.TotalMilliseconds:F0}ms since the spawn "
+                       + $"request; the server refuses movement until it lands (settle {SpawnSettleMs}ms)");
+            }
+            return ActionResult.Sent;   // handled: do NOT escalate or learn a wall from this
+        }
         // THE CALLER'S `from` IS NOT TRUSTED (2026-08-13)
         var live = mh.BeginMove(toX, toY, mh.WalkSpeed > 0 ? mh.WalkSpeed : 120.0);
         var drift = Math.Sqrt(Math.Pow(live.X - (double)fromX, 2) + Math.Pow(live.Y - (double)fromY, 2));
@@ -2350,11 +2364,32 @@ public sealed class BotManager : IAsyncDisposable
         if (!h.IsCrossServer && handle.ZoneSession is { } zs)
         {
             _ = zs.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), CancellationToken.None);
+            handle.LastSpawnUtc = DateTime.UtcNow;     // walks are refused until this lands -- SpawnSettleMs
             log($"[nav] >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) to spawn into {name}");
         }
     }
 
     private const int CrossServerHandoffSettleMs = 600;
+
+    /// <summary>⭐ HOW LONG AFTER A SPAWN THE SERVER STILL REFUSES TO MOVE US.
+    ///
+    /// <para>Measured from the live bots, 79 MOVEFAILs across all four:</para>
+    /// <code>
+    /// time since the last spawn / revive     MOVEFAILs
+    ///   under 1s                                50   (63%)
+    ///   1s to 3s                                 0   ( 0%)
+    ///   3s to 10s                                6   ( 8%)
+    ///   over 10s, or no spawn seen              23   (29%)
+    /// </code>
+    ///
+    /// <para>Nearly two thirds of every movement failure is one race, and the 1-3s band is EMPTY -- so the
+    /// window closes sharply rather than tapering, which is what makes a fixed settle the right shape of
+    /// fix. Caught in the log as a walk issued 32ms after MAP_LOGINCOMPLETE on a revive: the bot asked for
+    /// a 3,363-unit route before the server had finished spawning it.</para>
+    ///
+    /// <para>The walk is SUPPRESSED rather than failed, exactly as a walk under an open cast bar is: the
+    /// caller must not treat this as unreachable ground and start learning walls from it.</para></summary>
+    private const int SpawnSettleMs = 1000;
 
     private const int BashWindupMs = 450;
     private const int WatchdogPollMs = 5_000;
@@ -2725,6 +2760,9 @@ public sealed class BotManager : IAsyncDisposable
                 var botId = handle.Id; // capture for the lambda
 
                 // The selection died / went away — drop the assertion so the next attack re-sends TARGETTING
+                // A revive re-runs the spawn handshake: hold walks until it lands (SpawnSettleMs).
+                zoneView.SpawnRequested += () => handle.LastSpawnUtc = DateTime.UtcNow;
+
                 zoneView.TargetInvalidated += why =>
                 {
                     if (!handle.TargetAsserted) return;

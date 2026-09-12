@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using Fiesta.Bot.Session;
 
 namespace Fiesta.Bot.Manager;
@@ -387,6 +387,12 @@ public sealed class BotHandle
 
     /// <summary>Throttle for the "walk SUPPRESSED — cast bar open" line (see BotManager.WalkAsync)</summary>
     internal DateTime LastCastBarWalkLogUtc = DateTime.MinValue;
+
+    /// <summary>When we last asked the server to spawn us into a map -- MAP_LOGINCOMPLETE after a
+    /// LINKSAME, or a revive. A walk issued before that lands is REFUSED with MOVEFAIL; see
+    /// `BotManager.SpawnSettleMs`.</summary>
+    internal DateTime LastSpawnUtc = DateTime.MinValue;
+    internal DateTime LastSpawnWalkLogUtc = DateTime.MinValue;
 
     /// <summary>Throttle for the "HP stone still on cooldown" line (see BotManager.UseSoulStoneHpAsync)</summary>
     internal DateTime LastStoneCooldownLogUtc = DateTime.MinValue;
