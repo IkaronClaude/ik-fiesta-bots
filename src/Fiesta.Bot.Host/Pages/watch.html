@@ -115,6 +115,13 @@
   tr.qfocus td { background:rgba(88,166,255,.08) }
   .focus { border:1px solid var(--line); border-left:3px solid var(--accent); border-radius:5px;
            background:#0b0e13; padding:5px 8px; margin-bottom:6px; font-size:12px }
+  .qtabs { display:flex; gap:4px; margin:6px 0 4px }
+  button.qtab { background:#0b0e13; color:var(--dim); border:1px solid var(--line); border-radius:3px;
+                padding:2px 9px; font:inherit; font-size:11px; cursor:pointer }
+  button.qtab:hover { color:#cfd6e4 }
+  button.qtab.on { color:#e6edf7; border-color:#3b4657; background:#141a24 }
+  button.qtab span { color:var(--dim); margin-left:4px }
+  button.qtab.on span { color:var(--ok) }
   button.mini { background:#0b0e13; color:var(--dim); border:1px solid var(--line); border-radius:3px;
                 font:inherit; font-size:10px; padding:0 5px; cursor:pointer; margin-left:6px }
   button.mini:hover { color:var(--fg); border-color:var(--accent) }
@@ -242,6 +249,14 @@ Visible to other players and rate-limited server-side, so it is for watching, no
              driver's sort, so without this there is no way to tell which quest it actually picked, or
              why it is walking somewhere. -->
         <div id="focus" class="focus"></div>
+        <!-- THREE BOARDS, NOT ONE. "accepted" alone cannot answer "is there anything here it could take"
+             or "has it already done this" -- the two questions you actually ask when a bot looks stuck on
+             a map. Each tab carries its own count so an empty one reads as a measured zero. -->
+        <div class="qtabs">
+          <button class="qtab on" data-qtab="active"    onclick="setQuestTab('active')">accepted <span id="qc-active">0</span></button>
+          <button class="qtab"    data-qtab="available" onclick="setQuestTab('available')">acceptable <span id="qc-available">0</span></button>
+          <button class="qtab"    data-qtab="done"      onclick="setQuestTab('done')">finished <span id="qc-done">0</span></button>
+        </div>
         <div style="max-height:220px; overflow:auto"><table id="quests"></table></div>
       </div>
     </div>
@@ -813,9 +828,11 @@ async function tickMetrics() {
     stoneTiles(d.live.stones);
     lastLive = d.live;
     questList = d.live.quests || [];
+    questAvail = d.live.questsAvailable || [];
+    questDone  = d.live.questsDone || [];
     questsById = new Map(questList.map(q => [q.name, q]));
     focusLine(d.live.focus);
-    questTable(questList);
+    paintQuestBoard();
     $('#metrics').innerHTML = metricsTable(d.metrics);
     const sel = $('#mapsel');
     const have = new Set([...sel.options].map(o=>o.value));
@@ -1016,7 +1033,7 @@ $('#bot').onchange = () => {
   localStorage.setItem('botwatch.bot', $('#bot').value);
   // Everything on the page belongs to ONE bot. Switching without clearing leaves the previous bot's
   // trace, quests and toasts on screen under the new bot's name — which is worse than a blank panel.
-  pts = []; sinceT = 0; lastMap = null; lastLive = null; lastEnt = null; questList = []; questsById = new Map();
+  pts = []; sinceT = 0; lastMap = null; lastLive = null; lastEnt = null; questList = []; questsById = new Map(); questAvail = []; questDone = [];
   tickMetrics(); tickTrace(); tickLog(); tickCombat();
 };
 // ── ITEMS ────────────────────────────────────────────────────────────────────────────────────────
@@ -1550,6 +1567,53 @@ async function undeprio(qid, name) {
                    d.clearedDeathsAtLevel ? `cleared ${d.clearedDeathsAtLevel} death(s) @lvl${d.level}` : `lvl${d.level}`]);
     tickMetrics();
   } catch (e) { toast('goal', [name, 'un-deprio FAILED', e.message]); }
+}
+
+let questAvail = [], questDone = [], questTab = 'active';
+
+// TAB STATE IS THE OPERATOR'S, NOT THE POLL'S. The metrics poll repaints this card every second, so the
+// selected tab has to live outside the payload or every repaint would snap it back to "accepted".
+function setQuestTab(t) {
+  questTab = t;
+  for (const b of document.querySelectorAll('.qtab')) b.classList.toggle('on', b.dataset.qtab === t);
+  paintQuestBoard();
+}
+
+function paintQuestBoard() {
+  const n = (id, v) => { const e = $('#qc-' + id); if (e) e.textContent = v; };
+  n('active', questList.length); n('available', questAvail.length); n('done', questDone.length);
+  if (questTab === 'available') return simpleQuestTable(questAvail, 'available');
+  if (questTab === 'done') return simpleQuestTable(questDone, 'done');
+  questTable(questList);
+}
+
+// The two boards that have no live objective state. Kept deliberately separate from questTable rather
+// than flag-switching inside it: an acceptable quest has no progress and a finished one has no goals, so
+// sharing the renderer would mean columns that are permanently blank in two of three tabs.
+function simpleQuestTable(qs, kind) {
+  const hint = kind === 'available'
+    ? '· the server says these can be ACCEPTED here · sorted: on this map first, then exp'
+    : '· already COMPLETED this character';
+  $('#qhint').textContent = `· ${qs.length} ${kind}${qs.length ? ' ' + hint : ' · none'}`;
+  if (!qs.length) {
+    // An empty board is an ANSWER (nothing acceptable here), so say so rather than painting blank.
+    $('#quests').innerHTML = `<tr class="qg"><td><span class="muted">${
+      kind === 'available' ? 'nothing acceptable — the server has offered no quests here'
+                           : 'no completed quests recorded this session'}</span></td></tr>`;
+    return;
+  }
+  let h = '<colgroup><col class="c-name"><col class="c-num"><col class="c-stat"><col class="c-here"></colgroup>';
+  for (const q of qs) {
+    const miss = q.hasData ? '' : ' <span class="hit-warn" title="no QuestData entry — a decode gap, not an empty quest">?</span>';
+    const rep  = q.repeatable ? ' <span class="muted">(rep)</span>' : '';
+    const mid  = kind === 'available'
+      ? (q.remoteAccept ? '<span class="hit-ok">remote</span>' : '<span class="muted">at NPC</span>')
+      : '<span class="muted">done</span>';
+    const here = kind === 'available' && q.onCurrentMap ? '<span class="hit-ok">here</span>' : '<span class="muted">—</span>';
+    h += `<tr class="qh"><td><b>${q.name}</b>${rep}${miss}</td>`
+       + `<td>${expStr(q.expReward)}</td><td>${mid}</td><td>${here}</td></tr>`;
+  }
+  $('#quests').innerHTML = h;
 }
 
 function questTable(qs) {

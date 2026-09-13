@@ -1306,6 +1306,11 @@ public static class BotEndpoints
             Facing = bot.FacingDeg >= 0 ? bot.FacingDeg : (double?)null,
             // Live quest board: what is accepted, how far along, and what each one wants
             Quests = QuestPanel(bot, cd, knowledge),
+            // The other two thirds of the board. ACCEPTED alone cannot answer "is there anything here it
+            // could take" or "has it already done this", which is exactly what you ask when a bot looks
+            // stuck on a map. Both sets come from the server's own seeding (NC_QUEST_* at login).
+            QuestsAvailable = AcceptableQuestPanel(bot, cd),
+            QuestsDone = FinishedQuestPanel(bot, cd),
             // What the DRIVER says it is doing right now — which quest it picked, what phase it is in, and where it is walki…
             Focus = bot.Focus is { } f ? new
             {
@@ -1323,6 +1328,65 @@ public static class BotEndpoints
             SustainableHealDps = zv is { SustainableHealDps: > 0 } ? zv.SustainableHealDps : (double?)null,
             IncomingDps5s = zv?.IncomingDamageSince(TimeSpan.FromSeconds(5)),
         };
+    }
+
+    /// <summary>Quests the server says we COULD accept but have not. `AvailableQuests` is seeded from the
+    /// login quest blocks, so this is the server's view, not a client-data guess.</summary>
+    private static object[] AcceptableQuestPanel(BotHandle bot, GameData.ClientData? cd)
+    {
+        var zv = bot.ZoneView;
+        if (zv is null) return [];
+        var outp = new List<object>();
+        foreach (var qid in zv.AvailableQuests)
+        {
+            var qd = cd?.Quest(qid);
+            // Does any objective mob spawn on the map we are standing on? Answers "is this one actionable
+            // from here" without opening the quest.
+            var here = false;
+            if (qd is not null)
+                foreach (var o in qd.Objectives)
+                    if (o.Mob > 0 && cd?.MobCoordinatesAll(o.Mob)?.Any(ml =>
+                            string.Equals(ml.Map, bot.CurrentMap, StringComparison.OrdinalIgnoreCase)) == true)
+                    { here = true; break; }
+
+            outp.Add(new
+            {
+                Id = qid,
+                Name = cd?.QuestName(qid) ?? $"q{qid}",
+                ExpReward = qd?.ExpReward ?? 0,
+                Repeatable = qd?.Repeatable ?? false,
+                RemoteAccept = qd?.RemoteAcceptable ?? false,
+                StartNpc = qd?.StartNpc ?? 0,
+                TurnInNpc = qd?.TurnInNpc ?? 0,
+                Goals = qd?.Objectives.Count ?? 0,
+                OnCurrentMap = here,
+                // A missing QuestData entry is shown, not hidden -- it is a decode gap worth seeing.
+                HasData = qd is not null,
+            });
+        }
+        return outp.OrderByDescending(o => ((dynamic)o).OnCurrentMap)
+                   .ThenByDescending(o => (int)((dynamic)o).ExpReward).ToArray();
+    }
+
+    /// <summary>Quests already completed. Name and reward only -- objectives are spent.</summary>
+    private static object[] FinishedQuestPanel(BotHandle bot, GameData.ClientData? cd)
+    {
+        var zv = bot.ZoneView;
+        if (zv is null) return [];
+        var outp = new List<object>();
+        foreach (var qid in zv.DoneQuests)
+        {
+            var qd = cd?.Quest(qid);
+            outp.Add(new
+            {
+                Id = qid,
+                Name = cd?.QuestName(qid) ?? $"q{qid}",
+                ExpReward = qd?.ExpReward ?? 0,
+                Repeatable = qd?.Repeatable ?? false,
+                HasData = qd is not null,
+            });
+        }
+        return outp.OrderBy(o => (int)((dynamic)o).Id).ToArray();
     }
 
     /// <summary>The accepted-quest board with live state</summary>
