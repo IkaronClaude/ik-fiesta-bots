@@ -2390,6 +2390,11 @@ public sealed class BotManager : IAsyncDisposable
     ///
     /// <para>The walk is SUPPRESSED rather than failed, exactly as a walk under an open cast bar is: the
     /// caller must not treat this as unreachable ground and start learning walls from it.</para></summary>
+    /// <summary>How many CONSECUTIVE thrown ticks mean the script is dead. At the 400ms tick this is ~10s,
+    /// far longer than any transient (a cast failing, a packet arriving mid-read) and far shorter than the
+    /// hours the 2026-09-13 outage ran for. A restart is cheap; a frozen bot is not.</summary>
+    private const int DeadTickErrorStreak = 25;
+
     private const int SpawnSettleMs = 1000;
 
     private const int BashWindupMs = 450;
@@ -2943,7 +2948,32 @@ public sealed class BotManager : IAsyncDisposable
                         // see this — it only checks for a MISSING runner — so a crashed script used to sit there while
                         // (b) logged the same diagnosis forever: JcqArcher, 2026-08-18, ~60 reports over 50 minutes
                         // stood motionless being aggroed. Restarting is the job; reporting is not.
-                        if (handle.ScriptRunner?.Status() is { State: "running", Ticks: > 500 }) scriptRestarts = 0;
+                        if (handle.ScriptRunner?.Status() is { State: "running", Ticks: > 500, ConsecutiveTickErrors: 0 })
+                            scriptRestarts = 0;
+                        // (a3) THE SCRIPT RUNS BUT EVERY TICK THROWS. SafeCall catches per tick, so State stays
+                        // "running" and Ticks keeps climbing -- (a2) cannot see this, and neither can a human
+                        // glancing at the bot list. On 2026-09-13 all four bots sat at State=running, ticks=23473,
+                        // MOVEFAIL=0 (a dead script never walks) for HOURS while every tick threw on the first
+                        // statement of tick(). Restart on the STREAK, which is the one signal that separates a
+                        // script doing nothing from a script doing its job.
+                        if (handle.ScriptRunner?.Status() is { ConsecutiveTickErrors: >= DeadTickErrorStreak } stuck
+                            && handle.LastScriptSource is { } stuckSrc)
+                        {
+                            var backoff = Math.Min(30 * Math.Pow(2, Math.Max(0, scriptRestarts - 1)), 300);
+                            if ((DateTime.UtcNow - lastRestartUtc).TotalSeconds >= backoff)
+                            {
+                                scriptRestarts++; lastRestartUtc = DateTime.UtcNow;
+                                handle.Log(BotLogLevel.Note,
+                                    $"⛔ WATCHDOG: script '{stuck.Name}' has thrown on {stuck.ConsecutiveTickErrors} " +
+                                    $"CONSECUTIVE ticks (state={stuck.State}, ticks={stuck.Ticks}) — it is dead in all but " +
+                                    $"name. Last error: {stuck.LastError ?? "(none recorded)"}. Restarting it " +
+                                    $"(attempt {scriptRestarts}).");
+                                ApplyScript(handle.Id, handle.LastScriptName ?? "level_quest", stuckSrc,
+                                            handle.LastScriptTickMs <= 0 ? 400 : handle.LastScriptTickMs);
+                                stillSince = DateTime.UtcNow;
+                                continue;
+                            }
+                        }
                         if (handle.ScriptRunner?.Status() is { State: "error" } dead && handle.LastScriptSource is { } deadSrc)
                         {
                             var backoff = Math.Min(30 * Math.Pow(2, Math.Max(0, scriptRestarts - 1)), 300);

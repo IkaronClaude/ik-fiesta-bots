@@ -11,7 +11,16 @@ namespace Fiesta.Bot.Scripting;
 /// <summary>Debug view of a running script, returned by the status endpoint</summary>
 public sealed record ScriptStatus(
     string Name, string State, long Ticks, long EventsHandled, string? LastError,
-    double UptimeSeconds, IReadOnlyList<string> Globals, string? SmState);
+    double UptimeSeconds, IReadOnlyList<string> Globals, string? SmState)
+{
+    /// <summary>Ticks that have thrown IN A ROW, reset by the first one that completes.
+    ///
+    /// <para>A script erroring on EVERY tick is not visibly different from a healthy one: SafeCall catches
+    /// per tick, so State stays "running" and Ticks keeps climbing. Four bots stood still for hours on
+    /// 2026-09-13 with ticks=23473 and State=running while every tick threw. This is the signal that
+    /// distinguishes them.</para></summary>
+    public long ConsecutiveTickErrors { get; init; }
+}
 
 /// <summary>Runs ONE Lua behaviour script for ONE bot on a dedicated thread</summary>
 public sealed class BotScriptRunner : IDisposable
@@ -37,6 +46,8 @@ public sealed class BotScriptRunner : IDisposable
     /// a wall-clock stamp cannot express "the same tick", so a cache keyed on it re-fetches on every call.</summary>
     public long TickCount => Volatile.Read(ref _ticks);
     private long _eventsHandled;
+    /// <summary>See <see cref="ScriptStatus.ConsecutiveTickErrors"/>. Reset by any tick that returns.</summary>
+    private long _consecutiveTickErrors;
     private volatile string _state = "starting";
     private double _tickMsTotal;
     /// <summary>A tick over this long prints where it went. Target is ~50ms (20 ticks/sec).</summary>
@@ -85,7 +96,10 @@ public sealed class BotScriptRunner : IDisposable
         var globals = Volatile.Read(ref _globalsSnapshot) ?? [];
         return new ScriptStatus(
             _name, _state, Interlocked.Read(ref _ticks), Interlocked.Read(ref _eventsHandled),
-            _lastError, Math.Round((DateTime.UtcNow - _startedUtc).TotalSeconds, 1), globals, _smState);
+            _lastError, Math.Round((DateTime.UtcNow - _startedUtc).TotalSeconds, 1), globals, _smState)
+        {
+            ConsecutiveTickErrors = Interlocked.Read(ref _consecutiveTickErrors),
+        };
     }
 
     /// <summary>One profiled Lua-visible call: time spent INSIDE it, plus the Lua time that ran just BEFORE it.</summary>
@@ -278,7 +292,10 @@ public sealed class BotScriptRunner : IDisposable
                     // field (no allocation, no stop-the-world).
                     var alloc0 = GC.GetAllocatedBytesForCurrentThread();
                     var swTick = System.Diagnostics.Stopwatch.StartNew();
-                    SafeCall("tick");
+                    // A THROWN TICK IS NOT A TICK. Counted so a script that fails every time is
+                    // distinguishable from one that is working; the watchdog restarts on the streak.
+                    if (SafeCall("tick")) Interlocked.Exchange(ref _consecutiveTickErrors, 0);
+                    else Interlocked.Increment(ref _consecutiveTickErrors);
                     swTick.Stop();
                     var pauseMs = (GC.GetTotalPauseDuration() - gcPause0).TotalMilliseconds;
                     var allocKb = (GC.GetAllocatedBytesForCurrentThread() - alloc0) / 1024.0;
@@ -645,12 +662,14 @@ end
     }
 
     /// <summary>Call a Lua global if it's defined as a function</summary>
-    private void SafeCall(string fn, params DynValue[] args)
+    /// <summary>Returns TRUE when the Lua function ran to completion (or was absent). False means it threw,
+    /// which the tick loop counts -- see <see cref="ScriptStatus.ConsecutiveTickErrors"/>.</summary>
+    private bool SafeCall(string fn, params DynValue[] args)
     {
-        if (_lua is null) return;
+        if (_lua is null) return true;
         var f = _lua.Globals.Get(fn);
-        if (f.Type != DataType.Function) return;
-        try { _lua.Call(f, args); }
+        if (f.Type != DataType.Function) return true;
+        try { _lua.Call(f, args); return true; }
         catch (ScriptRuntimeException ex) { _lastError = ex.DecoratedMessage; _log($"[script:{_name}] {fn} error: {ex.DecoratedMessage}"); }
         // A .NET exception thrown INSIDE a bot.* callback is NOT a ScriptRuntimeException, so it lands here — and this u…
         catch (Exception ex)
@@ -666,6 +685,7 @@ end
             _log($"[script:{_name}] {fn} error: {ex.GetType().Name}: {ex.Message}" +
                  (where.Length > 0 ? $"  |  {where}" : "  |  (no stack)"));
         }
+        return false;
     }
 
     private DynValue ChatTable(ChatMessage m)
