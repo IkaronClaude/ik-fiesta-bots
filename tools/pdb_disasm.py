@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--pdb", required=True)
     ap.add_argument("--sym")
     ap.add_argument("--find")
+    ap.add_argument("--through", action="store_true", help="do not stop at the first ret")
     ap.add_argument("--count", type=int, default=180, help="instructions to disassemble")
     a = ap.parse_args()
 
@@ -69,7 +70,13 @@ def main():
                 print("  seg%-3d off=0x%06X  %s" % (seg, off, name))
         return
 
-    hits = [h for h in publics(pdb, a.sym)]
+    if a.sym.lower().startswith("0x"):
+        # a raw VA: disassemble from there (a branch target past a function's first ret)
+        want = int(a.sym, 16) - base
+        seg = next(i for i, (va, vsz, praw, rsz, sname) in enumerate(secs) if va <= want < va + vsz) + 1
+        hits = [("@%s" % a.sym, seg, want - secs[seg - 1][0])]
+    else:
+        hits = [h for h in publics(pdb, a.sym)]
     if not hits:
         print("symbol not found as S_PUB32:", a.sym)
         return
@@ -86,7 +93,7 @@ def main():
     for ins in md.disasm(exe[fo:fo + 4096], base + rva):
         print("  %08X  %-24s %s" % (ins.address, ins.mnemonic, ins.op_str))
         n += 1
-        if ins.mnemonic == "ret" or n >= a.count:
+        if (ins.mnemonic == "ret" and not a.through) or n >= a.count:
             break
 
 
