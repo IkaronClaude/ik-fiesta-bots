@@ -240,8 +240,12 @@ public sealed class LoginChain
                 var ok = pkt.ReadBody<PROTO_NC_AVATAR_CREATESUCC_ACK>();
                 var a = ok.avatar;
                 // Thread the created char's CLASS through so the zone driver's class-gated logic works up-front (quest-accept cl…
-                var sum = new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level, Class: (byte)spec.Class);
-                _log($"[WM] << AVATAR_CREATESUCC_ACK name='{sum.Name}' slot={sum.Slot} level={sum.Level} class={spec.Class}({(byte)spec.Class})");
+                // The login map comes from the reply too - the avatar list was read BEFORE the create, so it does not
+                // have this character, and without this the caller fell back to its hardcoded start map ("RouN") and
+                // reported a map the server never put the character on (2026-09-23: the new char was in Rou).
+                var sum = new AvatarSummary(a.chrregnum, AsciiZ(a.name.n5_name), a.slot, a.level,
+                    AsciiZ(a.loginmap.n3_name), Class: (byte)spec.Class);
+                _log($"[WM] << AVATAR_CREATESUCC_ACK name='{sum.Name}' slot={sum.Slot} level={sum.Level} class={spec.Class}({(byte)spec.Class}) map={sum.LoginMap}");
                 return sum;
             }
             if (pkt.Opcode == OpAvatarCreateFail)
