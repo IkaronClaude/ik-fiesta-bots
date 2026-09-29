@@ -98,7 +98,7 @@ ik-fiesta-bots/
   require an admin JWT (`nAuthID==9`) and deliver via the cash shop
   (`tChargeItem`) — separate from in-game GM level. The API does NOT yet set a
   game account's in-game GM level → small addition needed (master-key-gated).
-- Test account: `testuser` / `test123` (password = raw MD5, no salt).
+- Test account: `testuser` / `<password>` (password = raw MD5, no salt).
 
 ## Roadmap (task tracker mirrors these)
 
@@ -130,7 +130,7 @@ skill-cast + nearby-player tracking), then **party** (invite/accept), then
   `git submodule update --init` works for a real clone. (Earlier this note also
   claimed "no network in the build sandbox" — that was never true and was
   removed 2026-06-10: the dev/test environment reaches both the live game server
-  at 62.171.171.24 and the internet, which is how every "live-verified" note in
+  at <server-ip> and the internet, which is how every "live-verified" note in
   this file was produced.)
 
 ## Refinements (added mid-build)
@@ -148,7 +148,7 @@ skill-cast + nearby-player tracking), then **party** (invite/accept), then
 ## Login handshake (SOLVED, live-verified 2026-06-09)
 
 Login→WM chain works end-to-end, typed, no capture replay. Verified vs the live
-k8s server (62.171.171.24). The real client C→S Login order (from the reference
+k8s server (<server-ip>). The real client C→S Login order (from the reference
 pcap, decoded with fiesta-proxy `tools/session_client.py`):
 
 1. `VERSION_CHECK_REQ` 0x0C65 — **sent first**, server version-gates and drops the
@@ -207,7 +207,7 @@ Live flow (2026-06-10, Bot2433 Priest, Ikaron acct slot 2):
 ```
 >> AVATAR_CREATE_REQ slot=2  << AVATAR_CREATESUCC_ACK slot=2 level=1
 >> CHAR_LOGIN_REQ slot=2     << TUTORIAL_POPUP_REQ (0x1110)
->> TUTORIAL_POPUP_ACK skip=1 << CHAR_LOGIN_ACK zone=62.171.171.24:9016
+>> TUTORIAL_POPUP_ACK skip=1 << CHAR_LOGIN_ACK zone=<server-ip>:9016
 >> MAP_LOGIN_REQ (0x1801)    << 0x1038  *** IN ZONE ***
 ```
 
@@ -286,7 +286,7 @@ connection is owned by its session's `DisposeAsync` (no double-dispose).
   still starts and every bot endpoint returns **503 with the reason** (health
   reports `botsEnabled:false`).
 - **Live-verified end to end via the HTTP API (2026-06-10).** `POST /api/bots`
-  (testuser, against 62.171.171.24:9010) drove the whole chain: WORLDSELECT →
+  (testuser, against <server-ip>:9010) drove the whole chain: WORLDSELECT →
   WM (`handle=52500`, existing avatars `Anna`/`Anna2`) → CHAR_LOGIN slot 0 →
   zone 9016 → [1801]+49 checksums → `0x1038` *** IN ZONE *** on the first try.
   Sessions ran on BOTH links and answered their heartbeats (1 each); `POST
@@ -848,7 +848,7 @@ onto the tile** — just be within the gate's range. The zone then replies with
   **wmHandle** (the trailing u16) — confirmed: the 9019 reconnect's chardata was
   `[0x7B0C]["BotPriest"]` + the same 49 checksums, and 0x7B0C == LINKOTHER's tail.
   The WM link (9013) stays open across the handoff. (Capture: RouN→Eld = LINKOTHER
-  to 62.171.171.24:9019, spawn (11802,10466).)
+  to <server-ip>:9019, spawn (11802,10466).)
 
 Multi-destination gates: server sends `NC_MAP_MULTY_LINK_CMD` (0x181F,
 `npcHandle, npcPosition, limitRange, num, LinkMapName[5]`) when near; client picks
@@ -1269,7 +1269,7 @@ gates/inventory/equipment/playerByName`.
    soulstone-HP when low), `town_buff.lua` (on_chat "buff pls" → cast buffs on sender).
 
 ### Verification (first goal)
-`dotnet build`, then live (testuser/BotPriest or BotMage on 62.171.171.24): upload a
+`dotnet build`, then live (testuser/BotPriest or BotMage on <server-ip>): upload a
 script → `POST /{id}/script` → watch `GET /{id}/script` + the bot log loop it; confirm
 a new upload swaps cleanly and `/script/stop` halts it. HP/SP via `GET /{id}` snapshot.
 

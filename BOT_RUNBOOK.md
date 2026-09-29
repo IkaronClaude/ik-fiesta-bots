@@ -53,7 +53,7 @@ XOR_TABLE_PATH=C:/Projects/ik-fiesta-bots/xor-table.hex \
 #    the in-game avatar to select. Current target char = IkFresh2.
 curl -s -X POST http://127.0.0.1:5097/api/bots \
   -H 'Content-Type: application/json' \
-  -d '{"Host":"62.171.171.24","LoginPort":9010,"Username":"fighter1","Password":"fighter1","Id":"IkFresh2","Character":"IkFresh2","PacketLog":true}'
+  -d '{"Host":"<server-ip>","LoginPort":9010,"Username":"fighter1","Password":"<password>","Id":"IkFresh2","Character":"IkFresh2","PacketLog":true}'
 ```
 
 - Lua/C# split: **`.lua` is interpreted at runtime — re-applying the script needs NO rebuild.**
@@ -190,6 +190,6 @@ freelens/k8s probe, NOT the game — ignore it.**
 
 ## Live server / accounts
 
-- `62.171.171.24` — login 9010, WM 9013, zone00 9016. Sandbox reaches it + the internet.
-- Test acct `testuser`/`test123` (nUserNo 100). Leveling acct `fighter1`/`fighter1` (Bot1208).
+- `<server-ip>` — login 9010, WM 9013, zone00 9016. Sandbox reaches it + the internet.
+- Test acct `testuser`/`<password>` (nUserNo 100). Leveling acct `fighter1`/`<password>` (Bot1208).
 - In-game pw = raw MD5 (no salt). SQL Server access pattern: see workspace `C:/Projects/CLAUDE.md`.

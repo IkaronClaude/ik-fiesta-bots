@@ -11,7 +11,7 @@ public static class LoginTestCli
     public static async Task<int> RunAsync(string[] args)
     {
         var opt = ParseArgs(args);
-        var host = opt.GetValueOrDefault("host", "62.171.171.24");
+        var host = opt.GetValueOrDefault("host", "127.0.0.1");
         var port = int.Parse(opt.GetValueOrDefault("port", "9010"));
         var user = opt.GetValueOrDefault("user", "testuser");
         var worldNo = byte.Parse(opt.GetValueOrDefault("world", "0"));
@@ -27,10 +27,15 @@ public static class LoginTestCli
             createSpec = new CharacterSpec(cname, cls, Gender: gender, Slot: slot ?? 0);
         }
 
-        // Password: --pass = plaintext (MD5'd here), or --passmd5 = already hashed
+        // Password: --pass = plaintext (MD5'd here), or --passmd5 = already hashed. No default - BYO credentials.
+        if (!opt.ContainsKey("pass") && !opt.ContainsKey("passmd5"))
+        {
+            Console.Error.WriteLine("login-test: --pass <plaintext> or --passmd5 <hash> is required");
+            return 2;
+        }
         BotCredentials creds = opt.TryGetValue("passmd5", out var md5)
             ? new BotCredentials(user, md5)
-            : BotCredentials.FromPlaintext(user, opt.GetValueOrDefault("pass", "test123"));
+            : BotCredentials.FromPlaintext(user, opt["pass"]);
 
         byte[] table;
         try { table = XorTableLoader.Require(); }

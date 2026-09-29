@@ -2,7 +2,7 @@
 
 Findings from wiring **item pickup/drops**, **healing**, **guard filtering**, **soul-stones**
 and **skill learning** for the bot, toward the autonomous "**quest/grind to level 20**" goal.
-Live-verified against the live server (`62.171.171.24`) with test char **`testuser`/`test123`
+Live-verified against the live server (`<server-ip>`) with test char **`testuser`/`<password>`
 slot 2 = `BotPriest`** (currently **level 77**, in **Uruga**). Read alongside `PROJECT_PLAN.md`.
 
 > Convention reminder: the **bot/packets are the source of truth**, not the DB. Client data
