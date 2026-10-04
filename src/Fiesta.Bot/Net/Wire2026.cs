@@ -27,7 +27,11 @@ public static class Wire2026
     /// <summary>The opcodes the zone sends in a 2026 shape (bridge26 batches 1-3)</summary>
     private static readonly HashSet<ushort> Translated =
         [0x2448, 0x2449, 0x243C, 0x2452, 0x2402, 0x244E, 0x2450, 0x244F, 0x2451, 0x103A, 0x10D7,
-         0x1038, 0x104A, 0x9003, 0x9004, 0x3C03, 0x3C04, 0x3C06, 0x3C09, 0x3C0A, 0x3C0B];
+         0x1038, 0x104A, 0x9003, 0x9004, 0x3C03, 0x3C04, 0x3C06, 0x3C09, 0x3C0A, 0x3C0B,
+         0x1C06, 0x1C07, 0x1C08, 0x1C09, 0x1C1A];
+
+    /// <summary>The US build's briefinfo records are one byte longer than the German's (the zone's bridge26.ini build=us)</summary>
+    private const int UsExtra = 1;
 
     /// <summary>The 2016-layout packet for a 2026-shape one; the packet itself when this opcode is not translated.</summary>
     public static FiestaPacket ToLegacy(FiestaPacket pkt, Action<string>? log = null)
@@ -51,6 +55,11 @@ public static class Wire2026
             0x9003 => p.Length == 22 ? p[..14].ToArray() : null,     // CHARGED_BUFFSTART
             0x9004 => p.Length == 5 ? p[..4].ToArray() : null,       // CHARGED_BUFFTERMINATE
             0x3C03 or 0x3C04 or 0x3C06 or 0x3C09 or 0x3C0A or 0x3C0B => ShopTable(p),
+            0x1C08 => p.Length == 187 + UsExtra ? RegenMobRow(p) : null,           // BRIEFINFO_REGENMOB
+            0x1C09 => Rows(p, 187 + UsExtra, 149, RegenMobRow),                   // BRIEFINFO_MOB {count u8} + rows
+            0x1C1A => RegenMover(p),                                              // BRIEFINFO_REGENMOVER
+            0x1C06 => p.Length == 304 + UsExtra ? LoginCharacterRow(p) : null,    // BRIEFINFO_LOGINCHARACTER
+            0x1C07 => Rows(p, 304 + UsExtra, 235, LoginCharacterRow),             // BRIEFINFO_CHARACTER {count u8} + rows
             _ => Array.Empty<byte>(),
         };
         if (legacy is { Length: 0 } && !Translated.Contains(pkt.Opcode))
@@ -135,6 +144,50 @@ public static class Wire2026
             o[5 + 3 * i] = p[8 + 6 * i];
             o[6 + 3 * i] = p[9 + 6 * i];
         }
+        return o;
+    }
+
+    // REGENMOB row 187 + extra -> 149: the 37 + extra bytes after the abstate array at 114 and the last byte dropped
+    private static byte[] RegenMobRow(ReadOnlySpan<byte> p)
+    {
+        var o = new byte[149];
+        p[..114].CopyTo(o);
+        p.Slice(151 + UsExtra, 35).CopyTo(o.AsSpan(114));
+        return o;
+    }
+
+    // REGENMOVER 176 + extra -> 139
+    private static byte[]? RegenMover(ReadOnlySpan<byte> p)
+    {
+        if (p.Length != 176 + UsExtra) return null;
+        var o = new byte[139];
+        p[..118].CopyTo(o);
+        p.Slice(155 + UsExtra, 21).CopyTo(o.AsSpan(118));
+        return o;
+    }
+
+    // LOGINCHARACTER 304 + extra -> 235 (the inverse of the zone's layout; the 2016 record's last byte is not carried: 0)
+    private static byte[] LoginCharacterRow(ReadOnlySpan<byte> p)
+    {
+        var o = new byte[235];
+        p[..82].CopyTo(o);
+        p.Slice(113, 9).CopyTo(o.AsSpan(82));
+        p.Slice(123, 99).CopyTo(o.AsSpan(91));
+        p.Slice(258 + UsExtra, 44).CopyTo(o.AsSpan(190));
+        return o;
+    }
+
+    private delegate byte[] RowFn(ReadOnlySpan<byte> row);
+
+    // {count u8} + count rows of `width` -> {count u8} + rows of `legacy`
+    private static byte[]? Rows(ReadOnlySpan<byte> p, int width, int legacy, RowFn fn)
+    {
+        if (p.Length < 1) return null;
+        int n = p[0];
+        if (p.Length != 1 + width * n) return null;
+        var o = new byte[1 + legacy * n];
+        o[0] = (byte)n;
+        for (var i = 0; i < n; i++) fn(p.Slice(1 + width * i, width)).CopyTo(o, 1 + legacy * i);
         return o;
     }
 
