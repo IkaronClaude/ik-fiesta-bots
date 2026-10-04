@@ -38,7 +38,7 @@ if (xorTable is not null)
         var clientData = new Fiesta.Bot.GameData.ClientData(clientDataDir);
         // FIESTA_WIRE=2026: the zone sends item records at their 2026 widths, sized by the 2026 item class - from this client
         // data (set the client data dir to the 2026 client for that mode)
-        Fiesta.Bot.Net.Wire2026Items.ClassOf = id => clientData.Item(id)?.ItemClass ?? -1;
+        Fiesta.Bot.Net.Wire2026Items.UseClientData(clientData);
         return new BotManager(xorTable, m => logger.LogInformation("{BotLog}", m))
         {
             // Let navigation actions (follow) pathfind over the BYO block grids

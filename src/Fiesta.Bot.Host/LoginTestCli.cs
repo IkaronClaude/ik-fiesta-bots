@@ -62,6 +62,7 @@ public static class LoginTestCli
                 if (wm.ZoneAdvertised is { } zoneAdv && wm.Selected is { } sel)
                 {
                     var dataDir = opt.GetValueOrDefault("data-dir", "Z:/ClientProd2/ressystem");
+                    Fiesta.Bot.Net.Wire2026Items.UseClientData(new Fiesta.Bot.GameData.ClientData(dataDir));
                     var zoneEntry = ZoneEntry.FromDataDir(table, Log, dataDir);
                     var zoneEp = new FiestaEndpoint(host, zoneAdv.Port); // public host, advertised port
                     var zoneConn = (await zoneEntry.EnterAsync(zoneEp, wm.WmHandle, sel.Name, cts.Token)).Conn;

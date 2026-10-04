@@ -14,6 +14,10 @@ public static class Wire2026Items
     /// <summary>The item's 2026 attribute class, -1 = unknown (then the packet passes as it came).</summary>
     public static Func<int, int> ClassOf { get; set; } = _ => -1;
 
+    /// <summary>Item classes from this client data (the 2026 client's ressystem for FIESTA_WIRE=2026). Every entry point
+    /// that logs in calls it - the host AND login-test: left at the default, the 2026 records reach the 2016 parser.</summary>
+    public static void UseClientData(GameData.ClientData data) => ClassOf = id => data.Item(id)?.ItemClass ?? -1;
+
     private const int Head = 5;
 
     private static int EnchantableFixed(int cls) => cls switch { 4 => 39, 5 => 66, 6 or 7 or 8 or 38 => 14, _ => -1 };
