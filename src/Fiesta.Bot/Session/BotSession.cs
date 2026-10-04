@@ -87,6 +87,7 @@ public sealed class BotSession : IAsyncDisposable
             while (!ct.IsCancellationRequested)
             {
                 var pkt = await _conn.ReadPacketAsync(ct);
+                pkt = Fiesta.Bot.Net.Wire2026.ToLegacy(pkt, _log);   // FIESTA_WIRE=2026: the zone's 2026 shapes back to 2016
                 State.RecordInbound(pkt.Opcode);
 
                 if (_logInbound)
