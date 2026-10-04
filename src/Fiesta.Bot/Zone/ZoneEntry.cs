@@ -94,7 +94,7 @@ public sealed class ZoneEntry
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(remaining);
                 FiestaPacket pkt;
-                try { pkt = await conn.ReadPacketAsync(cts.Token); }
+                try { pkt = Fiesta.Bot.Net.Wire2026.ToLegacy(await conn.ReadPacketAsync(cts.Token), _log); }   // FIESTA_WIRE=2026
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { break; } // deadline
                 // raw frame dump deleted (comment-scrub P0): superseded by the packet log, which decodes these.
 

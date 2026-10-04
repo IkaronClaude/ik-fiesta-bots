@@ -24,9 +24,9 @@ public static class Wire2026
 
     private static readonly ConcurrentDictionary<ushort, int> Mismatches = new();
 
-    /// <summary>The opcodes the zone sends in a 2026 shape (bridge26 batches 1-2)</summary>
+    /// <summary>The opcodes the zone sends in a 2026 shape (bridge26 batches 1-3)</summary>
     private static readonly HashSet<ushort> Translated =
-        [0x2448, 0x2449, 0x243C, 0x2452, 0x2402, 0x244E, 0x2450, 0x244F, 0x2451];
+        [0x2448, 0x2449, 0x243C, 0x2452, 0x2402, 0x244E, 0x2450, 0x244F, 0x2451, 0x103A, 0x10D7];
 
     /// <summary>The 2016-layout packet for a 2026-shape one; the packet itself when this opcode is not translated.</summary>
     public static FiestaPacket ToLegacy(FiestaPacket pkt, Action<string>? log = null)
@@ -43,6 +43,8 @@ public static class Wire2026
             0x2450 => Tail4(p, 12),                              // HIT_FLD_START
             0x244F => Tail4(p, 8),                               // SOMEONE_HIT_OBJ_START
             0x2451 => Tail4(p, 14),                              // SOMEONE_HIT_FLD_START
+            0x103A => QuestList(p, p.Length >= 6 ? p[5] : -1),   // CLIENT_QUEST_DOING {chr u32, clear u8, count u8}
+            0x10D7 => QuestList(p, p.Length >= 6 ? p[4] | (p[5] << 8) : -1),   // CLIENT_QUEST_REPEAT {chr u32, count u16}
             _ => Array.Empty<byte>(),
         };
         if (legacy is { Length: 0 } && !Translated.Contains(pkt.Opcode))
@@ -79,6 +81,17 @@ public static class Wire2026
 
     // the four SKILLBASH *_START frames: the 2016 struct + a trailing u32 (the zone sends 1)
     private static byte[]? Tail4(ReadOnlySpan<byte> p, int size2016) => p.Length == size2016 + 4 ? p[..size2016].ToArray() : null;
+
+    // the quest lists: head 6, then n x 37 -> n x 32 (PLAYER_QUEST_INFO; the 5 added bytes dropped). A quest the zone moved
+    // counters for (quest-counter-rows.txt) keeps its 2026 row order - the bot reads the status and id, not those rows.
+    private static byte[]? QuestList(ReadOnlySpan<byte> p, int n)
+    {
+        if (n < 0 || p.Length != 6 + 37 * n) return null;
+        var o = new byte[6 + 32 * n];
+        p[..6].CopyTo(o);
+        for (var i = 0; i < n; i++) p.Slice(6 + 37 * i, 32).CopyTo(o.AsSpan(6 + 32 * i));
+        return o;
+    }
 
     // 20 -> 13: the 2016 layout, 7 trailing bytes dropped
     private static byte[]? Tail7(ReadOnlySpan<byte> p) => p.Length == 20 ? p[..13].ToArray() : null;
