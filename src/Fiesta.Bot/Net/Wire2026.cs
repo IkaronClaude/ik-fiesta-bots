@@ -28,7 +28,8 @@ public static class Wire2026
     private static readonly HashSet<ushort> Translated =
         [0x2448, 0x2449, 0x243C, 0x2452, 0x2402, 0x244E, 0x2450, 0x244F, 0x2451, 0x103A, 0x10D7,
          0x1038, 0x104A, 0x9003, 0x9004, 0x3C03, 0x3C04, 0x3C06, 0x3C09, 0x3C0A, 0x3C0B,
-         0x1C06, 0x1C07, 0x1C08, 0x1C09, 0x1C1A];
+         0x1C06, 0x1C07, 0x1C08, 0x1C09, 0x1C1A,
+         0x3001, 0x3002, 0x1047, 0x305B, 0x7492, 0x6814, 0x986E, 0x302D, 0x3C08, 0x305C, 0x4C10, 0xC407];
 
     /// <summary>The US build's briefinfo records are one byte longer than the German's (the zone's bridge26.ini build=us)</summary>
     private const int UsExtra = 1;
@@ -60,6 +61,19 @@ public static class Wire2026
             0x1C1A => RegenMover(p),                                              // BRIEFINFO_REGENMOVER
             0x1C06 => p.Length == 304 + UsExtra ? LoginCharacterRow(p) : null,    // BRIEFINFO_LOGINCHARACTER
             0x1C07 => Rows(p, 304 + UsExtra, 235, LoginCharacterRow),             // BRIEFINFO_CHARACTER {count u8} + rows
+            // batch 6: items (Wire2026Items - needs the item classes, set by the host from its client data)
+            0x3001 => Wire2026Items.TrailingItem(p, 4),          // ITEM_CELLCHANGE
+            0x3002 => Wire2026Items.TrailingItem(p, 3),          // ITEM_EQUIPCHANGE
+            0x1047 => Wire2026Items.ClientItem(p),               // CHAR_CLIENT_ITEM
+            0x305B => Wire2026Items.RecordList(p, 0, 3),
+            0x7492 => Wire2026Items.RecordList(p, 18, 3),
+            0x6814 => Wire2026Items.RecordList(p, 2, 15),
+            0x986E => Wire2026Items.RecordList(p, 10, 3),
+            0x302D => Wire2026Items.RecordList(p, 0, 3),
+            0x3C08 => Wire2026Items.RecordList(p, 11, 3),
+            0x305C => Wire2026Items.LeadingItem(p, 2),
+            0x4C10 => Wire2026Items.LeadingItem(p, 1),
+            0xC407 => Wire2026Items.LeadingItem(p, 3),
             _ => Array.Empty<byte>(),
         };
         if (legacy is { Length: 0 } && !Translated.Contains(pkt.Opcode))
