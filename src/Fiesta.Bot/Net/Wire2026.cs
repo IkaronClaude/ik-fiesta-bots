@@ -26,7 +26,8 @@ public static class Wire2026
 
     /// <summary>The opcodes the zone sends in a 2026 shape (bridge26 batches 1-3)</summary>
     private static readonly HashSet<ushort> Translated =
-        [0x2448, 0x2449, 0x243C, 0x2452, 0x2402, 0x244E, 0x2450, 0x244F, 0x2451, 0x103A, 0x10D7];
+        [0x2448, 0x2449, 0x243C, 0x2452, 0x2402, 0x244E, 0x2450, 0x244F, 0x2451, 0x103A, 0x10D7,
+         0x1038, 0x104A, 0x9003, 0x9004, 0x3C03, 0x3C04, 0x3C06, 0x3C09, 0x3C0A, 0x3C0B];
 
     /// <summary>The 2016-layout packet for a 2026-shape one; the packet itself when this opcode is not translated.</summary>
     public static FiestaPacket ToLegacy(FiestaPacket pkt, Action<string>? log = null)
@@ -45,6 +46,11 @@ public static class Wire2026
             0x2451 => Tail4(p, 14),                              // SOMEONE_HIT_FLD_START
             0x103A => QuestList(p, p.Length >= 6 ? p[5] : -1),   // CLIENT_QUEST_DOING {chr u32, clear u8, count u8}
             0x10D7 => QuestList(p, p.Length >= 6 ? p[4] | (p[5] << 8) : -1),   // CLIENT_QUEST_REPEAT {chr u32, count u16}
+            0x1038 => ClientBase(p),                             // CHAR_CLIENT_BASE (US 362 B)
+            0x104A => ChargedBuff(p),
+            0x9003 => p.Length == 22 ? p[..14].ToArray() : null,     // CHARGED_BUFFSTART
+            0x9004 => p.Length == 5 ? p[..4].ToArray() : null,       // CHARGED_BUFFTERMINATE
+            0x3C03 or 0x3C04 or 0x3C06 or 0x3C09 or 0x3C0A or 0x3C0B => ShopTable(p),
             _ => Array.Empty<byte>(),
         };
         if (legacy is { Length: 0 } && !Translated.Contains(pkt.Opcode))
@@ -90,6 +96,45 @@ public static class Wire2026
         var o = new byte[6 + 32 * n];
         p[..6].CopyTo(o);
         for (var i = 0; i < n; i++) p.Slice(6 + 37 * i, 32).CopyTo(o.AsSpan(6 + 32 * i));
+        return o;
+    }
+
+    // CHAR_CLIENT_BASE the US 362 -> 105: the byte the 2026 build inserted at 54 removed, the zero padding dropped
+    private static byte[]? ClientBase(ReadOnlySpan<byte> p)
+    {
+        if (p.Length != 362) return null;
+        var o = new byte[105];
+        p[..54].CopyTo(o);
+        p.Slice(55, 105 - 54).CopyTo(o.AsSpan(54));
+        return o;
+    }
+
+    // CHARGEDBUFF {u32 0, count u16} + n x 22 -> {count u16} + n x 14
+    private static byte[]? ChargedBuff(ReadOnlySpan<byte> p)
+    {
+        if (p.Length < 6) return null;
+        int n = p[4] | (p[5] << 8);
+        if (p.Length != 6 + 22 * n) return null;
+        var o = new byte[2 + 14 * n];
+        o[0] = p[4]; o[1] = p[5];
+        for (var i = 0; i < n; i++) p.Slice(6 + 22 * i, 14).CopyTo(o.AsSpan(2 + 14 * i));
+        return o;
+    }
+
+    // SHOPOPEN tables {itemnum u16, npc u16} + n x {slot u32, item u16} -> n x {slot u8, item u16}
+    private static byte[]? ShopTable(ReadOnlySpan<byte> p)
+    {
+        if (p.Length < 4) return null;
+        int n = p[0] | (p[1] << 8);
+        if (p.Length != 4 + 6 * n) return null;
+        var o = new byte[4 + 3 * n];
+        p[..4].CopyTo(o);
+        for (var i = 0; i < n; i++)
+        {
+            o[4 + 3 * i] = p[4 + 6 * i];
+            o[5 + 3 * i] = p[8 + 6 * i];
+            o[6 + 3 * i] = p[9 + 6 * i];
+        }
         return o;
     }
 
