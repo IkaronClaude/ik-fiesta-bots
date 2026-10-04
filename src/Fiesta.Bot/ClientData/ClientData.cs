@@ -206,6 +206,11 @@ public sealed class ClientData
             UsableDegree: GetInt(row, "UsableDegree"),
             IsMovingSkill: GetInt(row, "IsMovingSkill") != 0,
             DelayTimeMs: GetInt(row, "DlyTime"),
+            // SHARED COOLDOWN: every skill with the same DlyGroupNum is blocked for DlyTimeGroup after any of them starts -
+            // every rank of one skill (Magic Missile 01-04 = 150), and some different skills too (operator: Ice Bolt and
+            // Ice Blast share, Fire Bolt and Fire Ball do not). The server refuses a cast inside it with 0x0FC8.
+            DelayGroup: GetInt(row, "DlyGroupNum"),
+            GroupDelayMs: GetInt(row, "DlyTimeGroup"),
             // ActiveSkill.DemandType separates real COMBAT skills from gathering/event toys
             DemandType: GetInt(row, "DemandType"),
             CastTimeMs: GetInt(row, "CastTime"),
@@ -887,7 +892,7 @@ public sealed record MobLocation(int MobId, string Map, int CenterX, int CenterY
 public sealed record PortalDest(int Index, int GroupNo, string Map, int MinLevel, uint X, uint Y);
 
 /// <summary>Combat-relevant fields of an ActiveSkill row, projected from the client table</summary>
-public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0, int DemandType = 0, int MaxMa = 0, int CastFrom = 0, int LandsOn = 0)
+public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0, int DemandType = 0, int MaxMa = 0, int CastFrom = 0, int LandsOn = 0, int DelayGroup = 0, int GroupDelayMs = 0)
 {
     /// <summary>How hard this skill hits, whichever school it uses: for a weapon skill, for a spell</summary>
     public int Damage => Math.Max(MaxWc, MaxMa);

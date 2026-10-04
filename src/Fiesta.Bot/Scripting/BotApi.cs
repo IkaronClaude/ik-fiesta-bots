@@ -57,9 +57,23 @@ public sealed class BotApi
 
     public double skillReadyInMs(int id)
     {
-        var si = _mgr.ClientData?.Skill(id);
+        var cd = _mgr.ClientData;
+        var si = cd?.Skill(id);
         if (si is null || View is null) return 0;      // unknown skill: never report a phantom cooldown
-        return View.SkillReadyInMs((ushort)id, si.DelayTimeMs, si.CastTimeMs);
+        var ready = View.SkillReadyInMs((ushort)id, si.DelayTimeMs, si.CastTimeMs);
+        if (si.DelayGroup == 0) return ready;
+        // SHARED COOLDOWN GROUP (ActiveSkill.DlyGroupNum): any skill of the group that started blocks this one for the
+        // started skill's DlyTimeGroup. MageZero's clone fight, cluster 2026-10-04: 11 of 27 casts refused with 0x0FC8
+        // because Magic Missile 01 and 04 (both group 150) were cast as if separate, leaving ~5s of a 30s fight idle.
+        foreach (var (other, started) in View.SkillStarts)
+        {
+            if (other == id) continue;
+            var oi = cd!.Skill(other);
+            if (oi is null || oi.DelayGroup != si.DelayGroup) continue;
+            var wait = Math.Max(oi.GroupDelayMs, 0) + Math.Max(oi.CastTimeMs, 0) - (DateTime.UtcNow - started).TotalMilliseconds;
+            if (wait > ready) ready = wait;
+        }
+        return ready;
     }
 
     /// <summary>Skill info from client ActiveSkill (cooldown ms, SP cost, range, facing arc) so scripts can track cooldowns /…</summary>

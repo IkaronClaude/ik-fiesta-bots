@@ -1239,6 +1239,10 @@ public sealed class ZoneView : IDisposable
 
     public void NoteSkillStarted(ushort skillId) => _skillStartedAt[skillId] = DateTime.UtcNow;
 
+    /// <summary>Every skill the server has confirmed STARTED this session, with when (for shared-cooldown groups)</summary>
+    public IReadOnlyList<(ushort SkillId, DateTime StartedUtc)> SkillStarts =>
+        _skillStartedAt.Select(kv => (kv.Key, kv.Value)).ToArray();
+
     /// <summary>When the server last confirmed this skill STARTED, or null if never</summary>
     public DateTime? SkillStartedAtUtc(ushort skillId) =>
         _skillStartedAt.TryGetValue(skillId, out var t) ? t : null;
