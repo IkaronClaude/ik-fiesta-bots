@@ -22,6 +22,24 @@ public static class Wire2026
 {
     public static bool Enabled { get; } = Environment.GetEnvironmentVariable("FIESTA_WIRE") == "2026";
 
+    /// <summary>
+    /// MAP_LOGIN_REQ as the 2026 client sends it, so a zone running bridge26 send=auto knows this is a 2026 client: 22 B head
+    /// + 53 checksums (1718 B) instead of 49 (1590). The 2026 list is the zone's minus slots 24/25 (MapLinkPoint, MapWayPoint
+    /// - the 2026 client has neither) plus six trailing ones the zone ignores (DeprecatedFiles + 5 quest tables): bridge26's
+    /// maplogin_2026_to_2016 inverted.
+    /// </summary>
+    public static FiestaPacket MapLoginAs2026(FiestaPacket p)
+    {
+        const int head = 22, sum = 32;
+        var s = p.Payload.Span;
+        if (s.Length != head + 49 * sum) return p;
+        var o = new byte[head + 53 * sum];
+        s[..(head + 24 * sum)].CopyTo(o);
+        s.Slice(head + 26 * sum, 23 * sum).CopyTo(o.AsSpan(head + 24 * sum));
+        o.AsSpan(head + 47 * sum).Fill((byte)'0');
+        return new FiestaPacket(p.Opcode, o);
+    }
+
     private static readonly ConcurrentDictionary<ushort, int> Mismatches = new();
 
     /// <summary>The opcodes the zone sends in a 2026 shape (bridge26 batches 1-3)</summary>

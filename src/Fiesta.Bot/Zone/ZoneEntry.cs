@@ -73,8 +73,10 @@ public sealed class ZoneEntry
                 req.checksum[i] = new Name8();
                 FillBytes(req.checksum[i].n8_name, _checksums[i]); // 32 ASCII hex chars
             }
-            await conn.SendAsync(req, ct);
-            _log($"[Zone] >> MAP_LOGIN_REQ (0x1801) handle={wmHandle} char='{charName}' (+49 checksums)");
+            var login = FiestaPacket.Create(req);
+            if (Net.Wire2026.Enabled) login = Net.Wire2026.MapLoginAs2026(login);   // the zone tells the clients apart by it
+            await conn.SendAsync(login, ct);
+            _log($"[Zone] >> MAP_LOGIN_REQ (0x1801) handle={wmHandle} char='{charName}' ({(login.Payload.Length - 22) / 32} checksums)");
 
             // After [1801] the server streams the chardata burst and ends it with MAP_LOGIN_ACK [1802]
             var deadline = DateTime.UtcNow.AddSeconds(10);
