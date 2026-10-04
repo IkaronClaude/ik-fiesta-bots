@@ -3,7 +3,11 @@ namespace Fiesta.Bot.Manager;
 public sealed class BotLogFile : IDisposable
 {
     public const int MaxLines = 10_000;
-    public const int MaxFiles = 10;
+    // How many rotated files are kept per bot (BOT_LOG_MAX_FILES, default 100). 10 held ~5 hours on the cluster
+    // (2026-10-04: FighterZero's ten 3.5 MB files spanned 16:46-22:06), too little to read a night back the next day;
+    // 100 is ~2 days at that rate, ~350 MB per bot on a volume with 84 GB free.
+    public static readonly int MaxFiles =
+        int.TryParse(Environment.GetEnvironmentVariable("BOT_LOG_MAX_FILES"), out var n) && n >= 2 ? n : 100;
 
     private readonly string _dir;
     private readonly string _id;
