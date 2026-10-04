@@ -183,6 +183,9 @@ public sealed class NpcKnowledge
         }
     }
 
+    public bool HasRosterEntry(string id) =>
+        !string.IsNullOrWhiteSpace(id) && File.Exists(Path.Combine(_rosterDir, ScriptFile(id)));
+
     public void SaveRosterEntry(string id, BotSpawnOptions opts)
     {
         if (string.IsNullOrWhiteSpace(id)) return;

@@ -52,7 +52,12 @@ public sealed class BotManager : IAsyncDisposable
     /// <summary>Start a bot. Non-blocking — the login chain runs in the background; watch the returned handle for progress</summary>
     public BotHandle Spawn(BotSpawnOptions options)
     {
-        var id = options.Id ?? $"b{Interlocked.Increment(ref _seq)}";
+        var id = options.Id ?? NextFreeId();
+        // The id goes INTO the options: Relog() and the roster replay re-spawn from them. Left null, every relog minted a
+        // new auto-id bot (saved to the roster as a new entry, the old one never forgotten) and then waited for the OLD
+        // id to reach the zone - 4 attempts, 4 more bots, each able to do the same. 2026-10-04: one GateBot spawn while
+        // the zones were down became 79,864 bots / ~10,000 sockets on the login port (89,918 roster files on disk).
+        options = options with { Id = id };
         var handle = new BotHandle(id, options);
         handle.AnnounceChat = options.Announce;   // the toggle is a spawn option too, so a relog/restart restores it
         if (!_bots.TryAdd(id, handle))
@@ -88,6 +93,17 @@ public sealed class BotManager : IAsyncDisposable
         }
         handle.RunTask = Task.Run(() => RunBotAsync(handle));
         return handle;
+    }
+
+    /// <summary>An auto-id no live bot and no saved roster entry uses: the counter restarts at 0 in every process, while a
+    /// restored roster already holds b1, b2, ... - a bare counter handed those out again (409, or a roster overwrite).</summary>
+    private string NextFreeId()
+    {
+        while (true)
+        {
+            var id = $"b{Interlocked.Increment(ref _seq)}";
+            if (!_bots.ContainsKey(id) && Knowledge?.HasRosterEntry(id) != true) return id;
+        }
     }
 
     public IReadOnlyList<BotHandle> List() => _bots.Values.OrderBy(b => b.Id).ToArray();
