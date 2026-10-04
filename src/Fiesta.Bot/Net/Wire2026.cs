@@ -16,12 +16,17 @@ namespace Fiesta.Bot.Net;
 ///
 /// Mirrors the zone plugin's batches; each inverse is the exact inverse of the proxy's T.* translator.
 ///   batch 1: 0x2448 SWING_DAMAGE, 0x2449 SOMEONESWING_DAMAGE, 0x243C DOTDAMAGE, 0x2452 SKILLBASH_HIT_DAMAGE, 0x2402 TARGETINFO
+///   batch 2: 0x244E / 0x2450 / 0x244F / 0x2451 the SKILLBASH *_START frames (+u32)
 /// </summary>
 public static class Wire2026
 {
     public static bool Enabled { get; } = Environment.GetEnvironmentVariable("FIESTA_WIRE") == "2026";
 
     private static readonly ConcurrentDictionary<ushort, int> Mismatches = new();
+
+    /// <summary>The opcodes the zone sends in a 2026 shape (bridge26 batches 1-2)</summary>
+    private static readonly HashSet<ushort> Translated =
+        [0x2448, 0x2449, 0x243C, 0x2452, 0x2402, 0x244E, 0x2450, 0x244F, 0x2451];
 
     /// <summary>The 2016-layout packet for a 2026-shape one; the packet itself when this opcode is not translated.</summary>
     public static FiestaPacket ToLegacy(FiestaPacket pkt, Action<string>? log = null)
@@ -34,9 +39,13 @@ public static class Wire2026
             0x2449 or 0x243C => Tail7(p),
             0x2452 => SkillHit(p),
             0x2402 => TargetInfo(p),
+            0x244E => Tail4(p, 6),                               // HIT_OBJ_START
+            0x2450 => Tail4(p, 12),                              // HIT_FLD_START
+            0x244F => Tail4(p, 8),                               // SOMEONE_HIT_OBJ_START
+            0x2451 => Tail4(p, 14),                              // SOMEONE_HIT_FLD_START
             _ => Array.Empty<byte>(),
         };
-        if (legacy is { Length: 0 } && pkt.Opcode is not (0x2448 or 0x2449 or 0x243C or 0x2452 or 0x2402))
+        if (legacy is { Length: 0 } && !Translated.Contains(pkt.Opcode))
             return pkt;                                          // not a translated opcode
         if (legacy is null)
         {
@@ -67,6 +76,9 @@ public static class Wire2026
         BinaryPrimitives.WriteUInt16LittleEndian(o.AsSpan(28), (ushort)BinaryPrimitives.ReadUInt32LittleEndian(p[28..]));
         return o;
     }
+
+    // the four SKILLBASH *_START frames: the 2016 struct + a trailing u32 (the zone sends 1)
+    private static byte[]? Tail4(ReadOnlySpan<byte> p, int size2016) => p.Length == size2016 + 4 ? p[..size2016].ToArray() : null;
 
     // 20 -> 13: the 2016 layout, 7 trailing bytes dropped
     private static byte[]? Tail7(ReadOnlySpan<byte> p) => p.Length == 20 ? p[..13].ToArray() : null;

@@ -401,6 +401,10 @@ public sealed class BotManager : IAsyncDisposable
     public Task<ActionResult> SayAsync(string id, string text, CancellationToken ct = default)
         => ActAsync(id, $"say: \"{text}\"", s => s.SendAsync(ChatCodec.BuildChatReq(text), ct));
 
+    /// <summary>Send a raw packet on the zone link (protocol tests: a 2026-shape request the zone must accept)</summary>
+    public Task<ActionResult> SendRawAsync(string id, ushort opcode, byte[] payload, CancellationToken ct = default)
+        => ActAsync(id, $"raw 0x{opcode:X4} {payload.Length} B", s => s.SendRawAsync(opcode, payload, ct));
+
     /// <summary>Whisper to the player named</summary>
     public Task<ActionResult> WhisperAsync(string id, string to, string text, CancellationToken ct = default)
         => ActAsync(id, $"whisper {to}: \"{text}\"", s => s.SendAsync(ChatCodec.BuildWhisperReq(to, text), ct));

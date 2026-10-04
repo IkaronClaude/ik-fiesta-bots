@@ -597,6 +597,8 @@ public sealed class BotApi
 
     // ── actions (C→S) ─────────────────────────────────────────────────────────
     public bool say(string text) => Ok(Wait(_mgr.SayAsync(Id, text)));
+    /// <summary>Send a raw packet on the zone link: opcode + payload as hex (protocol tests, e.g. 2026-shape requests)</summary>
+    public bool sendRaw(int opcode, string hex) => Ok(Wait(_mgr.SendRawAsync(Id, (ushort)opcode, Convert.FromHexString(hex))));
     public bool whisper(string to, string text) => Ok(Wait(_mgr.WhisperAsync(Id, to, text)));
     public bool cast(int skill, int target) => Ok(Wait(_mgr.CastAsync(Id, (ushort)skill, (ushort)target)));
     public bool castGround(int skill, double x, double y) => Ok(Wait(_mgr.CastGroundAsync(Id, (ushort)skill, (uint)x, (uint)y)));

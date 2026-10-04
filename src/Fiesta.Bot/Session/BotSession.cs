@@ -72,6 +72,13 @@ public sealed class BotSession : IAsyncDisposable
         catch (Exception ex) { _log($"[Session:{State.CharName}] logout send failed: {ex.Message}"); }
     }
 
+    /// <summary>Send a packet as given (opcode + payload) - for protocol tests, e.g. a 2026-shape request (Net.Wire2026)</summary>
+    public Task SendRawAsync(ushort opcode, byte[] payload, CancellationToken ct = default)
+    {
+        LastSentOpcode = opcode;
+        return _conn.SendAsync(new FiestaPacket(opcode, payload), ct);
+    }
+
     public Task SendAsync<T>(T body, CancellationToken ct = default) where T : IFiestaPacketBody
     {
         try { LastSentOpcode = PacketRegistry.GetOpcode<T>(); } catch { }
