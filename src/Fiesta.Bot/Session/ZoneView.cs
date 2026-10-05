@@ -3218,10 +3218,22 @@ public sealed class ZoneView : IDisposable
                     var skillId = (ushort)(p[off] | (p[off + 1] << 8));
                     // id 0 is a REAL skill
                     if (_skills.TryAdd(skillId, 1)) added++;
+                    // PROTO_SKILLREADBLOCKCLIENT (PDB, 12 B): skillid u16 @0, cooltime u32 @2, empow @6, MASTERY u32 @8.
+                    // The seed carries the production mastery total per recipe skill (operator 2026-10-05) - the same
+                    // counter 0x481D updates per craft. Seeding it here means a producer knows its mastery at login
+                    // instead of summing only the recipes it has crafted since the last relog (ArcherZero read 316
+                    // after a relog with 1100+ banked).
+                    if (off + SkillBlockLen <= p.Length)
+                    {
+                        var mastery = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(off + 8, 4));
+                        if (mastery > 0) _mastery[skillId] = mastery;
+                    }
                 }
                 if (added > 0)
                 {
                     _log?.Invoke($"[ZoneView] learned skills: {string.Join(",", _skills.Keys.OrderBy(k => k))}");
+                    var seeded = _mastery.Where(kv => kv.Value > 0).Select(kv => $"{kv.Key}={kv.Value}").ToList();
+                    if (seeded.Count > 0) _log?.Invoke($"[ZoneView] MASTERY seeded from the login skill list: {string.Join(",", seeded)}");
                     SkillsChanged?.Invoke();
                 }
             }
