@@ -355,6 +355,14 @@ public sealed class BotApi
         t["mainskill"] = v?.LastProductFieldSkill ?? -1; t["err"] = v?.LastProductFieldErr ?? -1; t["count"] = v?.ProductFieldCount ?? 0;
         return DynValue.NewTable(t);
     }
+    /// <summary>The production jobs (ProduceView.shn): {{skill, name, masteryType}...} - skill is what pickProductionJob takes</summary>
+    public DynValue productionJobs()
+    {
+        var t = NewTable(); int i = 1;
+        foreach (var (skill, name, mt) in _mgr.ClientData?.ProductionJobs() ?? [])
+        { var e = NewTable(); e["skill"] = skill; e["name"] = name; e["masteryType"] = mt; t[i++] = DynValue.NewTable(e); }
+        return DynValue.NewTable(t);
+    }
     /// <summary>A recipe: {id, name, product, lot, raws = {{item, qty}...}, masteryType, gain, neededType, needed}</summary>
     public DynValue recipe(int productId)
     {

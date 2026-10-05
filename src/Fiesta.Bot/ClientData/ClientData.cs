@@ -795,6 +795,15 @@ public sealed class ClientData
         return outp.OrderBy(r => r.NeededPoints).ThenBy(r => r.ProductId).ToList();
     }
 
+    /// <summary>The production jobs from ProduceView.shn: (job skill id = NC_SKILL_PRODUCTFIELD_REQ mainskill, name, mastery type)</summary>
+    public IReadOnlyList<(int SkillId, string Name, int MasteryType)> ProductionJobs()
+    {
+        var outp = new List<(int, string, int)>();
+        if (Table("ProduceView") is not { } t) return outp;
+        foreach (var row in t.Rows) outp.Add(((int)ToU32(row, "ID"), GetStr(row, "Name"), (int)ToU32(row, "MasteryType")));
+        return outp;
+    }
+
     /// <summary>Display name of a Produce mastery type (job) from ProduceView.shn</summary>
     public string? MasteryTypeName(int masteryType)
     {
