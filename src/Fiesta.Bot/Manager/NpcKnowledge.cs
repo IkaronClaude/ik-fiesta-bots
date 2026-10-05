@@ -33,6 +33,7 @@ public sealed class NpcKnowledge
         _unstorablePath = Path.Combine(baseDir, "unstorable-items.json");
         _mobThreatPath = Path.Combine(baseDir, "mob-threats.json");
         _scalarPath = Path.Combine(baseDir, "learned-scalars.json");
+        _blockerPath = Path.Combine(baseDir, "blockers.json");
         _scriptDir = Path.Combine(baseDir, "scripts");
         _rosterDir = Path.Combine(baseDir, "roster");   // spawn options per bot id — CREDENTIALS, never log/commit
         Load();
@@ -41,6 +42,7 @@ public sealed class NpcKnowledge
         LoadUnstorable();
         LoadMobThreat();
         LoadScalars();
+        LoadBlockers();
     }
 
     private static string QKey(string host, int questId) => $"{host}|{questId}";
@@ -419,6 +421,76 @@ public sealed class NpcKnowledge
                 File.WriteAllText(_mobThreatPath, json);
             }
             catch { /* persistence is best-effort; in-memory still works this session */ }
+        }
+    }
+
+    // ---- BLOCKERS: "this did not work" with a RETEST time, never a permanent ban ----------------------------------
+    // Operator 2026-10-05: persisting a failure "risks locking a quest up forever even if the blocker is temporary".
+    // So an entry only DEFERS: the next retest is due after 1h * 2^(fails-1), capped at 24h, or at once when the
+    // character has levelled past the level it failed at. A success clears it. The worst a temporary blocker costs is
+    // one retest per window. Key = knowledge scope (per bot) + a caller-chosen name (e.g. "scenario:10").
+    private readonly string _blockerPath;
+    private readonly object _blockerIoLock = new();
+    private readonly ConcurrentDictionary<string, Blocker> _blockers = new(StringComparer.Ordinal);
+
+    public sealed record Blocker(int Fails, DateTime LastFailUtc, int Level);
+
+    private static TimeSpan BlockerBackoff(int fails) =>
+        TimeSpan.FromHours(Math.Min(24.0, Math.Pow(2, Math.Max(0, fails - 1))));
+
+    /// <summary>Seconds until this blocker should be retested; 0 = test it now (unknown, expired, or we levelled past it)</summary>
+    public int BlockerRetestInSec(string scope, string name, int level)
+    {
+        if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(name)) return 0;
+        if (!_blockers.TryGetValue(SKey(scope, name), out var b)) return 0;
+        if (level > b.Level) return 0;
+        var due = b.LastFailUtc + BlockerBackoff(b.Fails);
+        var left = (due - DateTime.UtcNow).TotalSeconds;
+        return left > 0 ? (int)Math.Ceiling(left) : 0;
+    }
+
+    /// <summary>Record (and persist) one more confirmed failure; returns the new backoff in seconds</summary>
+    public int RecordBlocker(string scope, string name, int level)
+    {
+        if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(name)) return 0;
+        var b = _blockers.AddOrUpdate(SKey(scope, name),
+            _ => new Blocker(1, DateTime.UtcNow, level),
+            (_, o) => new Blocker(level > o.Level ? 1 : o.Fails + 1, DateTime.UtcNow, level));
+        SaveBlockers();
+        return (int)BlockerBackoff(b.Fails).TotalSeconds;
+    }
+
+    /// <summary>The thing worked: forget the blocker</summary>
+    public bool ClearBlocker(string scope, string name)
+    {
+        if (string.IsNullOrEmpty(scope) || string.IsNullOrEmpty(name)) return false;
+        if (!_blockers.TryRemove(SKey(scope, name), out _)) return false;
+        SaveBlockers();
+        return true;
+    }
+
+    private void LoadBlockers()
+    {
+        try
+        {
+            if (!File.Exists(_blockerPath)) return;
+            var d = JsonSerializer.Deserialize<Dictionary<string, Blocker>>(File.ReadAllText(_blockerPath));
+            if (d is not null) foreach (var (k, v) in d) _blockers[k] = v;
+        }
+        catch { /* a corrupt/missing store just starts empty */ }
+    }
+
+    private void SaveBlockers()
+    {
+        lock (_blockerIoLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_blockerPath)!);
+                File.WriteAllText(_blockerPath, JsonSerializer.Serialize(
+                    new SortedDictionary<string, Blocker>(_blockers), new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { /* best-effort; in-memory still works this session */ }
         }
     }
 

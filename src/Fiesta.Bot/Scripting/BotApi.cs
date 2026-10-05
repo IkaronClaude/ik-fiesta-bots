@@ -257,6 +257,14 @@ public sealed class BotApi
     /// <summary>Record + PERSIST that a flee happened while pursuing this quest's objective mob, at the current character leve…</summary>
     public void recordQuestDeprioritized(int questId, int atLevel) => _mgr.Knowledge.RecordQuestDeprioritized(_handle.KnowledgeScope, questId, atLevel);
 
+    /// <summary>Seconds until a recorded blocker (e.g. "scenario:10") should be retested; 0 = test it now. Persisted per bot,
+    /// backed off 1h, 2h, 4h ... 24h per confirmed failure, reset by a level-up - never a permanent ban.</summary>
+    public int blockerRetestInSec(string name) => _mgr.Knowledge.BlockerRetestInSec(_handle.KnowledgeScope, name, (int)_handle.Level);
+    /// <summary>Record one more confirmed failure of a blocker; returns the new backoff in seconds</summary>
+    public int recordBlocker(string name) => _mgr.Knowledge.RecordBlocker(_handle.KnowledgeScope, name, (int)_handle.Level);
+    /// <summary>The blocked thing worked: forget the blocker</summary>
+    public bool clearBlocker(string name) => _mgr.Knowledge.ClearBlocker(_handle.KnowledgeScope, name);
+
     /// <summary>Has the server already refused to STORE this item?</summary>
     public bool isUnstorable(int itemId) => _mgr.Knowledge.IsUnstorable(_handle.Options.Host, itemId);
 
