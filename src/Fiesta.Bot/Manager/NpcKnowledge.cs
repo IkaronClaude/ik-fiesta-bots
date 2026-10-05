@@ -35,6 +35,7 @@ public sealed class NpcKnowledge
         _scalarPath = Path.Combine(baseDir, "learned-scalars.json");
         _blockerPath = Path.Combine(baseDir, "blockers.json");
         _stockPath = Path.Combine(baseDir, "npc-stock.json");
+        _ledgerPath = Path.Combine(baseDir, "ledger.json");
         _scriptDir = Path.Combine(baseDir, "scripts");
         _rosterDir = Path.Combine(baseDir, "roster");   // spawn options per bot id — CREDENTIALS, never log/commit
         Load();
@@ -45,6 +46,7 @@ public sealed class NpcKnowledge
         LoadScalars();
         LoadBlockers();
         LoadStock();
+        LoadLedger();
     }
 
     private static string QKey(string host, int questId) => $"{host}|{questId}";
@@ -556,6 +558,76 @@ public sealed class NpcKnowledge
             }
             catch { /* best-effort */ }
         }
+    }
+
+    // ---- COMMISSION LEDGER (operator 2026-10-05): credit per CHARACTER NAME, gifted as cen over the trade window, and the
+    // open orders against it. ONE store for the whole host, so credit "works on all production bots at once". Key = the
+    // character's name (what every bot sees in chat / the player list); host-scoped, not per bot.
+    private readonly string _ledgerPath;
+    private readonly object _ledgerIoLock = new();
+    public sealed record Order(string Who, int Item, int Qty, long Quoted, string State, DateTime AtUtc, string Producer);
+    private sealed class Ledger
+    {
+        public Dictionary<string, long> Credit { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public List<Order> Orders { get; set; } = new();
+    }
+    private Ledger _ledger = new();
+
+    public long Credit(string who) { lock (_ledgerIoLock) return _ledger.Credit.TryGetValue(who ?? "", out var c) ? c : 0; }
+    /// <summary>Add (or, negative, spend) credit; returns the new balance</summary>
+    public long CreditAdd(string who, long cen)
+    {
+        if (string.IsNullOrEmpty(who)) return 0;
+        lock (_ledgerIoLock)
+        {
+            var c = (_ledger.Credit.TryGetValue(who, out var v) ? v : 0) + cen;
+            _ledger.Credit[who] = c;
+            SaveLedger();
+            return c;
+        }
+    }
+    public IReadOnlyList<Order> Orders() { lock (_ledgerIoLock) return _ledger.Orders.ToArray(); }
+    public void OrderAdd(string who, int item, int qty, long quoted, string producer)
+    {
+        lock (_ledgerIoLock) { _ledger.Orders.Add(new Order(who, item, qty, quoted, "open", DateTime.UtcNow, producer)); SaveLedger(); }
+    }
+    /// <summary>Change an order's state (open -> paid -> ready -> delivered / cancelled); the first matching order of that who+item+state</summary>
+    public bool OrderSet(string who, int item, string fromState, string toState)
+    {
+        lock (_ledgerIoLock)
+        {
+            for (int i = 0; i < _ledger.Orders.Count; i++)
+            {
+                var o = _ledger.Orders[i];
+                if (string.Equals(o.Who, who, StringComparison.OrdinalIgnoreCase) && o.Item == item && o.State == fromState)
+                {
+                    _ledger.Orders[i] = o with { State = toState };
+                    if (toState is "delivered" or "cancelled") _ledger.Orders.RemoveAt(i);
+                    SaveLedger();
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    private void LoadLedger()
+    {
+        try
+        {
+            if (!File.Exists(_ledgerPath)) return;
+            var d = JsonSerializer.Deserialize<Ledger>(File.ReadAllText(_ledgerPath));
+            if (d is not null) { d.Credit = new Dictionary<string, long>(d.Credit, StringComparer.OrdinalIgnoreCase); _ledger = d; }
+        }
+        catch { /* a corrupt/missing store just starts empty */ }
+    }
+    private void SaveLedger()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_ledgerPath)!);
+            File.WriteAllText(_ledgerPath, JsonSerializer.Serialize(_ledger, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch { /* best-effort */ }
     }
 
     private readonly string _scalarPath;

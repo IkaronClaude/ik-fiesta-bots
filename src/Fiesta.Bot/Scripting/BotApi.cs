@@ -334,6 +334,29 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    // ---- CHAT (read) + COMMISSION LEDGER (operator 2026-10-05) ----
+    /// <summary>The last `max` chat lines seen: {{handle, name, text, ageMs}...}, oldest first; chatCount() is monotonic</summary>
+    public DynValue recentChat(int max = 32)
+    {
+        var t = NewTable(); int i = 1;
+        foreach (var c in View?.RecentChat(max) ?? [])
+        { var e = NewTable(); e["handle"] = c.Handle; e["name"] = c.SenderName ?? ""; e["text"] = c.Text; e["ageMs"] = (DateTime.UtcNow - c.AtUtc).TotalMilliseconds; t[i++] = DynValue.NewTable(e); }
+        return DynValue.NewTable(t);
+    }
+    public int chatCount() => View?.ChatCount ?? 0;
+    public double credit(string who) => _mgr.Knowledge.Credit(who);
+    public double creditAdd(string who, double cen) => _mgr.Knowledge.CreditAdd(who, (long)cen);
+    public void orderAdd(string who, int item, int qty, double quoted) => _mgr.Knowledge.OrderAdd(who, item, qty, (long)quoted, Id);
+    public bool orderSet(string who, int item, string fromState, string toState) => _mgr.Knowledge.OrderSet(who, item, fromState, toState);
+    /// <summary>All open orders on the host: {{who, item, qty, quoted, state, producer, ageMs}...}</summary>
+    public DynValue orders()
+    {
+        var t = NewTable(); int i = 1;
+        foreach (var o in _mgr.Knowledge.Orders())
+        { var e = NewTable(); e["who"] = o.Who; e["item"] = o.Item; e["qty"] = o.Qty; e["quoted"] = (double)o.Quoted; e["state"] = o.State; e["producer"] = o.Producer; e["ageMs"] = (DateTime.UtcNow - o.AtUtc).TotalMilliseconds; t[i++] = DynValue.NewTable(e); }
+        return DynValue.NewTable(t);
+    }
+
     // ---- PLAYER TRADE (operator 2026-10-05: money for scrolls between bots) ----
     public bool tradePropose(int handle) => Ok(Wait(_mgr.TradeProposeAsync(Id, (ushort)handle)));
     public bool tradeAnswer(bool yes) => Ok(Wait(_mgr.TradeAnswerAsync(Id, yes)));

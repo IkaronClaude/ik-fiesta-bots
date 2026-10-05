@@ -461,6 +461,14 @@ public sealed class ZoneView : IDisposable
     /// <summary>Count of NPCs in the current map's seed roster (for logging/diagnostics)</summary>
     public int NpcSeedCount => _npcSeed.Count;
     public ChatMessage? LastChat { get; private set; }
+    // the last 64 chat lines, newest last - the commission flow (operator 2026-10-05) talks in chat: "I need 5x def t1"
+    private readonly Queue<ChatMessage> _chatRing = new();
+    private readonly object _chatLock = new();
+    public int ChatCount { get; private set; }
+    public IReadOnlyList<ChatMessage> RecentChat(int max = 64)
+    {
+        lock (_chatLock) return _chatRing.Reverse().Take(Math.Max(1, max)).Reverse().ToArray();
+    }
 
     /// <summary>Handle of the most recently killed entity (from REALLYKILL) — lets a grind script confirm a kill landed and mo…</summary>
     public ushort LastKill { get; private set; }
@@ -3301,6 +3309,7 @@ public sealed class ZoneView : IDisposable
                 var name = _nearby.TryGetValue(handle, out var p) ? p.Name : null;
                 var msg = new ChatMessage(handle, name, text);
                 LastChat = msg;
+                lock (_chatLock) { _chatRing.Enqueue(msg); ChatCount++; while (_chatRing.Count > 64) _chatRing.Dequeue(); }
                 _log?.Invoke($"[ZoneView] chat <{name ?? $"h{handle}"}>: {text}");
                 ChatReceived?.Invoke(msg);
             }
