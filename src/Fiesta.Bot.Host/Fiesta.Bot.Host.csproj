@@ -1,6 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
+    <!-- WORKSTATION GC, MEASURED (2026-10-05). The Web SDK defaults to Server GC; with the pod's 2-core limit that is two
+         heaps with a gen0 budget of hundreds of MB, so gen0 ran rarely and each run marked a huge MoonSharp object graph:
+         the Lua tick profiler logged gc=518ms/1/0/0 (ONE gen0 collection, 518 ms) on a tick that allocated 1.2 MB, and
+         every bot's tick stalls with it (NewMage at tickMs=50 ran 300-960 ms ticks). Workstation concurrent GC collects
+         gen0 small and often (single-digit ms) - the right trade for a 20 Hz tick loop; throughput is not the goal. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
