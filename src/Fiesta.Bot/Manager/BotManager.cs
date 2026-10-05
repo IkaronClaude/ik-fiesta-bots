@@ -2862,6 +2862,26 @@ public sealed class BotManager : IAsyncDisposable
                             {
                                 // HOLD if EITHER we're already in melee (dist < holdRange) OR the approach is WEDGED (MoveFailStreak ≥ 2 = we've…
                                 var why = dist < holdRange ? $"in melee ({dist:F0}u)" : $"WEDGED approaching (streak {handle.MoveFailStreak})";
+                                // HOLDING ONLY WORKS IF THE MOB COMES TO US. A ranged mob never does, and "in melee" by our own
+                                // numbers while the server keeps saying OUT OF RANGE means the belief (ours or the target's
+                                // position) is wrong. NewFighter, JCQ room 2 (cluster 2026-10-05): ~450 refusals in a row at
+                                // 44-71u from a Shadow Skeleton Archer, standing still and getting shot. After 3 such refusals
+                                // within 5s, take the same real step as the desync branch below: the server either accepts it
+                                // (we were wrong) or MOVEFAILs (snapping us to the truth).
+                                var now = DateTime.UtcNow;
+                                handle.InstanceHoldFails = (now - handle.InstanceHoldFailAt).TotalSeconds <= 5 ? handle.InstanceHoldFails + 1 : 1;
+                                handle.InstanceHoldFailAt = now;
+                                if (dist < holdRange && handle.InstanceHoldFails >= 3 && dist > 0.5)
+                                {
+                                    handle.InstanceHoldFails = 0;
+                                    Log($"[combat] cast out of range (0x{reason:X4}) in instance 3x while {why} by our numbers — " +
+                                        "a POSITION DESYNC or a ranged mob that will not come: stepping toward it to force the truth");
+                                    var (sx, sy) = (pos.X, pos.Y);
+                                    var stepX = (uint)Math.Max(0, sx + (dx / dist) * DesyncProbeStep);
+                                    var stepY = (uint)Math.Max(0, sy + (dy / dist) * DesyncProbeStep);
+                                    _ = Task.Run(() => WalkAsync(botId, sx, sy, stepX, stepY, ct), ct);
+                                    return;
+                                }
                                 Log($"[combat] cast out of range (0x{reason:X4}) in instance, {why} — HOLDING + autoAttack, letting the aggroing mob come (not chasing into a wall)");
                             }
                             else

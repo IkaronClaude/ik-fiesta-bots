@@ -1539,7 +1539,7 @@ public sealed class BotApi
             var (gtx, gty) = grid.WorldToTile(x, y);
             bool startUnwalkable = !grid.IsWalkableTile(stx, sty);
             _handle.Log($"[nav] walkTo ({x},{y}) UNREACHABLE on {map} after {sw.ElapsedMilliseconds}ms — " +
-                $"start=({stx},{sty})walk={startUnwalkable} goal=({gtx},{gty})walk={grid.IsWalkableTile(gtx, gty)} " +
+                $"start=({stx},{sty})walk={!startUnwalkable} goal=({gtx},{gty})walk={grid.IsWalkableTile(gtx, gty)} " +
                 $"grid={grid.WidthTiles}x{grid.HeightTiles}");
             // BLIND-MOVE ESCAPE (2026-07-17): the .shbd marks the bot's OWN tile unwalkable, but the SERVER has it standing there
             if (startUnwalkable)

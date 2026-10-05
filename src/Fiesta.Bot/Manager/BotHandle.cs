@@ -357,6 +357,10 @@ public sealed class BotHandle
     /// <summary>MOVEFAIL-streak tracking for the perpendicular-to-wall UNSTICK (operator 2026-07-13): the snap-back position of the last MOVEFAIL and how many in a row landed at ~the same spot</summary>
     public (uint X, uint Y)? LastMoveFailPos { get; internal set; }
     public int MoveFailStreak { get; internal set; }
+    /// <summary>Consecutive in-instance casts refused OUT OF RANGE while our own geometry says we are in melee, and when
+    /// the last one was (UTC). Three in a row means the belief is wrong, not the distance - see BotManager's hold branch.</summary>
+    internal int InstanceHoldFails;
+    internal DateTime InstanceHoldFailAt;
     public DateTime LastUnstickUtc { get; internal set; }
 
     private volatile object? _selfHandleBox; // ushort? boxed (volatile needs reference)
