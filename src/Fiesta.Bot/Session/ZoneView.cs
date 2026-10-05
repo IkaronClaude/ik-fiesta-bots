@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Navigation;
 using FiestaLibReloaded.Networking;
@@ -2797,7 +2797,7 @@ public sealed class ZoneView : IDisposable
             {
                 case 2: TradeReset("asked"); TradeProposer = U16(0); TradeOpposite = TradeProposer; what = $"PROPOSE_ASK_REQ proposer={TradeProposer}"; break;
                 case 3: what = "PROPOSE_ASKNO_ACK"; break;
-                case 4: TradeReset("none"); what = "PROPOSENO_ACK (declined)"; break;
+                case 4: TradeReset("none"); TradeLastErr = U16(0); what = $"PROPOSENO_ACK (declined) code=0x{TradeLastErr:X4}"; break;   // 0x06C8 = target in an NPC window
                 case 5: what = "PROPOSE_ASKYES_ACK"; break;
                 case 6: what = "PROPOSEYES_ACK"; break;
                 case 7: case 8: TradeReset("none"); what = cmd == 7 ? "PROPOSE_CANCEL_CMD" : "PROPOSE_CANCELED_CMD"; break;
