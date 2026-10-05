@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using Fiesta.Bot.Behaviors;
 using Fiesta.Bot.Login;
 using Fiesta.Bot.Metrics;
@@ -459,12 +459,12 @@ public sealed class BotManager : IAsyncDisposable
         handle.LastCastTarget = target;
         var (needFace, needStop) = ResolveFaceStop(skill, stopFirst);
         // SKILL-CAST THROUGHPUT in an instance (P0 tick 78, boss-fight DPS): FaceAndStop's tiny MOVERUN step MOVEFAILs i…
-        if (handle.ZoneView is { } zv && zv.InScenarioInstance
-            && zv.LastRealDamageDealtAtUtc > DateTime.MinValue
-            && (DateTime.UtcNow - zv.LastRealDamageDealtAtUtc).TotalMilliseconds < 2500)
-        {
-            needFace = false; needStop = false;
-        }
+        // THE INSTANCE OVERRIDE BELOW IS GONE (2026-10-05). It skipped face+stop for 2.5 s after any damage dealt, on
+        // the theory that a recent hit proves we are faced. A KITING caster disproves it every step: NewMage vs the
+        // clone, 21:49-21:50, 6 of 28 casts refused 0x0FCA with dist 52-128 (in reach 400) and offBy 157-167 deg --
+        // it had just stepped away and cast with its back to the target. NeedsFacingAdjust() measures the geometry
+        // and already returns false when the facing is fine, so the throughput case keeps its no-face path; only a
+        // genuinely mis-faced cast now pays the 16u face step.
         // IT IS THE **MOVERUN**, NOT THE STOP, THAT KILLS THE AUTO-ATTACK (Z:/CombatPriest.pcapng, operator's deliberate…
         var adjust = NeedsFacingAdjust(handle, skill, target);
         if (!adjust) { needFace = false; needStop = false; }
