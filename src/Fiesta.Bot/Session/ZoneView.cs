@@ -78,6 +78,7 @@ public sealed class ZoneView : IDisposable
     private static readonly ushort OpRegenMob = PacketRegistry.GetOpcode<PROTO_NC_BRIEFINFO_REGENMOB_CMD>();
     // Mover (mount) ride state — self only (0xCC02/0xCC06; 0xCC04 = someone else)
     private const ushort OpItemRelocAck = 0x300C;
+    private const ushort OpItemSplitAck = 0x300E;   // NC_ITEM_SPLIT_ACK (dept 12 cmd 14)
     private const ushort OpCreateCastBar = 0x2047;
     private const ushort OpCancelCastBar = 0x2048;
     private const ushort OpActMoveSpeed = 0x203E;
@@ -867,6 +868,10 @@ public sealed class ZoneView : IDisposable
     public double SpStoneReadyInMs => SpStoneCooldownMs < 0 || LastSpStoneSuccessUtc == DateTime.MinValue
         ? -1
         : Math.Max(0, SpStoneCooldownMs - (DateTime.UtcNow - LastSpStoneSuccessUtc).TotalMilliseconds);
+
+    /// <summary>Result code from the most recent NC_ITEM_SPLIT_ACK (0x300E), -1 if none seen; the stamp tells a fresh one from a stale one</summary>
+    public int LastSplitAckCode { get; private set; } = -1;
+    public DateTime LastSplitAckAtUtc { get; private set; } = DateTime.MinValue;
 
     /// <summary>Result code from the most recent NC_ITEM_RELOC_ACK (0x300C), -1 if none seen</summary>
     public int LastRelocAckCode { get; private set; } = -1;
@@ -1848,6 +1853,15 @@ public sealed class ZoneView : IDisposable
                 _logLevel?.Invoke(BotLogLevel.Info,
                     $"[ZoneView] RELOC_ACK (0x300C) code={LastRelocAckCode} (0x{LastRelocAckCode:X4})");
             }
+        }
+        else if (op == OpItemSplitAck)
+        {
+            // NC_ITEM_SPLIT_ACK: no PDB layout in the extract - logged raw; a u16 code when 2 bytes (RELOC's shape)
+            var rp = pkt.Payload.Span;
+            LastSplitAckCode = rp.Length >= 2 ? rp[0] | (rp[1] << 8) : (rp.Length == 1 ? rp[0] : 0);
+            LastSplitAckAtUtc = DateTime.UtcNow;
+            _logLevel?.Invoke(BotLogLevel.Note,
+                $"[ZoneView] SPLIT_ACK (0x300E) code={LastSplitAckCode} (0x{LastSplitAckCode:X4}) len={rp.Length} hex={Convert.ToHexString(rp)}");
         }
         else if (op == OpCreateCastBar)
         {

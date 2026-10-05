@@ -1752,6 +1752,41 @@ public sealed class BotManager : IAsyncDisposable
         _ => "unknown",
     };
 
+    /// <summary>
+    /// SPLIT `lot` off the stack in bag slot `fromSlot` into the lowest free bag slot (NC_ITEM_SPLIT_REQ {from, to, lot}),
+    /// and VERIFY the new cell fills. Returns the new slot, or -1. A trade boards a whole inventory cell (UPBOARD_REQ has
+    /// no lot - the first live trade moved a stack of 3 for one scroll's price), so delivering an exact count needs this.
+    /// </summary>
+    public async Task<int> SplitItemAsync(string id, byte fromSlot, uint lot, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return -1;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s || handle.ZoneView is not { } view) return -1;
+        if (!view.Inventory.TryGetValue(fromSlot, out var item)) { handle.Log(BotLogLevel.Note, $"CRUTCH[WARN] split: bag slot {fromSlot} is empty"); return -1; }
+        int to = -1;
+        for (var i = 0; i < view.BagCapacity; i++) if (!view.Inventory.ContainsKey((byte)i)) { to = i; break; }
+        if (to < 0) { handle.Log(BotLogLevel.Note, "CRUTCH[WARN] split: no free bag slot"); return -1; }
+        var ackBefore = view.LastSplitAckAtUtc;
+        await s.SendAsync(new PROTO_NC_ITEM_SPLIT_REQ
+        {
+            from = new FiestaLibReloaded.Networking.Structs.ITEM_INVEN { Inven = (ushort)(MainBagBox << 10 | fromSlot) },
+            to = new FiestaLibReloaded.Networking.Structs.ITEM_INVEN { Inven = (ushort)(MainBagBox << 10 | to) },
+            lot = lot,
+        }, ct);
+        handle.Log(BotLogLevel.Note, $"ITEM SPLIT_REQ: {lot} of item {item} from bag slot {fromSlot} -> slot {to} (0x300D)");
+        for (var waited = 0; waited < 3000; waited += 50)
+        {
+            if (view.Inventory.TryGetValue((byte)to, out var now) && now == item)
+            {
+                handle.Log(BotLogLevel.Note, $"ITEM SPLIT ok: slot {to} now holds item {item} x{lot}");
+                return to;
+            }
+            await Task.Delay(50, ct);
+        }
+        var ackTxt = view.LastSplitAckAtUtc > ackBefore ? $"SPLIT_ACK code=0x{view.LastSplitAckCode:X4}" : "no SPLIT_ACK";
+        handle.Log(BotLogLevel.Note, $"CRUTCH[WARN] ITEM SPLIT FAILED: slot {to} never filled in 3s ({ackTxt})");
+        return -1;
+    }
+
     /// <summary>Sell of the bag item at to the open shop (NC_ITEM_SELL_REQ {slot, lot})</summary>
     public Task<ActionResult> SellAsync(string id, byte slot, uint lot, CancellationToken ct = default)
         => ActAsync(id, $"sell slot {slot} x{lot}",

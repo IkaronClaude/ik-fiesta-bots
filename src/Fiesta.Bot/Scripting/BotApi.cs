@@ -274,6 +274,12 @@ public sealed class BotApi
     /// <summary>The reason code from the last NC_ITEM_RELOC_ACK (0x300C), or -1 if none seen</summary>
     public int lastRelocAck() => View?.LastRelocAckCode ?? -1;
 
+    /// <summary>Split `lot` off the stack in bag `slot` into a free bag slot; returns the new slot or -1 (verified by the cell filling)</summary>
+    public int splitItem(int slot, int lot) => Wait(_mgr.SplitItemAsync(Id, (byte)slot, (uint)Math.Max(1, lot)));
+    public int lastSplitAck() => View?.LastSplitAckCode ?? -1;
+    /// <summary>This bot's own character name (what other players and chat see)</summary>
+    public string charName() => _handle.CharName ?? _handle.Options.Character ?? Id;
+
     /// <summary>Clear this quest's flee-deprioritization; true if a mark was removed</summary>
     public bool clearQuestDeprioritized(int questId) => _mgr.Knowledge.ClearQuestDeprioritized(_handle.KnowledgeScope, questId);
 
