@@ -669,6 +669,9 @@ public sealed class ClientData
         return onPreferField ?? bestField ?? onPrefer ?? best;
     }
 
+    /// <summary>Every mob id that has at least one MobCoordinate.shn row</summary>
+    public IEnumerable<int> MobCoordinateMobIds => MobCoords().Keys;
+
     /// <summary>All maps a mob spawns on (the largest spawn patch per map), from MobCoordinate.shn</summary>
     public IReadOnlyList<MobLocation> MobCoordinatesAll(int mobId)
     {

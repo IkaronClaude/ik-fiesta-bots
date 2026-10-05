@@ -1112,6 +1112,44 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>FIELD maps ranked for grinding mobs of level minLevel..maxLevel, from client MobCoordinate.shn + MobInfo.shn:
+    /// only normal (GradeType 0), non-NPC, enemy-side mobs with a real spawn patch, never an inside map (dungeon/instance).
+    /// Each entry: {map, area (summed patch area of in-band mobs), mobs = {ids}, x, y (centre of the largest in-band patch)},
+    /// best first. Lets the driver pick a grind field from data instead of a baked map name.</summary>
+    public DynValue grindMaps(int minLevel, int maxLevel)
+    {
+        var t = NewTable();
+        var cd = _mgr.ClientData;
+        if (cd is null) return DynValue.NewTable(t);
+        var byMap = new Dictionary<string, (long area, List<int> mobs, GameData.MobLocation best)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mobId in cd.MobCoordinateMobIds)
+        {
+            var m = cd.Mob(mobId);
+            if (m is null || m.IsNpc || m.IsPlayerSide || m.GradeType != 0) continue;
+            if (m.Level < minLevel || m.Level > maxLevel) continue;
+            foreach (var loc in cd.MobCoordinatesAll(mobId))
+            {
+                long area = (long)loc.Width * loc.Height;
+                if (area <= 0 || cd.MapInside(loc.Map)) continue;
+                if (!byMap.TryGetValue(loc.Map, out var e)) e = (0, new List<int>(), loc);
+                if (area > (long)e.best.Width * e.best.Height) e.best = loc;
+                e.area += area; e.mobs.Add(mobId);
+                byMap[loc.Map] = e;
+            }
+        }
+        int i = 1;
+        foreach (var (map, e) in byMap.OrderByDescending(kv => kv.Value.area).ThenBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var r = NewTable();
+            r["map"] = map; r["area"] = e.area; r["x"] = e.best.CenterX; r["y"] = e.best.CenterY;
+            var mobs = NewTable(); int j = 1;
+            foreach (var id in e.mobs) mobs[j++] = id;
+            r["mobs"] = DynValue.NewTable(mobs);
+            t[i++] = DynValue.NewTable(r);
+        }
+        return DynValue.NewTable(t);
+    }
+
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate on not bot.hpStoneDepleted() so the…</summary>
