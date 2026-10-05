@@ -31,6 +31,8 @@ public sealed record NearbyNpc(ushort Handle, ushort MobId, byte Mode, uint X, u
 /// <summary>An in-zone chat line overheard from a nearby speaker</summary>
 public sealed record ChatMessage(ushort Handle, string? SenderName, string Text)
 {
+    /// <summary>A WHISPER to us (NC_ACT_SOMEONEWHISPER_CMD) rather than local chat; the talker comes as a NAME, Handle is 0</summary>
+    public bool Whisper { get; init; }
     public DateTime AtUtc { get; init; } = DateTime.UtcNow;
 }
 
@@ -3314,6 +3316,25 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[ZoneView] quest dialogue: quest {questId} qsc=0x{qsc:X2} dialog={dialogId} (answer to proceed)");
                 QuestPrompt?.Invoke(step);
             }
+        }
+        else if (op == ChatCodec.SomeoneWhisperOpcode)
+        {
+            // [itemLinkDataCount u8][talker Name5 20][flag u8][len u8][content] (PDB: PROTO_NC_ACT_SOMEONEWHISPER_CMD)
+            if (ChatCodec.TryDecodeSomeoneWhisper(pkt.Payload.Span, out var talker, out var wtext))
+            {
+                var msg = new ChatMessage(0, talker, wtext) { Whisper = true };
+                LastChat = msg;
+                lock (_chatLock) { _chatRing.Enqueue(msg); ChatCount++; while (_chatRing.Count > 64) _chatRing.Dequeue(); }
+                _logLevel?.Invoke(BotLogLevel.Note, $"[ZoneView] whisper <{talker}>: {wtext}");
+                ChatReceived?.Invoke(msg);
+            }
+        }
+        else if (op == ChatCodec.WhisperFailOpcode)
+        {
+            var rp = pkt.Payload.Span;
+            var err = rp.Length >= 2 ? rp[0] | (rp[1] << 8) : -1;
+            var who = rp.Length >= 22 ? FiestaText.Decode(rp.Slice(2, 20)).TrimEnd(' ') : "?";
+            _logLevel?.Invoke(BotLogLevel.Note, $"[ZoneView] WHISPER FAILED to {who}: error 0x{err:X4} (offline / no such player)");
         }
         else if (op == ChatCodec.SomeoneChatOpcode)
         {

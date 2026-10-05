@@ -348,7 +348,7 @@ public sealed class BotApi
     {
         var t = NewTable(); int i = 1;
         foreach (var c in View?.RecentChat(max) ?? [])
-        { var e = NewTable(); e["handle"] = c.Handle; e["name"] = c.SenderName ?? ""; e["text"] = c.Text; e["ageMs"] = (DateTime.UtcNow - c.AtUtc).TotalMilliseconds; t[i++] = DynValue.NewTable(e); }
+        { var e = NewTable(); e["handle"] = c.Handle; e["name"] = c.SenderName ?? ""; e["text"] = c.Text; e["whisper"] = c.Whisper; e["ageMs"] = (DateTime.UtcNow - c.AtUtc).TotalMilliseconds; t[i++] = DynValue.NewTable(e); }
         return DynValue.NewTable(t);
     }
     public int chatCount() => View?.ChatCount ?? 0;
