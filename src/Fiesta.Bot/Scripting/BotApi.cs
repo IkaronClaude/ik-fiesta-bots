@@ -120,6 +120,8 @@ public sealed class BotApi
         t["buyPrice"] = it.BuyPrice;
         // 2 bow / 10 crossbow / 3 staff / 11 wand = RANGED auto-attack; the melee types are 1/4/5/13/17/18/19/21
         t["weaponType"] = it.WeaponType;
+        // ItemUseSkill: "UsePotion" = a potion, "UseSkill" = a skill/recipe book, "UseScroll" = a buff scroll ... (ItemInfo)
+        t["useSkill"] = it.UseSkill ?? "";
         // gradeType 0 = ordinary/replaceable gear (every plain smith-bought item — Leather/Chain Boots, Chain Helmet/Pan…
         t["gradeType"] = it.GradeType;
         // twoHand = a 2-handed weapon (occupies BOTH hand slots — Equip 10 left + 12 right)

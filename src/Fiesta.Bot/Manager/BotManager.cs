@@ -2414,7 +2414,13 @@ public sealed class BotManager : IAsyncDisposable
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } session)
             return ActionResult.NotInZone;
-        await send(session);
+        try { await send(session); }
+        catch (ObjectDisposedException)
+        {
+            // the zone link was replaced under us (revive -> respawn handoff): not an error for the script, just "not in zone"
+            handle.Log(BotLogLevel.Info, $"{logLine} - zone link gone (disposed), not sent");
+            return ActionResult.NotInZone;
+        }
         handle.Log(logLine);
         return ActionResult.Sent;
     }

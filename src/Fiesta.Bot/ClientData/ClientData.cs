@@ -379,7 +379,7 @@ public sealed class ClientData
             GetInt(row, "TwoHand") != 0, GetInt(row, "ShieldAC"),
             GetInt(row, "BuyPrice"),
             // WeaponType tells us whether our AUTO-ATTACK reaches: 2 bow, 10 crossbow, 3 staff, 11 wand are RANGED; 1/4/5/13…
-            GetInt(row, "WeaponType"));
+            GetInt(row, "WeaponType", GetStr(row, "ItemUseSkill")));
     }
 
     /// <summary>The display name of a skill id from client ActiveSkill (col "Name")</summary>
@@ -946,7 +946,7 @@ public sealed record MobData(int Id, string Name, string InxName, int Level, int
 public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
     int EquipSlot, bool IsScroll, int Type = 0, int GradeType = 0, int ItemClass = 0,
     int MaxLot = 0, int SellPrice = 0, bool TwoHand = false, int ShieldAc = 0, int BuyPrice = 0,
-    int WeaponType = 0);
+    int WeaponType = 0, string UseSkill = "");
 
 /// <summary>Where a mob type spawns, from client MobCoordinate.shn : the short-name and the / of its main spawn field (wit…</summary>
 public sealed record MobLocation(int MobId, string Map, int CenterX, int CenterY, int Width, int Height);
