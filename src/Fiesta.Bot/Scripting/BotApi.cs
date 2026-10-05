@@ -279,6 +279,8 @@ public sealed class BotApi
     public int lastSplitAck() => View?.LastSplitAckCode ?? -1;
     /// <summary>This bot's own character name (what other players and chat see)</summary>
     public string charName() => _handle.CharName ?? _handle.Options.Character ?? Id;
+    /// <summary>This bot's host id (the roster key; what the order book records as the producer)</summary>
+    public string id() => Id;
 
     /// <summary>Clear this quest's flee-deprioritization; true if a mark was removed</summary>
     public bool clearQuestDeprioritized(int questId) => _mgr.Knowledge.ClearQuestDeprioritized(_handle.KnowledgeScope, questId);
