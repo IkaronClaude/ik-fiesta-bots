@@ -395,6 +395,8 @@ public sealed class BotApi
 
     /// <summary>True while a movement-blocking abnormal state (stun/root/entangle</summary>
     public bool rooted() => View?.Rooted ?? false;
+    /// <summary>True while a STUN is active on the bot (actions blocked: skills cannot be cast, HP stones still can)</summary>
+    public bool stunned() => View?.Stunned ?? false;
 
     /// <summary>The abnormal-state indices currently active on US (unexpired), as a Lua array</summary>
     public DynValue selfAbstates()

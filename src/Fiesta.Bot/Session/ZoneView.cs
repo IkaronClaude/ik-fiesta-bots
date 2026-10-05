@@ -1556,6 +1556,23 @@ public sealed class ZoneView : IDisposable
         }
     }
 
+    /// <summary>True while a STUN (blocks actions, not just movement) is active on the bot: no skill can be cast, but an
+    /// HP soul stone still can - so a heal-spell user must fall back to stones (operator 2026-10-05: "against enemies who can
+    /// stun stones become relevant"). Rooted is the wider set (roots/entangles still allow casting).</summary>
+    public bool Stunned
+    {
+        get
+        {
+            if (IsStunAbstate is not { } f) return false;
+            long now = Environment.TickCount64;
+            lock (_selfAbstateLock)
+            {
+                foreach (var kv in _selfAbstates) if (kv.Value > now && f(kv.Key)) return true;
+                return false;
+            }
+        }
+    }
+
     /// <summary>Snapshot of the abstate indices currently active (unexpired) on the bot (for loud logging)</summary>
     public uint[] SelfAbstateSnapshot()
     {
