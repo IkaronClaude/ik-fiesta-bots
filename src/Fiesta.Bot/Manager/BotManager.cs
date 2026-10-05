@@ -1857,6 +1857,31 @@ public sealed class BotManager : IAsyncDisposable
         => ActAsync(id, $"CRAFT produceskill={productId} (NC_ACT_PRODUCE_CAST_REQ) - awaiting 0x203B",
             s => s.SendAsync(new PROTO_NC_ACT_PRODUCE_CAST_REQ { produceskill = productId }, ct));
 
+    // Player trade (dept 19 = 0x4C00 | cmd; see ZoneView's trade notes). Bodies the client PDB lacks are sent empty and
+    // verified live between two of our own bots - a refusal shows up as the FAIL ack / a disconnect in the log.
+    private static ushort TradeOp(int cmd) => (ushort)((19 << 10) | cmd);
+    private Task<ActionResult> TradeSendAsync(string id, string what, int cmd, byte[] body, CancellationToken ct)
+        => ActAsync(id, $"TRADE {what} (0x{TradeOp(cmd):X4}, {body.Length} B)", s => s.SendAsync(new FiestaPacket(TradeOp(cmd), body), ct));
+    public Task<ActionResult> TradeProposeAsync(string id, ushort handle, CancellationToken ct = default)
+    {
+        if (_bots.TryGetValue(id, out var h)) h.ZoneView?.NoteTradeProposed(handle);
+        return TradeSendAsync(id, $"PROPOSE_REQ to h={handle}", 1, new[] { (byte)handle, (byte)(handle >> 8) }, ct);
+    }
+    public Task<ActionResult> TradeAnswerAsync(string id, bool yes, CancellationToken ct = default)
+        => TradeSendAsync(id, yes ? "PROPOSEYES_ACK (accept)" : "PROPOSE_ASKNO_ACK (decline)", yes ? 6 : 3, Array.Empty<byte>(), ct);
+    public Task<ActionResult> TradeUpBoardAsync(string id, byte slotInven, CancellationToken ct = default)
+        => TradeSendAsync(id, $"UPBOARD_REQ inven slot {slotInven}", 13, new[] { slotInven }, ct);
+    public Task<ActionResult> TradeDownBoardAsync(string id, byte slotBoard, CancellationToken ct = default)
+        => TradeSendAsync(id, $"DOWNBOARD_REQ board slot {slotBoard}", 17, new[] { slotBoard }, ct);
+    public Task<ActionResult> TradeCenAsync(string id, ulong cen, CancellationToken ct = default)
+    {
+        var b = new byte[8]; System.Buffers.Binary.BinaryPrimitives.WriteUInt64LittleEndian(b, cen);
+        return TradeSendAsync(id, $"CENBOARDING_REQ {cen} cen", 21, b, ct);
+    }
+    public Task<ActionResult> TradeLockAsync(string id, CancellationToken ct = default) => TradeSendAsync(id, "BOARDLOCK_REQ", 25, Array.Empty<byte>(), ct);
+    public Task<ActionResult> TradeDecideAsync(string id, CancellationToken ct = default) => TradeSendAsync(id, "DECIDE_REQ", 31, Array.Empty<byte>(), ct);
+    public Task<ActionResult> TradeCancelAsync(string id, CancellationToken ct = default) => TradeSendAsync(id, "CANCEL_REQ", 10, Array.Empty<byte>(), ct);
+
     public Task<ActionResult> ClickNpcAsync(string id, ushort npcHandle, CancellationToken ct = default)
         => ActAsync(id, $"click npc h={npcHandle}",
             s => s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct));

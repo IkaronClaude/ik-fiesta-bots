@@ -334,6 +334,31 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    // ---- PLAYER TRADE (operator 2026-10-05: money for scrolls between bots) ----
+    public bool tradePropose(int handle) => Ok(Wait(_mgr.TradeProposeAsync(Id, (ushort)handle)));
+    public bool tradeAnswer(bool yes) => Ok(Wait(_mgr.TradeAnswerAsync(Id, yes)));
+    public bool tradeUp(int slotInven) => Ok(Wait(_mgr.TradeUpBoardAsync(Id, (byte)slotInven)));
+    public bool tradeDown(int slotBoard) => Ok(Wait(_mgr.TradeDownBoardAsync(Id, (byte)slotBoard)));
+    public bool tradeCen(double cen) => Ok(Wait(_mgr.TradeCenAsync(Id, (ulong)Math.Max(0, cen))));
+    public bool tradeLock() => Ok(Wait(_mgr.TradeLockAsync(Id)));
+    public bool tradeDecide() => Ok(Wait(_mgr.TradeDecideAsync(Id)));
+    public bool tradeCancel() => Ok(Wait(_mgr.TradeCancelAsync(Id)));
+    /// <summary>{phase, opposite, proposer, myCen, theirCen, myLocked, theirLocked, myDecided, theirDecided, err, lastCmd, events,
+    /// myBoard = {[slotboard] = slotinven}, theirBoard = {[slotboard] = itemId}}</summary>
+    public DynValue tradeState()
+    {
+        var t = NewTable(); var v = View;
+        t["phase"] = v?.TradePhase ?? "none"; t["opposite"] = v?.TradeOpposite ?? -1; t["proposer"] = v?.TradeProposer ?? -1;
+        t["myCen"] = (double)(v?.TradeMyCen ?? 0); t["theirCen"] = (double)(v?.TradeTheirCen ?? 0);
+        t["myLocked"] = v?.TradeMyLocked ?? false; t["theirLocked"] = v?.TradeTheirLocked ?? false;
+        t["myDecided"] = v?.TradeMyDecided ?? false; t["theirDecided"] = v?.TradeTheirDecided ?? false;
+        t["err"] = v?.TradeLastErr ?? -1; t["lastCmd"] = v?.TradeLastCmd ?? -1; t["events"] = v?.TradeEvents ?? 0;
+        var mb = NewTable(); foreach (var (k, val) in v?.TradeMyBoard ?? new Dictionary<byte, byte>()) mb[(double)k] = (double)val;
+        var tb = NewTable(); foreach (var (k, val) in v?.TradeTheirBoard ?? new Dictionary<byte, ushort>()) tb[(double)k] = (double)val;
+        t["myBoard"] = DynValue.NewTable(mb); t["theirBoard"] = DynValue.NewTable(tb);
+        return DynValue.NewTable(t);
+    }
+
     // ---- PRODUCTION (operator 2026-10-05: production as a bot skill) ----
     /// <summary>Pick a production job (ProduceView id: 29100 potions, 29101 stones, 29102 scrolls, ...); result via productionJob()</summary>
     public bool pickProductionJob(int mainskill) => Ok(Wait(_mgr.PickProductionJobAsync(Id, (ushort)mainskill)));

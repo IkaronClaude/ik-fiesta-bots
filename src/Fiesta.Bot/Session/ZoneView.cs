@@ -272,6 +272,15 @@ public sealed class ZoneView : IDisposable
     //   S->C NC_SKILL_SKILLEXP_CLIENT_CMD 0x481D {skill u16, mastery u32 = the running total}, CELLCHANGEs, then
     //        NC_ACT_PRODUCE_MAKE_CMD 0x203B {item u16, err u16 (0x0B01 ok)}; NC_ACT_PRODUCE_CAST_FAIL_ACK 0x2036 on refusal
     private const ushort OpProductFieldAck = 0x4823;
+    // PLAYER TRADE (dept 19 -> 0x4C00 | cmd; PROTOCOL_COMMAND_TRADE in the zone's headers, structs from the client PDB where
+    // it has them, the rest learned on the wire between two of our own bots - every trade frame is logged raw).
+    // Operator's flow (2026-10-05): A proposes (1 PROPOSE_REQ {proposee}), B gets 2 PROPOSE_ASK_REQ {proposer} and answers
+    // 6 PROPOSEYES_ACK / 3 PROPOSE_ASKNO_ACK, 9 START_CMD {opposite} opens the window, each side boards items (13 UPBOARD_REQ
+    // {slotinven} -> 15 UPBOARD_ACK {slotinven, slotboard}, the other sees 16 OPPOSITUPBOARD_CMD {slotboard, SHINE_ITEM_STRUCT})
+    // and cen (21 CENBOARDING_REQ -> 23 CENBOARDING_ACK {cen u64}, 24 OPPOSITCENBOARDING_CMD {cen}), locks (25 BOARDLOCK_REQ ->
+    // 27 BOARDLOCK_ACK, 28 OPPOSITBOARDLOCK_CMD; a change unlocks: 29 / 30), both decide (31 DECIDE_REQ -> 33 DECIDE_ACK,
+    // 34 OPPOSITDECIDE_CMD), then 36 TRADECOMPLETE_CMD or 35 TRADEFAIL_CMD.
+    private const int TradeDept = 19;
     private const ushort OpSkillExp = 0x481D;
     private const ushort OpProduceMake = 0x203B;
     private const ushort OpProduceCastFail = 0x2036;
@@ -1199,6 +1208,33 @@ public sealed class ZoneView : IDisposable
     public int ProductFieldCount { get; private set; }
     /// <summary>Raised when a craft resolves: (product item id, err; 0x0B01 = ok)</summary>
     public event Action<ushort, ushort>? Crafted;
+
+    // ---- player trade state (see TradeDept) ----
+    public string TradePhase { get; private set; } = "none";   // none | asked | proposed | open | complete | failed
+    public int TradeOpposite { get; private set; } = -1;
+    public int TradeProposer { get; private set; } = -1;
+    public ulong TradeMyCen { get; private set; }
+    public ulong TradeTheirCen { get; private set; }
+    public bool TradeMyLocked { get; private set; }
+    public bool TradeTheirLocked { get; private set; }
+    public bool TradeMyDecided { get; private set; }
+    public bool TradeTheirDecided { get; private set; }
+    public int TradeLastErr { get; private set; } = -1;
+    public int TradeLastCmd { get; private set; } = -1;
+    /// <summary>Monotonic count of trade frames seen - the driver waits on it changing</summary>
+    public int TradeEvents { get; private set; }
+    private readonly Dictionary<byte, byte> _tradeMyBoard = new();        // slotboard -> slotinven
+    private readonly Dictionary<byte, ushort> _tradeTheirBoard = new();   // slotboard -> item id
+    public IReadOnlyDictionary<byte, byte> TradeMyBoard => new Dictionary<byte, byte>(_tradeMyBoard);
+    public IReadOnlyDictionary<byte, ushort> TradeTheirBoard => new Dictionary<byte, ushort>(_tradeTheirBoard);
+    private void TradeReset(string phase)
+    {
+        TradePhase = phase; TradeMyCen = 0; TradeTheirCen = 0;
+        TradeMyLocked = TradeTheirLocked = TradeMyDecided = TradeTheirDecided = false;
+        _tradeMyBoard.Clear(); _tradeTheirBoard.Clear();
+    }
+    /// <summary>The driver asked to propose: remember so the START_CMD can be attributed</summary>
+    public void NoteTradeProposed(int handle) { TradeReset("proposed"); TradeOpposite = handle; }
 
     /// <summary>Error code of the last NC_ITEM_USE_ACK (0x700 ok, 0x708 skill-level-too-low, 0x70B already-know-the-skill)</summary>
     public int LastUseAckError { get; private set; } = -1;
@@ -2715,6 +2751,46 @@ public sealed class ZoneView : IDisposable
                 else BagFull = false;   // a successful sell freed a bag slot — clear the full flag
                 _log?.Invoke($"[ZoneView] SELL_ACK 0x{LastSellAck:X4}{(LastSellAck == 0x0381 ? " (OK)" : " (rejected)")}");
             }
+        }
+        else if ((op >> 10) == TradeDept)
+        {
+            var p = pkt.Payload.ToArray();   // an array, not the span: the local U16 below captures it
+            int cmd = op & 0x3FF;
+            TradeLastCmd = cmd; TradeEvents++;
+            ushort U16(int at) => p.Length >= at + 2 ? (ushort)(p[at] | (p[at + 1] << 8)) : (ushort)0;
+            string what;
+            switch (cmd)
+            {
+                case 2: TradeReset("asked"); TradeProposer = U16(0); TradeOpposite = TradeProposer; what = $"PROPOSE_ASK_REQ proposer={TradeProposer}"; break;
+                case 3: what = "PROPOSE_ASKNO_ACK"; break;
+                case 4: TradeReset("none"); what = "PROPOSENO_ACK (declined)"; break;
+                case 5: what = "PROPOSE_ASKYES_ACK"; break;
+                case 6: what = "PROPOSEYES_ACK"; break;
+                case 7: case 8: TradeReset("none"); what = cmd == 7 ? "PROPOSE_CANCEL_CMD" : "PROPOSE_CANCELED_CMD"; break;
+                case 9: TradeReset("open"); TradeOpposite = U16(0); what = $"START_CMD opposite={TradeOpposite}"; break;
+                case 11: case 12: TradeReset("none"); what = cmd == 11 ? "CANCEL_ACK" : "CANCEL_CMD (the other side cancelled)"; break;
+                case 14: TradeLastErr = U16(0); what = $"UPBOARDFAIL_ACK err=0x{TradeLastErr:X4}"; break;
+                case 15: if (p.Length >= 2) _tradeMyBoard[p[1]] = p[0]; TradeMyLocked = false; TradeMyDecided = false; what = $"UPBOARD_ACK inven={p[0]} board={p[1]}"; break;
+                case 16: if (p.Length >= 3) _tradeTheirBoard[p[0]] = U16(1); TradeTheirLocked = false; TradeTheirDecided = false; what = $"OPPOSITUPBOARD_CMD board={p[0]} item={U16(1)}"; break;
+                case 18: TradeLastErr = U16(0); what = $"DOWNBOARDFAIL_ACK err=0x{TradeLastErr:X4}"; break;
+                case 19: if (p.Length >= 1) _tradeMyBoard.Remove(p[0]); TradeMyLocked = false; what = $"DOWNBOARD_ACK board={p[0]}"; break;
+                case 20: if (p.Length >= 1) _tradeTheirBoard.Remove(p[0]); TradeTheirLocked = false; what = $"OPPOSITDOWNBOARD_CMD board={p[0]}"; break;
+                case 22: TradeLastErr = U16(0); what = $"CENBOARDINGFAIL_ACK err=0x{TradeLastErr:X4}"; break;
+                case 23: if (p.Length >= 8) TradeMyCen = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(p); TradeMyLocked = false; what = $"CENBOARDING_ACK cen={TradeMyCen}"; break;
+                case 24: if (p.Length >= 8) TradeTheirCen = System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(p); TradeTheirLocked = false; what = $"OPPOSITCENBOARDING_CMD cen={TradeTheirCen}"; break;
+                case 26: TradeLastErr = U16(0); what = $"BOARDLOCKFAIL_ACK err=0x{TradeLastErr:X4}"; break;
+                case 27: TradeMyLocked = true; what = "BOARDLOCK_ACK (my board locked)"; break;
+                case 28: TradeTheirLocked = true; what = "OPPOSITBOARDLOCK_CMD (their board locked)"; break;
+                case 29: TradeMyLocked = false; TradeMyDecided = false; what = "BOARDUNLOCK_CMD (my board unlocked)"; break;
+                case 30: TradeTheirLocked = false; TradeTheirDecided = false; what = "OPPOSITBOARDUNLOCK_CMD (their board unlocked)"; break;
+                case 32: TradeLastErr = U16(0); what = $"DECIDEFAIL_ACK err=0x{TradeLastErr:X4}"; break;
+                case 33: TradeMyDecided = true; what = "DECIDE_ACK (I decided)"; break;
+                case 34: TradeTheirDecided = true; what = "OPPOSITDECIDE_CMD (they decided)"; break;
+                case 35: TradeReset("failed"); what = "TRADEFAIL_CMD"; break;
+                case 36: TradeReset("complete"); what = "TRADECOMPLETE_CMD"; break;
+                default: what = $"cmd {cmd} (unknown)"; break;
+            }
+            _log?.Invoke($"[ZoneView] TRADE {what} | len={p.Length} hex={Convert.ToHexString(p.Length > 24 ? p.AsSpan(0, 24) : p)} | phase={TradePhase} opp={TradeOpposite} mine={_tradeMyBoard.Count}items/{TradeMyCen}cen theirs={_tradeTheirBoard.Count}items/{TradeTheirCen}cen lock={TradeMyLocked}/{TradeTheirLocked} decide={TradeMyDecided}/{TradeTheirDecided}");
         }
         else if (op == OpSkillExp)
         {
