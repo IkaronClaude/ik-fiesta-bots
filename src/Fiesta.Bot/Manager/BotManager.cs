@@ -1848,6 +1848,15 @@ public sealed class BotManager : IAsyncDisposable
             s => s.SendAsync(new PROTO_NC_ITEM_BUY_REQ { itemid = itemId, lot = lot }, ct));
 
     // Quests ──────────────────────────────────────────────────────────────── Click an NPC (NC_ACT_NPCCLICK_CMD) — s…
+    // Production (Z:/Production.pcapng): pick a job, craft one lot of a learned recipe. Results in ZoneView (0x4823 / 0x203B).
+    public Task<ActionResult> PickProductionJobAsync(string id, ushort mainskill, CancellationToken ct = default)
+        => ActAsync(id, $"production job PICK mainskill={mainskill} (NC_SKILL_PRODUCTFIELD_REQ) - awaiting 0x4823",
+            s => s.SendAsync(new PROTO_NC_SKILL_PRODUCTFIELD_REQ { mainskill = mainskill }, ct));
+
+    public Task<ActionResult> ProduceAsync(string id, ushort productId, CancellationToken ct = default)
+        => ActAsync(id, $"CRAFT produceskill={productId} (NC_ACT_PRODUCE_CAST_REQ) - awaiting 0x203B",
+            s => s.SendAsync(new PROTO_NC_ACT_PRODUCE_CAST_REQ { produceskill = productId }, ct));
+
     public Task<ActionResult> ClickNpcAsync(string id, ushort npcHandle, CancellationToken ct = default)
         => ActAsync(id, $"click npc h={npcHandle}",
             s => s.SendAsync(new FiestaPacket(OpActNpcClick, new[] { (byte)npcHandle, (byte)(npcHandle >> 8) }), ct));

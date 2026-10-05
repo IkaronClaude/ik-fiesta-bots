@@ -265,6 +265,16 @@ public sealed class ZoneView : IDisposable
     private const ushort OpSkillLearnSuc = 0x4804;
     // NC_SKILL_SKILL_LEARNFAIL_CMD (cmd 5) — server REJECTED a learn (carries the reason err code)
     private const ushort OpSkillLearnFail = 0x4805;
+    // PRODUCTION (read from Z:/Production.pcapng, 2026-10-05):
+    //   C->S NC_SKILL_PRODUCTFIELD_REQ 0x4822 {mainskill u16 = ProduceView id, e.g. 29102 Scroll Production} picks a job
+    //   S->C NC_SKILL_PRODUCTFIELD_ACK 0x4823 {mainskill u16, err u16 (0x0B01 ok)}
+    //   C->S NC_ACT_PRODUCE_CAST_REQ 0x2035 {produceskill u16 = Produce.ProductID} crafts one lot
+    //   S->C NC_SKILL_SKILLEXP_CLIENT_CMD 0x481D {skill u16, mastery u32 = the running total}, CELLCHANGEs, then
+    //        NC_ACT_PRODUCE_MAKE_CMD 0x203B {item u16, err u16 (0x0B01 ok)}; NC_ACT_PRODUCE_CAST_FAIL_ACK 0x2036 on refusal
+    private const ushort OpProductFieldAck = 0x4823;
+    private const ushort OpSkillExp = 0x481D;
+    private const ushort OpProduceMake = 0x203B;
+    private const ushort OpProduceCastFail = 0x2036;
     // NC_ITEM_USE_ACK (ITEM dept 12, cmd 22) — result of using an item
     private const ushort OpItemUseAck = 0x3016;
     // Quest dialogue: the server drives accept/turn-in via NC_QUEST_SCRIPT_CMD_REQ (0x4401) {questId u16, STRUCT_QSC…
@@ -1170,6 +1180,25 @@ public sealed class ZoneView : IDisposable
     public DateTime LastBuyAckUtc { get; private set; }
     /// <summary>Monotonic count of BUY_ACKs (0x3004) seen this session</summary>
     public int BuyAckCount { get; private set; }
+
+    // ---- production (see the opcode notes above) ----
+    private readonly ConcurrentDictionary<ushort, uint> _mastery = new();
+    /// <summary>Running mastery total the server last reported for a production skill (recipe) id, or -1 if never seen</summary>
+    public long MasteryPoints(ushort skill) => _mastery.TryGetValue(skill, out var m) ? m : -1;
+    /// <summary>Highest mastery total seen this session across all production skills of the given recipe (by skill id)</summary>
+    public IReadOnlyDictionary<ushort, uint> MasterySnapshot() => new Dictionary<ushort, uint>(_mastery);
+    public int LastCraftItem { get; private set; } = -1;
+    public int LastCraftErr { get; private set; } = -1;
+    public DateTime LastCraftUtc { get; private set; }
+    /// <summary>Monotonic count of PRODUCE_MAKE_CMD (0x203B) seen this session - a craft resolved, ok or not</summary>
+    public int CraftCount { get; private set; }
+    public int LastCraftFailErr { get; private set; } = -1;
+    public int CraftFailCount { get; private set; }
+    public int LastProductFieldSkill { get; private set; } = -1;
+    public int LastProductFieldErr { get; private set; } = -1;
+    public int ProductFieldCount { get; private set; }
+    /// <summary>Raised when a craft resolves: (product item id, err; 0x0B01 = ok)</summary>
+    public event Action<ushort, ushort>? Crafted;
 
     /// <summary>Error code of the last NC_ITEM_USE_ACK (0x700 ok, 0x708 skill-level-too-low, 0x70B already-know-the-skill)</summary>
     public int LastUseAckError { get; private set; } = -1;
@@ -2685,6 +2714,48 @@ public sealed class ZoneView : IDisposable
                 if (LastSellAck != 0x0381) ShopOpenUtc = default;
                 else BagFull = false;   // a successful sell freed a bag slot — clear the full flag
                 _log?.Invoke($"[ZoneView] SELL_ACK 0x{LastSellAck:X4}{(LastSellAck == 0x0381 ? " (OK)" : " (rejected)")}");
+            }
+        }
+        else if (op == OpSkillExp)
+        {
+            var p = pkt.Payload.Span;
+            if (p.Length >= 6)
+            {
+                var skill = (ushort)(p[0] | (p[1] << 8));
+                var mastery = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(2, 4));
+                _mastery[skill] = mastery;
+                _log?.Invoke($"[ZoneView] MASTERY skill={skill} total={mastery}");
+            }
+        }
+        else if (op == OpProduceMake)
+        {
+            var p = pkt.Payload.Span;
+            if (p.Length >= 4)
+            {
+                LastCraftItem = p[0] | (p[1] << 8);
+                LastCraftErr = p[2] | (p[3] << 8);
+                LastCraftUtc = DateTime.UtcNow;
+                CraftCount++;
+                _log?.Invoke($"[ZoneView] CRAFTED item={LastCraftItem} err=0x{LastCraftErr:X4}{(LastCraftErr == 0x0B01 ? " (OK)" : " (FAILED)")} (#{CraftCount})");
+                Crafted?.Invoke((ushort)LastCraftItem, (ushort)LastCraftErr);
+            }
+        }
+        else if (op == OpProduceCastFail)
+        {
+            var p = pkt.Payload.Span;
+            LastCraftFailErr = p.Length >= 2 ? (p[0] | (p[1] << 8)) : (p.Length == 1 ? p[0] : 0);
+            CraftFailCount++;
+            _log?.Invoke($"[ZoneView] CRAFT REFUSED (0x2036) err=0x{LastCraftFailErr:X4} payload={Convert.ToHexString(p.Length > 8 ? p.Slice(0, 8) : p)} (#{CraftFailCount}) - not in the capture; decode it from this line");
+        }
+        else if (op == OpProductFieldAck)
+        {
+            var p = pkt.Payload.Span;
+            if (p.Length >= 4)
+            {
+                LastProductFieldSkill = p[0] | (p[1] << 8);
+                LastProductFieldErr = p[2] | (p[3] << 8);
+                ProductFieldCount++;
+                _log?.Invoke($"[ZoneView] PRODUCTION JOB mainskill={LastProductFieldSkill} err=0x{LastProductFieldErr:X4}{(LastProductFieldErr == 0x0B01 ? " (OK)" : " (refused)")}");
             }
         }
         else if (op == OpItemBuyAck)

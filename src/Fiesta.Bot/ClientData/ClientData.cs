@@ -14,6 +14,7 @@ public sealed class ClientData
     private IReadOnlyDictionary<string, int>? _passiveIdByInx; // PassiveSkill InxName -> skill ID (SEPARATE id space)
     private readonly object _skillInxLock = new();
     private IReadOnlyDictionary<int, IReadOnlyList<MobLocation>>? _mobCoords; // Mob_ID -> every spawn patch
+    private IReadOnlyDictionary<string, int>? _itemByInx;                       // ItemInfo InxName -> ID (built once)
     private readonly object _mobCoordLock = new();
     private IReadOnlySet<uint>? _moveBlockAbstates; // AbState.AbStataIndex set that immobilizes (stun/root)
     private readonly object _abstateLock = new();
@@ -742,6 +743,56 @@ public sealed class ClientData
         var row = t.FindByLong("ProductID", productId);
         if (row is null) return null;
         return ((int)ToU32(row, "NeededMasteryType"), (int)ToU32(row, "NeededMasteryGain"));
+    }
+
+    /// <summary>ItemInfo ID for an InxName (Produce.shn names raws and products by InxName), or -1</summary>
+    public int ItemIdByInxName(string? inx)
+    {
+        if (string.IsNullOrEmpty(inx) || inx == "-") return -1;
+        if (_itemByInx is null)
+        {
+            var d = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            if (Table("ItemInfo") is { } t)
+                foreach (var row in t.Rows)
+                {
+                    var n = GetStr(row, "InxName");
+                    if (!string.IsNullOrEmpty(n) && !d.ContainsKey(n)) d[n] = (int)ToU32(row, "ID");
+                }
+            _itemByInx = d;
+        }
+        return _itemByInx.TryGetValue(inx, out var id) ? id : -1;
+    }
+
+    /// <summary>A Produce.shn recipe by ProductID (= the recipe scroll's item id = the produce skill id)</summary>
+    public sealed record Recipe(int ProductId, string Name, int ProductItemId, int Lot, IReadOnlyList<(int ItemId, int Qty)> Raws,
+                                int MasteryType, int MasteryGain, int NeededMasteryType, int NeededPoints);
+
+    public Recipe? GetRecipe(int productId)
+    {
+        var t = Table("Produce");
+        var row = t?.FindByLong("ProductID", productId);
+        if (row is null) return null;
+        var raws = new List<(int, int)>();
+        for (int i = 0; i < 8; i++)
+        {
+            var inx = GetStr(row, "Raw" + i);
+            var qty = (int)ToU32(row, "Quantity" + i);
+            var id = ItemIdByInxName(inx);
+            if (id >= 0 && qty > 0) raws.Add((id, qty));
+        }
+        return new Recipe(productId, GetStr(row, "Name"), ItemIdByInxName(GetStr(row, "Product")), (int)ToU32(row, "Lot"), raws,
+            (int)ToU32(row, "MasteryType"), (int)ToU32(row, "MasteryGain"),
+            (int)ToU32(row, "NeededMasteryType"), (int)ToU32(row, "NeededMasteryGain"));
+    }
+
+    /// <summary>Every recipe of a mastery type, cheapest requirement first</summary>
+    public IReadOnlyList<Recipe> RecipesOfMastery(int masteryType)
+    {
+        var outp = new List<Recipe>();
+        if (Table("Produce") is not { } t) return outp;
+        foreach (var row in t.Rows)
+            if ((int)ToU32(row, "MasteryType") == masteryType && GetRecipe((int)ToU32(row, "ProductID")) is { } r) outp.Add(r);
+        return outp.OrderBy(r => r.NeededPoints).ThenBy(r => r.ProductId).ToList();
     }
 
     /// <summary>Display name of a Produce mastery type (job) from ProduceView.shn</summary>

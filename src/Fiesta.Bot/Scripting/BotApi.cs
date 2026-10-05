@@ -334,6 +334,67 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    // ---- PRODUCTION (operator 2026-10-05: production as a bot skill) ----
+    /// <summary>Pick a production job (ProduceView id: 29100 potions, 29101 stones, 29102 scrolls, ...); result via productionJob()</summary>
+    public bool pickProductionJob(int mainskill) => Ok(Wait(_mgr.PickProductionJobAsync(Id, (ushort)mainskill)));
+    /// <summary>Craft one lot of a LEARNED recipe (Produce ProductID); result via lastCraft()</summary>
+    public bool craft(int productId) => Ok(Wait(_mgr.ProduceAsync(Id, (ushort)productId)));
+    /// <summary>The server's last reported mastery total for a recipe skill id (0x481D), or -1 if not seen this session</summary>
+    public double masteryPoints(int skill) => View?.MasteryPoints((ushort)skill) ?? -1;
+    public DynValue lastCraft()
+    {
+        var t = NewTable(); var v = View;
+        t["item"] = v?.LastCraftItem ?? -1; t["err"] = v?.LastCraftErr ?? -1; t["count"] = v?.CraftCount ?? 0;
+        t["failErr"] = v?.LastCraftFailErr ?? -1; t["failCount"] = v?.CraftFailCount ?? 0;
+        t["ageMs"] = v is { CraftCount: > 0 } ? (DateTime.UtcNow - v.LastCraftUtc).TotalMilliseconds : -1;
+        return DynValue.NewTable(t);
+    }
+    public DynValue productionJob()
+    {
+        var t = NewTable(); var v = View;
+        t["mainskill"] = v?.LastProductFieldSkill ?? -1; t["err"] = v?.LastProductFieldErr ?? -1; t["count"] = v?.ProductFieldCount ?? 0;
+        return DynValue.NewTable(t);
+    }
+    /// <summary>A recipe: {id, name, product, lot, raws = {{item, qty}...}, masteryType, gain, neededType, needed}</summary>
+    public DynValue recipe(int productId)
+    {
+        if (_mgr.ClientData?.GetRecipe(productId) is not { } r) return DynValue.Nil;
+        return RecipeTable(r);
+    }
+    /// <summary>Every recipe of a mastery type, lowest requirement first</summary>
+    public DynValue recipesOfMastery(int masteryType)
+    {
+        var t = NewTable(); int i = 1;
+        foreach (var r in _mgr.ClientData?.RecipesOfMastery(masteryType) ?? []) t[i++] = RecipeTable(r);
+        return DynValue.NewTable(t);
+    }
+    private DynValue RecipeTable(global::Fiesta.Bot.GameData.ClientData.Recipe r)
+    {
+        var t = NewTable();
+        t["id"] = r.ProductId; t["name"] = r.Name; t["product"] = r.ProductItemId; t["lot"] = r.Lot;
+        t["masteryType"] = r.MasteryType; t["gain"] = r.MasteryGain; t["neededType"] = r.NeededMasteryType; t["needed"] = r.NeededPoints;
+        var raws = NewTable(); int i = 1;
+        foreach (var (item, qty) in r.Raws) { var e = NewTable(); e["item"] = item; e["qty"] = qty; raws[i++] = DynValue.NewTable(e); }
+        t["raws"] = DynValue.NewTable(raws);
+        return DynValue.NewTable(t);
+    }
+    /// <summary>Record the OPEN shop's item list for this npc in the shared store (who sells what); returns how many ids</summary>
+    public int recordShopStock(int npcId)
+    {
+        var v = View; var map = _handle.CurrentMap;
+        if (v is null || string.IsNullOrEmpty(map) || v.ShopItems.Count == 0) return 0;
+        _mgr.Knowledge.RecordShopStock(_handle.Options.Host, map!, npcId, v.ShopItems.Select(i => (int)i));
+        return v.ShopItems.Count;
+    }
+    /// <summary>Known shops selling an item id: {{map, npc}...} (learned from opened shops, shared across bots)</summary>
+    public DynValue vendorsSelling(int itemId)
+    {
+        var t = NewTable(); int i = 1;
+        foreach (var (map, npc) in _mgr.Knowledge.VendorsSelling(_handle.Options.Host, itemId))
+        { var e = NewTable(); e["map"] = map; e["npc"] = npc; t[i++] = DynValue.NewTable(e); }
+        return DynValue.NewTable(t);
+    }
+
     /// <summary>The PASSIVE skill ids the character has learned (login 0x103E list)</summary>
     public DynValue learnedPassives()
     {

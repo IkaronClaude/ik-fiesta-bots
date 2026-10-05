@@ -34,6 +34,7 @@ public sealed class NpcKnowledge
         _mobThreatPath = Path.Combine(baseDir, "mob-threats.json");
         _scalarPath = Path.Combine(baseDir, "learned-scalars.json");
         _blockerPath = Path.Combine(baseDir, "blockers.json");
+        _stockPath = Path.Combine(baseDir, "npc-stock.json");
         _scriptDir = Path.Combine(baseDir, "scripts");
         _rosterDir = Path.Combine(baseDir, "roster");   // spawn options per bot id — CREDENTIALS, never log/commit
         Load();
@@ -43,6 +44,7 @@ public sealed class NpcKnowledge
         LoadMobThreat();
         LoadScalars();
         LoadBlockers();
+        LoadStock();
     }
 
     private static string QKey(string host, int questId) => $"{host}|{questId}";
@@ -491,6 +493,68 @@ public sealed class NpcKnowledge
                     new SortedDictionary<string, Blocker>(_blockers), new JsonSerializerOptions { WriteIndented = true }));
             }
             catch { /* best-effort; in-memory still works this session */ }
+        }
+    }
+
+    // ---- SHOP STOCK: the item ids an NPC's shop listed when it was opened (NC_MENU_SHOPOPEN*). The only client-side
+    // source for "who sells X" (NPCItemList is server data), shared by every bot on the host - operator 2026-10-05:
+    // "find the item vendor npcs that sell materials", data-driven, no baked Nina. Key = host|map|npcId.
+    private readonly string _stockPath;
+    private readonly object _stockIoLock = new();
+    private readonly ConcurrentDictionary<string, int[]> _stock = new(StringComparer.Ordinal);
+
+    public void RecordShopStock(string host, string map, int npcId, IEnumerable<int> itemIds)
+    {
+        if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(map)) return;
+        var ids = itemIds.Distinct().OrderBy(i => i).ToArray();
+        if (ids.Length == 0) return;
+        var key = Key(host, map, npcId);
+        if (_stock.TryGetValue(key, out var ex) && ex.SequenceEqual(ids)) return;
+        _stock[key] = ids;
+        SaveStock();
+    }
+
+    /// <summary>Every known shop (map, npcId) whose recorded stock includes this item id</summary>
+    public IReadOnlyList<(string Map, int NpcId)> VendorsSelling(string host, int itemId)
+    {
+        var outp = new List<(string, int)>();
+        if (string.IsNullOrEmpty(host)) return outp;
+        var prefix = host + "|";
+        foreach (var (key, ids) in _stock)
+        {
+            if (!key.StartsWith(prefix, StringComparison.Ordinal) || Array.IndexOf(ids, itemId) < 0) continue;
+            var lastBar = key.LastIndexOf('|');
+            if (lastBar <= prefix.Length - 1 || !int.TryParse(key.AsSpan(lastBar + 1), out var npcId)) continue;
+            outp.Add((key[prefix.Length..lastBar], npcId));
+        }
+        return outp;
+    }
+
+    public IReadOnlyList<int> ShopStock(string host, string map, int npcId) =>
+        _stock.TryGetValue(Key(host, map, npcId), out var ids) ? ids : Array.Empty<int>();
+
+    private void LoadStock()
+    {
+        try
+        {
+            if (!File.Exists(_stockPath)) return;
+            var d = JsonSerializer.Deserialize<Dictionary<string, int[]>>(File.ReadAllText(_stockPath));
+            if (d is not null) foreach (var (k, v) in d) _stock[k] = v;
+        }
+        catch { /* a corrupt/missing store just starts empty - it re-learns */ }
+    }
+
+    private void SaveStock()
+    {
+        lock (_stockIoLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_stockPath)!);
+                File.WriteAllText(_stockPath, JsonSerializer.Serialize(
+                    new SortedDictionary<string, int[]>(_stock), new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { /* best-effort */ }
         }
     }
 
