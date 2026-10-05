@@ -379,7 +379,7 @@ public sealed class ClientData
             GetInt(row, "TwoHand") != 0, GetInt(row, "ShieldAC"),
             GetInt(row, "BuyPrice"),
             // WeaponType tells us whether our AUTO-ATTACK reaches: 2 bow, 10 crossbow, 3 staff, 11 wand are RANGED; 1/4/5/13…
-            GetInt(row, "WeaponType", GetStr(row, "ItemUseSkill")));
+            GetInt(row, "WeaponType"), GetStr(row, "ItemUseSkill"));
     }
 
     /// <summary>The display name of a skill id from client ActiveSkill (col "Name")</summary>
