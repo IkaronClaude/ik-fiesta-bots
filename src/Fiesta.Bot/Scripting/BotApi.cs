@@ -122,6 +122,8 @@ public sealed class BotApi
         t["weaponType"] = it.WeaponType;
         // ItemUseSkill: "UsePotion" = a potion, "UseSkill" = a skill/recipe book, "UseScroll" = a buff scroll ... (ItemInfo)
         t["useSkill"] = it.UseSkill ?? "";
+        // ItemUseEffect: 0 = restores useValue HP (a real HP potion), 1 = SP, 4 = abstate (regen potions), 5 = cure; -1 = no table / no row
+        t["useEffect"] = it.UseEffect; t["useValue"] = it.UseValue;
         // gradeType 0 = ordinary/replaceable gear (every plain smith-bought item — Leather/Chain Boots, Chain Helmet/Pan…
         t["gradeType"] = it.GradeType;
         // twoHand = a 2-handed weapon (occupies BOTH hand slots — Equip 10 left + 12 right)

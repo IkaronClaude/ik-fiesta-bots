@@ -365,6 +365,27 @@ public sealed class ClientData
         return row is null ? "" : GetStr(row, "Name");
     }
 
+    // ItemUseEffect.shn (shipped by the 2026 client; a server table in 2016): what a consumable does on use -
+    // UseEffectA 0 = restores UseValueA HP, 1 = SP, 4 = an abstate (the "Regeneration" potions), 5 = cure. Keyed by
+    // InxName. Absent from the data dir -> every item reads (-1, 0) and a script falls back to what it measured.
+    private Dictionary<string, (int effect, int value)>? _useEffects;
+    private (int effect, int value) UseEffectOf(string inxName)
+    {
+        if (_useEffects is null)
+        {
+            var d = new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
+            var t = Table("ItemUseEffect");
+            if (t is not null)
+                foreach (var r in t.Rows)
+                {
+                    var k = GetStr(r, "ItemIndex");
+                    if (!string.IsNullOrEmpty(k) && !d.ContainsKey(k)) d[k] = (GetInt(r, "UseEffectA"), GetInt(r, "UseValueA"));
+                }
+            _useEffects = d;
+        }
+        return _useEffects.TryGetValue(inxName ?? "", out var v) ? v : (-1, 0);
+    }
+
     /// <summary>Item fields from client ItemInfo for shop eval: (class line — Fighter 2–7, 0 = all), (level to use/equip), (ra…</summary>
     public ItemData? Item(int itemId)
     {
@@ -379,7 +400,7 @@ public sealed class ClientData
             GetInt(row, "TwoHand") != 0, GetInt(row, "ShieldAC"),
             GetInt(row, "BuyPrice"),
             // WeaponType tells us whether our AUTO-ATTACK reaches: 2 bow, 10 crossbow, 3 staff, 11 wand are RANGED; 1/4/5/13…
-            GetInt(row, "WeaponType"), GetStr(row, "ItemUseSkill"));
+            GetInt(row, "WeaponType"), GetStr(row, "ItemUseSkill"), UseEffectOf(GetStr(row, "InxName")).effect, UseEffectOf(GetStr(row, "InxName")).value);
     }
 
     /// <summary>The display name of a skill id from client ActiveSkill (col "Name")</summary>
@@ -946,7 +967,7 @@ public sealed record MobData(int Id, string Name, string InxName, int Level, int
 public sealed record ItemData(int Id, string Name, int UseClass, int DemandLv, int Grade,
     int EquipSlot, bool IsScroll, int Type = 0, int GradeType = 0, int ItemClass = 0,
     int MaxLot = 0, int SellPrice = 0, bool TwoHand = false, int ShieldAc = 0, int BuyPrice = 0,
-    int WeaponType = 0, string UseSkill = "");
+    int WeaponType = 0, string UseSkill = "", int UseEffect = -1, int UseValue = 0);
 
 /// <summary>Where a mob type spawns, from client MobCoordinate.shn : the short-name and the / of its main spawn field (wit…</summary>
 public sealed record MobLocation(int MobId, string Map, int CenterX, int CenterY, int Width, int Height);
