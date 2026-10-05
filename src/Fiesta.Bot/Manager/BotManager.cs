@@ -1809,6 +1809,23 @@ public sealed class BotManager : IAsyncDisposable
         return -1;
     }
 
+    /// <summary>
+    /// CLOSE the NPC window we are in (shop / quest dialogue): ENDOFTRADE 0x200B, what the real client sends when the
+    /// window closes. Until now the bot only sent it right before clicking the NEXT NPC, so a producer standing at Nina
+    /// kept her shop open for good - and the server declines every trade proposal to a player in an NPC window
+    /// (PROPOSENO 0x06C8; operator 2026-10-05: "ArcherZero rejects every trade (likely dialogue with Nina open)").
+    /// </summary>
+    public async Task<ActionResult> CloseNpcAsync(string id, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        await s.SendAsync(new FiestaPacket(OpActEndOfTrade, ReadOnlyMemory<byte>.Empty), ct);
+        handle.ZoneView?.ResetShopState();
+        handle.ZoneView?.ClearNpcMenu();
+        handle.Log(BotLogLevel.Info, "NPC window CLOSED (ENDOFTRADE 0x200B)");
+        return ActionResult.Sent;
+    }
+
     /// <summary>Sell of the bag item at to the open shop (NC_ITEM_SELL_REQ {slot, lot})</summary>
     public Task<ActionResult> SellAsync(string id, byte slot, uint lot, CancellationToken ct = default)
         => ActAsync(id, $"sell slot {slot} x{lot}",

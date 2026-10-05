@@ -274,6 +274,9 @@ public sealed class BotApi
     /// <summary>The reason code from the last NC_ITEM_RELOC_ACK (0x300C), or -1 if none seen</summary>
     public int lastRelocAck() => View?.LastRelocAckCode ?? -1;
 
+    /// <summary>Close the NPC window we are in (shop / dialogue) - a player in an NPC window cannot be traded with</summary>
+    public bool closeNpc() => Ok(Wait(_mgr.CloseNpcAsync(Id)));
+
     /// <summary>Split `lot` off the stack in bag `slot` into a free bag slot; returns the new slot or -1 (verified by the cell filling)</summary>
     public int splitItem(int slot, int lot) => Wait(_mgr.SplitItemAsync(Id, (byte)slot, (uint)Math.Max(1, lot)));
     public int lastSplitAck() => View?.LastSplitAckCode ?? -1;
