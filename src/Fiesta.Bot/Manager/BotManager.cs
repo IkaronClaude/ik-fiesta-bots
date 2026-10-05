@@ -421,9 +421,10 @@ public sealed class BotManager : IAsyncDisposable
     public Task<ActionResult> SendRawAsync(string id, ushort opcode, byte[] payload, CancellationToken ct = default)
         => ActAsync(id, $"raw 0x{opcode:X4} {payload.Length} B", s => s.SendRawAsync(opcode, payload, ct));
 
-    /// <summary>Whisper to the player named</summary>
+    /// <summary>Whisper to the player named - on the WM link: the WorldManager relays whispers (fc_NC_ACT_WHISPER_REQ is
+    /// in WorldManager.pdb only; the zone drops the request without an ack - verified 2026-10-05)</summary>
     public Task<ActionResult> WhisperAsync(string id, string to, string text, CancellationToken ct = default)
-        => ActAsync(id, $"whisper {to}: \"{text}\"", s => s.SendAsync(ChatCodec.BuildWhisperReq(to, text), ct));
+        => WmActAsync(id, $"whisper {to}: \"{text}\"", s => s.SendAsync(ChatCodec.BuildWhisperReq(to, text), ct));
 
     // The real client's cast sequence (from Z:/Buff.pcapng): TARGET the handle (BAT TargettingReq), switch to battle…
     private static readonly ushort OpBatTarget =
@@ -1035,6 +1036,27 @@ public sealed class BotManager : IAsyncDisposable
                     handle.Log($"friend request from '{requester}' pending — friendConfirm to answer");
                 }
                 else if (pkt.Opcode == OpFriendAddCmd) handle.PendingFriendRequester = null; // added; resolved
+                else if (pkt.Opcode == ChatCodec.SomeoneWhisperOpcode)
+                {
+                    if (ChatCodec.TryDecodeSomeoneWhisper(pkt.Payload.Span, out var talker, out var wtext))
+                    {
+                        if (handle.ZoneView is { } zv) zv.AddWhisper(talker, wtext, "wm");
+                        else handle.Log($"whisper <{talker}> (wm, no zone view yet): {wtext}");
+                    }
+                }
+                else if (pkt.Opcode == ChatCodec.WhisperFailOpcode)
+                {
+                    var rp = pkt.Payload.Span;
+                    var err = rp.Length >= 2 ? rp[0] | (rp[1] << 8) : -1;
+                    var who = rp.Length >= 22 ? FiestaText.Decode(rp.Slice(2, 20)).TrimEnd(' ') : "?";
+                    handle.Log($"WHISPER FAILED to {who}: error 0x{err:X4} (offline / no such player)");
+                }
+                else if (pkt.Opcode == ChatCodec.WhisperSuccessOpcode)
+                {
+                    var rp = pkt.Payload.Span;
+                    var who = rp.Length >= 21 ? FiestaText.Decode(rp.Slice(1, 20)).TrimEnd(' ') : "?";
+                    handle.Log(BotLogLevel.Info, $"whisper to {who} delivered (WHISPERSUCCESS_ACK)");
+                }
             }
             catch { /* ignore an unparseable WM frame */ }
         };

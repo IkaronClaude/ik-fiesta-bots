@@ -468,6 +468,16 @@ public sealed class ZoneView : IDisposable
     private readonly Queue<ChatMessage> _chatRing = new();
     private readonly object _chatLock = new();
     public int ChatCount { get; private set; }
+    /// <summary>A whisper to us. The WorldManager relays whispers (CParserClient::fc_NC_ACT_WHISPER_REQ lives in
+    /// WorldManager.pdb only), so SOMEONEWHISPER_CMD arrives on the WM link - the BotManager's WM hook calls this.</summary>
+    public void AddWhisper(string talker, string text, string link)
+    {
+        var msg = new ChatMessage(0, talker, text) { Whisper = true };
+        LastChat = msg;
+        lock (_chatLock) { _chatRing.Enqueue(msg); ChatCount++; while (_chatRing.Count > 64) _chatRing.Dequeue(); }
+        _logLevel?.Invoke(BotLogLevel.Note, $"[ZoneView] whisper <{talker}> ({link}): {text}");
+        ChatReceived?.Invoke(msg);
+    }
     public IReadOnlyList<ChatMessage> RecentChat(int max = 64)
     {
         lock (_chatLock) return _chatRing.Reverse().Take(Math.Max(1, max)).Reverse().ToArray();
@@ -3320,14 +3330,7 @@ public sealed class ZoneView : IDisposable
         else if (op == ChatCodec.SomeoneWhisperOpcode)
         {
             // [itemLinkDataCount u8][talker Name5 20][flag u8][len u8][content] (PDB: PROTO_NC_ACT_SOMEONEWHISPER_CMD)
-            if (ChatCodec.TryDecodeSomeoneWhisper(pkt.Payload.Span, out var talker, out var wtext))
-            {
-                var msg = new ChatMessage(0, talker, wtext) { Whisper = true };
-                LastChat = msg;
-                lock (_chatLock) { _chatRing.Enqueue(msg); ChatCount++; while (_chatRing.Count > 64) _chatRing.Dequeue(); }
-                _logLevel?.Invoke(BotLogLevel.Note, $"[ZoneView] whisper <{talker}>: {wtext}");
-                ChatReceived?.Invoke(msg);
-            }
+            if (ChatCodec.TryDecodeSomeoneWhisper(pkt.Payload.Span, out var talker, out var wtext)) AddWhisper(talker, wtext, "zone");
         }
         else if (op == ChatCodec.WhisperFailOpcode)
         {
