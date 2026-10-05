@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using Fiesta.Bot.Manager;
 using Fiesta.Bot.Navigation;
 using Fiesta.Bot.Session;
@@ -103,7 +103,7 @@ public sealed class BotScriptRunner : IDisposable
     }
 
     /// <summary>One profiled Lua-visible call: time spent INSIDE it, plus the Lua time that ran just BEFORE it.</summary>
-    public sealed record ProfileRow(string Name, long Calls, double InMs, double MaxMs, double GapMs);
+    public sealed record ProfileRow(string Name, long Calls, double InMs, double MaxMs, double GapMs, double AllocKb = 0);
 
     /// <summary>Where one tick went, worst-first. GapMs is pure-Lua work, attributed to the call that follows it.</summary>
     public sealed record ProfileSnapshot(long Ticks, double TickMs, double InMs, double GapMs, long Calls,
@@ -149,6 +149,7 @@ public sealed class BotScriptRunner : IDisposable
         var secs = prof.Get("secs").Table;
         var gaps = prof.Get("gaps").Table;
         var maxs = prof.Get("maxs").Table;
+        var allocs = prof.Get("allocs") is { Type: DataType.Table } av ? av.Table : null;
         var rows = new List<ProfileRow>();
         foreach (var k in calls.Keys)
         {
@@ -158,7 +159,8 @@ public sealed class BotScriptRunner : IDisposable
                 (long)(calls.Get(name).CastToNumber() ?? 0),
                 (secs.Get(name).CastToNumber() ?? 0) * 1000.0,
                 (maxs.Get(name).CastToNumber() ?? 0) * 1000.0,
-                (gaps.Get(name).CastToNumber() ?? 0) * 1000.0));
+                (gaps.Get(name).CastToNumber() ?? 0) * 1000.0,
+                (allocs?.Get(name).CastToNumber() ?? 0) / 1024.0));
         }
         rows.Sort((a, b) => (b.InMs + b.GapMs).CompareTo(a.InMs + a.GapMs));
         // Memo hits are crossings that DID NOT happen. Reported next to the calls that did, because the ratio is
@@ -169,7 +171,7 @@ public sealed class BotScriptRunner : IDisposable
             foreach (var hk in hv.Table.Keys) memoHits += (long)(hv.Table.Get(hk).CastToNumber() ?? 0);
             hv.Table.Clear();
         }
-        calls.Clear(); secs.Clear(); gaps.Clear(); maxs.Clear();
+        calls.Clear(); secs.Clear(); gaps.Clear(); maxs.Clear(); allocs?.Clear();
         return new ProfileSnapshot(ticks, tickMs, rows.Sum(r => r.InMs), rows.Sum(r => r.GapMs),
             rows.Sum(r => r.Calls), rows) { MemoHits = memoHits };
     }
@@ -180,13 +182,17 @@ public sealed class BotScriptRunner : IDisposable
     {
         var top = string.Join("  ", p.Rows.Take(8)
             .Select(r => $"{r.Name}={r.InMs:F0}+{r.GapMs:F0}ms/{r.Calls}"));
+        // WHO MAKES THE GARBAGE: top bot.* calls by bytes allocated during the call (shim diff of allocBytes()). The
+        // 'now' row is the interop baseline - a call that allocates no more than 'now' per crossing is just interop.
+        var topAlloc = string.Join("  ", p.Rows.Where(r => r.AllocKb > 0).OrderByDescending(r => r.AllocKb).Take(6)
+            .Select(r => $"{r.Name}={r.AllocKb:F0}KB/{r.Calls}"));
         // gc=<pause>ms/<g0>/<g1>/<g2>: time this tick spent with the runtime SUSPENDED, and the collections that did
         // it. Read it FIRST -- a tick whose pause covers most of its duration is a memory problem, not a script one,
         // and no amount of caching bot.* calls will move it.
         _handle.Log(BotLogLevel.Note,
             $"[prof] TICK {p.TickMs:F0}ms = {p.InMs:F0}ms in {p.Calls} bot.* calls (+{p.MemoHits} memo hits) + {p.GapMs:F0}ms lua | " +
             $"evt={evtMs:F0}ms/{evtN} | " +
-            $"gc={pauseMs:F0}ms/{gc.G0}/{gc.G1}/{gc.G2} alloc={allocKb:F0}KB | name=inCall+luaBefore/calls: {top}");
+            $"gc={pauseMs:F0}ms/{gc.G0}/{gc.G1}/{gc.G2} alloc={allocKb:F0}KB | name=inCall+luaBefore/calls: {top} | alloc KB/calls: {topAlloc}");
     }
 
     private void OnEvent(BotEvent e)
@@ -439,8 +445,9 @@ end
 do
   local real = bot
   local clock = real.nowPrecise
-  __prof = { calls = {}, secs = {}, gaps = {}, maxs = {}, hits = {}, last = clock() }
-  local calls, secs, gaps, maxs, hits = __prof.calls, __prof.secs, __prof.gaps, __prof.maxs, __prof.hits
+  local allocb = real.allocBytes or function() return 0 end
+  __prof = { calls = {}, secs = {}, gaps = {}, maxs = {}, hits = {}, allocs = {}, last = clock() }
+  local calls, secs, gaps, maxs, hits, allocs = __prof.calls, __prof.secs, __prof.gaps, __prof.maxs, __prof.hits, __prof.allocs
   local wrapped = {}
   -- MEMOISED LOOKUPS. Allocation is ~10-12KB PER bot.* CALL and holds across a 3.4x range of call counts
   -- (437 calls -> 4974KB, 1004 -> 9882KB, 1466 -> 17621KB), so the cost is per-call interop, not any one API,
@@ -499,12 +506,13 @@ do
   -- at ~1,200 bot.* calls per tick, the measurement was a large allocator in the thing it measures.
   -- Forwarding through a second function instead keeps exact multi-return semantics with no table:
   -- `return done(k, t0, v(...))` passes every result as an argument, and `return ...` hands them back.
-  local function done(k, t0, ...)
+  local function done(k, t0, a0, ...)
     local t1 = clock()
     local dt = t1 - t0
     __prof.last = t1
     calls[k] = (calls[k] or 0) + 1
     secs[k] = (secs[k] or 0) + dt
+    allocs[k] = (allocs[k] or 0) + (allocb() - a0)   -- bytes THIS call (and the shim's own crossings) made
     if dt > (maxs[k] or 0) then maxs[k] = dt end
     return ...
   end
@@ -544,7 +552,7 @@ do
               end
               local t0m = clock()
               gaps[k] = (gaps[k] or 0) + (t0m - __prof.last)
-              local r = done(k, t0m, v(...))
+              local r = done(k, t0m, allocb(), v(...))
               byArg[key] = (r == nil) and NILV or r
               return r
             end
@@ -552,7 +560,7 @@ do
         end
         local t0 = clock()
         gaps[k] = (gaps[k] or 0) + (t0 - __prof.last)
-        return done(k, t0, v(...))
+        return done(k, t0, allocb(), v(...))
       end
       wrapped[k] = w
       return w

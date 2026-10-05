@@ -1,4 +1,4 @@
-﻿using Fiesta.Bot.Manager;
+using Fiesta.Bot.Manager;
 using Fiesta.Bot.Pathfinding;
 using MoonSharp.Interpreter;
 
@@ -156,6 +156,9 @@ public sealed class BotApi
     /// <summary>High-resolution seconds for the profile shim. bot.now() is milliseconds and far too coarse to
     /// attribute a call that costs microseconds -- 1,370 of those per tick is what we are trying to see.</summary>
     public double nowPrecise() => System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
+    /// <summary>Bytes allocated so far on THIS thread (the tick thread) - the profiler shim diffs it around every bot.* call
+    /// so the [prof] line can say WHICH call makes the garbage (12-20 MB a tick on a fighter, 2026-10-05).</summary>
+    public double allocBytes() => GC.GetAllocatedBytesForCurrentThread();
 
 
 
