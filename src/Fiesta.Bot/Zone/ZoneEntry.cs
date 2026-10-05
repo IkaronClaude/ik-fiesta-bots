@@ -78,8 +78,14 @@ public sealed class ZoneEntry
             await conn.SendAsync(login, ct);
             _log($"[Zone] >> MAP_LOGIN_REQ (0x1801) handle={wmHandle} char='{charName}' ({(login.Payload.Length - 22) / 32} checksums)");
 
-            // After [1801] the server streams the chardata burst and ends it with MAP_LOGIN_ACK [1802]
-            var deadline = DateTime.UtcNow.AddSeconds(10);
+            // After [1801] the server streams the chardata burst and ends it with MAP_LOGIN_ACK [1802].
+            // Wait while the burst is still STREAMING: 10s of silence, 45s at most. A flat 10s deadline cut off slow
+            // zones mid-burst (cluster 2026-10-05: NewMage's item frames were still arriving at +7s and [1802] came
+            // after +10s); the "burst" retry that followed reconnected the zone, the WM dropped the session 0.2s later,
+            // and every one of those (19 across 5 bots) ended in a full re-login.
+            var hardDeadline = DateTime.UtcNow.AddSeconds(45);
+            var idleWindow = TimeSpan.FromSeconds(10);
+            var deadline = DateTime.UtcNow + idleWindow;
             var sawFrame = false;
             List<ushort>? skills = null;
             List<ushort>? passives = null;
@@ -111,6 +117,9 @@ public sealed class ZoneEntry
                 }
 
                 sawFrame = true;
+                // still streaming: push the silence deadline out, up to the hard cap
+                deadline = DateTime.UtcNow + idleWindow;
+                if (deadline > hardDeadline) deadline = hardDeadline;
                 if (pkt.Opcode == OpCharBase) // current vitals + soul-stone reserve counts + MONEY
                 {
                     var p = pkt.Payload.Span;
