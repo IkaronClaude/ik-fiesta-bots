@@ -1734,14 +1734,12 @@ public sealed class BotManager : IAsyncDisposable
                     if (step.Qsc is 0x06 or 0x0A) continue; // terminal — not ours to act on here
                     if (DialogHasMenuTag(step.DialogId))
                     {
-                        // A [MENU] page means the NPC's menu FOLLOWS: the server sends NC_ACT_NPCMENUOPEN_REQ (0x201C)
-                        // about a second after the page (PotionZero at Kenton, packet log 01:15: click -> 0x4401 page ->
-                        // 0x201C). This used to send the NPCMENUOPEN_ACK right here, before that menu existed, and set
-                        // requestedMenu - so when the real menu arrived the branch below never answered it: eight
-                        // re-clicks, "not a shop", and two producers stuck at their vendor for most of an hour. Now we
-                        // only note that the menu is expected and let the NpcMenuOpen branch answer it.
                         if (!requestedMenu)
-                            handle.Log($"open shop npc h={npcHandle} — q{step.QuestId} page has [MENU]; waiting for the NPC menu (0x201C) to answer it");
+                        {
+                            requestedMenu = true;
+                            await s.SendAsync(new PROTO_NC_ACT_NPCMENUOPEN_ACK { ack = menuOption }, ct);
+                            handle.Log($"open shop npc h={npcHandle} — q{step.QuestId} page has [MENU], requesting shop instead of acking it");
+                        }
                     }
                     else
                     {
