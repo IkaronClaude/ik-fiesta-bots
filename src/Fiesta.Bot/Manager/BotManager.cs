@@ -2685,6 +2685,11 @@ public sealed class BotManager : IAsyncDisposable
                 // Lets the 0x4804 learn-confirmation tell an ACTIVE learn from a PASSIVE one (overlapping id spaces) by looking…
                 zoneView.ScrollSkillResolver = itemId => ClientData?.ScrollSkill(itemId) ?? (-1, false);
                 handle.ZoneView = zoneView;
+                // A NEW ZONE SESSION STARTS ON FOOT IN NON-BATTLE MODE. The belief lives on the handle and survived a relog
+                // onto the same map (no MapChanged): NewFighter 05:05-05:10 never sent one CHANGEMODE and had 118 of 63 casts
+                // refused 0x0FC0. Reset here so the first cast of every session asserts it once.
+                handle.InBattleMode = false;
+                handle.LastBattleModeSentUtc = DateTime.MinValue;
                 // DYNAMIC SCENARIO-DOOR COLLISION (2026-07-15): push live door states into the map's pathfinding grid so closed…
                 zoneView.DoorStatesByNameChanged += states =>
                 {
