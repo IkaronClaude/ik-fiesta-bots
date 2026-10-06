@@ -1580,6 +1580,10 @@ public sealed class BotManager : IAsyncDisposable
         var origin = handle.Position;
         var startedAt = Environment.TickCount64;
         var neverMoved = false;
+        // MID-WALK STALL (2026-10-06, NewArcher RouVal02 -> EldGbl02): the server snapped the walk back after 1 s ("move
+        // blocked — resynced"), the walk task kept stepping, nothing moved for 2.5 min and this wait held its full 180 s
+        // while the script saw traveling()==true and did nothing. A walk that has not moved 8u in 10 s is over.
+        var lastProgressAt = startedAt; var lastPos = origin; var stalled = false;
         await WaitUntilAsync(() =>
         {
             if (handle.Position is { } p)
@@ -1591,6 +1595,8 @@ public sealed class BotManager : IAsyncDisposable
                     neverMoved = true;
                     return true;
                 }
+                if (lastPos is { } lp && Dist((p.X, p.Y), lp.X, lp.Y) >= ApproachMovedEps) { lastPos = p; lastProgressAt = Environment.TickCount64; }
+                else if (Environment.TickCount64 - lastProgressAt > ApproachStallMs) { stalled = true; return true; }
             }
             return handle.WalkCts is null;
         }, waitMs, ct);
@@ -1598,7 +1604,16 @@ public sealed class BotManager : IAsyncDisposable
             handle.Log($"[nav] approach to ({tx},{ty}): the walk NEVER STARTED — still within {ApproachMovedEps}u of " +
                        $"({origin?.X},{origin?.Y}) after {ApproachNoStartMs}ms, {wp.Count} waypoint(s) issued. " +
                        "Returning instead of holding the full arrival timeout; the caller re-approaches.");
+        if (stalled)
+        {
+            handle.Log($"[nav] approach to ({tx},{ty}): STALLED at ({lastPos?.X},{lastPos?.Y}) for {ApproachStallMs}ms mid-walk — " +
+                       "cancelling the walk and returning; the caller re-approaches or aborts (no more 3-minute holds)");
+            handle.WalkCts?.Cancel();
+        }
     }
+
+    /// <summary>A walk in flight that has not moved ApproachMovedEps in this long is stalled (server snap-back, hold, desync)</summary>
+    private const int ApproachStallMs = 10000;
 
     /// <summary>How long to give a freshly-issued walk to produce ANY movement before calling it a no-start</summary>
     private const int ApproachNoStartMs = 6000;

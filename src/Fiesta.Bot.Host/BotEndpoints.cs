@@ -292,24 +292,6 @@ public static class BotEndpoints
             });
         }).WithSummary("Every phase change: wall time, phase, seconds in it (derive metrics from this)");
 
-        group.MapGet("/{id}/skills", (string id) =>
-        {
-            // Read path (operator silver rule: "I'd have to run a probe" = a missing endpoint). 2026-10-06: which recipes
-            // PotionZero knows could not be read without replacing its script.
-            var bot = manager.Get(id);
-            if (bot is null) return Results.NotFound();
-            var view = bot.ZoneView;
-            if (view is null) return Results.Ok(new { id, learned = Array.Empty<ushort>(), passive = Array.Empty<ushort>(), mastery = new Dictionary<ushort, uint>() });
-            return Results.Ok(new
-            {
-                id,
-                learned = view.LearnedSkills.OrderBy(x => x).ToArray(),
-                passive = view.PassiveSkills.OrderBy(x => x).ToArray(),
-                mastery = view.MasterySnapshot().OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key, kv => kv.Value),
-            });
-        })
-        .WithSummary("Learned active + passive skill ids (incl. production recipes) and per-skill mastery points, as the zone sent them");
-
         group.MapGet("/{id}/quests", (string id) =>
         {
             var bot = manager.Get(id);
@@ -744,7 +726,12 @@ public static class BotEndpoints
                     descript = cd?.AbStateByWireIndex((int)a)?.Descript,
                 })
                 .ToArray();
-            return Results.Ok(new { id, count = skills.Count, skills = skills
+            // PASSIVES + MASTERY ride along (2026-10-06): which production recipes a producer knows, and the points behind
+            // each, were unreadable without replacing its script (operator silver rule: a probe need = a missing endpoint)
+            var passive = bot.ZoneView?.PassiveSkills.OrderBy(x => x).ToArray() ?? [];
+            var mastery = (bot.ZoneView?.MasterySnapshot() ?? new Dictionary<ushort, uint>()).OrderBy(kv => kv.Key)
+                .Select(kv => new { skillId = kv.Key, name = cd?.SkillName(kv.Key), points = kv.Value }).ToArray();
+            return Results.Ok(new { id, count = skills.Count, passive, mastery, skills = skills
                 .OrderBy(s => s)
                 .Select(s => new
                 {
