@@ -590,9 +590,15 @@ public sealed class BotManager : IAsyncDisposable
         //     C-> 0x242B NC_BAT_BASHSTART_CMD       -> SWING_START / SWING_DAMAGE follow
         // So: we are in battle mode from the moment we send the REQ, and we leave it when CEASE_FIRE lands on
         // our handle. Re-send only when the last CEASE_FIRE is NEWER than our last request.
+        // CORRECTION 2026-10-06 (wire: packets-NewFighter.log vs Z:/LongCaptureNoDc.pcapng, 179 real-client casts):
+        // the real client sends CHANGEMODE_REQ 14 times in 23 zone sessions - after zone entry or an item use - and
+        // NEVER right before a cast; it casts mid-swing freely. Ours sent CHANGEMODE+STOP before 58 of 64 casts and 55
+        // of them were refused 0x0FC0. The re-send below on a newer CEASE_FIRE, plus the 0x0FC0 handler clearing
+        // InBattleMode, were a self-sustaining refusal loop (NewCleric: 108 of 147 casts refused, its self-heals
+        // included, as it died). CEASE_FIRE does NOT drop battle mode (the comment above was already wrong about it).
+        // Rule now: once per zone session (InBattleMode is reset only by a map change / zone re-entry / mount).
+        if (handle.InBattleMode) return;
         var ceased = handle.ZoneView?.LastBashCeasedAtUtc ?? DateTime.MinValue;
-        if (handle.InBattleMode && ceased <= handle.LastBattleModeSentUtc) return;
-        if (handle.ZoneView?.SelfInBattleMode == true) { handle.InBattleMode = true; return; }
 
         // Spam guard only -- NOT the correctness gate. Without the check above this was the bug: it skipped the
         // send and then cast anyway.
@@ -2945,9 +2951,10 @@ public sealed class BotManager : IAsyncDisposable
                     // drops us out of battle mode.
                     if (reason == ZoneView.CastFailReason.NonBattleMode)
                     {
-                        handle.InBattleMode = false;
+                        // NOT a reason to re-send CHANGEMODE: on the wire (2026-10-06) 0x0FC0 followed OUR OWN CHANGEMODE sent
+                        // 1 ms before the cast in 55 of 58 cases; re-asserting made the next cast fail the same way.
                         handle.Log(BotLogLevel.Info,
-                            "[combat] cast refused NON-BATTLE MODE (0x0FC0) — clearing battle-mode belief, re-asserting on the next action");
+                            "[combat] cast refused 0x0FC0 (client text: NONBATTLE MODE) — belief kept; a CHANGEMODE right before a cast is what causes this");
                     }
                     // Reactive cast-fail handling — lightweight, fire-and-forget
                     if (reason == ZoneView.CastFailReason.NotEnoughSp)
