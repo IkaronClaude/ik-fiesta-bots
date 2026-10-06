@@ -1740,8 +1740,12 @@ public sealed class BotManager : IAsyncDisposable
                         // requestedMenu - so when the real menu arrived the branch below never answered it: eight
                         // re-clicks, "not a shop", and two producers stuck at their vendor for most of an hour. Now we
                         // only note that the menu is expected and let the NpcMenuOpen branch answer it.
-                        if (!requestedMenu)
-                            handle.Log($"open shop npc h={npcHandle} — q{step.QuestId} page has [MENU]; waiting for the NPC menu (0x201C) to answer it");
+                        // ...and the menu only comes once the PAGE is answered: on the new host the click -> page -> 4 s
+                        // of silence loop (01:30) showed a [MENU] page is not followed by 0x201C by itself, while the
+                        // 01:15 probe got a 0x201C 0.6-2 s after every NC_QUEST_SCRIPT_CMD_ACK. So: ack the page (Next),
+                        // then the NpcMenuOpen branch below answers the menu that follows.
+                        await AnswerQuestAsync(id, step.QuestId, step.Qsc, 1, ct);
+                        handle.Log($"open shop npc h={npcHandle} — q{step.QuestId} page has [MENU]: acked the page, waiting for the NPC menu (0x201C) to answer it");
                     }
                     else
                     {
