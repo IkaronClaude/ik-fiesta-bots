@@ -133,6 +133,11 @@ public sealed class BotScriptRunner : IDisposable
                 // boundary -- a memo that outlives its tick is a stale read, and a memo cleared anywhere else could
                 // be cleared mid-decision. The forever-memo (__prof.memo, pure SHN data) is deliberately untouched.
                 if (pv.Table.Get("tick") is { Type: DataType.Table } tickMemo) tickMemo.Table.Clear();
+                // SAMPLED PROFILING (2026-10-06): the per-call shim costs FOUR extra interop crossings per bot.* call
+                // (two clocks, two allocation reads) and at ~230 calls a tick that was ~900 crossings of pure
+                // measurement - the operator's "tick rate" problem was one third profiler. One tick in ten is
+                // measured in full; the other nine call straight through (the memo still applies).
+                pv.Table.Set("sample", DynValue.NewBoolean(Interlocked.Read(ref _ticks) % 10 == 0));
             }
         }
         catch { /* profiling must never break the tick */ }
@@ -446,7 +451,7 @@ do
   local real = bot
   local clock = real.nowPrecise
   local allocb = real.allocBytes or function() return 0 end
-  __prof = { calls = {}, secs = {}, gaps = {}, maxs = {}, hits = {}, allocs = {}, last = clock() }
+  __prof = { calls = {}, secs = {}, gaps = {}, maxs = {}, hits = {}, allocs = {}, last = clock(), sample = true }
   local calls, secs, gaps, maxs, hits, allocs = __prof.calls, __prof.secs, __prof.gaps, __prof.maxs, __prof.hits, __prof.allocs
   local wrapped = {}
   -- MEMOISED LOOKUPS. Allocation is ~10-12KB PER bot.* CALL and holds across a 3.4x range of call counts
@@ -493,10 +498,17 @@ do
   -- list and writes into it, and there is no table.insert/remove/sort against them. They are server state, so a
   -- tick is the right lifetime -- long enough to stop 17 rebuilds, short enough that a quest accepted or handed
   -- in this tick is visible on the next one 50ms later.
+  -- 2026-10-06: the LIVE scalars and the two big read-only tables are enrolled too. A tick is 50-300 ms; nothing
+  -- we send changes hp/x/y/money/inventory synchronously (the server's packet does, on a later tick), and the
+  -- call sites iterate nearbyMobs()/inventory() inline (mobByHandle alone re-marshalled the whole mob list on
+  -- every lookup: 23-69 crossings of ~100 KB a tick). now() is a per-tick constant by the same argument as ticks().
   local tickK = { map = true, ticks = true, level = true, mounted = true, skillDamageAvg = true,
                   questDone = true, questStatus = true, questProgress = true,
                   invenCountOf = true, invenCount = true, itemUseFails = true,
-                  activeQuests = true, eligibleQuests = true, availableQuests = true }
+                  activeQuests = true, eligibleQuests = true, availableQuests = true,
+                  now = true, hp = true, hpPct = true, sp = true, maxHp = true, x = true, y = true, money = true,
+                  walking = true, traveling = true, casting = true, bagFreeSlots = true, bagFull = true,
+                  inventory = true, nearbyMobs = true, aggressorHandles = true, selfHandle = true, exp = true }
   __prof.memo = {}
   __prof.tick = {}
   local memo, tickmemo = __prof.memo, __prof.tick
@@ -550,14 +562,20 @@ do
                 if hit == NILV then return nil end
                 return hit
               end
-              local t0m = clock()
-              gaps[k] = (gaps[k] or 0) + (t0m - __prof.last)
-              local r = done(k, t0m, allocb(), v(...))
+              local r
+              if __prof.sample then
+                local t0m = clock()
+                gaps[k] = (gaps[k] or 0) + (t0m - __prof.last)
+                r = done(k, t0m, allocb(), v(...))
+              else
+                r = v(...)
+              end
               byArg[key] = (r == nil) and NILV or r
               return r
             end
           end
         end
+        if not __prof.sample then return v(...) end
         local t0 = clock()
         gaps[k] = (gaps[k] or 0) + (t0 - __prof.last)
         return done(k, t0, allocb(), v(...))
