@@ -2711,6 +2711,7 @@ public sealed class BotManager : IAsyncDisposable
                 // Level from char-info (NC_CHAR_BASE Level@25) — authoritative on EVERY zone-enter, so bot.level() advances with…
                 if (entry.Level is { } lvl0 && lvl0 > 0) handle.SetLevel(lvl0);
                 zoneView.SeedSkills(entry.Skills);
+                zoneView.SeedMastery(entry.SkillMastery);
                 zoneView.SeedPassives(entry.Passives);
                 zoneView.SeedStats(entry.Stats);   // STR/END/.../DEF/M.Def for the watch panel
                 zoneView.SeedItems(entry.Items);

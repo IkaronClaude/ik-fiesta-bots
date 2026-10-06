@@ -1410,6 +1410,13 @@ public sealed class ZoneView : IDisposable
     }
 
     /// <summary>Seed the learned-skill set from the zone-login skill list (captured by during the login burst, which the sessi…</summary>
+    /// <summary>Seed the per-recipe mastery counters from the login skill list (the same store 0x481D updates per craft).</summary>
+    public void SeedMastery(IReadOnlyDictionary<ushort, uint>? mastery)
+    {
+        if (mastery is null || mastery.Count == 0) return;
+        foreach (var (skill, m) in mastery) _mastery[skill] = m;
+        _log?.Invoke($"[ZoneView] MASTERY seeded from the login skill list: {string.Join(",", mastery.OrderBy(k => k.Key).Select(k => $"{k.Key}={k.Value}"))}");
+    }
     public void SeedSkills(IEnumerable<ushort>? skills)
     {
         if (skills is null) return;

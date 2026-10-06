@@ -88,6 +88,7 @@ public sealed class ZoneEntry
             var deadline = DateTime.UtcNow + idleWindow;
             var sawFrame = false;
             List<ushort>? skills = null;
+            Dictionary<ushort, uint>? skillMastery = null;   // PROTO_SKILLREADBLOCKCLIENT.mastery u32 @8 per block
             List<ushort>? passives = null;
             List<(byte box, ushort inven, ushort itemId, int count)>? items = null;
             List<ushort>? doneQuests = null;
@@ -153,7 +154,7 @@ public sealed class ZoneEntry
                 }
                 if (pkt.Opcode == OpClientSkill) // learned-skill list (drained here; seed ZoneView)
                 {
-                    skills = ParseSkillList(pkt.Payload.Span);
+                    skills = ParseSkillList(pkt.Payload.Span, out skillMastery);
                     _log($"[Zone] learned skills ({skills.Count}): {string.Join(",", skills)}");
                     continue;
                 }
@@ -291,7 +292,7 @@ public sealed class ZoneEntry
                     if (exp is null)
                         _log("[Zone] ⛔ MAP_LOGIN_ACK reached with NO exp seed — CHAR_BASE never arrived or " +
                              "was too short. OUR decode gap: a real client has exp the instant it logs in.");
-                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel, charStats);
+                    return await CompleteLoginAsync(conn, "MAP_LOGIN_ACK", sx, sy, charHandle, maxHp, maxSp, skills, skillMastery, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel, charStats);
                 }
                 // else: a chardata burst frame ([1038] etc.) — keep draining
             }
@@ -302,7 +303,7 @@ public sealed class ZoneEntry
                 if (exp is null)
                     _log("[Zone] ⛔ zone-enter burst completed with NO exp seed — CHAR_BASE never arrived. " +
                          "OUR bug, not the server's: the real client shows exp from the moment it logs in.");
-                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen, exp, charLevel, null);
+                return await CompleteLoginAsync(conn, "burst (no explicit [1802])", null, null, null, null, null, skills, skillMastery, passives, items, doneQuests, activeQuests, readQuests, ct, curHpStone, curSpStone, null, null, cen, exp, charLevel, null);
             }
             throw new ZoneEntryException("Zone phase timed out with no MAP_LOGINFAIL and no zone traffic");
         }
@@ -316,7 +317,7 @@ public sealed class ZoneEntry
     /// <summary>Send MAP_LOGINCOMPLETE [1803] to finish spawning into the world, then hand back the open connection (now fully…</summary>
     private async Task<ZoneEntryResult> CompleteLoginAsync(
         FiestaClientConnection conn, string via, uint? spawnX, uint? spawnY, ushort? charHandle,
-        uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills, IReadOnlyList<ushort>? passives,
+        uint? maxHp, uint? maxSp, IReadOnlyList<ushort>? skills, IReadOnlyDictionary<ushort, uint>? skillMastery, IReadOnlyList<ushort>? passives,
         IReadOnlyList<(byte box, ushort inven, ushort itemId, int count)>? items,
         IReadOnlyList<ushort>? doneQuests, IReadOnlyList<(ushort id, byte status, int progress, IReadOnlyList<int> objCounts)>? activeQuests,
         IReadOnlyList<ushort>? readQuests, CancellationToken ct, int? curHpStone = null, int? curSpStone = null,
@@ -325,13 +326,14 @@ public sealed class ZoneEntry
     {
         await conn.SendAsync(new FiestaPacket(OpMapLoginComplete, ReadOnlyMemory<byte>.Empty), ct);
         _log($"[Zone] *** IN ZONE ({via}) >> MAP_LOGINCOMPLETE (0x{OpMapLoginComplete:X4}) ***");
-        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel, stats, WasBurst: via.Contains("burst"));
+        return new ZoneEntryResult(conn, spawnX, spawnY, charHandle, maxHp, maxSp, skills, passives, items, doneQuests, activeQuests, readQuests, curHpStone, curSpStone, maxHpStone, maxSpStone, cen, exp, charLevel, stats, WasBurst: via.Contains("burst")) { SkillMastery = skillMastery };
     }
 
     /// <summary>Parse the learned skill ids out of a NC_CHAR_CLIENT_SKILL_CMD body (header then number × 12-byte blocks, each…</summary>
-    private static List<ushort> ParseSkillList(ReadOnlySpan<byte> p)
+    private static List<ushort> ParseSkillList(ReadOnlySpan<byte> p, out Dictionary<ushort, uint>? mastery)
     {
         var skills = new List<ushort>();
+        mastery = null;
         if (p.Length < SkillListHeaderLen) return skills;
         var number = (ushort)(p[8] | (p[9] << 8));
         for (var i = 0; i < number; i++)
@@ -341,6 +343,13 @@ public sealed class ZoneEntry
             var skillId = (ushort)(p[off] | (p[off + 1] << 8));
             // id 0 is a REAL skill (ActiveSkill.ID=0
             skills.Add(skillId);
+            // PROTO_SKILLREADBLOCKCLIENT (PDB, 12 B): skillid u16 @0, cooltime u32 @2, empow @6, MASTERY u32 @8 - the
+            // production mastery total per recipe skill (operator 2026-10-05: "the seed carries the total mastery level")
+            if (off + SkillBlockLen <= p.Length)
+            {
+                var m = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(off + 8, 4));
+                if (m > 0) { mastery ??= new Dictionary<ushort, uint>(); mastery[skillId] = m; }
+            }
         }
         return skills;
     }
@@ -376,7 +385,7 @@ public sealed record CharStats(
     uint DmgMin, uint DmgMax, uint Def, uint Aim, uint Evasion, uint MagicDmg, uint MagicDef,
     ulong PrevExp = 0, ulong NextExp = 0);
 
-public sealed record ZoneEntryResult(
+public sealed partial record ZoneEntryResult(
     FiestaClientConnection Conn, uint? SpawnX, uint? SpawnY, ushort? CharHandle, uint? MaxHp = null, uint? MaxSp = null,
     IReadOnlyList<ushort>? Skills = null,
     IReadOnlyList<ushort>? Passives = null,
@@ -390,6 +399,11 @@ public sealed record ZoneEntryResult(
     CharStats? Stats = null,
     // True when login completed WITHOUT the explicit [1802] MAP_LOGIN_ACK ("burst") → position/HP were NOT seeded (n…
     bool WasBurst = false);
+public sealed partial record ZoneEntryResult
+{
+    /// <summary>Per-recipe-skill production mastery from the login skill list (null when none was non-zero).</summary>
+    public IReadOnlyDictionary<ushort, uint>? SkillMastery { get; init; }
+}
 
 public sealed class ZoneEntryException : Exception
 {
