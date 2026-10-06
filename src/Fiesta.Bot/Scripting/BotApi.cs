@@ -1274,7 +1274,9 @@ public sealed class BotApi
         foreach (var mobId in cd.MobCoordinateMobIds)
         {
             var mm = cd.Mob(mobId);
-            if (mm is null || mm.IsNpc || mm.IsPlayerSide) continue;
+            // regular spawns only (GradeType 0): a lone rare like RouCos02's level-93 Nest Slime (grade 4, one spawn) or a
+            // gathering node (grade 5, "level 150") must not disqualify a newbie field
+            if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0) continue;
             foreach (var loc in cd.MobCoordinatesAll(mobId))
             {
                 if (cd.MapInside(loc.Map)) continue;
