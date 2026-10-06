@@ -292,6 +292,24 @@ public static class BotEndpoints
             });
         }).WithSummary("Every phase change: wall time, phase, seconds in it (derive metrics from this)");
 
+        group.MapGet("/{id}/skills", (string id) =>
+        {
+            // Read path (operator silver rule: "I'd have to run a probe" = a missing endpoint). 2026-10-06: which recipes
+            // PotionZero knows could not be read without replacing its script.
+            var bot = manager.Get(id);
+            if (bot is null) return Results.NotFound();
+            var view = bot.ZoneView;
+            if (view is null) return Results.Ok(new { id, learned = Array.Empty<ushort>(), passive = Array.Empty<ushort>(), mastery = new Dictionary<ushort, uint>() });
+            return Results.Ok(new
+            {
+                id,
+                learned = view.LearnedSkills.OrderBy(x => x).ToArray(),
+                passive = view.PassiveSkills.OrderBy(x => x).ToArray(),
+                mastery = view.MasterySnapshot().OrderBy(kv => kv.Key).ToDictionary(kv => kv.Key, kv => kv.Value),
+            });
+        })
+        .WithSummary("Learned active + passive skill ids (incl. production recipes) and per-skill mastery points, as the zone sent them");
+
         group.MapGet("/{id}/quests", (string id) =>
         {
             var bot = manager.Get(id);

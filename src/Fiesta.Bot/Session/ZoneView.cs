@@ -1318,6 +1318,8 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Skill ids the character has actually learned, from the zone-login skill list (NC_CHAR_CLIENT_SKILL_CMD)</summary>
     public IReadOnlyCollection<ushort> LearnedSkills => _skills.Keys.ToArray();
+    /// <summary>Passive skill ids the character has learned (separate id space from the active list)</summary>
+    public IReadOnlyCollection<ushort> PassiveSkills => _passives.Keys.ToArray();
 
     // PER-SKILL LAST-CAST, so the watch panel can show real cooldowns
     private readonly ConcurrentDictionary<ushort, DateTime> _lastSkillCast = new();
@@ -2116,7 +2118,14 @@ public sealed class ZoneView : IDisposable
         else if (op == OpCharDeadMenu)
         {
             Dead = true; DeadAtUtc = DateTime.UtcNow;
-            _log?.Invoke("[combat] DIED (death menu) — revive in place or respawn to town");
+            // PROTO_NC_CHAR_DEADMENU_CMD (PDB, 9 B): Second u32 @0 (countdown), priority u8 @4, eMenuType @5 (DeadMenuType)
+            {
+                var dp = pkt.Payload.Span;
+                var sec = dp.Length >= 4 ? System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(dp) : 0u;
+                var prio = dp.Length >= 5 ? dp[4] : (byte)0;
+                var mt = dp.Length >= 9 ? System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(dp[5..]) : 0u;
+                _log?.Invoke($"[combat] DIED (death menu) — revive in place or respawn to town | DEADMENU second={sec} priority={prio} menuType={mt}");
+            }
             // NOTE: dying does NOT itself drop the selection — the RESPAWN does, because it teleports you (operator 2026-08-…
         }
         else if (op == OpCharReviveSame)
