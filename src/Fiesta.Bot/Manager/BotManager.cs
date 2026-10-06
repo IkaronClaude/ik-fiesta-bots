@@ -637,7 +637,10 @@ public sealed class BotManager : IAsyncDisposable
         var slot = MountSlot(handle);
         if (slot < 0) { handle.Log("[travel] mounted but no mount item found in bag — cannot dismount for the gate"); return false; }
         handle.Log($"[travel] DISMOUNTING before gate (slot={slot}) — a gate is silently ignored while mounted");
-        await UseItemAsync(id, (byte)slot, 0, ct);
+        // invenType is the inventory BOX (PDB: PROTO_NC_ITEM_USE_REQ {invenslot, invenType}); the bag is box 9, which is
+        // what the script's useItem sends. 0 asked the server for slot 16 of box 0: "item USE item=65535 err 0x702", no
+        // RIDE_OFF, and the gate was then taken mounted and ignored (NewArcher 06:00:30, six such dismounts today).
+        await UseItemAsync(id, (byte)slot, 9, ct);
         // 3000ms was set JUST UNDER the real dismount latency, so this "failed" essentially every time
         var ok = await WaitUntilAsync(
             () => handle.ZoneView?.IsMounted != true || handle.ZoneView is { ServerMenuOpen: true },
