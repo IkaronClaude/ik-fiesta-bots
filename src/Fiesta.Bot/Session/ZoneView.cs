@@ -1454,10 +1454,10 @@ public sealed class ZoneView : IDisposable
     public event Action<int, int>? SkillCastStarted;
 
     // ── Personal storage (warehouse) ───────────────────────────────────────────────────────────────
-    private (byte Slot, ushort ItemId)[] _storageItems = [];
+    private (ushort Slot, ushort ItemId)[] _storageItems = [];
 
     /// <summary>Contents of the personal storage as of the last open (0x3C08), as (slot, itemId)</summary>
-    public IReadOnlyList<(byte Slot, ushort ItemId)> StorageItems => _storageItems;
+    public IReadOnlyList<(ushort Slot, ushort ItemId)> StorageItems => _storageItems;
 
     /// <summary>The inventory BOX id storage lives in — learned from the wire (every item `location` in the storage-open packe…</summary>
     public int StorageBox { get; private set; } = StorageBoxId;
@@ -1479,7 +1479,7 @@ public sealed class ZoneView : IDisposable
     public int CellChangeCount { get; private set; }
 
     /// <summary>Raised when storage opens with its contents</summary>
-    public event Action<IReadOnlyList<(byte Slot, ushort ItemId)>>? StorageOpened;
+    public event Action<IReadOnlyList<(ushort Slot, ushort ItemId)>>? StorageOpened;
 
     private readonly HashSet<int> _doneQuests = new();
     private readonly ConcurrentDictionary<int, byte> _activeQuests = new();
@@ -2687,21 +2687,26 @@ public sealed class ZoneView : IDisposable
                 StoragePage = p[9];
                 var openType = p[10];
                 int count = p[11];
-                var items = new List<(byte Slot, ushort ItemId)>(count);
+                var items = new List<(ushort Slot, ushort ItemId)>(count);
                 var boxesSeen = new HashSet<byte>();
                 var off = 12;
                 for (var i = 0; i < count && off + 3 <= p.Length; i++)
                 {
                     var datasize = p[off];
                     var loc = (ushort)(p[off + 1] | (p[off + 2] << 8));
+                    // Z:/Storage.pcapng (real client, 2026-06-26, read 2026-10-06): a storage location is 0x1800 | cell, box 6,
+                    // cell = page*36 + slot (page 1 slot 0 = 0x1824 = cell 36), so the cell needs the low TEN bits.
                     var box = (byte)(loc >> 10);
-                    var slot = (byte)(loc & 0xFF);
+                    var slot = (ushort)(loc & 0x3FF);
                     // itemId is the first field of SHINE_ITEM_STRUCT, immediately after `location`
                     var itemId = off + 5 <= p.Length ? (ushort)(p[off + 3] | (p[off + 4] << 8)) : (ushort)0;
                     boxesSeen.Add(box);
                     items.Add((slot, itemId));
                     if (datasize == 0) break;           // malformed; don't spin
-                    off += datasize;
+                    // PROTO_ITEMPACKET_INFORM: datasize counts location + SHINE_ITEM_STRUCT, NOT the datasize byte itself
+                    // (capture: a sword record is 45 | 00 18 | fa 00 + 65 attr bytes = 1 + 69). Advancing by datasize alone
+                    // read every record after an equipment item one byte early - the "high-bits DISAGREE (0,2,3,6,47)" slots.
+                    off += 1 + datasize;
                 }
                 // Adopt an observed container ONLY when every item agrees on it
                 if (boxesSeen.Count == 1)

@@ -1889,7 +1889,7 @@ public sealed class BotManager : IAsyncDisposable
             if (confirmed)
             {
                 handle.Log(BotLogLevel.Note, $"storage {(deposit ? "DEPOSIT" : "WITHDRAW")} ok: " +
-                    $"box{from >> 10} slot{from & 0xFF} -> box{to >> 10} slot{to & 0xFF}" +
+                    $"box{from >> 10} slot{from & 0x3FF} -> box{to >> 10} slot{to & 0x3FF}" +
                     (deposit ? " (bag cell cleared)" : ""));
                 return ActionResult.Sent;
             }
@@ -1900,11 +1900,21 @@ public sealed class BotManager : IAsyncDisposable
             handle.Log(BotLogLevel.Note, $"storage DEPOSIT: cells DID change but bag slot {fromSlot} still holds " +
                 $"item {srcItem} — the move did not free the slot (this is what the old any-cellchange check mis-read as success)");
         // The server DOES answer every RELOC with NC_ITEM_RELOC_ACK (0x300C) — we were just throwing it away, so this li…
+        // Z:/Storage.pcapng: EVERY successful deposit/withdrawal is acked RELOC_ACK 0x0241 (577) together with its two
+        // CELLCHANGEs; 0x024A (586) is the refusal (unstorable item / bad target). 0x0241 without a bag-cell clear within
+        // 3 s is "happened, confirmation missed", not a refusal.
         var ackTxt = view.LastRelocAckAtUtc > ackBefore
-            ? $"server answered RELOC_ACK code={view.LastRelocAckCode} (0x{view.LastRelocAckCode:X4}) — the move was REFUSED, not lost"
+            ? (view.LastRelocAckCode == 0x0241
+                ? "server answered RELOC_ACK 0x0241 = OK (the capture's success code) but the bag cell did not clear within 3 s — treating as DONE"
+                : $"server answered RELOC_ACK code={view.LastRelocAckCode} (0x{view.LastRelocAckCode:X4}) — the move was REFUSED, not lost")
             : "and NO RELOC_ACK either — the request itself never landed";
+        if (view.LastRelocAckAtUtc > ackBefore && view.LastRelocAckCode == 0x0241)
+        {
+            handle.Log(BotLogLevel.Note, $"storage {(deposit ? "DEPOSIT" : "WITHDRAW")} box{from >> 10} slot{from & 0x3FF} -> box{to >> 10} slot{to & 0x3FF}: {ackTxt}");
+            return ActionResult.Sent;
+        }
         handle.Log(BotLogLevel.Note, $"CRUTCH[CRIT] storage {(deposit ? "DEPOSIT" : "WITHDRAW")} FAILED — no CELLCHANGE in 3s for " +
-            $"box{from >> 10} slot{from & 0xFF} -> box{to >> 10} slot{to & 0xFF}: {ackTxt}");
+            $"box{from >> 10} slot{from & 0x3FF} -> box{to >> 10} slot{to & 0x3FF}: {ackTxt}");
         return ActionResult.NotInZone;
     }
 
