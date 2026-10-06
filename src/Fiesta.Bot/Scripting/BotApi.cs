@@ -1267,6 +1267,20 @@ public sealed class BotApi
         var cd = _mgr.ClientData;
         if (cd is null) return DynValue.NewTable(t);
         var byMap = new Dictionary<string, (long area, List<int> mobs, GameData.MobLocation best)>(StringComparer.OrdinalIgnoreCase);
+        // THE WHOLE MAP'S ROSTER, not just the in-band mobs: EldCem01 has lvl 28-30 mobs AND level-40 Secret Society
+        // Archers; NewArcher (29) and NewFighter (28) each died there twice on 2026-10-06 after picking it as a grind
+        // field on the in-band mobs alone. maxMobLevel lets the script refuse a map whose roster outclasses it.
+        var maxLevelByMap = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mobId in cd.MobCoordinateMobIds)
+        {
+            var mm = cd.Mob(mobId);
+            if (mm is null || mm.IsNpc || mm.IsPlayerSide) continue;
+            foreach (var loc in cd.MobCoordinatesAll(mobId))
+            {
+                if (cd.MapInside(loc.Map)) continue;
+                if (!maxLevelByMap.TryGetValue(loc.Map, out var cur) || mm.Level > cur) maxLevelByMap[loc.Map] = mm.Level;
+            }
+        }
         foreach (var mobId in cd.MobCoordinateMobIds)
         {
             var m = cd.Mob(mobId);
@@ -1287,6 +1301,7 @@ public sealed class BotApi
         {
             var r = NewTable();
             r["map"] = map; r["area"] = e.area; r["x"] = e.best.CenterX; r["y"] = e.best.CenterY;
+            r["maxMobLevel"] = maxLevelByMap.TryGetValue(map, out var ml) ? ml : 0;
             var mobs = NewTable(); int j = 1;
             foreach (var id in e.mobs) mobs[j++] = id;
             r["mobs"] = DynValue.NewTable(mobs);
