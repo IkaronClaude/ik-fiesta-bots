@@ -1905,16 +1905,14 @@ public sealed class BotManager : IAsyncDisposable
         // Z:/Storage.pcapng: EVERY successful deposit/withdrawal is acked RELOC_ACK 0x0241 (577) together with its two
         // CELLCHANGEs; 0x024A (586) is the refusal (unstorable item / bad target). 0x0241 without a bag-cell clear within
         // 3 s is "happened, confirmation missed", not a refusal.
+        // 0x0241 with the bag cell UNCHANGED is not "done" either (2026-10-06 05:58, NewFighter: a Return Scroll merged
+        // into a storage stack was acked 0x0241 twice, cells changed, the bag kept the scroll - a full stack or a rule the
+        // server does not report). Report it as what it is and let the script mark the target cell, never as a success.
         var ackTxt = view.LastRelocAckAtUtc > ackBefore
             ? (view.LastRelocAckCode == 0x0241
-                ? "server answered RELOC_ACK 0x0241 = OK (the capture's success code) but the bag cell did not clear within 3 s — treating as DONE"
+                ? "server answered RELOC_ACK 0x0241 (the success code) but the bag cell did not clear — a full target stack or an unreported rule; NOT done"
                 : $"server answered RELOC_ACK code={view.LastRelocAckCode} (0x{view.LastRelocAckCode:X4}) — the move was REFUSED, not lost")
             : "and NO RELOC_ACK either — the request itself never landed";
-        if (view.LastRelocAckAtUtc > ackBefore && view.LastRelocAckCode == 0x0241)
-        {
-            handle.Log(BotLogLevel.Note, $"storage {(deposit ? "DEPOSIT" : "WITHDRAW")} box{from >> 10} slot{from & 0x3FF} -> box{to >> 10} slot{to & 0x3FF}: {ackTxt}");
-            return ActionResult.Sent;
-        }
         handle.Log(BotLogLevel.Note, $"CRUTCH[CRIT] storage {(deposit ? "DEPOSIT" : "WITHDRAW")} FAILED — no CELLCHANGE in 3s for " +
             $"box{from >> 10} slot{from & 0x3FF} -> box{to >> 10} slot{to & 0x3FF}: {ackTxt}");
         return ActionResult.NotInZone;
