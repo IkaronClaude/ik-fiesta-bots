@@ -491,6 +491,8 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>True while the bot is riding a mount (tracked from MOVER ride on/off, 0xCC02/0xCC06)</summary>
     public bool IsMounted { get; private set; }
+    /// <summary>RIDE_ON (true) / RIDE_OFF (false) landed - battle mode does not survive either (the real client re-sends CHANGEMODE after the mount item use)</summary>
+    public event Action<bool>? MountChanged;
 
     /// <summary>The bot's current walk speed in world-units per second, as last reported by the server's MOVESPEED broadcast (…</summary>
     public double WalkSpeed { get; private set; } = 120.0;
@@ -1801,6 +1803,7 @@ public sealed class ZoneView : IDisposable
             var p = pkt.Payload.Span;
             if (p.Length >= 2) _mountHandle = (ushort)(p[0] | (p[1] << 8));
             _log?.Invoke($"[ZoneView] mounted (RIDE_ON, mountH={_mountHandle})");
+            MountChanged?.Invoke(true);
         }
         else if (op == OpMoverRideOff)
         {
@@ -1818,6 +1821,7 @@ public sealed class ZoneView : IDisposable
                 WalkSpeedChanged?.Invoke(120.0);
             }
             _log?.Invoke("[ZoneView] dismounted (RIDE_OFF)");
+            MountChanged?.Invoke(false);
         }
         else if (op == OpMoveSpeed)
         {

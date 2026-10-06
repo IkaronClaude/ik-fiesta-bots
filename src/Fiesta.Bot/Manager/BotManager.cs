@@ -598,6 +598,8 @@ public sealed class BotManager : IAsyncDisposable
         // included, as it died). CEASE_FIRE does NOT drop battle mode (the comment above was already wrong about it).
         // Rule now: once per zone session (InBattleMode is reset only by a map change / zone re-entry / mount).
         if (handle.InBattleMode) return;
+        // A mode change while MOUNTED is ignored by the server; the caller dismounts before fighting, re-assert then.
+        if (handle.ZoneView?.IsMounted == true) return;
         var ceased = handle.ZoneView?.LastBashCeasedAtUtc ?? DateTime.MinValue;
 
         // Spam guard only -- NOT the correctness gate. Without the check above this was the bug: it skipped the
@@ -2754,6 +2756,11 @@ public sealed class BotManager : IAsyncDisposable
                 // it, "which map does the bot think it is on, and does the server agree" is unanswerable exactly when
                 // the bot is wedged and has had no recent transition to re-derive it.
                 handle.SetCurrentMap(currentMap, ClientData?.MapId(currentMap), "WM-loginmap");
+                // A mount or dismount ends battle mode server-side (2026-10-06: NewArcher asserted battle mode while MOUNTED
+                // at 05:06:24, the server ignored it, and every cast after the dismount was refused 0x0FC0 - 60 of 30 casts).
+                // The real client re-sends CHANGEMODE after the mount item use (Z:/LongCaptureNoDc.pcapng). Drop the belief
+                // so the next cast re-asserts, once, on foot.
+                zoneView.MountChanged += _ => { handle.InBattleMode = false; };
                 zoneView.MapChanged += h =>
                 {
                     // A map change ends combat server-side: battle mode and any running swing stream are gone, so re-assert them on…
