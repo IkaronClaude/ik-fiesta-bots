@@ -1280,6 +1280,10 @@ public sealed class BotApi
             foreach (var loc in cd.MobCoordinatesAll(mobId))
             {
                 if (cd.MapInside(loc.Map)) continue;
+                // POINT placements (width*height == 0) are markers, not spawn regions: the Tower of Iyzel mobs 8100-8137
+                // (level 50+) sit as points on RouVal01 at the instance gate and made a level-20s field read as "roster
+                // up to 52". Only a region with an area counts, the same rule the candidates themselves use.
+                if ((long)loc.Width * loc.Height <= 0) continue;
                 if (!maxLevelByMap.TryGetValue(loc.Map, out var cur) || mm.Level > cur) maxLevelByMap[loc.Map] = mm.Level;
             }
         }
