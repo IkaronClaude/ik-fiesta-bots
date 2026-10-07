@@ -1378,6 +1378,16 @@ public sealed class BotApi
     /// <summary>The script looked around the current map: record it as explored (with whatever mobs were sighted)</summary>
     public void markMapExplored() => _mgr.Knowledge.RecordMapVisited(_handle.KnowledgeScope, _handle.CurrentMap);
 
+    /// <summary>Set the maps the router must route AROUND (never through) for this bot - the script's death / outclass
+    /// list. A Lua array of map names; an empty table clears it. Returns how many are set.</summary>
+    public int setAvoidMaps(Table maps)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var v in maps.Values) if (v.Type == DataType.String && !string.IsNullOrEmpty(v.String)) set.Add(v.String);
+        _handle.AvoidMaps = set;
+        return set.Count;
+    }
+
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate on not bot.hpStoneDepleted() so the…</summary>

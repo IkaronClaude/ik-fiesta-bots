@@ -475,6 +475,9 @@ public sealed class BotHandle
 
     /// <summary>The bot's current walk speed in world-units per second, driven by MOVESPEED broadcasts (0x203E / 0xCC0D)</summary>
     public double WalkSpeed { get; set; } = 120.0;
+    /// <summary>Maps the script does not want to CROSS (its death / outclass list, bot.setAvoidMaps): the map router routes
+    /// around them. Replaced whole on each set, so readers see a consistent snapshot.</summary>
+    public IReadOnlySet<string> AvoidMaps { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The map name the bot is *intentionally* travelling into (set by the travel loop right before it takes a gate)</summary>
     internal volatile string? PendingDestMap;

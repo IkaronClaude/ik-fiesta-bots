@@ -1343,7 +1343,8 @@ public sealed class BotManager : IAsyncDisposable
 
         // Cost-gated route: Dijkstra over field gates AND town portals, edge cost = on-map walk distance to the transiti…
         var startPos = handle.Position is { } sp ? (sp.X, sp.Y) : (0u, 0u);
-        var costed = Graph.RouteCost(from, startPos, destMap, null, (int)handle.Level, StraightLineCost);
+        var avoidSet = handle.AvoidMaps;
+        var costed = Graph.RouteCost(from, startPos, destMap, null, (int)handle.Level, StraightLineCost, avoid: avoidSet.Count > 0 ? avoidSet.Contains : null);
         if (costed is not { Route.Count: > 0 } cr) return (TravelResult.NoRoute, null);
         var route = cr.Route;
         int portalHops = route.Count(e => e.IsPortal);
@@ -1495,7 +1496,8 @@ public sealed class BotManager : IAsyncDisposable
         SeedGraphIfNeeded(id);
         ObserveGates(id);
         var startPos = handle.Position is { } sp ? (sp.X, sp.Y) : (0u, 0u);
-        var costed = Graph.RouteCost(from, startPos, destMap, null, (int)handle.Level, StraightLineCost);
+        var avoidSet = handle.AvoidMaps;
+        var costed = Graph.RouteCost(from, startPos, destMap, null, (int)handle.Level, StraightLineCost, avoid: avoidSet.Count > 0 ? avoidSet.Contains : null);
         if (costed is not { Route.Count: > 0 } cr) return (TravelResult.NoRoute, null);
         return (TravelResult.Started, cr.Route);
     }

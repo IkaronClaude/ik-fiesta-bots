@@ -119,7 +119,8 @@ public sealed class MapGraph
     /// <summary>Least-COST route from @ to @ over field gates AND town portals (Dijkstra)</summary>
     public (IReadOnlyList<GateEdge> Route, double Cost)? RouteCost(
         string fromMap, (uint X, uint Y) fromPos, string toMap, (uint X, uint Y)? toPos,
-        int botLevel, Func<(uint X, uint Y), (uint X, uint Y), double> walkCost, double portalHopCost = 0)
+        int botLevel, Func<(uint X, uint Y), (uint X, uint Y), double> walkCost, double portalHopCost = 0,
+        Func<string, bool>? avoid = null)
     {
         var cmp = StringComparer.OrdinalIgnoreCase;
         double FinalLeg((uint X, uint Y) arr) => toPos is { } t ? walkCost(arr, t) : 0;
@@ -143,6 +144,10 @@ public sealed class MapGraph
             {
                 if (done.Contains(e.ToMap)) continue;
                 if (e.MinLevel > 0 && botLevel < e.MinLevel) continue; // level-gated portal tier
+                // a map the bot must not CROSS (its script's death / outclass list) is routed around, never through;
+                // the destination itself is the caller's decision (2026-10-07: NewMage stood 2 h on RouVal02 because the
+                // only route the planner knew to RouN ran through EldGbl02, and the script refused the whole trip)
+                if (avoid is not null && !string.Equals(e.ToMap, toMap, StringComparison.OrdinalIgnoreCase) && avoid(e.ToMap)) continue;
                 double nd = dm + walkCost(p, (e.GateX, e.GateY)) + (e.IsPortal ? portalHopCost : 0);
                 if (dist.TryGetValue(e.ToMap, out var od) && nd >= od) continue;
                 dist[e.ToMap] = nd;
