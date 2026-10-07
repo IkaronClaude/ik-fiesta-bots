@@ -52,6 +52,14 @@ public sealed class BotScriptRunner : IDisposable
     private double _tickMsTotal;
     /// <summary>A tick over this long prints where it went. Target is ~50ms (20 ticks/sec).</summary>
     private const int SlowTickMs = 250;
+    // REGRESSION ALARM (operator 2026-10-07): the tick-rate work took the levellers to 70-100 ticks/s, and any tick over
+    // CritTickMs must be loud enough to survive a grep for CRIT. Aggregated, not per tick: one line per window with the
+    // count, the worst tick and its GC pause / allocation, so a regression is visible without flooding the log.
+    private const int CritTickMs = 50;
+    private const int CritTickWindowMs = 30_000;
+    private int _critSlowN;
+    private double _critWorstMs, _critWorstGcMs, _critWorstAllocKb;
+    private long _critWindowStart = Environment.TickCount64;
     private volatile string? _lastError;
     private volatile string? _smState; // current state-machine state (null for a plain script)
     private int _disposed;
@@ -315,6 +323,21 @@ public sealed class BotScriptRunner : IDisposable
                     var gcN = (GC.CollectionCount(0) - gc0.Item1, GC.CollectionCount(1) - gc0.Item2,
                                GC.CollectionCount(2) - gc0.Item3);
                     _tickMsTotal += swTick.Elapsed.TotalMilliseconds;
+                    if (swTick.Elapsed.TotalMilliseconds > CritTickMs)
+                    {
+                        _critSlowN++;
+                        if (swTick.Elapsed.TotalMilliseconds > _critWorstMs)
+                        { _critWorstMs = swTick.Elapsed.TotalMilliseconds; _critWorstGcMs = pauseMs; _critWorstAllocKb = allocKb; }
+                    }
+                    if (Environment.TickCount64 - _critWindowStart >= CritTickWindowMs)
+                    {
+                        if (_critSlowN > 0)
+                            _log($"[script:{_name}] CRUTCH[CRIT] SLOW TICKS: {_critSlowN} tick(s) over {CritTickMs}ms in the last " +
+                                 $"{(Environment.TickCount64 - _critWindowStart) / 1000}s - worst {_critWorstMs:F0}ms " +
+                                 $"(gc {_critWorstGcMs:F0}ms, alloc {_critWorstAllocKb:F0}KB). Tick-rate REGRESSION alarm; [lqprof] TIME names the section.");
+                        _critSlowN = 0; _critWorstMs = _critWorstGcMs = _critWorstAllocKb = 0;
+                        _critWindowStart = Environment.TickCount64;
+                    }
                     // RECORD EVERY TICK. LogMetric batches (500ms) and is a lock plus two adds, so this costs far
                     // less than the work it measures -- and unlike the [prof] line it is NOT limited to slow ticks,
                     // which is what made the old numbers so easy to misread.
