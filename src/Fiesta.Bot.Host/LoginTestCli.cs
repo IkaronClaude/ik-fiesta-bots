@@ -74,9 +74,27 @@ public static class LoginTestCli
                     var wmSession = new BotSession(wmConn, sel.Name, wm.WmHandle, wmEp, Log);
                     using var holdCts = new CancellationTokenSource(TimeSpan.FromSeconds(holdSec));
                     Log($"[hold] staying in zone for {holdSec}s, answering heartbeats…");
+                    // --send "2001:0005414243...,2001:..." = raw zone packets (opcode hex : payload hex), sent 3 s after
+                    // entering, 1 s apart - a protocol probe (e.g. a malformed chat for the zone's packet_guard)
+                    var sendTask = Task.CompletedTask;
+                    if (opt.TryGetValue("send", out var sendSpec))
+                        sendTask = Task.Run(async () =>
+                        {
+                            await Task.Delay(3000, holdCts.Token);
+                            foreach (var part in sendSpec.Split(',', StringSplitOptions.RemoveEmptyEntries))
+                            {
+                                var kv = part.Split(':');
+                                var op = Convert.ToUInt16(kv[0], 16);
+                                var body = kv.Length > 1 ? Convert.FromHexString(kv[1]) : [];
+                                Log($"[send] 0x{op:X4} {body.Length} byte(s): {Convert.ToHexString(body)}");
+                                await zoneSession.SendRawAsync(op, body, holdCts.Token);
+                                await Task.Delay(1000, holdCts.Token);
+                            }
+                        });
                     await Task.WhenAll(
                         zoneSession.RunAsync(holdCts.Token),
                         wmSession.RunAsync(holdCts.Token));
+                    try { await sendTask; } catch (OperationCanceledException) { }
                     var zs = zoneSession.State; var ws = wmSession.State;
                     var survived = zs.DisconnectReason == "cancelled" && ws.DisconnectReason == "cancelled";
                     Log($"[hold] done — zone: {zs.InboundCount} frames / {zs.HeartbeatCount} hb (end: {zs.DisconnectReason}), " +
