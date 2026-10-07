@@ -21,5 +21,10 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app ./
 ENV ASPNETCORE_URLS=http://+:8080
+# GEN0 BUDGET 64 MB (2026-10-07). Workstation GC (see the csproj) collected gen0 every ~4.6 MB: 524 collections a
+# minute at ~40 MB/s, averaging 39 ms each on a node with a 145-deep run queue (the pause is mostly getting every
+# thread to a safe point, not marking) - 34% of wall time with every bot stopped. Fewer, not cheaper, collections.
+# Measured via GET /api/gc (counts + totalPauseMs per minute).
+ENV DOTNET_GCgen0size=0x4000000
 EXPOSE 8080
 ENTRYPOINT ["dotnet", "Fiesta.Bot.Host.dll"]
