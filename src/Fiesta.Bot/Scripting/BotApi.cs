@@ -1401,6 +1401,10 @@ public sealed class BotApi
         return n;
     }
 
+    /// <summary>Highest regular mob level within reach of <paramref name="mobId"/>'s own spawn areas on
+    /// <paramref name="map"/> (-1 = no known spawn there): judge a quest mob's fight by its neighbourhood, not the map's top</summary>
+    public int spawnAreaDanger(int mobId, string map) => _mgr.SpawnAreaDanger(Id, mobId, map);
+
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate on not bot.hpStoneDepleted() so the…</summary>

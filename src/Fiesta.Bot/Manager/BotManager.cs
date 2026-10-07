@@ -1383,6 +1383,59 @@ public sealed class BotManager : IAsyncDisposable
     }
 
     /// <summary>Compute the cross-map route WITHOUT starting travel — a diagnostic / decision helper for the Lua leveler</summary>
+    /// <summary>Per map: (level, mobId, x0, y0, x1, y1) for every REGULAR enemy spawn area (GradeType 0) - client
+    /// MobCoordinate.shn plus this host's observed rosters for maps the client does not cover.</summary>
+    private Dictionary<string, List<(int Lv, int Mob, double X0, double Y0, double X1, double Y1)>> SpawnIndex(GameData.ClientData cd, string scope)
+    {
+        var spawns = new Dictionary<string, List<(int Lv, int Mob, double X0, double Y0, double X1, double Y1)>>(StringComparer.OrdinalIgnoreCase);
+        void Add(string m, int lv, int mob, double cx, double cy, double w, double h)
+        {
+            if (!spawns.TryGetValue(m, out var l)) spawns[m] = l = new();
+            l.Add((lv, mob, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2));
+        }
+        foreach (var mobId in cd.MobCoordinateMobIds)
+        {
+            var mm = cd.Mob(mobId);
+            if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0) continue;
+            foreach (var loc in cd.MobCoordinatesAll(mobId))
+                if ((long)loc.Width * loc.Height > 0) Add(loc.Map, mm.Level, mobId, loc.CenterX, loc.CenterY, loc.Width, loc.Height);
+        }
+        foreach (var (m, roster) in Knowledge.ObservedRosters(scope))
+        {
+            if (cd.MapHasMobCoordinates(m)) continue;
+            foreach (var (mobId, b) in roster)
+            {
+                var mm = cd.Mob(mobId);
+                if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0 || b.Seen <= 0) continue;
+                Add(m, mm.Level, mobId, (b.MinX + b.MaxX) / 2.0, (b.MinY + b.MaxY) / 2.0, b.MaxX - b.MinX, b.MaxY - b.MinY);
+            }
+        }
+        return spawns;
+    }
+
+    /// <summary>THE DANGER AROUND ONE MOB'S SPAWNS (2026-10-07): the highest REGULAR mob level whose spawn area lies within
+    /// <paramref name="pad"/> of any spawn area of <paramref name="mobId"/> on <paramref name="map"/> (its own level
+    /// included), or -1 when the mob has no known spawn there. Replaces judging a fight map by its single top mob: EldCem01
+    /// tops out at level 37 (Foxes / Fire ViVis), which blacklisted the level-29 Ice ViVis two of NewFighter's quests need,
+    /// and with its other quests death-deprioritized it had nothing left to do but grind.</summary>
+    public int SpawnAreaDanger(string id, int mobId, string map, double pad = 800)
+    {
+        var cd = ClientData;
+        if (cd is null || !_bots.TryGetValue(id, out var handle)) return -1;
+        if (!SpawnIndex(cd, handle.KnowledgeScope).TryGetValue(map, out var list)) return -1;
+        var mine = list.Where(sp => sp.Mob == mobId).ToList();
+        if (mine.Count == 0) return -1;
+        static double RectGap(double ax0, double ay0, double ax1, double ay1, double bx0, double by0, double bx1, double by1)
+        {
+            double dx = Math.Max(0, Math.Max(bx0 - ax1, ax0 - bx1)), dy = Math.Max(0, Math.Max(by0 - ay1, ay0 - by1));
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+        int max = mine.Max(sp => sp.Lv);
+        foreach (var sp in list)
+            if (sp.Lv > max && mine.Any(m => RectGap(m.X0, m.Y0, m.X1, m.Y1, sp.X0, sp.Y0, sp.X1, sp.Y1) <= pad)) max = sp.Lv;
+        return max;
+    }
+
     /// <summary>THE DANGER OF WALKING A ROUTE, per map, judged by the path actually walked (2026-10-07). The script refused to
     /// CROSS any map whose single highest regular mob outclassed us: EldGbl02 tops out at level 41 in one corner, so for a
     /// level-31 archer every quest whose mobs lay beyond it was blacklisted ("only reachable THROUGH avoided map EldGbl02")
@@ -1398,30 +1451,7 @@ public sealed class BotManager : IAsyncDisposable
         bool ok = res is TravelResult.Started or TravelResult.AlreadyThere;
         var cd = ClientData;
         if (!_bots.TryGetValue(id, out var handle) || route is null || cd is null || handle.CurrentMap is not { } here) return (ok, outLegs);
-        // per map: (level, mobId, x0, y0, x1, y1) for every regular enemy spawn area
-        var spawns = new Dictionary<string, List<(int Lv, int Mob, double X0, double Y0, double X1, double Y1)>>(StringComparer.OrdinalIgnoreCase);
-        void Add(string m, int lv, int mob, double cx, double cy, double w, double h)
-        {
-            if (!spawns.TryGetValue(m, out var l)) spawns[m] = l = new();
-            l.Add((lv, mob, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2));
-        }
-        foreach (var mobId in cd.MobCoordinateMobIds)
-        {
-            var mm = cd.Mob(mobId);
-            if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0) continue;
-            foreach (var loc in cd.MobCoordinatesAll(mobId))
-                if ((long)loc.Width * loc.Height > 0) Add(loc.Map, mm.Level, mobId, loc.CenterX, loc.CenterY, loc.Width, loc.Height);
-        }
-        foreach (var (m, roster) in Knowledge.ObservedRosters(handle.KnowledgeScope))
-        {
-            if (cd.MapHasMobCoordinates(m)) continue;
-            foreach (var (mobId, b) in roster)
-            {
-                var mm = cd.Mob(mobId);
-                if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0 || b.Seen <= 0) continue;
-                Add(m, mm.Level, mobId, (b.MinX + b.MaxX) / 2.0, (b.MinY + b.MaxY) / 2.0, b.MaxX - b.MinX, b.MaxY - b.MinY);
-            }
-        }
+        var spawns = SpawnIndex(cd, handle.KnowledgeScope);
         // the legs: (map, from, to); the destination contributes its arrival point
         var legs = new List<(string Map, (uint X, uint Y) A, (uint X, uint Y) B)>();
         var onMap = here;
