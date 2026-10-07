@@ -466,6 +466,9 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>EVERY static entry, including several that share one mob id — unlike , which is keyed by mob id and therefore…</summary>
     public IReadOnlyCollection<NpcSeedEntry> NpcSeedAll => _npcSeedAll.Values.ToArray();
+    /// <summary>Bumped whenever the seed roster changes (an entry added / changed, the map's roster cleared) - lets a caller
+    /// keep its marshalled copy until it does (bot.npcSeedList rebuilt 4 MB of Lua tables per call, 2026-10-07)</summary>
+    public int NpcSeedVersion { get; private set; }
     /// <summary>Gate entries in the seed: linkMap -&gt; (x,y) — the LIVE current-map gate positions, better than the static MapLi…</summary>
     public IReadOnlyList<(string LinkMap, uint X, uint Y)> SeedGates()
         => _npcSeed.Values.Where(e => e.IsGate && !string.IsNullOrEmpty(e.LinkMap))
@@ -2183,7 +2186,7 @@ public sealed class ZoneView : IDisposable
                 // MOVEFAILs were walks issued inside this window.
                 SpawnRequested?.Invoke();
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _npcSeedAll.Clear(); _nearby.Clear(); _drops.Clear();
+                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _npcSeedAll.Clear(); NpcSeedVersion++; _nearby.Clear(); _drops.Clear();
                 // TELEPORTING DROPS THE SERVER-SIDE SELECTION (operator 2026-08-13: "Teleportation in general untargets" — and s…
                 TargetInvalidated?.Invoke("teleported — the server drops the selection on a teleport");
                 _mobAnchor.Clear();   // handles are PER-MAP and get reused — a stale anchor from the previous
@@ -3023,7 +3026,7 @@ public sealed class ZoneView : IDisposable
             if (handoff is { } h)
             {
                 CurrentMapId = h.MapId;
-                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _npcSeedAll.Clear(); _mobAnchor.Clear();  // entities are per-map; the new map re-broadcasts
+                _npcs.Clear(); _recentNpcs.Clear(); _npcSeed.Clear(); _npcSeedAll.Clear(); NpcSeedVersion++; _mobAnchor.Clear();  // entities are per-map; the new map re-broadcasts
                 // TELEPORTING DROPS THE SERVER-SIDE SELECTION (operator 2026-08-13: "Teleportation in general untargets" — and s…
                 TargetInvalidated?.Invoke("teleported — the server drops the selection on a teleport");
                 _nearby.Clear();
@@ -3499,6 +3502,7 @@ public sealed class ZoneView : IDisposable
         // THE SEED: record every NPC/gate by mobId (the bulk 0x1C09 on map-enter populates this fully)
         var seedEntry = new NpcSeedEntry(mobid, x, y, flag == 1, linkMap);
         _npcSeed[mobid] = seedEntry;
+        if (!_npcSeedAll.TryGetValue((mobid, x, y), out var prevSeed) || prevSeed != seedEntry) NpcSeedVersion++;
         _npcSeedAll[(mobid, x, y)] = seedEntry;
         if (isNew)
         {

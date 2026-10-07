@@ -1936,22 +1936,28 @@ public sealed class BotApi
     public int npcSeedCount() => View?.NpcSeedCount ?? 0;
 
     /// <summary>The full map-enter NPC SEED roster as a lua array of {mobId, x, y, isGate, linkMap, dist} — every NPC+gate on…</summary>
+    // THE ROSTER IS CACHED until it changes (ZoneView.NpcSeedVersion): every call rebuilt a table per NPC - ~4 MB of Lua
+    // tables a call, four calls a tick, the largest allocator of all (95 MB in 5 minutes across the levellers, 2026-10-07).
+    // The cached list is SHARED and READ-ONLY to callers, and carries no per-call `dist` (it moved with the bot): a caller
+    // that needs distance computes it from x / y.
+    private DynValue? _seedCache;
+    private Session.ZoneView? _seedView;
+    private int _seedVer = -1;
     public DynValue npcSeedList()
     {
-        var v = View; var arr = NewTable();
-        if (v is not null)
+        var v = View;
+        if (v is null) return DynValue.NewTable(NewTable());
+        if (_seedCache is not null && ReferenceEquals(v, _seedView) && v.NpcSeedVersion == _seedVer) return _seedCache;
+        var ver = v.NpcSeedVersion;
+        var arr = NewTable();
+        foreach (var e in v.NpcSeedAll)
         {
-            int i = 1;
-            foreach (var e in v.NpcSeedAll)
-            {
-                var t = NewTable();
-                t["mobId"] = e.MobId; t["x"] = e.X; t["y"] = e.Y; t["isGate"] = e.IsGate; t["linkMap"] = e.LinkMap;
-                if (_handle.Position is { } p) t["dist"] = Math.Sqrt(Sq((double)e.X - p.X) + Sq((double)e.Y - p.Y));
-                arr.Append(DynValue.NewTable(t));
-                i++;
-            }
+            var t = NewTable();
+            t["mobId"] = e.MobId; t["x"] = e.X; t["y"] = e.Y; t["isGate"] = e.IsGate; t["linkMap"] = e.LinkMap;
+            arr.Append(DynValue.NewTable(t));
         }
-        return DynValue.NewTable(arr);
+        _seedCache = DynValue.NewTable(arr); _seedView = v; _seedVer = ver;
+        return _seedCache;
     }
 
     public DynValue npcByMob(int mobId)
