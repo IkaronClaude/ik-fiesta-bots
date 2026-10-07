@@ -125,6 +125,37 @@ app.MapGet("/health", () => Results.Ok(new
    .WithTags("Meta")
    .WithSummary("Liveness probe");
 
+// GC FORENSICS (2026-10-07): the bots' ticks were dominated by single gen0 collections of 100-500 ms. Whether a pause is
+// WORK (promoted bytes, a big gen1) or WAITING (thread suspension on a crowded node) decides the fix, and the runtime
+// already records both for its last collection of each kind.
+app.MapGet("/api/gc", () =>
+{
+    object Info(GCKind k)
+    {
+        var i = GC.GetGCMemoryInfo(k);
+        return new
+        {
+            index = i.Index, generation = i.Generation, compacted = i.Compacted, concurrent = i.Concurrent,
+            pauseMs = i.PauseDurations.ToArray().Select(d => d.TotalMilliseconds).ToArray(),
+            promotedKb = i.PromotedBytes / 1024, heapMb = i.HeapSizeBytes / (1024 * 1024),
+            fragmentedMb = i.FragmentedBytes / (1024 * 1024), pinned = i.PinnedObjectsCount,
+            pausePct = i.PauseTimePercentage,
+            gens = i.GenerationInfo.ToArray().Select(g => new { beforeMb = g.SizeBeforeBytes / (1024 * 1024), afterMb = g.SizeAfterBytes / (1024 * 1024) }).ToArray(),
+        };
+    }
+    return Results.Ok(new
+    {
+        totalPauseMs = GC.GetTotalPauseDuration().TotalMilliseconds,
+        counts = new[] { GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2) },
+        allocatedMb = GC.GetTotalAllocatedBytes() / (1024 * 1024),
+        server = System.Runtime.GCSettings.IsServerGC, latency = System.Runtime.GCSettings.LatencyMode.ToString(),
+        threads = System.Diagnostics.Process.GetCurrentProcess().Threads.Count,
+        ephemeral = Info(GCKind.Ephemeral), fullBlocking = Info(GCKind.FullBlocking), background = Info(GCKind.Background),
+    });
+})
+   .WithTags("Meta")
+   .WithSummary("GC forensics: last collection of each kind (pause, promoted bytes, generation sizes)");
+
 // --- Public bot status: a super-simple live view for bots.ikaron.uk (P1, operator 2026-07-28)
 var statusMgr = app.Services.GetService<BotManager>();
 app.MapGet("/status.json", () =>
