@@ -1200,7 +1200,9 @@ public sealed class BotApi
             // character to be at least as far along as the quest asks.
             if (q.NeedsClass && q.Class != 0 && _handle.Class != 0
                 && (ClassLine(q.Class) != ClassLine(_handle.Class) || _handle.Class < q.Class)) continue;
-            if (v.IsQuestDone(q.Id) || v.IsQuestActive(q.Id)) continue;
+            // a REPEATABLE done only by a hand-in this session is acceptable again at once (the server's login done list
+            // never holds a repeatable; ZoneView.IsQuestDoneByHandIn)
+            if ((v.IsQuestDone(q.Id) && !(q.Repeatable && v.IsQuestDoneByHandIn(q.Id))) || v.IsQuestActive(q.Id)) continue;
             // Accept ALL NPC-startable, level-appropriate quests: kill (Type 1), item-collect (Type 2), find/visit (Type 3)…
             // NO LEVEL CONDITION IS NOT A FAILED ONE. This was `if (!q.IsNeedLevel) continue;`, which
             // dropped every quest whose StartCondition has no level gate -- 37 of the 2118 NPC-startable

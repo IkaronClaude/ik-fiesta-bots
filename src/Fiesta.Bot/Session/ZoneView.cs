@@ -1568,8 +1568,15 @@ public sealed class ZoneView : IDisposable
     }
 
     /// <summary>Mark a quest active (just accepted) / done (just turned in) so the driver's view stays current within the sess…</summary>
-    public void MarkQuestActive(int id, byte status = 1) { _activeQuests[id] = status; _availableQuests.Remove(id); _doneQuests.Remove(id); }
-    public void MarkQuestDone(int id) { _activeQuests.TryRemove(id, out _); _availableQuests.Remove(id); _doneQuests.Add(id); }
+    public void MarkQuestActive(int id, byte status = 1) { _activeQuests[id] = status; _availableQuests.Remove(id); _doneQuests.Remove(id); _doneByHandIn.Remove(id); }
+    public void MarkQuestDone(int id) { _activeQuests.TryRemove(id, out _); _availableQuests.Remove(id); _doneQuests.Add(id); _doneByHandIn.Add(id); }
+
+    /// <summary>Quests marked done by a hand-in THIS session (not by the login QUEST_DONE burst). The server never lists a
+    /// REPEATABLE as done at login, so a repeatable done only by a hand-in is acceptable again at once - treating it as done
+    /// until the next map login sent the bot away to grind and straight back to re-accept it (NewMage, Ruined Garden 2,
+    /// 2026-10-07: town <-> RouVal01 every few minutes).</summary>
+    private readonly HashSet<int> _doneByHandIn = new();
+    public bool IsQuestDoneByHandIn(int id) => _doneByHandIn.Contains(id);
 
     /// <summary>The quest-dialogue step the server is currently prompting (last NC_QUEST_SCRIPT_CMD_REQ), or null if none pend…</summary>
     public QuestStep? PendingQuest { get; private set; }
