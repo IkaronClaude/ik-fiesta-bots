@@ -611,6 +611,14 @@ public static class BotEndpoints
         })
         .WithSummary("Whisper a message to a named player");
 
+        group.MapGet("/{id}/route-corridors", (string id, string map, double? pad) =>
+        {
+            if (manager.Get(id) is null) return Results.NotFound();
+            var (ok, legs) = manager.RouteCorridors(id, map, pad ?? 500);
+            var cd = manager.ClientData;
+            return Results.Ok(new { ok, legs = legs.Select(l => new { l.Map, l.MaxLevel, l.Mob, mobName = l.Mob >= 0 ? cd?.Mob(l.Mob)?.Name : null, l.Kinds, l.Meshed }) });
+        }).WithSummary("Route danger per map as walked: highest regular mob within reach of each leg");
+
         group.MapGet("/{id}/inventory", (string id) =>
         {
             var bot = manager.Get(id);

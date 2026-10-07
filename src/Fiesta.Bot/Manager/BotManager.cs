@@ -1382,6 +1382,109 @@ public sealed class BotManager : IAsyncDisposable
     }
 
     /// <summary>Compute the cross-map route WITHOUT starting travel — a diagnostic / decision helper for the Lua leveler</summary>
+    /// <summary>THE DANGER OF WALKING A ROUTE, per map, judged by the path actually walked (2026-10-07). The script refused to
+    /// CROSS any map whose single highest regular mob outclassed us: EldGbl02 tops out at level 41 in one corner, so for a
+    /// level-31 archer every quest whose mobs lay beyond it was blacklisted ("only reachable THROUGH avoided map EldGbl02")
+    /// and all five levellers ground instead of questing. For each map on the route this walks the leg - where we enter
+    /// (our position, or the previous gate's arrival) to the gate we leave by - through that map's nav mesh (straight line
+    /// when the map has no grid), and reports the highest REGULAR mob (GradeType 0, enemy, client MobCoordinate or this
+    /// host's observed rosters) whose spawn area lies within <paramref name="pad"/> units of it. The destination's leg is
+    /// its arrival point alone (where we fight there is the caller's question).</summary>
+    public (bool Ok, List<CorridorLeg> Legs) RouteCorridors(string id, string map, double pad = 500)
+    {
+        var outLegs = new List<CorridorLeg>();
+        var (res, route) = RouteInfo(id, map);
+        bool ok = res is TravelResult.Started or TravelResult.AlreadyThere;
+        var cd = ClientData;
+        if (!_bots.TryGetValue(id, out var handle) || route is null || cd is null || handle.CurrentMap is not { } here) return (ok, outLegs);
+        // per map: (level, mobId, x0, y0, x1, y1) for every regular enemy spawn area
+        var spawns = new Dictionary<string, List<(int Lv, int Mob, double X0, double Y0, double X1, double Y1)>>(StringComparer.OrdinalIgnoreCase);
+        void Add(string m, int lv, int mob, double cx, double cy, double w, double h)
+        {
+            if (!spawns.TryGetValue(m, out var l)) spawns[m] = l = new();
+            l.Add((lv, mob, cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2));
+        }
+        foreach (var mobId in cd.MobCoordinateMobIds)
+        {
+            var mm = cd.Mob(mobId);
+            if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0) continue;
+            foreach (var loc in cd.MobCoordinatesAll(mobId))
+                if ((long)loc.Width * loc.Height > 0) Add(loc.Map, mm.Level, mobId, loc.CenterX, loc.CenterY, loc.Width, loc.Height);
+        }
+        foreach (var (m, roster) in Knowledge.ObservedRosters(handle.KnowledgeScope))
+        {
+            if (cd.MapHasMobCoordinates(m)) continue;
+            foreach (var (mobId, b) in roster)
+            {
+                var mm = cd.Mob(mobId);
+                if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0 || b.Seen <= 0) continue;
+                Add(m, mm.Level, mobId, (b.MinX + b.MaxX) / 2.0, (b.MinY + b.MaxY) / 2.0, b.MaxX - b.MinX, b.MaxY - b.MinY);
+            }
+        }
+        // the legs: (map, from, to); the destination contributes its arrival point
+        var legs = new List<(string Map, (uint X, uint Y) A, (uint X, uint Y) B)>();
+        var onMap = here;
+        (uint X, uint Y) entry = handle.Position is { } p0 ? ((uint)p0.X, (uint)p0.Y) : (0u, 0u);
+        foreach (var e in route)
+        {
+            legs.Add((onMap, entry, (e.GateX, e.GateY)));
+            onMap = e.ToMap; entry = e.Arrival;
+        }
+        legs.Add((onMap, entry, entry));
+        foreach (var (lm, a, b) in legs)
+        {
+            // the walked polyline: mesh path through this map when it has a grid, else the straight segment
+            var pts = new List<(double X, double Y)> { (a.X, a.Y) };
+            bool meshed = false;
+            if (!(a == b) && GridProvider?.Invoke(lm) is { } g)
+            {
+                try
+                {
+                    var (sx, sy) = g.WorldToTile(a.X, a.Y); var (gx2, gy2) = g.WorldToTile(b.X, b.Y);
+                    var tp = Fiesta.Bot.Pathfinding.NavMeshPath.Find(g.Mesh(), sx, sy, gx2, gy2, g.DoorClosedPredicate());
+                    if (tp is { Count: > 0 }) { pts = tp.Select(q => { var w = g.TileToWorld(q.X, q.Y); return ((double)w.X, (double)w.Y); }).ToList(); meshed = true; }
+                }
+                catch { /* no mesh: the straight segment below */ }
+            }
+            if (!meshed) pts.Add((b.X, b.Y));
+            int maxLv = 0, maxMob = -1; var kinds = new HashSet<int>();
+            if (spawns.TryGetValue(lm, out var list))
+                foreach (var sp in list)
+                {
+                    if (!NearPolyline(pts, sp.X0, sp.Y0, sp.X1, sp.Y1, pad)) continue;
+                    kinds.Add(sp.Mob);
+                    if (sp.Lv > maxLv) { maxLv = sp.Lv; maxMob = sp.Mob; }
+                }
+            outLegs.Add(new CorridorLeg(lm, maxLv, maxMob, kinds.Count, meshed));
+        }
+        return (ok, outLegs);
+    }
+    /// <summary>One map of a route as walked: the highest regular mob within reach of the walked leg</summary>
+    public sealed record CorridorLeg(string Map, int MaxLevel, int Mob, int Kinds, bool Meshed);
+
+    // Is the rectangle within `pad` of the polyline? Sampled every 50 units - fine against spawn areas hundreds wide.
+    private static bool NearPolyline(List<(double X, double Y)> pts, double x0, double y0, double x1, double y1, double pad)
+    {
+        static double RectDist(double px, double py, double x0, double y0, double x1, double y1)
+        {
+            double dx = px < x0 ? x0 - px : px > x1 ? px - x1 : 0, dy = py < y0 ? y0 - py : py > y1 ? py - y1 : 0;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+        if (pts.Count == 1) return RectDist(pts[0].X, pts[0].Y, x0, y0, x1, y1) <= pad;
+        for (int i = 0; i + 1 < pts.Count; i++)
+        {
+            var (ax, ay) = pts[i]; var (bx, by) = pts[i + 1];
+            double len = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+            int n = Math.Max(1, (int)(len / 50));
+            for (int k = 0; k <= n; k++)
+            {
+                double f = (double)k / n;
+                if (RectDist(ax + (bx - ax) * f, ay + (by - ay) * f, x0, y0, x1, y1) <= pad) return true;
+            }
+        }
+        return false;
+    }
+
     public (TravelResult Result, IReadOnlyList<GateEdge>? Route) RouteInfo(string id, string destMap)
     {
         if (!_bots.TryGetValue(id, out var handle)) return (TravelResult.NotFound, null);

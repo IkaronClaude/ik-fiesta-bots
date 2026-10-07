@@ -1549,6 +1549,31 @@ public sealed class BotApi
         return DynValue.NewTable(t);
     }
 
+    /// <summary>THE DANGER OF WALKING A ROUTE, per map, judged by the path actually walked (2026-10-07). The script refused to
+    /// CROSS any map whose single highest regular mob outclassed us: EldGbl02 tops out at level 41 in one corner, so for a
+    /// level-31 archer every quest whose mobs lay beyond it was blacklisted ("only reachable THROUGH avoided map EldGbl02")
+    /// and all five levellers ground instead of questing. For each map on the route this walks the leg - where we enter
+    /// (our position, or the previous gate's arrival) to the gate we leave by - through that map's nav mesh (straight line
+    /// when the map has no grid), and reports the highest REGULAR mob (GradeType 0, enemy, client MobCoordinate or this
+    /// host's observed rosters) whose spawn area lies within <paramref name="pad"/> units of it. The destination's leg is
+    /// its arrival point alone (where we fight there is the caller's question).
+    /// Result: {ok, legs = {{map, maxLevel, mob, kinds, meshed}}}.</summary>
+    public DynValue routeCorridors(string map, double pad = 500)
+    {
+        var t = NewTable();
+        var (ok, legs) = _mgr.RouteCorridors(Id, map, pad);
+        t["ok"] = ok;
+        var outLegs = NewTable(); int li = 1;
+        foreach (var l in legs)
+        {
+            var r = NewTable();
+            r["map"] = l.Map; r["maxLevel"] = l.MaxLevel; r["mob"] = l.Mob; r["kinds"] = l.Kinds; r["meshed"] = l.Meshed;
+            outLegs[li++] = DynValue.NewTable(r);
+        }
+        t["legs"] = DynValue.NewTable(outLegs);
+        return DynValue.NewTable(t);
+    }
+
     /// <summary>All map nodes currently in the routing graph (seeded client nav + live-observed gates)</summary>
     public DynValue knownMaps()
     {
