@@ -1405,6 +1405,12 @@ public sealed class BotApi
     /// <paramref name="map"/> (-1 = no known spawn there): judge a quest mob's fight by its neighbourhood, not the map's top</summary>
     public int spawnAreaDanger(int mobId, string map) => _mgr.SpawnAreaDanger(Id, mobId, map);
 
+    /// <summary>Record a learned number under <paramref name="name"/> in this host's persisted store (learned-scalars.json):
+    /// what the script learns about the world - e.g. a town smith's armour tier - survives relogs and script reloads.</summary>
+    public void recordScalar(string name, double value) => _mgr.Knowledge.RecordScalar(_handle.KnowledgeScope, name, value);
+    /// <summary>The largest value ever recorded under <paramref name="name"/>, or -1 when nothing has been</summary>
+    public double learnedScalarMax(string name) => _mgr.Knowledge.Scalar(_handle.KnowledgeScope, name)?.Max ?? -1;
+
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate on not bot.hpStoneDepleted() so the…</summary>
