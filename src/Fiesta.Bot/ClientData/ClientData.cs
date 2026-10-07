@@ -215,6 +215,10 @@ public sealed class ClientData
             // ActiveSkill.DemandType separates real COMBAT skills from gathering/event toys
             DemandType: GetInt(row, "DemandType"),
             CastTimeMs: GetInt(row, "CastTime"),
+            // SOULS the skill spends (Joker: Razor Claw, Claw Lunge = 1). The zone refuses the cast with 0x0FD3 unless the
+            // caster's soul target is THIS target and its soul count reaches this (sp_NC_BAT_SKILLBASH_OBJ_CAST_REQ
+            // 0x57FEF9: skill +0x29C vs player +0x2A90C target / +0x2A910 count); NC_BAT_SOULCOLLECT_CMD reports both
+            DemandSoul: GetInt(row, "DemandSoul"),
             Range: GetInt(row, "Range"),
             // WHO THE SKILL LANDS ON. ActiveSkill First/Last are target-side codes, verified across the table:
             // Last 0=enemy (Slice and Dice, Concussive Charge), 1=self (Vitality), 2=party (Protect, Sacrifice,
@@ -976,7 +980,7 @@ public sealed record MobLocation(int MobId, string Map, int CenterX, int CenterY
 public sealed record PortalDest(int Index, int GroupNo, string Map, int MinLevel, uint X, uint Y);
 
 /// <summary>Combat-relevant fields of an ActiveSkill row, projected from the client table</summary>
-public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0, int DemandType = 0, int MaxMa = 0, int CastFrom = 0, int LandsOn = 0, int DelayGroup = 0, int GroupDelayMs = 0)
+public sealed record SkillInfo(int Id, int UsableDegree, bool IsMovingSkill, int DelayTimeMs, int Range, int Sp, int UseClass = 0, int MaxWc = 0, bool Stun = false, bool Heal = false, bool HealOverTime = false, int CastTimeMs = 0, int DemandType = 0, int MaxMa = 0, int CastFrom = 0, int LandsOn = 0, int DelayGroup = 0, int GroupDelayMs = 0, int DemandSoul = 0)
 {
     /// <summary>How hard this skill hits, whichever school it uses: for a weapon skill, for a spell</summary>
     public int Damage => Math.Max(MaxWc, MaxMa);

@@ -135,7 +135,10 @@ public sealed class ZoneView : IDisposable
             0x0FCC      => "target is in Fear state (0x0FCC)",
             0x0FCD      => "skill did not finish normally (0x0FCD)",
             0x0FCE      => "skill use is prohibited in this area (0x0FCE)",
-            0x0FD1 or 0x0FD2 or 0x0FD3 or 0x0FD6 => $"failed to cast the skill (0x{code:X4})",
+            // 0x0FD3 from Zone.exe (sp_NC_BAT_SKILLBASH_OBJ_CAST_REQ 0x57FF32): the skill's DemandSoul is not met - the
+            // target is not the one our souls are on, or too few souls (NC_BAT_SOULCOLLECT_CMD / bot.souls())
+            0x0FD3      => "not enough SOULS on this target for the skill's DemandSoul (0x0FD3) — see bot.souls()",
+            0x0FD1 or 0x0FD2 or 0x0FD6 => $"failed to cast the skill (0x{code:X4})",
             // 0x0FD5 / 0x0FDC are NOT in the client's jump table (it stops at 0x0FD8) — they are read out
             // of Zone.exe. sp_NC_BAT_SKILLBASH_OBJ_CAST_REQ runs csl_SPCheck and, when that fails, works
             // out WHICH resource was short:
@@ -163,6 +166,12 @@ public sealed class ZoneView : IDisposable
     private DateTime _lastSignificantMoveFailUtc = DateTime.MinValue;
     // Abnormal-state set/reset on an entity: NC_BAT_ABSTATESET_CMD (0x2427) / _RESET (0x2428)
     private const ushort OpAbStateSet = 0x2427;
+    // NC_BAT_SOULCOLLECT_CMD (BAT 83 = 0x2453): the caster's souls and the mob they are on (Joker soul skills)
+    private const ushort OpSoulCollect = 0x2453;
+    /// <summary>The mob our souls are on (NC_BAT_SOULCOLLECT_CMD), null before the first report</summary>
+    public ushort? SoulTarget { get; private set; }
+    /// <summary>Souls held on <see cref="SoulTarget"/>: a DemandSoul skill casts only on that target with this many</summary>
+    public int SoulCount { get; private set; }
     private const ushort OpAbStateReset = 0x2428;
     // NC_BRIEFINFO_ABSTATE_CHANGE_CMD (0x1C18) / _LIST_CMD (0x1C19): the PERCEPTION channel for abnormal states — an…
     private const ushort OpBriefAbstateChange = 0x1C18;
@@ -1558,12 +1567,20 @@ public sealed class ZoneView : IDisposable
     /// <summary>Raised on every quest accept/start result (success or refusal) with (questId, err)</summary>
     public event Action<int, int>? QuestAcceptResult;
 
+    /// <summary>The quest-start result code for SUCCESS (0x0B41 = 2881), from Zone.exe - see RecordQuestAcceptResult</summary>
+    public const int QuestStartedOk = 0x0B41;
+
     private void RecordQuestAcceptResult(int questId, int err)
     {
         if (questId >= 0) _questAcceptErr[questId] = err;
         LastQuestAcceptResult = (questId, err);
-        if (err == 0 && questId >= 0) MarkQuestActive(questId);
-        _log?.Invoke($"[ZoneView] QUEST_ACCEPT_RESULT quest={questId} err={err}{(err == 0 ? " (accepted)" : " (refused)")}");
+        // 0x0B41 (2881) IS THE SUCCESS CODE, not an error: CQuestZone::Recv_NC_QUEST_SELECT_START_REQ (Zone.exe 0x5C066F)
+        // pushes 0x0B41 only after the quest STARTED (every failure path pushes 0x0B47), and the DB acks use it the same
+        // way. Read as a refusal, every menu-driven accept left the quest unmarked: NewMage accepted Ruined Garden 2 six
+        // times in an hour, believed it refused each time, and rode back to grind (2026-10-07).
+        var ok = err == 0 || err == QuestStartedOk;
+        if (ok && questId >= 0) MarkQuestActive(questId);
+        _log?.Invoke($"[ZoneView] QUEST_ACCEPT_RESULT quest={questId} err={err}{(ok ? " (accepted)" : " (refused)")}");
         QuestAcceptResult?.Invoke(questId, err);
     }
 
@@ -1911,6 +1928,19 @@ public sealed class ZoneView : IDisposable
                 : " — ran to full length; completion is only confirmed by the result packet";
             _logLevel?.Invoke(BotLogLevel.Note,
                 $"[ZoneView] CASTBAR closed (0x2048) after {(heldMs < 0 ? 0 : heldMs):F0}ms{verdict}");
+        }
+        else if (op == OpSoulCollect)
+        {
+            // NC_BAT_SOULCOLLECT_CMD (BAT 83): [target u16][soulnumber u8] - the souls we hold and the mob they are on (the
+            // zone keeps them at player +0x2A90C / +0x2A910 and refuses a DemandSoul skill with 0x0FD3 unless the cast
+            // target is that mob and the count reaches the skill's DemandSoul)
+            var p = pkt.Payload.Span;
+            if (p.Length >= 3)
+            {
+                SoulTarget = (ushort)(p[0] | (p[1] << 8));
+                SoulCount = p[2];
+                _logLevel?.Invoke(BotLogLevel.Info, $"[ZoneView] SOULS {SoulCount} on h={SoulTarget} (NC_BAT_SOULCOLLECT_CMD)");
+            }
         }
         else if (op == OpAbStateSet || op == OpAbStateReset)
         {

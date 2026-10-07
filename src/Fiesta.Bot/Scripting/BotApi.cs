@@ -86,6 +86,8 @@ public sealed class BotApi
         t["cooldownMs"] = si.DelayTimeMs; t["sp"] = si.Sp; t["range"] = si.Range;
         // castTimeMs = the CAST ANIMATION length
         t["castTimeMs"] = si.CastTimeMs;
+        // demandSoul = souls the skill spends; castable only on bot.souls().target with bot.souls().count >= it (else 0x0FD3)
+        t["demandSoul"] = si.DemandSoul;
         t["usableDegree"] = si.UsableDegree; t["moving"] = si.IsMovingSkill;
         // UseClass: real class combat skills are >=2 (Fighter line 2-7, Cleric 8-13, Archer 14-19, Mage 20-25, Joker 27+…
         t["useClass"] = si.UseClass;
@@ -897,6 +899,17 @@ public sealed class BotApi
 
     /// <summary>True if the character has completed this quest (from the login QUEST_DONE state)</summary>
     public bool questDone(int id) => View?.IsQuestDone(id) ?? false;
+
+    /// <summary>The souls we hold: { target = mob handle, count = n } (NC_BAT_SOULCOLLECT_CMD), nil before the first report. A
+    /// skill with skillInfo(id).demandSoul > 0 casts only on that target with count >= demandSoul (else 0x0FD3).</summary>
+    public DynValue souls()
+    {
+        var v = View;
+        if (v?.SoulTarget is not { } tgt) return DynValue.Nil;
+        var t = NewTable();
+        t["target"] = (double)tgt; t["count"] = (double)v.SoulCount;
+        return DynValue.NewTable(t);
+    }
     /// <summary>True if the quest is currently in progress (accepted, not yet turned in)</summary>
     public bool questActive(int id) => View?.IsQuestActive(id) ?? false;
 
