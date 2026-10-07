@@ -181,7 +181,7 @@ public static class NavMeshPath
         {
             int best = at + 1;
             for (int k = tiles.Count - 1; k > at; k--)
-                if (Clear(mesh, tiles[at], tiles[k])) { best = k; break; }
+                if (Clear(mesh, tiles[at], tiles[k], doorClosed)) { best = k; break; }
             if (outp.Count == 0 || outp[^1] != tiles[at]) outp.Add(tiles[at]);
             at = best;
         }
@@ -225,7 +225,11 @@ public static class NavMeshPath
     /// This walks EVERY tile the segment touches, so it cannot miss a clip at any geometry. Cost is O(dx+dy) with
     /// integer arithmetic only -- cheaper per tile than the old floating-point sampling, and it examines each tile
     /// exactly once instead of oversampling short segments and undersampling long ones.</summary>
-    private static bool Clear(NavMesh mesh, (int X, int Y) a, (int X, int Y) b)
+    // A tile counts only if its region is USABLE right now: the string-pull checked bare region membership, so it cut
+    // straight across a CLOSED door's wall that the region route had just gone around. Measured 2026-10-07: Eld's
+    // puzzle door Toryming shut, the route ran r3095 -> r3178 around its frame, the pull collapsed it to one segment
+    // through the frame, and three bots walked into it for ~15 minutes each at (16078,14531), 1,100+ MOVEFAILs.
+    private static bool Clear(NavMesh mesh, (int X, int Y) a, (int X, int Y) b, Func<int, bool>? doorClosed = null)
     {
         int dx = Math.Abs(b.X - a.X), dy = Math.Abs(b.Y - a.Y);
         int x = a.X, y = a.Y, n = 1 + dx + dy;
@@ -234,7 +238,8 @@ public static class NavMeshPath
         dx *= 2; dy *= 2;
         for (; n > 0; --n)
         {
-            if (mesh.RegionAt(x, y) < 0) return false;
+            var r = mesh.RegionAt(x, y);
+            if (r < 0 || !Usable(mesh, r, doorClosed)) return false;
             if (err > 0) { x += xi; err -= dy; }
             else if (err < 0) { y += yi; err += dx; }
             else { x += xi; y += yi; err -= dy; err += dx; --n; }   // exact diagonal: one step, not two
