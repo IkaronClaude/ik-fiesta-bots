@@ -36,6 +36,7 @@ public sealed class NpcKnowledge
         _blockerPath = Path.Combine(baseDir, "blockers.json");
         _stockPath = Path.Combine(baseDir, "npc-stock.json");
         _ledgerPath = Path.Combine(baseDir, "ledger.json");
+        _sightPath = Path.Combine(baseDir, "map-rosters.json");
         _scriptDir = Path.Combine(baseDir, "scripts");
         _rosterDir = Path.Combine(baseDir, "roster");   // spawn options per bot id — CREDENTIALS, never log/commit
         Load();
@@ -47,6 +48,87 @@ public sealed class NpcKnowledge
         LoadBlockers();
         LoadStock();
         LoadLedger();
+        LoadSightings();
+    }
+
+    // ---- OBSERVED MAP ROSTERS (2026-10-07). The client's MobCoordinate.shn only covers maps with quest objectives:
+    // not one abyss (CemDn02 / ValDn02 / GblDn02 / PriDn02 ...) is in it, so no bot could rate them as grind fields and
+    // NewArcher (31) farmed level-5 crabs. A player learns a map by going there and looking; so does the bot - every mob
+    // seen on its first appearance grows that map's per-mob spawn box. Shared by every bot on the host. Key = host|map.
+    public sealed class SpawnBox
+    {
+        public int MinX { get; set; } = int.MaxValue;
+        public int MinY { get; set; } = int.MaxValue;
+        public int MaxX { get; set; } = int.MinValue;
+        public int MaxY { get; set; } = int.MinValue;
+        public int Seen { get; set; }
+    }
+    private readonly string _sightPath;
+    private readonly object _sightIoLock = new();
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<int, SpawnBox>> _sight = new(StringComparer.OrdinalIgnoreCase);
+    private long _sightDirtySince = -1, _sightSavedAt;
+    private const int SightSaveMs = 60_000;
+
+    public void RecordMobSighting(string host, string? map, int mobId, uint x, uint y)
+    {
+        if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(map)) return;
+        var byMob = _sight.GetOrAdd($"{host}|{map}", _ => new ConcurrentDictionary<int, SpawnBox>());
+        var b = byMob.GetOrAdd(mobId, _ => new SpawnBox());
+        lock (b)
+        {
+            b.MinX = Math.Min(b.MinX, (int)x); b.MaxX = Math.Max(b.MaxX, (int)x);
+            b.MinY = Math.Min(b.MinY, (int)y); b.MaxY = Math.Max(b.MaxY, (int)y);
+            b.Seen++;
+        }
+        var now = Environment.TickCount64;
+        if (_sightDirtySince < 0) _sightDirtySince = now;
+        if (now - _sightSavedAt >= SightSaveMs) SaveSightings();
+    }
+
+    /// <summary>A bot looked around this map (an empty roster is an answer too: a hub with no mobs is not re-explored)</summary>
+    public void RecordMapVisited(string host, string? map)
+    {
+        if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(map)) return;
+        _sight.GetOrAdd($"{host}|{map}", _ => new ConcurrentDictionary<int, SpawnBox>());
+        SaveSightings();
+    }
+
+    /// <summary>map -> (mobId -> spawn box) for every map this host's bots have looked at</summary>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<int, SpawnBox>> ObservedRosters(string host)
+    {
+        var outp = new Dictionary<string, IReadOnlyDictionary<int, SpawnBox>>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(host)) return outp;
+        var prefix = host + "|";
+        foreach (var (k, v) in _sight)
+            if (k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) outp[k[prefix.Length..]] = v;
+        return outp;
+    }
+
+    private void LoadSightings()
+    {
+        try
+        {
+            if (!File.Exists(_sightPath)) return;
+            var d = JsonSerializer.Deserialize<Dictionary<string, Dictionary<int, SpawnBox>>>(File.ReadAllText(_sightPath));
+            if (d is not null) foreach (var (k, v) in d) _sight[k] = new ConcurrentDictionary<int, SpawnBox>(v);
+        }
+        catch { /* a corrupt/missing store just starts empty - it re-learns */ }
+    }
+
+    private void SaveSightings()
+    {
+        lock (_sightIoLock)
+        {
+            _sightSavedAt = Environment.TickCount64; _sightDirtySince = -1;
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(_sightPath)!);
+                var snap = new SortedDictionary<string, SortedDictionary<int, SpawnBox>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (k, v) in _sight) snap[k] = new SortedDictionary<int, SpawnBox>(v);
+                File.WriteAllText(_sightPath, JsonSerializer.Serialize(snap, new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { /* best-effort */ }
+        }
     }
 
     private static string QKey(string host, int questId) => $"{host}|{questId}";

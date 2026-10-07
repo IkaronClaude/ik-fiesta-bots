@@ -1279,7 +1279,9 @@ public sealed class BotApi
     }
 
     /// <summary>FIELD maps ranked for grinding mobs of level minLevel..maxLevel, from client MobCoordinate.shn + MobInfo.shn:
-    /// only normal (GradeType 0), non-NPC, enemy-side mobs with a real spawn patch, never an inside map (dungeon/instance).
+    /// only normal (GradeType 0), non-NPC, enemy-side mobs with a real spawn patch, never a Kingdom Quest map. CAVES COUNT:
+    /// InSide is a ceiling flag, and excluding it hid every dungeon - the abyss maps behind Eld's Battlefield Guard (CemDn02
+    /// for the 30s) among them, so NewArcher (31) farmed level-5 crabs for 1 exp (operator 2026-10-07).
     /// Each entry: {map, area (summed patch area of in-band mobs), mobs = {ids}, x, y (centre of the largest in-band patch)},
     /// best first. Lets the driver pick a grind field from data instead of a baked map name.</summary>
     public DynValue grindMaps(int minLevel, int maxLevel)
@@ -1300,7 +1302,7 @@ public sealed class BotApi
             if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0) continue;
             foreach (var loc in cd.MobCoordinatesAll(mobId))
             {
-                if (cd.MapInside(loc.Map)) continue;
+                if (cd.MapKingdom(loc.Map)) continue;
                 // POINT placements (width*height == 0) are markers, not spawn regions: the Tower of Iyzel mobs 8100-8137
                 // (level 50+) sit as points on RouVal01 at the instance gate and made a level-20s field read as "roster
                 // up to 52". Only a region with an area counts, the same rule the candidates themselves use.
@@ -1316,11 +1318,32 @@ public sealed class BotApi
             foreach (var loc in cd.MobCoordinatesAll(mobId))
             {
                 long area = (long)loc.Width * loc.Height;
-                if (area <= 0 || cd.MapInside(loc.Map)) continue;
+                if (area <= 0 || cd.MapKingdom(loc.Map)) continue;
                 if (!byMap.TryGetValue(loc.Map, out var e)) e = (0, new List<int>(), loc);
                 if (area > (long)e.best.Width * e.best.Height) e.best = loc;
                 e.area += area; e.mobs.Add(mobId);
                 byMap[loc.Map] = e;
+            }
+        }
+        // OBSERVED ROSTERS for the maps the client data does not cover (the abyss dungeons): what this host's bots saw
+        // there, the same filters (normal grade, enemy, in band, not a KQ map). A spawn box is grown from sightings, so
+        // it is padded by a mob's typical spread to read as an area. Covered maps keep the client data alone.
+        const int SightPad = 600;
+        foreach (var (map, roster) in _mgr.Knowledge.ObservedRosters(_handle.KnowledgeScope))
+        {
+            if (cd.MapHasMobCoordinates(map) || cd.MapKingdom(map)) continue;
+            foreach (var (mobId, b) in roster)
+            {
+                var m = cd.Mob(mobId);
+                if (m is null || m.IsNpc || m.IsPlayerSide || m.GradeType != 0 || b.Seen <= 0) continue;
+                if (!maxLevelByMap.TryGetValue(map, out var ml0) || m.Level > ml0) maxLevelByMap[map] = m.Level;
+                if (m.Level < minLevel || m.Level > maxLevel) continue;
+                long area = (long)(b.MaxX - b.MinX + SightPad) * (b.MaxY - b.MinY + SightPad);
+                var loc = new GameData.MobLocation(mobId, map, (b.MinX + b.MaxX) / 2, (b.MinY + b.MaxY) / 2, b.MaxX - b.MinX + SightPad, b.MaxY - b.MinY + SightPad);
+                if (!byMap.TryGetValue(map, out var e)) e = (0, new List<int>(), loc);
+                if (area > (long)e.best.Width * e.best.Height) e.best = loc;
+                e.area += area; e.mobs.Add(mobId);
+                byMap[map] = e;
             }
         }
         int i = 1;
@@ -1336,6 +1359,24 @@ public sealed class BotApi
         }
         return DynValue.NewTable(t);
     }
+
+    /// <summary>Maps whose roster nobody knows: in MapInfo, not a KQ map, not in MobCoordinate.shn and not yet looked at
+    /// by any bot on this host. The leveller explores the nearest of these when it has no grind field (operator
+    /// 2026-10-07: the abysses behind Eld's Battlefield Guard were invisible to it).</summary>
+    public DynValue unexploredMaps()
+    {
+        var t = NewTable();
+        var cd = _mgr.ClientData;
+        if (cd is null) return DynValue.NewTable(t);
+        var seen = _mgr.Knowledge.ObservedRosters(_handle.KnowledgeScope);
+        int i = 1;
+        foreach (var map in cd.MapNames().Distinct(StringComparer.OrdinalIgnoreCase))
+            if (!cd.MapKingdom(map) && !cd.MapHasMobCoordinates(map) && !seen.ContainsKey(map)) t[i++] = map;
+        return DynValue.NewTable(t);
+    }
+
+    /// <summary>The script looked around the current map: record it as explored (with whatever mobs were sighted)</summary>
+    public void markMapExplored() => _mgr.Knowledge.RecordMapVisited(_handle.KnowledgeScope, _handle.CurrentMap);
 
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));

@@ -2718,6 +2718,7 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SeedMobHits(Knowledge.MobThreatsFor(handle.KnowledgeScope)
                     .Select(kv => (kv.Key, kv.Value.Max, kv.Value.Count, kv.Value.Sum)));
                 zoneView.MobHitSampled = (mobId, dmg) => Knowledge.RecordMobHit(handle.KnowledgeScope, mobId, dmg);
+                zoneView.MobSighted = (mobId, x, y) => Knowledge.RecordMobSighting(handle.KnowledgeScope, handle.CurrentMap, mobId, x, y);
                 zoneView.ScalarLearned = (name, val) => Knowledge.RecordScalar(handle.KnowledgeScope, name, val);
                 var cdStat = Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarStoneCooldownMs);
                 var healStat = Knowledge.Scalar(handle.KnowledgeScope, ZoneView.ScalarStoneHeal);

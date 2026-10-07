@@ -361,6 +361,46 @@ public sealed class ClientData
         return _insideMaps.Contains(mapName);
     }
 
+    /// <summary>Every MapName in MapInfo.shn</summary>
+    public IEnumerable<string> MapNames()
+    {
+        var t = Table("MapInfo");
+        if (t is null) yield break;
+        foreach (var row in t.Rows) { var n = GetStr(row, "MapName"); if (!string.IsNullOrEmpty(n)) yield return n; }
+    }
+    private HashSet<string>? _coordMaps;
+    /// <summary>Maps that MobCoordinate.shn places at least one mob on (the client's own roster knowledge)</summary>
+    public bool MapHasMobCoordinates(string? mapName)
+    {
+        if (string.IsNullOrEmpty(mapName)) return false;
+        if (_coordMaps is null)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var id in MobCoordinateMobIds) foreach (var l in MobCoordinatesAll(id)) set.Add(l.Map);
+            _coordMaps = set;
+        }
+        return _coordMaps.Contains(mapName);
+    }
+
+    private HashSet<string>? _kingdomMaps;
+    /// <summary>True if the map is a KINGDOM QUEST map (MapInfo.shn KingdomMap=1) - the only no-go map kind the client
+    /// flags. InSide is a CEILING flag (caves such as Luminous Stone, the abyss dungeons), not an instance marker.</summary>
+    public bool MapKingdom(string? mapName)
+    {
+        if (string.IsNullOrEmpty(mapName)) return false;
+        if (_kingdomMaps is null)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var t = Table("MapInfo");
+            if (t != null)
+                foreach (var row in t.Rows)
+                    if (GetInt(row, "KingdomMap") != 0)
+                    { var n2 = GetStr(row, "MapName"); if (!string.IsNullOrEmpty(n2)) set.Add(n2); }
+            _kingdomMaps = set;
+        }
+        return _kingdomMaps.Contains(mapName);
+    }
+
     /// <summary>The display name of an item id</summary>
     public string ItemName(int itemId)
     {

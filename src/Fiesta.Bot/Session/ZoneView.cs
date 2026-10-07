@@ -756,6 +756,8 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Raised for every observed incoming hit so a DURABLE store can retain it across sessions (this in-memory table…</summary>
     public Action<int, int>? MobHitSampled;
+    /// <summary>A mob (not a gate) came into view for the first time: (mobId, x, y) - feeds the observed map roster</summary>
+    public Action<int, uint, uint>? MobSighted;
 
     public Action<string, double>? ScalarLearned;
 
@@ -3515,6 +3517,7 @@ public sealed class ZoneView : IDisposable
         NoteEntityChanged(handle);
         // First sighting of this handle = it's standing where it lives → seed its spawn anchor (see _mobAnchor)
         if (flag != 1) NoteMobAnchor(handle, x, y, idle: isNew);
+        if (isNew && flag != 1) MobSighted?.Invoke(mobid, x, y);
         _recentNpcs.TryRemove(handle, out _); // back in view (live) → drop the sticky flicker-bridge copy
         // THE SEED: record every NPC/gate by mobId (the bulk 0x1C09 on map-enter populates this fully)
         var seedEntry = new NpcSeedEntry(mobid, x, y, flag == 1, linkMap);
