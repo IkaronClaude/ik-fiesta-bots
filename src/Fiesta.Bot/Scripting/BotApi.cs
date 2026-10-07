@@ -1388,6 +1388,19 @@ public sealed class BotApi
         return set.Count;
     }
 
+    /// <summary>How many OTHER bots of this host, whose id sorts BEFORE ours, are in zone on <paramref name="map"/>.
+    /// Grind-field sharing (2026-10-07: NewFighter and NewJoker stood 75u apart in EchoCave waiting on the same respawns):
+    /// counting only the earlier ids makes the choice deterministic - the first bot keeps a field, later ones spread out,
+    /// and two bots never both leave the same one.</summary>
+    public int seniorBotsOnMap(string map)
+    {
+        int n = 0;
+        foreach (var h in _mgr.List())
+            if (string.CompareOrdinal(h.Id, Id) < 0 && h.Phase == BotPhase.InZone
+                && string.Equals(h.CurrentMap, map, StringComparison.OrdinalIgnoreCase)) n++;
+        return n;
+    }
+
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate on not bot.hpStoneDepleted() so the…</summary>
