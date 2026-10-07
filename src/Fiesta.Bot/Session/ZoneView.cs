@@ -1417,7 +1417,7 @@ public sealed class ZoneView : IDisposable
             // itemId 0 = the REAL item "Leather Boots" (a real occupied slot), NOT empty — the login list sends only occupie…
             var slot = (byte)(inven & 0xFF);
             if (box == EquipBox) { _equipment[slot] = itemId; eq++; }
-            else if (box == MainBag) { _inventory[slot] = itemId; _invCount[slot] = count; bag++; } // ONLY
+            else if (box == MainBag) { ItemVersion++; _inventory[slot] = itemId; _invCount[slot] = count; bag++; } // ONLY
             // the main bag (other boxes — premium/mini-house — collide on slot and hide the real loot)
         }
         if (bag + eq > 0)
@@ -1514,6 +1514,7 @@ public sealed class ZoneView : IDisposable
     /// <summary>Reset a quest's credited-kill progress to 0</summary>
     public void ResetQuestProgress(int id)
     {
+        QuestVersion++;
         _questProgress[id] = 0;
         // The per-objective counters must reset with the aggregate, or a repeatable's second run shows the previous run'…
         for (var oi = 0; oi < 5; oi++) _questObjProgress.TryRemove((id << 16) | oi, out _);
@@ -1537,6 +1538,7 @@ public sealed class ZoneView : IDisposable
         IEnumerable<(ushort id, byte status, int progress, IReadOnlyList<int> objCounts)>? active,
         IEnumerable<ushort>? available = null)
     {
+        QuestVersion++;
         if (done is not null) foreach (var d in done) _doneQuests.Add(d);
         // Seed both the status AND the credited progress (sum of End_NPCMobCount) from the zone's QUEST_DOING snapshot
         if (active is not null) foreach (var (id, st, prog, objCounts) in active)
@@ -1591,8 +1593,8 @@ public sealed class ZoneView : IDisposable
     }
 
     /// <summary>Mark a quest active (just accepted) / done (just turned in) so the driver's view stays current within the sess…</summary>
-    public void MarkQuestActive(int id, byte status = 1) { _activeQuests[id] = status; _availableQuests.Remove(id); _doneQuests.Remove(id); _doneByHandIn.Remove(id); }
-    public void MarkQuestDone(int id) { _activeQuests.TryRemove(id, out _); _availableQuests.Remove(id); _doneQuests.Add(id); _doneByHandIn.Add(id); }
+    public void MarkQuestActive(int id, byte status = 1) { QuestVersion++; _activeQuests[id] = status; _availableQuests.Remove(id); _doneQuests.Remove(id); _doneByHandIn.Remove(id); }
+    public void MarkQuestDone(int id) { QuestVersion++; _activeQuests.TryRemove(id, out _); _availableQuests.Remove(id); _doneQuests.Add(id); _doneByHandIn.Add(id); }
 
     /// <summary>Quests marked done by a hand-in THIS session (not by the login QUEST_DONE burst). The server never lists a
     /// REPEATABLE as done at login, so a repeatable done only by a hand-in is acceptable again at once - treating it as done
@@ -1746,9 +1748,24 @@ public sealed class ZoneView : IDisposable
     /// Named rather than repeated, so the next bare <c>!= 0</c> reads as visibly wrong beside it.</summary>
     private const ushort EmptyCellItemId = 0xFFFF;
 
+    /// <summary>Bumped by every inbound QUEST-department packet and every local quest mark / seed: the script memoizes what
+    /// it derives from quest state (kill lists, hand-in readiness, accept candidates) until this moves. Coarse on purpose -
+    /// a spurious bump costs one recompute, a missed one would serve stale state.</summary>
+    public int QuestVersion { get; private set; } = NextVersionBase();
+    /// <summary>Bumped by every inbound ITEM-department packet and the login bag snapshot (same use, for bag-derived state)</summary>
+    public int ItemVersion { get; private set; } = NextVersionBase();
+    private const int DeptQuest = 17, DeptItem = 12;
+    // each view starts its counters at its own base: a relog / zone handoff makes a NEW view, and a counter restarting at 0
+    // could equal a memo key taken on the old one
+    private static int _versionBase;
+    private static int NextVersionBase() => System.Threading.Interlocked.Add(ref _versionBase, 1 << 24);
+
     private void OnPacket(FiestaPacket pkt)
     {
         var op = pkt.Opcode;
+        var dept = op >> 10;
+        if (dept == DeptQuest) QuestVersion++;
+        else if (dept == DeptItem || op == OpClientItem) ItemVersion++;
         if (op == OpBriefChar)
         {
             foreach (var c in pkt.ReadBody<PROTO_NC_BRIEFINFO_CHARACTER_CMD>().chars)
@@ -3166,7 +3183,7 @@ public sealed class ZoneView : IDisposable
                         // login list only sends OCCUPIED slots anyway. Dropping id 0 made that slot invisible:
                         // BagFreeSlots over-reported, the sell/declutter classifier never saw the item, and
                         // AutoLootBehavior's free-slot gate was wrong until a CELLCHANGE happened to touch it.
-            if (itemId != EmptyCellItemId) { _inventory[slot] = itemId; _invCount[slot] = count; }
+            ItemVersion++; if (itemId != EmptyCellItemId) { _inventory[slot] = itemId; _invCount[slot] = count; }
                         off += 1 + datasize;
                     }
                 }
@@ -3188,12 +3205,12 @@ public sealed class ZoneView : IDisposable
                     // EMPTY IS 0xFFFF, NOT 0 (operator 2026-08-13: "sometimes randomly 2 items change to item 65535 x1
                     if (itemId != EmptyCellItemId)
                     {
-                        _inventory[slot] = itemId;
+                        ItemVersion++; _inventory[slot] = itemId;
                         // stack count = the lot after itemid: len 7 = byte-lot, len 8 = word-lot, bigger = gear/complex (count 1)
                         _invCount[slot] = p.Length == 7 ? p[6]
                                         : p.Length == 8 ? (p[6] | (p[7] << 8)) : 1;
                     }
-                    else { _inventory.TryRemove(slot, out _); _invCount.TryRemove(slot, out _); }
+                    else { ItemVersion++; _inventory.TryRemove(slot, out _); _invCount.TryRemove(slot, out _); }
                 }
             }
         }
@@ -3201,7 +3218,7 @@ public sealed class ZoneView : IDisposable
         {
             // [exchange:2][location:1][itemid:2…] — item moved bag→equip slot
             var p = pkt.Payload.Span;
-            if (p.Length >= 1) _inventory.TryRemove(p[0], out _);   // vacate bag slot
+            ItemVersion++; if (p.Length >= 1) _inventory.TryRemove(p[0], out _);   // vacate bag slot
             if (p.Length >= 5)
             {
                 var equipSlot = p[2];

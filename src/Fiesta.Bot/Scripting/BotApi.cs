@@ -901,6 +901,10 @@ public sealed class BotApi
 
     /// <summary>True if the character has completed this quest (from the login QUEST_DONE state)</summary>
     public bool questDone(int id) => View?.IsQuestDone(id) ?? false;
+    /// <summary>Moves on any quest-state change (ZoneView.QuestVersion): memoize quest-derived work until it does</summary>
+    public int questVersion() => View?.QuestVersion ?? -1;
+    /// <summary>Moves on any bag change (ZoneView.ItemVersion): memoize bag-derived work until it does</summary>
+    public int itemVersion() => View?.ItemVersion ?? -1;
 
     /// <summary>The souls we hold: { target = mob handle, count = n } (NC_BAT_SOULCOLLECT_CMD), nil before the first report. A
     /// skill with skillInfo(id).demandSoul > 0 casts only on that target with count >= demandSoul (else 0x0FD3).</summary>
