@@ -64,7 +64,9 @@ public sealed class BotScriptRunner : IDisposable
         _name = name;
         _source = source;
         _log = log;
-        _tickMs = Math.Clamp(tickMs, 20, 60_000);
+        // floor 5 ms (was 20, which capped every bot at 50 ticks/s): the leveller's FAST ticks (heal + the committed fight,
+        // 2026-10-07) cost a few ms, and the target is 100+ ticks/s per bot; the heavy decision pass paces itself (PLAN_MS)
+        _tickMs = Math.Clamp(tickMs, 5, 60_000);
         _trace = trace;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(botCt);
         _thread = new Thread(RunLoop) { IsBackground = true, Name = $"lua-{handle.Id}" };
