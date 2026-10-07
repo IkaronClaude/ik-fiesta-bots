@@ -697,6 +697,8 @@ public sealed class BotApi
 
     /// <summary>The raw code from the last SELL_ACK (0x3005): 0x0381 = success, else rejected; -1 if no sell acked yet this se…</summary>
     public int lastSellAck() => View?.LastSellAck ?? -1;
+    /// <summary>SELL_ACKs received so far (a sale fired at count n is answered when this passes n)</summary>
+    public int sellAckCount() => View?.SellAckCount ?? 0;
 
     /// <summary>The raw code from the last BUY_ACK (0x3004): 0x0201 = success (item added), else rejected</summary>
     public int lastBuyAck() => View?.LastBuyAck ?? -1;

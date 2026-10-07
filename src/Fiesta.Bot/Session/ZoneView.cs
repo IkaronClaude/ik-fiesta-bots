@@ -1217,6 +1217,9 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>The raw 2-byte code from the last NC_ITEM_SELL_ACK (0x3005), or -1 if none yet</summary>
     public int LastSellAck { get; private set; } = -1;
+    /// <summary>SELL_ACKs received this session: a sale is resolved by the ack that follows it (count moved past the
+    /// count at the sale), never by a timer - LastSellAck alone repeats 0x0381 and cannot tell one sale from the next</summary>
+    public int SellAckCount { get; private set; }
     /// <summary>UTC time of the last SELL_ACK — lets the driver wait for the result of a sell</summary>
     public DateTime LastSellAckUtc { get; private set; }
     /// <summary>The raw 2-byte code from the last NC_ITEM_BUY_ACK (0x3004), or -1 if none yet</summary>
@@ -2842,6 +2845,7 @@ public sealed class ZoneView : IDisposable
             {
                 LastSellAck = p[0] | (p[1] << 8);
                 LastSellAckUtc = DateTime.UtcNow;
+                SellAckCount++;
                 // A reject (not 0x0381) usually means the shop isn't really open — drop the open signal so the driver re-opens c…
                 if (LastSellAck != 0x0381) ShopOpenUtc = default;
                 else BagFull = false;   // a successful sell freed a bag slot — clear the full flag
