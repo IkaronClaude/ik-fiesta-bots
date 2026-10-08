@@ -1383,6 +1383,72 @@ public sealed class BotManager : IAsyncDisposable
     }
 
     /// <summary>Compute the cross-map route WITHOUT starting travel — a diagnostic / decision helper for the Lua leveler</summary>
+    // ---- PARTY DUNGEONS (operator 2026-10-08: "as this is a dungeon, it should be avoided solo"; "you can even tell it
+    // from stats ... grade normal enemies have stats MUCH higher than those of the same level in other maps"). Bots kept
+    // dying in Marlone Clan's Hideout (ValDn01) chasing Secret Hideout 2. Measured on the server tables: the median
+    // normal mob there has 3.00x the median HP of normal mobs of its level (CemDn01 3.00x, GblDn01 1.80x), while every
+    // field checked sits at 0.73-1.14x - field bosses (Mara, Marlone, Goblin King) do not change that, and per the
+    // operator they make their QUESTS party content, not their maps. Client data only: MobInfo for the per-level median,
+    // MobCoordinate plus this host's observed rosters for what spawns on the map (MobCoordinate does not cover ValDn01).
+    public const double PartyDungeonHpRatio = 1.5;
+    public sealed record DungeonVerdict(bool Dungeon, double HpRatio, int Normals, int TopLevel);
+    private Dictionary<int, double>? _medianNormalHp;
+    private readonly ConcurrentDictionary<string, (DungeonVerdict V, DateTime At)> _dungeonCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private Dictionary<int, double> MedianNormalHpByLevel(GameData.ClientData cd)
+    {
+        if (_medianNormalHp is not null) return _medianNormalHp;
+        var by = new Dictionary<int, List<int>>();
+        foreach (var mid in cd.AllMobIds())
+        {
+            var mm = cd.Mob(mid);
+            if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0 || mm.MaxHp <= 0 || mm.Level <= 0) continue;
+            if (!by.TryGetValue(mm.Level, out var l)) by[mm.Level] = l = new();
+            l.Add(mm.MaxHp);
+        }
+        var med = new Dictionary<int, double>();
+        foreach (var (lv, l) in by)
+        {
+            l.Sort();
+            med[lv] = l.Count % 2 == 1 ? l[l.Count / 2] : (l[l.Count / 2 - 1] + l[l.Count / 2]) / 2.0;
+        }
+        return _medianNormalHp = med;
+    }
+
+    public DungeonVerdict PartyDungeon(string id, string map)
+    {
+        var cd = ClientData;
+        if (cd is null || string.IsNullOrEmpty(map) || !_bots.TryGetValue(id, out var handle)) return new(false, 0, 0, 0);
+        var key = handle.KnowledgeScope + "|" + map;
+        if (_dungeonCache.TryGetValue(key, out var c) && DateTime.UtcNow - c.At < TimeSpan.FromMinutes(5)) return c.V;
+        var ids = new HashSet<int>();
+        foreach (var mid in cd.MobCoordinateMobIds)
+            foreach (var loc in cd.MobCoordinatesAll(mid))
+                if (string.Equals(loc.Map, map, StringComparison.OrdinalIgnoreCase)) { ids.Add(mid); break; }
+        if (Knowledge.ObservedRosters(handle.KnowledgeScope).TryGetValue(map, out var roster))
+            foreach (var (mid, b) in roster) if (b.Seen > 0) ids.Add(mid);
+        var med = MedianNormalHpByLevel(cd);
+        var ratios = new List<double>();
+        int top = 0;
+        foreach (var mid in ids)
+        {
+            var mm = cd.Mob(mid);
+            if (mm is null || mm.IsNpc || mm.IsPlayerSide || mm.GradeType != 0 || mm.MaxHp <= 0) continue;
+            if (!med.TryGetValue(mm.Level, out var mh) || mh <= 0) continue;
+            ratios.Add(mm.MaxHp / mh);
+            top = Math.Max(top, mm.Level);
+        }
+        double ratio = 0;
+        if (ratios.Count > 0)
+        {
+            ratios.Sort();
+            ratio = ratios.Count % 2 == 1 ? ratios[ratios.Count / 2] : (ratios[ratios.Count / 2 - 1] + ratios[ratios.Count / 2]) / 2.0;
+        }
+        var v = new DungeonVerdict(ratios.Count >= 2 && ratio >= PartyDungeonHpRatio, Math.Round(ratio, 2), ratios.Count, top);
+        _dungeonCache[key] = (v, DateTime.UtcNow);
+        return v;
+    }
+
     // ---- MONEY AID BOARD (2026-10-08, the TEAMWORK goal). NewJoker sat broke at ~280 cen for hours - no HP stones, so it
     // died faster than it earned (net exp negative two windows running) - while the other four bots held 10k-33k cen each.
     // A broke bot posts a request; a bot with surplus claims it, walks to it and gifts the cen through the normal trade

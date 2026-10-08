@@ -287,6 +287,14 @@ public sealed class ClientData
     }
 
     /// <summary>Look up a mob/NPC by its id in the client MobInfo table and project the display fields — the bot reports only…</summary>
+    /// <summary>Every mob id in the client MobInfo table (for whole-table statistics such as the per-level HP median)</summary>
+    public IEnumerable<int> AllMobIds()
+    {
+        var t = Table("MobInfo");
+        if (t is null) yield break;
+        foreach (var r in t.Rows) yield return GetInt(r, "ID");
+    }
+
     public MobData? Mob(int mobId)
     {
         var t = Table("MobInfo");

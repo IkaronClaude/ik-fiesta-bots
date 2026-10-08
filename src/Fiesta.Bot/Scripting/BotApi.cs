@@ -1441,6 +1441,16 @@ public sealed class BotApi
     public void aidRelease(string requesterId) => _mgr.AidRelease(Id, requesterId);
     public string myId() => Id;
 
+    /// <summary>Is <paramref name="map"/> a party dungeon (its normal mobs' median HP is well above the median for their
+    /// level, from client data + observed rosters)? {dungeon, hpRatio, normals, topLevel}</summary>
+    public DynValue mapDungeon(string map)
+    {
+        var v = _mgr.PartyDungeon(Id, map);
+        var r = NewTable();
+        r["dungeon"] = v.Dungeon; r["hpRatio"] = v.HpRatio; r["normals"] = v.Normals; r["topLevel"] = v.TopLevel;
+        return DynValue.NewTable(r);
+    }
+
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate on not bot.hpStoneDepleted() so the…</summary>
