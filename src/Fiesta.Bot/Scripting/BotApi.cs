@@ -1411,6 +1411,36 @@ public sealed class BotApi
     /// <summary>The largest value ever recorded under <paramref name="name"/>, or -1 when nothing has been</summary>
     public double learnedScalarMax(string name) => _mgr.Knowledge.Scalar(_handle.KnowledgeScope, name)?.Max ?? -1;
 
+    // ---- money aid board (BotManager.AidRequest...): a broke bot asks, a bot with surplus gives through a trade ----
+    public void aidRequest(double amount) => _mgr.AidRequest(Id, (long)Math.Max(0, amount));
+    public void aidCancel() => _mgr.AidCancel(Id);
+    /// <summary>Our own request: {amount, giverName (nil = unclaimed), ageS, claimAgeS}, or nil when we have none</summary>
+    public DynValue aidMine()
+    {
+        var e = _mgr.AidMine(Id);
+        if (e is null) return DynValue.Nil;
+        var t = NewTable();
+        t["amount"] = (double)e.Amount; t["ageS"] = (DateTime.UtcNow - e.AtUtc).TotalSeconds;
+        if (e.GiverName is not null) { t["giverName"] = e.GiverName; t["claimAgeS"] = (DateTime.UtcNow - e.ClaimedAtUtc).TotalSeconds; }
+        return DynValue.NewTable(t);
+    }
+    /// <summary>Other bots' open requests: {{id, name, amount, map, x, y, inZone, giverId}}</summary>
+    public DynValue aidRequests()
+    {
+        var t = NewTable(); int i = 1;
+        foreach (var (e, map, x, y, inZone) in _mgr.AidOpen(Id))
+        {
+            var r = NewTable();
+            r["id"] = e.Id; r["name"] = e.CharName; r["amount"] = (double)e.Amount; r["map"] = map; r["x"] = x; r["y"] = y;
+            r["inZone"] = inZone; if (e.GiverId is not null) r["giverId"] = e.GiverId;
+            t[i++] = DynValue.NewTable(r);
+        }
+        return DynValue.NewTable(t);
+    }
+    public bool aidClaim(string requesterId) => _mgr.AidClaim(Id, requesterId);
+    public void aidRelease(string requesterId) => _mgr.AidRelease(Id, requesterId);
+    public string myId() => Id;
+
     public bool soulstoneHp() => Ok(Wait(_mgr.UseSoulStoneHpAsync(Id)));
     public bool soulstoneSp() => Ok(Wait(_mgr.UseSoulStoneSpAsync(Id)));
     /// <summary>True once an HP soul-stone USE failed (reserve empty / on cooldown) — gate on not bot.hpStoneDepleted() so the…</summary>

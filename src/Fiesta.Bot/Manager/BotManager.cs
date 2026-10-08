@@ -1383,6 +1383,56 @@ public sealed class BotManager : IAsyncDisposable
     }
 
     /// <summary>Compute the cross-map route WITHOUT starting travel — a diagnostic / decision helper for the Lua leveler</summary>
+    // ---- MONEY AID BOARD (2026-10-08, the TEAMWORK goal). NewJoker sat broke at ~280 cen for hours - no HP stones, so it
+    // died faster than it earned (net exp negative two windows running) - while the other four bots held 10k-33k cen each.
+    // A broke bot posts a request; a bot with surplus claims it, walks to it and gifts the cen through the normal trade
+    // window. The board is in-memory (the bots share this process); a claim older than AidClaimTtl is free again.
+    public sealed record AidEntry(string Id, string CharName, long Amount, DateTime AtUtc, string? GiverId, string? GiverName, DateTime ClaimedAtUtc);
+    private readonly ConcurrentDictionary<string, AidEntry> _aid = new(StringComparer.Ordinal);
+    private static readonly TimeSpan AidClaimTtl = TimeSpan.FromMinutes(12);
+
+    public void AidRequest(string id, long amount)
+    {
+        if (!_bots.TryGetValue(id, out var h)) return;
+        var name = h.Options.Character ?? id;
+        _aid.AddOrUpdate(id, _ => new AidEntry(id, name, amount, DateTime.UtcNow, null, null, default),
+            (_, e) => e with { Amount = amount, CharName = name });
+    }
+    public void AidCancel(string id) => _aid.TryRemove(id, out _);
+
+    /// <summary>Open requests with the requester's LIVE map and position (other than <paramref name="exceptId"/>)</summary>
+    public IReadOnlyList<(AidEntry E, string? Map, uint X, uint Y, bool InZone)> AidOpen(string exceptId)
+    {
+        var outp = new List<(AidEntry, string?, uint, uint, bool)>();
+        foreach (var e in _aid.Values)
+        {
+            if (e.Id == exceptId || !_bots.TryGetValue(e.Id, out var h)) continue;
+            var p = h.Position;
+            outp.Add((e, h.CurrentMap, p is { } q ? (uint)q.X : 0u, p is { } r ? (uint)r.Y : 0u, h.Phase == BotPhase.InZone));
+        }
+        return outp;
+    }
+
+    /// <summary>Claim a request for <paramref name="giverId"/>: succeeds when it is unclaimed, already ours, or its claim went stale</summary>
+    public bool AidClaim(string giverId, string requesterId)
+    {
+        if (!_bots.TryGetValue(giverId, out var g)) return false;
+        var gname = g.Options.Character ?? giverId;
+        while (_aid.TryGetValue(requesterId, out var e))
+        {
+            bool free = e.GiverId is null || e.GiverId == giverId || DateTime.UtcNow - e.ClaimedAtUtc > AidClaimTtl;
+            if (!free) return false;
+            if (_aid.TryUpdate(requesterId, e with { GiverId = giverId, GiverName = gname, ClaimedAtUtc = DateTime.UtcNow }, e)) return true;
+        }
+        return false;
+    }
+    public void AidRelease(string giverId, string requesterId)
+    {
+        while (_aid.TryGetValue(requesterId, out var e) && e.GiverId == giverId)
+            if (_aid.TryUpdate(requesterId, e with { GiverId = null, GiverName = null, ClaimedAtUtc = default }, e)) return;
+    }
+    public AidEntry? AidMine(string id) => _aid.TryGetValue(id, out var e) ? e : null;
+
     /// <summary>Per map: (level, mobId, x0, y0, x1, y1) for every REGULAR enemy spawn area (GradeType 0) - client
     /// MobCoordinate.shn plus this host's observed rosters for maps the client does not cover.</summary>
     private Dictionary<string, List<(int Lv, int Mob, double X0, double Y0, double X1, double Y1)>> SpawnIndex(GameData.ClientData cd, string scope)
