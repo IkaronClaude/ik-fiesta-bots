@@ -2735,7 +2735,10 @@ public sealed class BotManager : IAsyncDisposable
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } session) return ActionResult.NotInZone;
         if (waypoints.Count < 2) return ActionResult.Sent;
         var rawCount = waypoints.Count;
-        waypoints = MergeShortSteps(handle, waypoints, MaxStepFor(unitsPerSec));
+        // the step cap follows OUR speed, not the caller's: on foot (120) callers passing a mount pace produced 430-450u steps
+        // (the client never exceeds 250) and the server rejected them (2026-10-08 22:35 [movefail-diag])
+        var stepCap = MaxStepFor(handle.WalkSpeed > 0 ? handle.WalkSpeed : unitsPerSec);
+        waypoints = MergeShortSteps(handle, waypoints, stepCap);
         if (waypoints.Count < rawCount)
             handle.Log(BotLogLevel.Verbose, $"walk-path: merged {rawCount} waypoints into {waypoints.Count} straight steps");
         // Per-walk cancellation (linked to the bot's lifetime) so a MOVEFAIL can abort just this walk
@@ -2756,7 +2759,7 @@ public sealed class BotManager : IAsyncDisposable
                     var (tx, ty) = waypoints[i + 1];
                     handle.WalkPlanIndex = i + 1;   // the waypoint we are walking toward right now
                     var segDist = Math.Sqrt(Math.Pow((double)tx - fx, 2) + Math.Pow((double)ty - fy, 2));
-                    var subSteps = Math.Max(1, (int)Math.Ceiling(segDist / MaxStepFor(unitsPerSec)));
+                    var subSteps = Math.Max(1, (int)Math.Ceiling(segDist / stepCap));
                     double cx = fx, cy = fy;
                     for (int k = 1; k <= subSteps && !ct.IsCancellationRequested; k++)
                     {
