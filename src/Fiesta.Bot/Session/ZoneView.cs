@@ -912,12 +912,18 @@ public sealed class ZoneView : IDisposable
 
     // Rolling window of incoming hits (utc, damage) so the driver can ask what the PACK is actually doing to us righ…
     private readonly ConcurrentQueue<(DateTime At, int Dmg)> _recentIncoming = new();
+    private static readonly TimeSpan IncomingRetention = TimeSpan.FromSeconds(60);   // longer than any window a caller asks
 
     /// <summary>Observed incoming damage per second over the trailing</summary>
     public double IncomingDamageSince(TimeSpan window)
     {
         var cutoff = DateTime.UtcNow - window;
-        while (_recentIncoming.TryPeek(out var head) && head.At < cutoff) _recentIncoming.TryDequeue(out _);
+        // TRIM BY A FIXED RETENTION, NEVER BY THE CALLER'S WINDOW: the queue is shared, so a caller asking for 1-2 s used to
+        // throw away the hits every longer window still needed. NewCleric 2026-10-08 13:35: two Wild Desert Wolves landed
+        // 376 at 17.3 s, the 5 s check at 20.5 s read "taking 0 dmg/s - a queue, not a threat", and their next burst (354)
+        // killed it at 22.0 s.
+        var keep = DateTime.UtcNow - IncomingRetention;
+        while (_recentIncoming.TryPeek(out var head) && head.At < keep) _recentIncoming.TryDequeue(out _);
         var total = 0L;
         foreach (var (at, dmg) in _recentIncoming) if (at >= cutoff) total += dmg;
         var secs = window.TotalSeconds;
