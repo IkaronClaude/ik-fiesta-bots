@@ -1808,6 +1808,76 @@ public sealed class BotManager : IAsyncDisposable
         => handle.ZoneView?.NearbyNpcs.FirstOrDefault(
             n => n.IsGate && string.Equals(n.LinkMap, map, StringComparison.OrdinalIgnoreCase));
 
+    // bot behaviour, not game data: how wide a berth a path gives a mob that is not chasing us yet (the script's
+    // SHED_DANGER_RANGE is 420 for "a pack is here"; this is "walking past one")
+    private const double IdleMobBerth = 260;
+    private const int IdleMobBendTries = 2;
+
+    /// <summary>CURVE THE PATH AROUND MOB GROUPS WE HAVE NOT PULLED (operator 2026-10-08: "when escaping it often makes sense
+    /// to curve the path slightly to avoid aggroing other mob groups when you're close to the end, as the end point will be
+    /// within their leash"). A straight escape takes ~0 damage from the pack behind (mobs move at our speed); the damage
+    /// comes from walking INTO a new group. For the first sample of the path that passes within IdleMobBerth of a huntable
+    /// mob that is not already on us, route through a walkable detour point pushed away from it; keep the bend only if it
+    /// actually gains clearance and costs under 1.5x the length. At most IdleMobBendTries bends.</summary>
+    private static IReadOnlyList<(uint X, uint Y)> BendAroundIdleMobs(BotHandle handle, BlockGrid grid, (uint X, uint Y) start,
+        uint tx, uint ty, IReadOnlyList<(uint X, uint Y)> wp)
+    {
+        var v = handle.ZoneView;
+        if (v is null || wp.Count < 2) return wp;
+        var aggro = v.Aggressors;
+        var mobs = v.NearbyNpcs.Where(n => !n.IsGate && n.LinkMap is null && n.CharName is null && !aggro.Contains(n.Handle)
+                                           && v.IsHuntableMob?.Invoke(n.MobId) != false)
+                               .Select(n => (X: (double)n.X, Y: (double)n.Y)).ToList();
+        if (mobs.Count == 0) return wp;
+        static double Len(IReadOnlyList<(uint X, uint Y)> w)
+        { double l = 0; for (int i = 1; i < w.Count; i++) l += Dist(w[i - 1], w[i].X, w[i].Y); return l; }
+        (double Clear, double Sx, double Sy, double Mx, double My)? Worst(IReadOnlyList<(uint X, uint Y)> w)
+        {
+            (double, double, double, double, double)? worst = null;
+            for (int i = 1; i < w.Count; i++)
+            {
+                double ax = w[i - 1].X, ay = w[i - 1].Y, bx = w[i].X, by = w[i].Y;
+                double len = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+                int n = Math.Max(1, (int)(len / 50));
+                for (int k = 0; k <= n; k++)
+                {
+                    double sx = ax + (bx - ax) * k / n, sy = ay + (by - ay) * k / n;
+                    // the first stretch is where we stand (a mob there is already our problem), the goal is fixed
+                    if (Math.Sqrt((sx - start.X) * (sx - start.X) + (sy - start.Y) * (sy - start.Y)) < 150) continue;
+                    if (Math.Sqrt((sx - tx) * (sx - tx) + (sy - ty) * (sy - ty)) < 80) continue;
+                    foreach (var m in mobs)
+                    {
+                        double d = Math.Sqrt((m.X - sx) * (m.X - sx) + (m.Y - sy) * (m.Y - sy));
+                        if (d < IdleMobBerth && (worst is null || d < worst.Value.Item1)) worst = (d, sx, sy, m.X, m.Y);
+                    }
+                }
+            }
+            return worst;
+        }
+        var cur = wp;
+        for (int t = 0; t < IdleMobBendTries; t++)
+        {
+            if (Worst(cur) is not { } w) break;
+            double ux = w.Sx - w.Mx, uy = w.Sy - w.My, ul = Math.Sqrt(ux * ux + uy * uy);
+            if (ul < 1) { ux = 1; uy = 0; ul = 1; }
+            double push = IdleMobBerth - w.Clear + 60;
+            var dx = w.Sx + ux / ul * push; var dy = w.Sy + uy / ul * push;
+            if (dx < 0 || dy < 0) break;
+            var (dtx, dty) = grid.WorldToTile((uint)dx, (uint)dy);
+            if (!grid.IsWalkableTile(dtx, dty)) break;
+            var a = PathFinder.FindPath(grid, start.X, start.Y, (uint)dx, (uint)dy);
+            var b = PathFinder.FindPath(grid, (uint)dx, (uint)dy, tx, ty);
+            if (a.Count == 0 || b.Count == 0) break;
+            var bent = PathFinder.Simplify(a.Concat(b.Skip(1)).ToList());
+            var nw = Worst(bent);
+            if (Len(bent) > Len(cur) * 1.5 || (nw is { } n2 && n2.Clear <= w.Clear)) break;
+            handle.Log($"[nav] BEND around an un-pulled mob at ({w.Mx:F0},{w.My:F0}): path passed {w.Clear:F0}u from it, " +
+                       $"now {(nw is { } n3 ? n3.Clear.ToString("F0") + "u" : "clear")} via ({dx:F0},{dy:F0}), {Len(cur):F0}u -> {Len(bent):F0}u");
+            cur = bent;
+        }
+        return cur;
+    }
+
     /// <summary>Walk the bot to within world-units of ( , ), pathfinding over the current map's grid when one is available (a…</summary>
     private async Task ApproachAsync(string id, BotHandle handle, uint tx, uint ty, double stopShort, double unitsPerSec, CancellationToken ct)
     {
@@ -1838,6 +1908,7 @@ public sealed class BotManager : IAsyncDisposable
                 return;
             }
             wp = PathFinder.Simplify(path);
+            wp = BendAroundIdleMobs(handle, grid, pos, tx, ty, wp);
         }
         else wp = new[] { (pos.X, pos.Y), (tx, ty) }; // no grid → best-effort direct
 
