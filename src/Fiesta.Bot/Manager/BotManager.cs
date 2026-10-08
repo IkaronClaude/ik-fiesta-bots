@@ -3104,6 +3104,7 @@ public sealed class BotManager : IAsyncDisposable
                 if (ClientData is { } cdata2)
                 {
                     zoneView.IsMoveBlockingAbstate = idx => cdata2.IsMoveBlockingAbstate(idx); // root/stun → don't learn walls
+                    zoneView.IsSlowAbstate = idx => cdata2.IsSlowAbstate(idx);                  // slowed → running does not shed
                     zoneView.IsStunAbstate = idx => cdata2.IsStunAbstate(idx);                 // stun vs root, for the metrics
                 }
                 zoneView.SeedMaxVitals(entry.MaxHp, entry.MaxSp);

@@ -561,6 +561,50 @@ public sealed class ClientData
         }
     }
 
+    // SLOWS (2026-10-08, operator: "the ice vivi 4 minute slow debuff ... Only mages can clear it with skills"): an abstate
+    // whose SubAbState carries SAA_SPEEDDOWNRATE (88) - Ice ViVi's StaMob2Slow is -45% move speed for 5 min. A slowed bot
+    // cannot outrun walking-speed mobs. Dispel: an ActiveSkill special SS_DISPELONE (9), its value the level it clears.
+    private const int SpeedDownActionIndex = 88;
+    private const int DispelOneSpecial = 9;
+    private IReadOnlySet<uint>? _slowAbstates;
+    public bool IsSlowAbstate(uint abStataIndex)
+    {
+        if (_slowAbstates is null)
+            lock (_abstateLock)
+            {
+                if (_slowAbstates is null)
+                {
+                    var set = new HashSet<uint>();
+                    var slowSubs = new HashSet<string>(StringComparer.Ordinal);
+                    if (Table("SubAbState") is { } sub)
+                        foreach (var row in sub.Rows)
+                        {
+                            var inx = GetStr(row, "InxName");
+                            if (string.IsNullOrEmpty(inx)) continue;
+                            foreach (var c in new[] { "ActionIndexA", "ActionIndexB", "ActionIndexC", "ActionIndexD" })
+                                if (GetInt(row, c) == SpeedDownActionIndex) { slowSubs.Add(inx); break; }
+                        }
+                    if (Table("AbState") is { } ab)
+                        foreach (var row in ab.Rows)
+                            if (GetStr(row, "SubAbState") is { Length: > 0 } sn && slowSubs.Contains(sn))
+                                set.Add((uint)GetInt(row, "AbStataIndex"));
+                    _slowAbstates = set;
+                }
+            }
+        return _slowAbstates.Contains(abStataIndex);
+    }
+
+    /// <summary>The level of debuff a skill dispels (ActiveSkill SpecialIndexA..E == SS_DISPELONE, its SpecialValue), -1 if none</summary>
+    public int SkillDispelLevel(int skillId)
+    {
+        var t = Table("ActiveSkill");
+        var row = t is null ? null : (t.FindByLong("ID", skillId) ?? t.FindByLong("id", skillId));
+        if (row is null) return -1;
+        foreach (var x in new[] { "A", "B", "C", "D", "E" })
+            if (GetInt(row, "SpecialIndex" + x) == DispelOneSpecial) return GetInt(row, "SpecialValue" + x);
+        return -1;
+    }
+
     private const int ActionBlockActionIndex = 25;
     private IReadOnlySet<uint>? _stunAbstates;
 

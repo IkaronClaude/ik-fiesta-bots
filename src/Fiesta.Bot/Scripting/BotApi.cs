@@ -106,6 +106,8 @@ public sealed class BotApi
         // a stun is a DEBUFF that lands on an enemy, and its abstate will never show up in selfAbstates().
         t["landsOn"] = si.LandsOn; t["castFrom"] = si.CastFrom;
         t["selfTargeted"] = si.LandsOn == 1;
+        // dispel = the debuff level this skill clears (ActiveSkill special SS_DISPELONE), -1 if it dispels nothing (Mage Dispel)
+        t["dispel"] = _mgr.ClientData?.SkillDispelLevel(id) ?? -1;
         return DynValue.NewTable(t);
     }
 
@@ -532,6 +534,8 @@ public sealed class BotApi
 
     /// <summary>True while a movement-blocking abnormal state (stun/root/entangle</summary>
     public bool rooted() => View?.Rooted ?? false;
+    /// <summary>True while a SLOW (move speed down, e.g. Ice ViVi's StaMob2Slow) is on us: running will not shed the pack</summary>
+    public bool slowed() => View?.Slowed ?? false;
     /// <summary>True while a STUN is active on the bot (actions blocked: skills cannot be cast, HP stones still can)</summary>
     public bool stunned() => View?.Stunned ?? false;
 

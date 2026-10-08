@@ -1772,6 +1772,23 @@ public sealed class ZoneView : IDisposable
 
     /// <summary>Returns true if an abstate index IMMOBILIZES the target (set by the manager from client AbState/SubAbState — s…</summary>
     public Func<uint, bool>? IsMoveBlockingAbstate { get; set; }
+    /// <summary>A SLOW (move speed down) abstate index - see ClientData.IsSlowAbstate</summary>
+    public Func<uint, bool>? IsSlowAbstate { get; set; }
+
+    /// <summary>True while a slow (move speed down) is active on the bot: running does not shed walking-speed mobs</summary>
+    public bool Slowed
+    {
+        get
+        {
+            if (IsSlowAbstate is not { } f) return false;
+            long now = Environment.TickCount64;
+            lock (_selfAbstateLock)
+            {
+                foreach (var kv in _selfAbstates) if (kv.Value > now && f(kv.Key)) return true;
+                return false;
+            }
+        }
+    }
 
     /// <summary>Of the move-blocking abstates, which are STUNS (block actions too) rather than roots/entangles (movement only)…</summary>
     public Func<uint, bool>? IsStunAbstate { get; set; }
