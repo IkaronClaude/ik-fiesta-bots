@@ -1310,7 +1310,8 @@ public sealed class BotManager : IAsyncDisposable
     private const double GateApproachDist = 60.0;
     // bot behaviour, not game data: further than this from a gate a click is not worth the 6 s wait; re-approach instead
     private const double GateClickMaxDist = GateApproachDist * 4;
-    private const int GateReapproachTries = 3;
+    private const int GateReapproachTries = 15;          // a hard cap only: the loop stops as soon as a try makes no progress
+    private const double GateReapproachMinGain = 100.0;
     // In a scenario instance, an out-of-range cast target CLOSER than this is NOT client-approached — hold + autoAtt…
     private const double ScenarioHoldRange = 40.0;
     // How far SHORT of the target the instance combat-approach stops — closes into swing range without pathing onto…
@@ -1744,10 +1745,21 @@ public sealed class BotManager : IAsyncDisposable
                 // ApproachAsync RETURNS WHETHER OR NOT WE ARRIVED. A walk aborted by a MOVEFAIL used to fall straight through
                 // to the click: NewFighter 2026-10-08 12:38:13 clicked the RouVal02 gate from ~4100u away mid-escape, waited
                 // 6 s for a transition that cannot happen from there, and died 1 s into the "closing in" retry.
+                // KEEP GOING WHILE IT WORKS: NewFighter 2026-10-08 16:03 Eld -> EldCem01 - each walk was cut ~5 s in by a transient
+                // MOVEFAIL yet gained 500-700u (3608 -> 3090 -> 2356); a fixed 3 tries ran out 2356u away, the click could not
+                // fire, the trip aborted, and the bot looped sell -> skills -> travel in Eld with 0 exp for 6 minutes.
+                double prevGap = double.MaxValue;
                 for (int again = 1; again <= GateReapproachTries && !ct.IsCancellationRequested
                      && handle.Position is { } gp && Dist((gp.X, gp.Y), gate.X, gate.Y) > GateClickMaxDist; again++)
                 {
-                    handle.Log($"[travel] hop {hop + 1}: walk ended {Dist((gp.X, gp.Y), gate.X, gate.Y):F0}u short of the gate - re-approaching ({again}/{GateReapproachTries}) before clicking");
+                    var gap = Dist((gp.X, gp.Y), gate.X, gate.Y);
+                    if (prevGap - gap < GateReapproachMinGain)
+                    {
+                        handle.Log($"[travel] hop {hop + 1}: re-approach made no progress ({prevGap:F0} -> {gap:F0}u) - stopping");
+                        break;
+                    }
+                    prevGap = gap;
+                    handle.Log($"[travel] hop {hop + 1}: walk ended {gap:F0}u short of the gate - re-approaching ({again}/{GateReapproachTries}) before clicking");
                     await ApproachAsync(id, handle, gate.X, gate.Y, GateApproachDist, unitsPerSec, ct);
                 }
 
