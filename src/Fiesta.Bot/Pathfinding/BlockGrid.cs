@@ -251,10 +251,14 @@ public sealed class BlockGrid
     public const int PuzzleMobBoard = 15035;   // PzlBoard_4x4 — the empty puzzle frame
     public static bool IsPuzzlePieceMob(int mobId) => mobId == PuzzleMobBoard;
 
+    // A guess must never wall a bot IN: see ReopenInferredDoors
+    private DateTime _puzzleInferenceOffUntil = DateTime.MinValue;
+
     /// <summary>Mark any field .sbi door CLOSED that currently contains a puzzle-piece entity</summary>
     public IReadOnlyList<string> NotePuzzleEntities(IEnumerable<(uint X, uint Y, int MobId)> entities)
     {
         if (_doorCol is not { } col) return Array.Empty<string>();
+        if (DateTime.UtcNow < _puzzleInferenceOffUntil) return Array.Empty<string>();
         List<string>? closed = null;
         foreach (var e in entities)
         {
@@ -272,6 +276,24 @@ public sealed class BlockGrid
         }
         if (closed is not null) RebuildDoorOverlay();
         return (IReadOnlyList<string>?)closed ?? Array.Empty<string>();
+    }
+
+    /// <summary>Doors closed by INFERENCE (puzzle board / MOVEFAIL learning - not a door packet) that a route was refused
+    /// through: open them again and keep the puzzle inference off for <paramref name="offFor"/>. NewMage 2026-10-08 RouN
+    /// 14:36-14:58: the 'Xiaoming' / 'Oluming' doors were marked closed because the puzzle board stood in their box, the
+    /// bot was on the walled side, and every walk (skill master, a money handoff) was "UNREACHABLE" for 22 minutes. A door
+    /// that really is shut is re-learned from the MOVEFAILs a walk into it produces - evidence, not a guess.
+    /// Returns the names reopened (empty = nothing was inferred).</summary>
+    public IReadOnlyList<string> ReopenInferredDoors(TimeSpan offFor)
+    {
+        var names = _learnedDoorStates.Where(kv => kv.Value == 0).Select(kv => kv.Key).ToList();
+        if (names.Count == 0) return names;
+        foreach (var n in names) _learnedDoorStates.Remove(n);
+        _sbiFailTiles.Clear();
+        _sbiFailCount.Clear();
+        _puzzleInferenceOffUntil = DateTime.UtcNow + offFor;
+        RebuildDoorOverlay();
+        return names;
     }
 
     /// <summary>Reset MOVEFAIL-learned field-door state on MAP RE-ENTRY — the door may have opened while we were off the map,…</summary>

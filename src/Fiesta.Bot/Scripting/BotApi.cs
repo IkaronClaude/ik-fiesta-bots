@@ -1808,9 +1808,18 @@ public sealed class BotApi
             {
                 if (!Fiesta.Bot.Pathfinding.NavMeshPath.Reachable(grid.Mesh(), stx0, sty0, gtx0, gty0, doorClosed))
                 {
-                    _handle.Log($"[nav] walkTo ({x},{y}) on {map}: UNREACHABLE — no route through the region graph "
-                        + $"with current door state ({sw.ElapsedMilliseconds}ms). No search run.");
-                    return false;
+                    // a door we only INFERRED shut may be what cuts us off: open it and ask again (BlockGrid.ReopenInferredDoors)
+                    var reopened = grid.ReopenInferredDoors(TimeSpan.FromMinutes(5));
+                    if (reopened.Count > 0
+                        && Fiesta.Bot.Pathfinding.NavMeshPath.Reachable(grid.Mesh(), stx0, sty0, gtx0, gty0, grid.DoorClosedPredicate()))
+                        _handle.Log($"[nav] walkTo ({x},{y}) on {map}: was unreachable only through INFERRED-closed door(s) "
+                            + $"{string.Join(", ", reopened)} - reopened them (no door packet said so); a real wall is re-learned from MOVEFAILs");
+                    else
+                    {
+                        _handle.Log($"[nav] walkTo ({x},{y}) on {map}: UNREACHABLE — no route through the region graph "
+                            + $"with current door state ({sw.ElapsedMilliseconds}ms). No search run.");
+                        return false;
+                    }
                 }
             }
             catch { /* mesh unavailable -> fall through and let the search decide */ }
