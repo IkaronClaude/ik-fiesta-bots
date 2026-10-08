@@ -1581,7 +1581,7 @@ public sealed class BotManager : IAsyncDisposable
     /// when the map has no grid), and reports the highest REGULAR mob (GradeType 0, enemy, client MobCoordinate or this
     /// host's observed rosters) whose spawn area lies within <paramref name="pad"/> units of it. The destination's leg is
     /// its arrival point alone (where we fight there is the caller's question).</summary>
-    public (bool Ok, List<CorridorLeg> Legs) RouteCorridors(string id, string map, double pad = 500)
+    public (bool Ok, List<CorridorLeg> Legs) RouteCorridors(string id, string map, double pad = 500, (uint X, uint Y)? target = null)
     {
         var outLegs = new List<CorridorLeg>();
         var (res, route) = RouteInfo(id, map);
@@ -1598,7 +1598,8 @@ public sealed class BotManager : IAsyncDisposable
             legs.Add((onMap, entry, (e.GateX, e.GateY)));
             onMap = e.ToMap; entry = e.Arrival;
         }
-        legs.Add((onMap, entry, entry));
+        // the destination: its arrival point, or the walk from it to a TARGET on that map (a hand-in NPC) when given
+        legs.Add((onMap, entry, target ?? entry));
         foreach (var (lm, a, b) in legs)
         {
             // the walked polyline: mesh path through this map when it has a grid, else the straight segment

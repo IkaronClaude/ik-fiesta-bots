@@ -1642,10 +1642,12 @@ public sealed class BotApi
     /// host's observed rosters) whose spawn area lies within <paramref name="pad"/> units of it. The destination's leg is
     /// its arrival point alone (where we fight there is the caller's question).
     /// Result: {ok, legs = {{map, maxLevel, mob, kinds, meshed}}}.</summary>
-    public DynValue routeCorridors(string map, double pad = 500)
+    public DynValue routeCorridors(string map, double pad = 500, double tx = -1, double ty = -1)
     {
         var t = NewTable();
-        var (ok, legs) = _mgr.RouteCorridors(Id, map, pad);
+        // tx/ty: a point ON the destination map whose walk from the arrival is judged too; -1 = the arrival alone (0 is a real coord)
+        (uint X, uint Y)? target = tx >= 0 && ty >= 0 ? ((uint)tx, (uint)ty) : null;
+        var (ok, legs) = _mgr.RouteCorridors(Id, map, pad, target);
         t["ok"] = ok;
         var outLegs = NewTable(); int li = 1;
         foreach (var l in legs)
