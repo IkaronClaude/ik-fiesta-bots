@@ -2696,11 +2696,48 @@ public sealed class BotManager : IAsyncDisposable
     private const double MaxMoveStep = 250.0;
 
     /// <summary>Walk a precomputed path: stream MoverunCmd steps on a background task, paced to the bot's current (updated liv…</summary>
+    // CLIENT-SHAPED STEPS (2026-10-08). PathFinder.Simplify drops only EXACTLY collinear points, so a diagonal tile staircase
+    // stays a string of 8-17u moves sent every ~80 ms. [movefail-diag] showed the server rejecting exactly those bursts and
+    // snapping us back to where the FIRST of them started (e.g. 17u, 9u, 9u, 17u -> back to the start): 45-86 MOVEFAILs per bot
+    // per 10 min, each aborting the walk. The real client (Z:/Full.pcapng) sends ~99u steps every ~0.35 s. Merge waypoints
+    // greedily into the longest straight step (<= maxStep) whose line stays walkable on the grid (learned blocks + doors).
+    private const double MergeSampleStep = 3.0;
+    private IReadOnlyList<(uint X, uint Y)> MergeShortSteps(BotHandle handle, IReadOnlyList<(uint X, uint Y)> wp, double maxStep)
+    {
+        if (wp.Count <= 2 || handle.CurrentMap is not { } map || GridProvider?.Invoke(map) is not { } g) return wp;
+        bool LineWalkable((uint X, uint Y) a, (uint X, uint Y) b)
+        {
+            double dx = (double)b.X - a.X, dy = (double)b.Y - a.Y, len = Math.Sqrt(dx * dx + dy * dy);
+            for (double t = MergeSampleStep; t < len; t += MergeSampleStep)
+                if (!g.IsWalkableWorld((uint)Math.Round(a.X + dx / len * t), (uint)Math.Round(a.Y + dy / len * t))) return false;
+            return true;
+        }
+        var outp = new List<(uint X, uint Y)> { wp[0] };
+        int anchor = 0;
+        while (anchor < wp.Count - 1)
+        {
+            int best = anchor + 1;
+            for (int j = anchor + 2; j < wp.Count; j++)
+            {
+                var d = Math.Sqrt(Math.Pow((double)wp[j].X - wp[anchor].X, 2) + Math.Pow((double)wp[j].Y - wp[anchor].Y, 2));
+                if (d > maxStep || !LineWalkable(wp[anchor], wp[j])) break;
+                best = j;
+            }
+            outp.Add(wp[best]);
+            anchor = best;
+        }
+        return outp;
+    }
+
     public ActionResult WalkPath(string id, IReadOnlyList<(uint X, uint Y)> waypoints, double unitsPerSec = 120.0)
     {
         if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
         if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } session) return ActionResult.NotInZone;
         if (waypoints.Count < 2) return ActionResult.Sent;
+        var rawCount = waypoints.Count;
+        waypoints = MergeShortSteps(handle, waypoints, MaxStepFor(unitsPerSec));
+        if (waypoints.Count < rawCount)
+            handle.Log(BotLogLevel.Verbose, $"walk-path: merged {rawCount} waypoints into {waypoints.Count} straight steps");
         // Per-walk cancellation (linked to the bot's lifetime) so a MOVEFAIL can abort just this walk
         var walkCts = CancellationTokenSource.CreateLinkedTokenSource(handle.Cts.Token);
         handle.WalkCts?.Cancel();
