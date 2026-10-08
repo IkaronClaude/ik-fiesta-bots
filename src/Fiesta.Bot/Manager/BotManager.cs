@@ -512,8 +512,13 @@ public sealed class BotManager : IAsyncDisposable
             return ActionResult.Sent;   // not an error: we simply let the swing land first
         }
 
+        // A CAST ON OURSELVES NEVER RE-TARGETS (2026-10-08). The real client's self-heals (Z:/CombatPriest.pcapng, 4 x
+        // Heal [14] on its own handle 0x1F87) are STOP + SKILLBASH_OBJ_CAST_REQ{skill, self} with NO TARGETTING: the
+        // enemy stays selected. Ours sent TARGETTING at our own handle first and the server refused the heal 0x0FC0
+        // "NONBATTLE MODE" - NewCleric, 18 of its mid-fight self-heals in 10 minutes.
+        var selfCast = handle.ZoneView?.SelfHandle is ushort me && me == target;
         // FIX 2 of 3: ONLY RE-TARGET WHEN THE TARGET ACTUALLY CHANGES ─────────────────────────── We sent NC_BAT_TARGETT…
-        if (handle.CurrentTarget != target || !handle.TargetAsserted)
+        if (!selfCast && (handle.CurrentTarget != target || !handle.TargetAsserted))
         {
             await s.SendAsync(new FiestaPacket(OpBatTarget, new byte[] { (byte)target, (byte)(target >> 8) }), ct);
             handle.CurrentTarget = target; handle.TargetAsserted = true; handle.TargetSetAtUtc = DateTime.UtcNow;
@@ -533,7 +538,9 @@ public sealed class BotManager : IAsyncDisposable
         await EnsureBattleModeAsync(handle, s, ct);
         // Record WHICH of the three pre-cast paths ran
         string sentPath;
-        if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
+        if (selfCast)
+        { await StopOnlyAsync(handle, s, ct); sentPath = "stop+cast(self, no retarget)"; }   // as the real client does
+        else if ((needFace || needStop) && NpcPos(handle, target) is { } tp)
         { await FaceAndStopAsync(handle, s, tp.X, tp.Y, ct); sentPath = "face+stop+cast"; }
         else if (!adjust)
         { await StopOnlyAsync(handle, s, ct); sentPath = "stop+cast"; }   // STOP without the swing-breaking MOVERUN
