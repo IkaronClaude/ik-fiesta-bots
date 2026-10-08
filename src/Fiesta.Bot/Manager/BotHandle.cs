@@ -311,6 +311,28 @@ public sealed class BotHandle
     }
 
     /// <summary>Begin a move to (toX,toY) at , and return the position the move actually STARTS from — the interpolated point…</summary>
+    // The last moves we SENT (from, to, when): logged beside the server's position at every MOVEFAIL so a rejected move can
+    // be read against what we claimed (2026-10-08: 45-86 MOVEFAILs per bot per 10 min on ground walkable end to end)
+    private readonly (DateTime At, uint Fx, uint Fy, uint Tx, uint Ty)[] _recentMoves = new (DateTime, uint, uint, uint, uint)[4];
+    private int _recentMoveN;
+
+    /// <summary>The last sent moves, newest first: "-120ms (fx,fy)->(tx,ty) from-off=Nu" against the server position given</summary>
+    internal string RecentMovesAgainst(uint sx, uint sy)
+    {
+        var sb = new System.Text.StringBuilder();
+        lock (_posGate)
+        {
+            for (int k = 0; k < Math.Min(_recentMoveN, _recentMoves.Length); k++)
+            {
+                var m = _recentMoves[(_recentMoveN - 1 - k) % _recentMoves.Length];
+                var off = Math.Sqrt(Math.Pow((double)m.Fx - sx, 2) + Math.Pow((double)m.Fy - sy, 2));
+                var len = Math.Sqrt(Math.Pow((double)m.Tx - m.Fx, 2) + Math.Pow((double)m.Ty - m.Fy, 2));
+                sb.Append($" | -{(DateTime.UtcNow - m.At).TotalMilliseconds:F0}ms ({m.Fx},{m.Fy})->({m.Tx},{m.Ty}) len={len:F0} from-off={off:F0}");
+            }
+        }
+        return sb.ToString();
+    }
+
     internal (uint X, uint Y) BeginMove(uint toX, uint toY, double unitsPerSec)
     {
         (uint X, uint Y) cur; (uint X, uint Y)? prev;
@@ -323,6 +345,8 @@ public sealed class BotHandle
             _segStartUtc = DateTime.UtcNow;
             _segDurationMs = (unitsPerSec > 0 && dist > 0) ? dist / unitsPerSec * 1000.0 : 0;
             _pos = cur;   // anchor the segment's origin
+            _recentMoves[_recentMoveN % _recentMoves.Length] = (DateTime.UtcNow, cur.X, cur.Y, toX, toY);
+            _recentMoveN++;
         }
         SetFacing(cur.X, cur.Y, toX, toY);   // moving A->B IS what turns us to face B
         NoteMoved(prev, cur);

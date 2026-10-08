@@ -3177,6 +3177,9 @@ public sealed class BotManager : IAsyncDisposable
                 };
                 zoneView.MoveFailed += pos =>
                 {
+                    // what we SENT vs where the server says we are - read BEFORE the resync overwrites our position
+                    handle.Log(BotLogLevel.Info, $"[movefail-diag] server=({pos.X},{pos.Y}) believed={handle.Position}"
+                        + $" walkSpeed={handle.WalkSpeed:F0}{handle.RecentMovesAgainst(pos.X, pos.Y)}");
                     // Server rejected a move into an off-grid obstacle: resync to its truth and abort the current walk so we stop pu…
                     handle.SetPosition(pos.X, pos.Y);
                     handle.WalkCts?.Cancel();
