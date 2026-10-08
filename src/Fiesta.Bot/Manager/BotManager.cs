@@ -3069,12 +3069,13 @@ public sealed class BotManager : IAsyncDisposable
                 var detectScope = handle.Options.Host + "|world";
                 // "mobDetect2:" - the first build ("mobDetect:") learned from mobs already mid-chase (radii of 1000-2300u);
                 // a running max cannot unlearn them, so the corrected learner starts a fresh key
-                zoneView.MobDetectSeed = mobId => Knowledge.Scalar(detectScope, "mobDetect2:" + mobId)?.Max ?? 0;
-                zoneView.MobDetectLearned = (mobId, r) => Knowledge.RecordScalar(detectScope, "mobDetect2:" + mobId, r);
+                // "mobDetect3:" - the second build still learned from mobs that never came for us (no hit confirmation)
+                zoneView.MobDetectSeed = mobId => Knowledge.Scalar(detectScope, "mobDetect3:" + mobId)?.Max ?? 0;
+                zoneView.MobDetectLearned = (mobId, r) => Knowledge.RecordScalar(detectScope, "mobDetect3:" + mobId, r);
                 zoneView.SelfLevelOf = () => (int)handle.Level;
                 zoneView.MobLevelOf = mobId => ClientData?.Mob(mobId)?.Level ?? 0;
-                zoneView.MobIgnoresLevelGapSeed = mobId => (Knowledge.Scalar(detectScope, "mobNoLevel:" + mobId)?.Max ?? 0) > 0;
-                zoneView.MobIgnoresLevelGapLearned = mobId => Knowledge.RecordScalar(detectScope, "mobNoLevel:" + mobId, 1);
+                zoneView.MobIgnoresLevelGapSeed = mobId => (Knowledge.Scalar(detectScope, "mobNoLevel2:" + mobId)?.Max ?? 0) > 0;
+                zoneView.MobIgnoresLevelGapLearned = mobId => Knowledge.RecordScalar(detectScope, "mobNoLevel2:" + mobId, 1);
                 RegisterMetrics(handle, zoneView);
                 // DURABLE THREAT TABLE: seed what we already know about how hard each mob hits, and push every new sample back o…
                 zoneView.SeedMobHits(Knowledge.MobThreatsFor(handle.KnowledgeScope)

@@ -689,6 +689,26 @@ public sealed class ZoneView : IDisposable
     public Action<int>? MobIgnoresLevelGapLearned { get; set; }
     public const int AggroLevelGap = 10;
     private readonly ConcurrentDictionary<int, byte> _mobNoLevel = new();
+    // A CHARGE IS ONLY A DETECTION ONCE THE MOB HITS US: "running our way" also catches mobs heading home, chasing someone
+    // out of our view or roaming - NewMage 2026-10-08 13:20 "learned" a level-16 mob aggroing it at level 28 from 1342u,
+    // which the exe's own level gap rules out. The observation waits here and is committed by its first hit on us.
+    private readonly ConcurrentDictionary<ushort, (int MobId, double Bound, double Dist, bool Facing, bool GapCase, DateTime At)> _detectPending = new();
+    private static readonly TimeSpan DetectConfirmWindow = TimeSpan.FromSeconds(20);
+
+    private void CommitDetect(ushort hnd, (int MobId, double Bound, double Dist, bool Facing, bool GapCase, DateTime At) p)
+    {
+        if (p.GapCase && _mobNoLevel.TryAdd(p.MobId, 1))
+        {
+            MobIgnoresLevelGapLearned?.Invoke(p.MobId);
+            _log?.Invoke($"[aggro-shape] mob {p.MobId} (h={hnd}) charged AND hit us from more than {AggroLevelGap} levels below - it ignores the level gap");
+        }
+        var prevR = MobDetectRange(p.MobId);
+        if (p.Bound <= prevR) return;
+        _mobDetect[p.MobId] = p.Bound;
+        MobDetectLearned?.Invoke(p.MobId, p.Bound);
+        _log?.Invoke($"[aggro-shape] mob {p.MobId} (h={hnd}) noticed us {p.Dist:F0}u away and hit us " +
+                     $"({(p.Facing ? "facing known" : "facing unknown - worst case")}) - detect radius >= {p.Bound:F0}u (was {prevR:F0}u)");
+    }
     /// <summary>Can this mob id start a fight with us at all, by the level gap? (true when unknown)</summary>
     public bool MobCanAggroUs(int mobId)
     {
@@ -1089,6 +1109,8 @@ public sealed class ZoneView : IDisposable
                 _log?.Invoke($"[combat] START vs mob h={h.Attacker}");
             _aggressors[h.Attacker] = DateTime.UtcNow;
             _hitUsAt[h.Attacker] = DateTime.UtcNow;
+            if (_detectPending.TryRemove(h.Attacker, out var pend) && DateTime.UtcNow - pend.At <= DetectConfirmWindow)
+                CommitDetect(h.Attacker, pend);
             FreezeMobAnchor(h.Attacker);   // it's on us now → its anchor stops moving; measure the chase from home
             LastHitAtUtc = DateTime.UtcNow;
             // DAMAGE-TAKEN SAMPLE for the survivability model (operator 2026-07-29): every incoming hit, labeled by the atta…
@@ -3148,22 +3170,11 @@ public sealed class ZoneView : IDisposable
                                     && _mobAnchor.TryGetValue(hnd, out var calmAnc) && calmAnc.IdleConfirmed)
                                 {
                                     double ddx = (double)me.X - frX, ddy = (double)me.Y - frY;
-                                    // aggroed us from more than the gap below: this mob is the NoLevel kind
-                                    if (SelfLevelOf?.Invoke() is { } lvMe && MobLevelOf?.Invoke(npc.MobId) is { } lvMob
-                                        && lvMob > 0 && lvMe - lvMob > AggroLevelGap && _mobNoLevel.TryAdd(npc.MobId, 1))
-                                    {
-                                        MobIgnoresLevelGapLearned?.Invoke(npc.MobId);
-                                        _log?.Invoke($"[aggro-shape] mob {npc.MobId} aggroed us at lvl{lvMe} from lvl{lvMob} - ignores the {AggroLevelGap}-level gap");
-                                    }
-                                    var bound = DetectRadiusBound(ddx, ddy, facingBefore);
-                                    var prevR = MobDetectRange(npc.MobId);
-                                    if (bound > prevR)
-                                    {
-                                        _mobDetect[npc.MobId] = bound;
-                                        MobDetectLearned?.Invoke(npc.MobId, bound);
-                                        _log?.Invoke($"[aggro-shape] mob {npc.MobId} (h={hnd}) noticed us {Math.Sqrt(ddx * ddx + ddy * ddy):F0}u away "
-                                            + $"({(facingBefore is null ? "facing unknown - worst case" : "facing known")}) - detect radius >= {bound:F0}u (was {prevR:F0}u)");
-                                    }
+                                    bool gapCase = SelfLevelOf?.Invoke() is { } lvMe && MobLevelOf?.Invoke(npc.MobId) is { } lvMob
+                                                   && lvMob > 0 && lvMe - lvMob > AggroLevelGap;
+                                    // pending until this mob actually HITS us (CommitDetect from NoteHit)
+                                    _detectPending[hnd] = (npc.MobId, DetectRadiusBound(ddx, ddy, facingBefore),
+                                                           Math.Sqrt(ddx * ddx + ddy * ddy), facingBefore is not null, gapCase, aggroNow);
                                 }
                                 _aggressors[hnd] = aggroNow;
                                 FreezeMobAnchor(hnd);             // chasing → freeze its spawn anchor
