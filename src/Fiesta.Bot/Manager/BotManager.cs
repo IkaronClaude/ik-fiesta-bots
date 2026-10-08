@@ -2897,7 +2897,13 @@ public sealed class BotManager : IAsyncDisposable
         });
 
     /// <summary>Max single-MoverunCmd distance for a given walk speed</summary>
-    private static double MaxStepFor(double unitsPerSec) => Math.Max(MaxMoveStep, unitsPerSec * (MaxMoveStep / 120.0));
+    // THE SERVER'S RULE (Zone.exe ShinePlayer::sp_MoveLocationCheck_From, read 2026-10-09 via Zone.pdb): a MOVERUN whose `from`
+    // is more than 200u from the server's stored position (dx^2 + dy^2 > 0x9C40) is refused -> MOVEFAIL. Our next `from` sits
+    // about one step past the last accepted one, so a step over 200u can push it out of range; the old cap (250u on foot,
+    // ~420u mounted - it scaled with speed) did exactly that. One cap for every speed, under the server's limit.
+    private const double ServerFromTolerance = 200.0;
+    private const double MaxStepUnderServerLimit = 180.0;
+    private static double MaxStepFor(double unitsPerSec) => MaxStepUnderServerLimit;
 
     /// <summary>React to a gate / town-portal transition: advance the tracked position to the new spawn coord and update the c…</summary>
     private void OnMapChanged(BotHandle handle, MapHandoff h, Action<string> log)
