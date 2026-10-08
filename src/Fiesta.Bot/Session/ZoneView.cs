@@ -179,6 +179,9 @@ public sealed class ZoneView : IDisposable
     // Other players' movement broadcasts: SOMEONE_MOVEWALK (ACT cmd 24) / MOVERUN (cmd 26)
     private const ushort OpSomeoneMoveWalk = 0x2018;
     private const ushort OpSomeoneMoveRun = 0x201A;
+    // NC_ACT_SOMEONESTOP_CMD (ACT cmd 19): {handle u16, x u32, y u32} - where an entity STOPPED. A chase is cut short by
+    // this (the run's destination is where it was heading, not where it ended up).
+    private const ushort OpSomeoneStop = 0x2013;
     // Server menu (0x3C01): a Yes/No or list prompt an NPC/gate opens
     private const ushort OpMenuServerMenu = 0x3C01;
     // Shop open (Menu dept 0x0F): the server sends a sell list when you click an NPC
@@ -2972,6 +2975,33 @@ public sealed class ZoneView : IDisposable
                 LastBuyAckUtc = DateTime.UtcNow;
                 BuyAckCount++;
                 _log?.Invoke($"[ZoneView] BUY_ACK 0x{LastBuyAck:X4}{(LastBuyAck == 0x0201 ? " (OK)" : " (rejected)")}");
+            }
+        }
+        else if (op == OpSomeoneStop)
+        {
+            // WHERE IT STOPPED, NOT WHERE IT WAS RUNNING TO. Unhandled until 2026-10-08: NewCleric meleed a Skeleton
+            // Archer for 9 minutes (0 damage, every cast 0x0FCA out of range) because we held it at its last RUN
+            // destination (9294,4673), 20u from us, while the server had stopped it at (9231,4542) - 139u away,
+            // shooting us from there (packets-NewCleric.log 12:04:26 MOVERUN -> 12:04:27 SOMEONESTOP).
+            var p = pkt.Payload.Span;
+            if (p.Length >= 10)
+            {
+                var hnd = (ushort)(p[0] | (p[1] << 8));
+                var x = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(2, 4));
+                var y = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p.Slice(6, 4));
+                _entityMove.TryRemove(hnd, out _);
+                if (_nearby.TryGetValue(hnd, out var pl))
+                {
+                    _nearby[hnd] = pl with { X = x, Y = y };
+                    NoteEntityChanged(hnd);
+                }
+                else if (_npcs.TryGetValue(hnd, out var npc))
+                {
+                    if (npc.X != x || npc.Y != y)
+                        _logLevel?.Invoke(BotLogLevel.Verbose, $"[ZoneView] mob {npc.MobId} (h={hnd}) STOPPED at ({x},{y}) - we had it at ({npc.X},{npc.Y})");
+                    _npcs[hnd] = npc with { X = x, Y = y };
+                    NoteEntityChanged(hnd);
+                }
             }
         }
         else if (op == OpSomeoneMoveWalk || op == OpSomeoneMoveRun)
