@@ -1504,6 +1504,9 @@ public sealed class BotApi
         return v.IncomingDamageSince(TimeSpan.FromMilliseconds(windowMs));
     }
 
+    /// <summary>Damage WE deal per second while engaged, over the last ms (swings + skills); -1 = too few hits to say</summary>
+    public double outgoingDps(double windowMs = 20000) => View?.OutgoingDpsEngaged(TimeSpan.FromMilliseconds(windowMs)) ?? -1;
+
     public int mobHitsToKillUs(int mobId)
     {
         var max = View?.MobHitMax(mobId) ?? -1;

@@ -930,6 +930,37 @@ public sealed class ZoneView : IDisposable
         return secs > 0 ? total / secs : 0;
     }
 
+    // OUR damage, the mirror of _recentIncoming: lets the driver ask "do we kill it before it kills us" (2026-10-08, NewFighter
+    // EldCem01 16:21: a Magic Staff - 966 HP, a caster that follows 1800u - hit for ~300 per cast; the bot judged "DEAD IN
+    // 12.5s", ran, and was killed on the run twice in a minute, where killing a 966 HP mob was the shorter road)
+    private readonly ConcurrentQueue<(DateTime At, int Dmg)> _recentOutgoing = new();
+    private void RecordOutgoing(int dmg)
+    {
+        if (dmg <= 0) return;
+        _recentOutgoing.Enqueue((DateTime.UtcNow, dmg));
+        var keep = DateTime.UtcNow - IncomingRetention;
+        while (_recentOutgoing.TryPeek(out var head) && head.At < keep) _recentOutgoing.TryDequeue(out _);
+    }
+
+    /// <summary>Damage we deal per second WHILE ENGAGED over the trailing window: the hits divided by the span they cover
+    /// (first to last, plus one average gap), so walking between fights does not dilute it. -1 = fewer than 3 hits (unknown).</summary>
+    public double OutgoingDpsEngaged(TimeSpan window)
+    {
+        var cutoff = DateTime.UtcNow - window;
+        long total = 0; int n = 0; DateTime first = DateTime.MaxValue, last = DateTime.MinValue;
+        foreach (var (at, dmg) in _recentOutgoing)
+        {
+            if (at < cutoff) continue;
+            total += dmg; n++;
+            if (at < first) first = at;
+            if (at > last) last = at;
+        }
+        if (n < 3) return -1;
+        var span = (last - first).TotalSeconds;
+        var secs = span + span / (n - 1);
+        return secs > 0 ? total / secs : -1;
+    }
+
     public int HpStoneHealMax { get; private set; } = -1;
 
     /// <summary>Largest UNCENSORED heal — one that stopped short of full HP, so nothing clipped it and it is the exact charge</summary>
@@ -1196,7 +1227,7 @@ public sealed class ZoneView : IDisposable
                 _logLevel?.Invoke(BotLogLevel.Info,
                     $"[dmgdealt] mob={defMob} dmg={h.Damage} resthp={h.RestHp} h={h.Defender}" +
                     (h.Damage > 0 ? "" : " — WHIFF (no connect)"));
-                if (h.Damage > 0) MetricSink?.Invoke("damageDealt", h.Damage);
+                if (h.Damage > 0) { MetricSink?.Invoke("damageDealt", h.Damage); RecordOutgoing(h.Damage); }
             }
             if (h.Damage > 0)
             {
@@ -2430,6 +2461,7 @@ public sealed class ZoneView : IDisposable
                         if (dmg > 0)
                         {
                             MetricSink?.Invoke("damageDealt", dmg);
+                            RecordOutgoing((int)dmg);
                             // A landing SKILL is proof we are in range and faced, exactly like a landing swing — NeedsFacingAdjust keys off…
                             LastRealDamageDealtAtUtc = DateTime.UtcNow;
                         }

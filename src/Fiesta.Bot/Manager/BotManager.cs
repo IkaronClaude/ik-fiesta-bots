@@ -1758,17 +1758,21 @@ public sealed class BotManager : IAsyncDisposable
                 // KEEP GOING WHILE IT WORKS: NewFighter 2026-10-08 16:03 Eld -> EldCem01 - each walk was cut ~5 s in by a transient
                 // MOVEFAIL yet gained 500-700u (3608 -> 3090 -> 2356); a fixed 3 tries ran out 2356u away, the click could not
                 // fire, the trip aborted, and the bot looped sell -> skills -> travel in Eld with 0 exp for 6 minutes.
+                // PROGRESS = THE WALK MOVED US, not "the straight-line gap shrank": a path that detours round a wall ends farther
+                // from the gate on the way (NewFighter 2026-10-08 16:12 EldGbl02: 3717 -> 4457u) and that was read as stuck.
                 double prevGap = double.MaxValue;
+                (uint X, uint Y)? prevPos = null;
                 for (int again = 1; again <= GateReapproachTries && !ct.IsCancellationRequested
                      && handle.Position is { } gp && Dist((gp.X, gp.Y), gate.X, gate.Y) > GateClickMaxDist; again++)
                 {
                     var gap = Dist((gp.X, gp.Y), gate.X, gate.Y);
-                    if (prevGap - gap < GateReapproachMinGain)
+                    var moved = prevPos is { } pp ? Dist((gp.X, gp.Y), pp.X, pp.Y) : double.MaxValue;
+                    if (prevGap - gap < GateReapproachMinGain && moved < GateReapproachMinGain)
                     {
-                        handle.Log($"[travel] hop {hop + 1}: re-approach made no progress ({prevGap:F0} -> {gap:F0}u) - stopping");
+                        handle.Log($"[travel] hop {hop + 1}: re-approach made no progress ({prevGap:F0} -> {gap:F0}u, moved {moved:F0}u) - stopping");
                         break;
                     }
-                    prevGap = gap;
+                    prevGap = gap; prevPos = (gp.X, gp.Y);
                     handle.Log($"[travel] hop {hop + 1}: walk ended {gap:F0}u short of the gate - re-approaching ({again}/{GateReapproachTries}) before clicking");
                     await ApproachAsync(id, handle, gate.X, gate.Y, GateApproachDist, unitsPerSec, ct);
                 }
