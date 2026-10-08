@@ -1354,8 +1354,18 @@ public sealed class BotManager : IAsyncDisposable
 
         // Cost-gated route: Dijkstra over field gates AND town portals, edge cost = on-map walk distance to the transiti…
         var startPos = handle.Position is { } sp ? (sp.X, sp.Y) : (0u, 0u);
+        // AN INSTANCE MAP IS NOT A FIELD (MapInfo KingdomMap != 0: kingdom quests, ID dungeons, hard dungeons, houses): its
+        // entrance is an instance gate the server refuses SILENTLY to a solo player. NewJoker 2026-10-08 16:11 EldGbl02 took
+        // the "Devildom Barracks" (WarL) gate as a death-loop escape three times - three silent refusals, 0 exp for 4 min.
+        if (ClientData?.MapKingdom(destMap) == true)
+        {
+            handle.Log($"[travel] {destMap} is an INSTANCE map (MapInfo KingdomMap != 0) - its gate is not walked through solo; no route");
+            return (TravelResult.NoRoute, null);
+        }
         var avoidSet = handle.AvoidMaps;
-        var costed = Graph.RouteCost(from, startPos, destMap, null, (int)handle.Level, StraightLineCost, avoid: avoidSet.Count > 0 ? avoidSet.Contains : null);
+        Func<string, bool>? avoid = avoidSet.Count > 0 ? avoidSet.Contains : null;
+        if (ClientData is { } cdK) { var inner = avoid; avoid = m => cdK.MapKingdom(m) || (inner?.Invoke(m) ?? false); }
+        var costed = Graph.RouteCost(from, startPos, destMap, null, (int)handle.Level, StraightLineCost, avoid: avoid);
         if (costed is not { Route.Count: > 0 } cr) return (TravelResult.NoRoute, null);
         var route = cr.Route;
         int portalHops = route.Count(e => e.IsPortal);

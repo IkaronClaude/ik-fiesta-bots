@@ -1447,6 +1447,10 @@ public sealed class BotApi
 
     /// <summary>Is <paramref name="map"/> a party dungeon (its normal mobs' median HP is well above the median for their
     /// level, from client data + observed rosters)? {dungeon, hpRatio, normals, topLevel}</summary>
+    /// <summary>True for an INSTANCE map (MapInfo KingdomMap != 0: kingdom quest, ID dungeon, hard dungeon, house) - not a field
+    /// a solo bot can walk into through its gate</summary>
+    public bool mapIsInstance(string map) => _mgr.ClientData?.MapKingdom(map) ?? false;
+
     public DynValue mapDungeon(string map)
     {
         var v = _mgr.PartyDungeon(Id, map);
