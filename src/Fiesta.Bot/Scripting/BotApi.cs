@@ -2004,6 +2004,20 @@ public sealed class BotApi
     }
 
     public double mobChaseLimit(int mobId) => View?.MobChaseLimit(mobId) ?? 0;
+    /// <summary>Learned detect radius r of a mob id (0 = never observed). Its aggro shape is a circle of r centred 0.4 r
+    /// AHEAD of the mob along its facing (Zone.exe so_mob_SightCenter) - see aggroShapeHas.</summary>
+    public double mobDetectRange(int mobId) => View?.MobDetectRange(mobId) ?? 0;
+    /// <summary>False when the mob is more than 10 levels under us and has never ignored that gap: it will not start a fight</summary>
+    public bool mobCanAggroUs(int mobId) => View?.MobCanAggroUs(mobId) ?? true;
+    /// <summary>Would a mob (by handle) at its tracked position notice a player standing at (x,y)? nil when its radius is unlearned</summary>
+    public DynValue aggroShapeHas(int handle, double x, double y)
+    {
+        var v = View; if (v is null) return DynValue.Nil;
+        var n = v.NearbyNpcs.FirstOrDefault(m => m.Handle == (ushort)handle);
+        if (n is null) return DynValue.Nil;
+        var r = v.MobDetectRange(n.MobId); if (r <= 0) return DynValue.Nil;
+        return DynValue.NewBoolean(Fiesta.Bot.Session.ZoneView.InsideAggroShape(n.X, n.Y, v.EntityFacing(n.Handle), r, x, y));
+    }
 
     /// <summary>World position { x, y } of ANY tracked entity by handle — a mob ( _npcs ) OR a character ( _nearby )</summary>
     public DynValue entityPos(int handle)

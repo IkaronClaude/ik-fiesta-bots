@@ -1812,6 +1812,7 @@ public sealed class BotManager : IAsyncDisposable
     // SHED_DANGER_RANGE is 420 for "a pack is here"; this is "walking past one")
     private const double IdleMobBerth = 260;
     private const int IdleMobBendTries = 2;
+    private const double IdleMobShapeMargin = 40;   // bot behaviour: walk this far outside a learned aggro shape
 
     /// <summary>CURVE THE PATH AROUND MOB GROUPS WE HAVE NOT PULLED (operator 2026-10-08: "when escaping it often makes sense
     /// to curve the path slightly to avoid aggroing other mob groups when you're close to the end, as the end point will be
@@ -1826,8 +1827,10 @@ public sealed class BotManager : IAsyncDisposable
         if (v is null || wp.Count < 2) return wp;
         var aggro = v.Aggressors;
         var mobs = v.NearbyNpcs.Where(n => !n.IsGate && n.LinkMap is null && n.CharName is null && !aggro.Contains(n.Handle)
-                                           && v.IsHuntableMob?.Invoke(n.MobId) != false)
-                               .Select(n => (X: (double)n.X, Y: (double)n.Y)).ToList();
+                                           && v.IsHuntableMob?.Invoke(n.MobId) != false
+                                           && v.MobCanAggroUs(n.MobId))     // more than 10 levels under us: it won't start a fight
+                               .Select(n => (X: (double)n.X, Y: (double)n.Y, R: v.MobDetectRange(n.MobId), F: v.EntityFacing(n.Handle)))
+                               .ToList();
         if (mobs.Count == 0) return wp;
         static double Len(IReadOnlyList<(uint X, uint Y)> w)
         { double l = 0; for (int i = 1; i < w.Count; i++) l += Dist(w[i - 1], w[i].X, w[i].Y); return l; }
@@ -1848,7 +1851,12 @@ public sealed class BotManager : IAsyncDisposable
                     foreach (var m in mobs)
                     {
                         double d = Math.Sqrt((m.X - sx) * (m.X - sx) + (m.Y - sy) * (m.Y - sy));
-                        if (d < IdleMobBerth && (worst is null || d < worst.Value.Item1)) worst = (d, sx, sy, m.X, m.Y);
+                        // a LEARNED detect radius: the real shape (a circle 0.4 r ahead of the mob), plus a margin;
+                        // unknown: the fixed berth
+                        bool inside = m.R > 0
+                            ? ZoneView.InsideAggroShape(m.X, m.Y, m.F, m.R + IdleMobShapeMargin, sx, sy)
+                            : d < IdleMobBerth;
+                        if (inside && (worst is null || d < worst.Value.Item1)) worst = (d, sx, sy, m.X, m.Y);
                     }
                 }
             }
@@ -1860,7 +1868,10 @@ public sealed class BotManager : IAsyncDisposable
             if (Worst(cur) is not { } w) break;
             double ux = w.Sx - w.Mx, uy = w.Sy - w.My, ul = Math.Sqrt(ux * ux + uy * uy);
             if (ul < 1) { ux = 1; uy = 0; ul = 1; }
-            double push = IdleMobBerth - w.Clear + 60;
+            // clear the mob's whole reach: a learned shape reaches 1.4 r ahead (+ margin), an unknown one the fixed berth
+            var wm = mobs.OrderBy(m => (m.X - w.Mx) * (m.X - w.Mx) + (m.Y - w.My) * (m.Y - w.My)).First();
+            var reach = wm.R > 0 ? wm.R * (1 + ZoneView.SightCenterAhead) + IdleMobShapeMargin : IdleMobBerth;
+            double push = Math.Max(reach - w.Clear, 0) + 60;
             var dx = w.Sx + ux / ul * push; var dy = w.Sy + uy / ul * push;
             if (dx < 0 || dy < 0) break;
             var (dtx, dty) = grid.WorldToTile((uint)dx, (uint)dy);
@@ -3054,6 +3065,14 @@ public sealed class BotManager : IAsyncDisposable
                     handle.PacketLog?.NoteSelfHandle(selfH2, handle.CharName ?? handle.Options.Character);
                 }
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
+                // learned mob detect radii are WORLD facts (shared by every bot on the server), kept durable
+                var detectScope = handle.Options.Host + "|world";
+                zoneView.MobDetectSeed = mobId => Knowledge.Scalar(detectScope, "mobDetect:" + mobId)?.Max ?? 0;
+                zoneView.MobDetectLearned = (mobId, r) => Knowledge.RecordScalar(detectScope, "mobDetect:" + mobId, r);
+                zoneView.SelfLevelOf = () => (int)handle.Level;
+                zoneView.MobLevelOf = mobId => ClientData?.Mob(mobId)?.Level ?? 0;
+                zoneView.MobIgnoresLevelGapSeed = mobId => (Knowledge.Scalar(detectScope, "mobNoLevel:" + mobId)?.Max ?? 0) > 0;
+                zoneView.MobIgnoresLevelGapLearned = mobId => Knowledge.RecordScalar(detectScope, "mobNoLevel:" + mobId, 1);
                 RegisterMetrics(handle, zoneView);
                 // DURABLE THREAT TABLE: seed what we already know about how hard each mob hits, and push every new sample back o…
                 zoneView.SeedMobHits(Knowledge.MobThreatsFor(handle.KnowledgeScope)

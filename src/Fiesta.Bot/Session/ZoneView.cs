@@ -650,7 +650,72 @@ public sealed class ZoneView : IDisposable
     public event Action<HitInfo>? Damaged;
 
     private readonly ConcurrentDictionary<ushort, DateTime> _aggressors = new();      // confident: hit us / clearly running at us
-    private readonly ConcurrentDictionary<ushort, DateTime> _hitUsAt = new();         // when each handle last actually HIT us (swing or skill)
+    private readonly ConcurrentDictionary<ushort, DateTime> _hitUsAt = new();
+    private readonly ConcurrentDictionary<ushort, byte> _provoked = new();             // mobs WE hit (their aggro is not detection)
+    private readonly ConcurrentDictionary<ushort, (double Dx, double Dy)> _lastFacing = new(); // unit heading of each entity's last move
+
+    // ---- MOB AGGRO SHAPE (read from Zone.exe 2016, 2026-10-08) ----------------------------------------------------------
+    // MobInfoServer.EnemyDetectType picks a target selector (MobTacticElement::MobActionArgument::Selector ctor 0x54EE00):
+    //   0 ED_BOUT -> MobTargetBout (never starts a fight; fights whoever damaged it), 1 ED_AGGRESSIVE -> MobTargetAggresive,
+    //   2 ED_NOBRAIN -> MobTargetNoBrain (never targets), 3 ED_AGGRESSIVE2 -> MobTargetAggresive2,
+    //   4 ED_AGGREESIVEALL -> MobTargetAggresiveALL, 5 ED_ENEMYALLDETECT -> MobTargetAggresiveNoLevel.
+    // MobTargetAggresive::mts_SelectTarget (0x4AD290): no new target while so_mob_DistanceFromHome > 9,000,000; otherwise
+    // so_AllOfRange(radius r, centre = so_mob_SightCenter(r), fan NULL) = a CIRCLE of radius r (the detect range, DetectCha)
+    // whose centre ShineMob::so_mob_SightCenter (0x4ABCD0) puts r*205/512 (~0.4 r) AHEAD of the mob along its facing
+    // (ddt_GetFoward). So a mob sees ~1.4 r ahead, ~0.92 r to the side, ~0.6 r behind. ali_Work (0x4A9E20) skips a
+    // candidate the mob cannot kill / that is hidden (abstates) / on another sub-layer, and IsIgnoreLevelGap (0x4A9B70)
+    // skips a player more than 10 levels above the mob (not for type 5, NoLevel). A kept target is worth half past 500u
+    // and nothing past 1000u. Detect ranges are server-only (a client never reads MobInfoServer), so the radius is LEARNED.
+    public const double SightCenterAhead = 205.0 / 512.0;
+    private readonly ConcurrentDictionary<int, double> _mobDetect = new();
+    /// <summary>Learned detect radius r of a mob id (see the aggro shape above), 0 when never observed</summary>
+    public double MobDetectRange(int mobId)
+    {
+        if (_mobDetect.TryGetValue(mobId, out var r)) return r;
+        if (MobDetectSeed?.Invoke(mobId) is { } seed && seed > 0) return _mobDetect.GetOrAdd(mobId, seed);
+        return 0;
+    }
+    /// <summary>Unit heading of an entity's last move (its facing), or null when it has not moved in view</summary>
+    public (double Dx, double Dy)? EntityFacing(ushort h) => _lastFacing.TryGetValue(h, out var f) ? f : null;
+    /// <summary>Durable store for learned detect radii (set by the manager): the seed reads it, learned writes it</summary>
+    public Func<int, double>? MobDetectSeed { get; set; }
+    public Action<int, double>? MobDetectLearned { get; set; }
+    /// <summary>Our level and a mob id's level (client MobInfo), for the level-gap rule (IsIgnoreLevelGap: > 10 above)</summary>
+    public Func<int>? SelfLevelOf { get; set; }
+    public Func<int, int>? MobLevelOf { get; set; }
+    /// <summary>A mob id seen aggroing us from more than AggroLevelGap levels below (the NoLevel selector, type 5)</summary>
+    public Func<int, bool>? MobIgnoresLevelGapSeed { get; set; }
+    public Action<int>? MobIgnoresLevelGapLearned { get; set; }
+    public const int AggroLevelGap = 10;
+    private readonly ConcurrentDictionary<int, byte> _mobNoLevel = new();
+    /// <summary>Can this mob id start a fight with us at all, by the level gap? (true when unknown)</summary>
+    public bool MobCanAggroUs(int mobId)
+    {
+        if (SelfLevelOf?.Invoke() is not { } me || MobLevelOf?.Invoke(mobId) is not { } ml || ml <= 0) return true;
+        if (me - ml <= AggroLevelGap) return true;
+        return _mobNoLevel.ContainsKey(mobId) || MobIgnoresLevelGapSeed?.Invoke(mobId) == true;
+    }
+
+    /// <summary>The smallest detect radius r for which a mob facing f sees a point d away: |d - 0.4 r f| = r.
+    /// Without a facing, the worst case (we stood dead ahead): r = |d| / 1.4.</summary>
+    public static double DetectRadiusBound(double dx, double dy, (double Dx, double Dy)? facing)
+    {
+        var dd = dx * dx + dy * dy;
+        if (facing is not { } f) return Math.Sqrt(dd) / (1 + SightCenterAhead);
+        var a = 1 - SightCenterAhead * SightCenterAhead;           // 0.84
+        var b = 2 * SightCenterAhead * (dx * f.Dx + dy * f.Dy);   // 0.8 (d.f)
+        return (-b + Math.Sqrt(b * b + 4 * a * dd)) / (2 * a);
+    }
+
+    /// <summary>Is (px,py) inside the aggro shape of a mob at (mx,my) facing f with detect radius r? Without a facing, the
+    /// union of every facing: a circle of 1.4 r around the mob.</summary>
+    public static bool InsideAggroShape(double mx, double my, (double Dx, double Dy)? facing, double r, double px, double py)
+    {
+        if (facing is not { } f)
+            return (px - mx) * (px - mx) + (py - my) * (py - my) <= Math.Pow(r * (1 + SightCenterAhead), 2);
+        double cx = mx + f.Dx * r * SightCenterAhead, cy = my + f.Dy * r * SightCenterAhead;
+        return (px - cx) * (px - cx) + (py - cy) * (py - cy) <= r * r;
+    }         // when each handle last actually HIT us (swing or skill)
     private readonly ConcurrentDictionary<ushort, DateTime> _maybeAggressors = new();  // running our way, but a player shares the angle
     private static readonly TimeSpan CombatWindow = TimeSpan.FromSeconds(8);
 
@@ -1015,6 +1080,7 @@ public sealed class ZoneView : IDisposable
         // Whoever took the hit just told us its remaining hp — attacker or defender, us or them
         _entityHp[h.Defender] = h.RestHp;
         NoteEntityChanged(h.Defender);       // its health bar just moved — push it, don't wait for a poll
+        if (SelfHandle is { } me0 && h.Attacker == me0) _provoked[h.Defender] = 1;   // its aggro on us is ours, not detection
         if (SelfHandle is { } self && h.Defender == self)
         {
             // Combat-START marker for the tail: a hit arriving after a CombatWindow gap is a fresh engagement
@@ -3018,6 +3084,12 @@ public sealed class ZoneView : IDisposable
                 var rawSpeed = p.Length >= 20 ? (ushort)(p[18] | (p[19] << 8)) : (ushort)0;
                 if (rawSpeed > 0)
                     _entityMove[hnd] = (frX, frY, toX, toY, rawSpeed * SpeedRawToUPerSec, DateTime.UtcNow);
+                // its facing BEFORE this move (the detection that started a charge happened facing the old way)
+                var facingBefore = EntityFacing(hnd);
+                {
+                    double fdx = (double)toX - frX, fdy = (double)toY - frY, fl = Math.Sqrt(fdx * fdx + fdy * fdy);
+                    if (fl > 1) _lastFacing[hnd] = (fdx / fl, fdy / fl);
+                }
                 if (_nearby.TryGetValue(hnd, out var pl))
                 {
                     _nearby[hnd] = pl with { X = toX, Y = toY };
@@ -3060,6 +3132,30 @@ public sealed class ZoneView : IDisposable
                                 var aggroNow = DateTime.UtcNow;
                                 bool wasAggro = _aggressors.TryGetValue(hnd, out var prevAggroAt)
                                                 && aggroNow - prevAggroAt < CombatWindow;
+                                // LEARN ITS DETECT RADIUS from a FIRST-CONTACT aggro only: not already fighting (a family
+                                // assist would read as a huge radius), not a mob we hit (that is retaliation); it started
+                                // from where it stood (frX,frY). The bound converges upward like the leash does.
+                                if (!wasAggro && !_provoked.ContainsKey(hnd) && aggroNow - LastHitAtUtc > CombatWindow
+                                    && npc.MobId != 0)
+                                {
+                                    double ddx = (double)me.X - frX, ddy = (double)me.Y - frY;
+                                    // aggroed us from more than the gap below: this mob is the NoLevel kind
+                                    if (SelfLevelOf?.Invoke() is { } lvMe && MobLevelOf?.Invoke(npc.MobId) is { } lvMob
+                                        && lvMob > 0 && lvMe - lvMob > AggroLevelGap && _mobNoLevel.TryAdd(npc.MobId, 1))
+                                    {
+                                        MobIgnoresLevelGapLearned?.Invoke(npc.MobId);
+                                        _log?.Invoke($"[aggro-shape] mob {npc.MobId} aggroed us at lvl{lvMe} from lvl{lvMob} - ignores the {AggroLevelGap}-level gap");
+                                    }
+                                    var bound = DetectRadiusBound(ddx, ddy, facingBefore);
+                                    var prevR = MobDetectRange(npc.MobId);
+                                    if (bound > prevR)
+                                    {
+                                        _mobDetect[npc.MobId] = bound;
+                                        MobDetectLearned?.Invoke(npc.MobId, bound);
+                                        _log?.Invoke($"[aggro-shape] mob {npc.MobId} (h={hnd}) noticed us {Math.Sqrt(ddx * ddx + ddy * ddy):F0}u away "
+                                            + $"({(facingBefore is null ? "facing unknown - worst case" : "facing known")}) - detect radius >= {bound:F0}u (was {prevR:F0}u)");
+                                    }
+                                }
                                 _aggressors[hnd] = aggroNow;
                                 FreezeMobAnchor(hnd);             // chasing → freeze its spawn anchor
                                 LastHitAtUtc = aggroNow;          // charging at me -> in combat
