@@ -1683,6 +1683,25 @@ public sealed class BotApi
     /// <summary>Ask for a route to (x,y) on the current map. Returns WITHOUT pathfinding: the search runs off the
     /// tick and the walk is issued when it lands. False means the last COMPLETED search for this exact target
     /// found no route -- a caller that treats false as "unsolvable" learns it one tick later than it used to.</summary>
+    /// <summary>Walkable tiles 4-connected to (tx,ty), counted up to <paramref name="cap"/> (cap = "big enough")</summary>
+    private static int PocketSize(Fiesta.Bot.Pathfinding.BlockGrid grid, int tx, int ty, int cap)
+    {
+        if (!grid.IsWalkableTile(tx, ty)) return 0;
+        var seen = new HashSet<long> { ((long)ty << 32) | (uint)tx };
+        var q = new Queue<(int X, int Y)>();
+        q.Enqueue((tx, ty));
+        while (q.Count > 0 && seen.Count < cap)
+        {
+            var (cx, cy) = q.Dequeue();
+            foreach (var (nx, ny) in new[] { (cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1) })
+            {
+                if (nx < 0 || ny < 0 || nx >= grid.WidthTiles || ny >= grid.HeightTiles || !grid.IsWalkableTile(nx, ny)) continue;
+                if (seen.Add(((long)ny << 32) | (uint)nx)) q.Enqueue((nx, ny));
+            }
+        }
+        return seen.Count;
+    }
+
     public bool walkTo(double x, double y)
     {
         if (_handle.CurrentMap is not { } map) return false;
@@ -1816,6 +1835,20 @@ public sealed class BotApi
                             + $"{string.Join(", ", reopened)} - reopened them (no door packet said so); a real wall is re-learned from MOVEFAILs");
                     else
                     {
+                        // A START IN A POCKET: NewMage 2026-10-08 stood at (6209,8578) on RouN, a 7-tile walkable island of the
+                        // .shbd, and every walk out answered UNREACHABLE for 25+ minutes - no move was ever sent, so no MOVEFAIL
+                        // ever reached the trapped-bot escape (recall scroll). The server put us there and governs whether we can
+                        // leave: blind-move toward the target and let it decide; refused moves feed the trap logic.
+                        int pocket = PocketSize(grid, stx0, sty0, 300);
+                        double pdx = (double)x - pos.X, pdy = (double)y - pos.Y, plen = System.Math.Sqrt(pdx * pdx + pdy * pdy);
+                        if (pocket < 300 && plen > 1)
+                        {
+                            var ex = (uint)System.Math.Max(0, pos.X + pdx / plen * 160.0);
+                            var ey = (uint)System.Math.Max(0, pos.Y + pdy / plen * 160.0);
+                            _handle.Log($"[nav] walkTo ({x},{y}) on {map}: we stand in a {pocket}-tile POCKET of the .shbd - BLIND-MOVE toward ({ex},{ey}) [server governs walkability; refused moves feed the trap escape]");
+                            _ = _mgr.WalkAsync(Id, pos.X, pos.Y, ex, ey);
+                            return true;
+                        }
                         _handle.Log($"[nav] walkTo ({x},{y}) on {map}: UNREACHABLE — no route through the region graph "
                             + $"with current door state ({sw.ElapsedMilliseconds}ms). No search run.");
                         return false;
