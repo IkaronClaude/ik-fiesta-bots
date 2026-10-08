@@ -1997,6 +1997,7 @@ public sealed class BotApi
             if (n.IsScenarioClone) row["isClone"] = true;
             row["fromSpawn"] = from; row["chaseLimit"] = limit;
             row["willDropIn"] = limit > 0 ? limit - from : 0;
+            row["hitAgoMs"] = v.HitUsAgoMs(n.Handle);
             t[i++] = row;
         }
         return DynValue.NewTable(t);

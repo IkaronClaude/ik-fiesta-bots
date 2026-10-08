@@ -647,6 +647,7 @@ public sealed class ZoneView : IDisposable
     public event Action<HitInfo>? Damaged;
 
     private readonly ConcurrentDictionary<ushort, DateTime> _aggressors = new();      // confident: hit us / clearly running at us
+    private readonly ConcurrentDictionary<ushort, DateTime> _hitUsAt = new();         // when each handle last actually HIT us (swing or skill)
     private readonly ConcurrentDictionary<ushort, DateTime> _maybeAggressors = new();  // running our way, but a player shares the angle
     private static readonly TimeSpan CombatWindow = TimeSpan.FromSeconds(8);
 
@@ -694,6 +695,10 @@ public sealed class ZoneView : IDisposable
     /// <summary>Mobs we're confident are aggroing us within the combat window — hit us (incoming SWING_DAMAGE, defender==self)…</summary>
     public IReadOnlyCollection<ushort> Aggressors =>
         _aggressors.Where(kv => DateTime.UtcNow - kv.Value < CombatWindow).Select(kv => kv.Key).ToArray();
+
+    /// <summary>Milliseconds since <paramref name="h"/> last HIT us (a swing or a skill), -1 if it never has. A caster can
+    /// stand past its chase leash and still hit - the leash says where it stops FOLLOWING, not that it stopped hurting.</summary>
+    public double HitUsAgoMs(ushort h) => _hitUsAt.TryGetValue(h, out var t) ? (DateTime.UtcNow - t).TotalMilliseconds : -1;
 
     /// <summary>Mobs running roughly toward us but where a nearby player shares the heading, so the target is uncertain — "may…</summary>
     public IReadOnlyCollection<ushort> MaybeAggressors =>
@@ -1013,6 +1018,7 @@ public sealed class ZoneView : IDisposable
             if (DateTime.UtcNow - LastHitAtUtc > CombatWindow)
                 _log?.Invoke($"[combat] START vs mob h={h.Attacker}");
             _aggressors[h.Attacker] = DateTime.UtcNow;
+            _hitUsAt[h.Attacker] = DateTime.UtcNow;
             FreezeMobAnchor(h.Attacker);   // it's on us now → its anchor stops moving; measure the chase from home
             LastHitAtUtc = DateTime.UtcNow;
             // DAMAGE-TAKEN SAMPLE for the survivability model (operator 2026-07-29): every incoming hit, labeled by the atta…
