@@ -1308,6 +1308,9 @@ public sealed class BotManager : IAsyncDisposable
 
     // Autonomous multi-map travel ─────────────────────────────────────────── Stop this far (world units) short of a…
     private const double GateApproachDist = 60.0;
+    // bot behaviour, not game data: further than this from a gate a click is not worth the 6 s wait; re-approach instead
+    private const double GateClickMaxDist = GateApproachDist * 4;
+    private const int GateReapproachTries = 3;
     // In a scenario instance, an out-of-range cast target CLOSER than this is NOT client-approached — hold + autoAtt…
     private const double ScenarioHoldRange = 40.0;
     // How far SHORT of the target the instance combat-approach stops — closes into swing range without pathing onto…
@@ -1738,6 +1741,15 @@ public sealed class BotManager : IAsyncDisposable
 
                 // Walk to within range of the gate (pathfind around obstacles if a grid is available; else a best-effort straigh…
                 await ApproachAsync(id, handle, gate.X, gate.Y, GateApproachDist, unitsPerSec, ct);
+                // ApproachAsync RETURNS WHETHER OR NOT WE ARRIVED. A walk aborted by a MOVEFAIL used to fall straight through
+                // to the click: NewFighter 2026-10-08 12:38:13 clicked the RouVal02 gate from ~4100u away mid-escape, waited
+                // 6 s for a transition that cannot happen from there, and died 1 s into the "closing in" retry.
+                for (int again = 1; again <= GateReapproachTries && !ct.IsCancellationRequested
+                     && handle.Position is { } gp && Dist((gp.X, gp.Y), gate.X, gate.Y) > GateClickMaxDist; again++)
+                {
+                    handle.Log($"[travel] hop {hop + 1}: walk ended {Dist((gp.X, gp.Y), gate.X, gate.Y):F0}u short of the gate - re-approaching ({again}/{GateReapproachTries}) before clicking");
+                    await ApproachAsync(id, handle, gate.X, gate.Y, GateApproachDist, unitsPerSec, ct);
+                }
 
                 // Take the gate and wait for the transition
                 handle.PendingDestMap = expected;
