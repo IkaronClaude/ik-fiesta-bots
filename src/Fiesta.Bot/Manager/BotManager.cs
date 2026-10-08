@@ -649,12 +649,12 @@ public sealed class BotManager : IAsyncDisposable
         // RIDE_OFF, and the gate was then taken mounted and ignored (NewArcher 06:00:30, six such dismounts today).
         await UseItemAsync(id, (byte)slot, 9, ct);
         // 3000ms was set JUST UNDER the real dismount latency, so this "failed" essentially every time
-        var ok = await WaitUntilAsync(
-            () => handle.ZoneView?.IsMounted != true || handle.ZoneView is { ServerMenuOpen: true },
-            8000, ct);
-        if (ok && handle.ZoneView is { IsMounted: true, ServerMenuOpen: true })
-            handle.Log(BotLogLevel.Info, "[travel] gate menu already open — not waiting out the dismount; " +
-                                         "the RIDE_OFF arrives with the map transition");
+        // WAIT FOR THE RIDE_OFF EVEN WITH THE GATE MENU OPEN. This used to stop waiting as soon as the menu was open
+        // ("the RIDE_OFF arrives with the map transition"), and UseGateAsync then answered Yes while still mounted - which
+        // the gate ignores. NewArcher 2026-10-08 12:49:36.652 answered "move to Moonlight Tomb field?" mounted, RIDE_OFF came
+        // 218 ms later with NO transition, the gate "didn't fire", and it died standing there 9 s later. The menu waits
+        // for its answer; a dismount takes well under a second.
+        var ok = await WaitUntilAsync(() => handle.ZoneView?.IsMounted != true, 8000, ct);
         if (!ok) handle.Log("[travel] dismount NOT confirmed (no RIDE_OFF within 8s) — taking the gate anyway");
         return ok;
     }
