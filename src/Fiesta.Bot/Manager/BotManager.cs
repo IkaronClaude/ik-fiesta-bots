@@ -3067,8 +3067,10 @@ public sealed class BotManager : IAsyncDisposable
                 zoneView.SelfPositionProvider = () => handle.Position; // for aggro (mob running at us)
                 // learned mob detect radii are WORLD facts (shared by every bot on the server), kept durable
                 var detectScope = handle.Options.Host + "|world";
-                zoneView.MobDetectSeed = mobId => Knowledge.Scalar(detectScope, "mobDetect:" + mobId)?.Max ?? 0;
-                zoneView.MobDetectLearned = (mobId, r) => Knowledge.RecordScalar(detectScope, "mobDetect:" + mobId, r);
+                // "mobDetect2:" - the first build ("mobDetect:") learned from mobs already mid-chase (radii of 1000-2300u);
+                // a running max cannot unlearn them, so the corrected learner starts a fresh key
+                zoneView.MobDetectSeed = mobId => Knowledge.Scalar(detectScope, "mobDetect2:" + mobId)?.Max ?? 0;
+                zoneView.MobDetectLearned = (mobId, r) => Knowledge.RecordScalar(detectScope, "mobDetect2:" + mobId, r);
                 zoneView.SelfLevelOf = () => (int)handle.Level;
                 zoneView.MobLevelOf = mobId => ClientData?.Mob(mobId)?.Level ?? 0;
                 zoneView.MobIgnoresLevelGapSeed = mobId => (Knowledge.Scalar(detectScope, "mobNoLevel:" + mobId)?.Max ?? 0) > 0;

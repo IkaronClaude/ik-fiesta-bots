@@ -653,6 +653,7 @@ public sealed class ZoneView : IDisposable
     private readonly ConcurrentDictionary<ushort, DateTime> _hitUsAt = new();
     private readonly ConcurrentDictionary<ushort, byte> _provoked = new();             // mobs WE hit (their aggro is not detection)
     private readonly ConcurrentDictionary<ushort, (double Dx, double Dy)> _lastFacing = new(); // unit heading of each entity's last move
+    private readonly ConcurrentDictionary<ushort, bool> _lastMoveRun = new();          // was each entity's last move a RUN (chase) or a WALK (wander)
 
     // ---- MOB AGGRO SHAPE (read from Zone.exe 2016, 2026-10-08) ----------------------------------------------------------
     // MobInfoServer.EnemyDetectType picks a target selector (MobTacticElement::MobActionArgument::Selector ctor 0x54EE00):
@@ -3084,8 +3085,11 @@ public sealed class ZoneView : IDisposable
                 var rawSpeed = p.Length >= 20 ? (ushort)(p[18] | (p[19] << 8)) : (ushort)0;
                 if (rawSpeed > 0)
                     _entityMove[hnd] = (frX, frY, toX, toY, rawSpeed * SpeedRawToUPerSec, DateTime.UtcNow);
-                // its facing BEFORE this move (the detection that started a charge happened facing the old way)
+                // its facing BEFORE this move (the detection that started a charge happened facing the old way), and
+                // whether that move was a calm WALK - only then is this run the START of a charge
                 var facingBefore = EntityFacing(hnd);
+                var prevWasWalk = _lastMoveRun.TryGetValue(hnd, out var prevRun) && !prevRun;
+                _lastMoveRun[hnd] = op == OpSomeoneMoveRun;
                 {
                     double fdx = (double)toX - frX, fdy = (double)toY - frY, fl = Math.Sqrt(fdx * fdx + fdy * fdy);
                     if (fl > 1) _lastFacing[hnd] = (fdx / fl, fdy / fl);
@@ -3135,8 +3139,13 @@ public sealed class ZoneView : IDisposable
                                 // LEARN ITS DETECT RADIUS from a FIRST-CONTACT aggro only: not already fighting (a family
                                 // assist would read as a huge radius), not a mob we hit (that is retaliation); it started
                                 // from where it stood (frX,frY). The bound converges upward like the leash does.
+                                // ...and only a mob we SAW CALM just before: its previous move in view was a WALK (a wander) and
+                                // its spawn is idle-confirmed. The first run packet of a mob that enters view already chasing, or
+                                // heading home after a reset, is not the moment it noticed us: the first build learned "noticed us
+                                // 1575u away -> radius 2339u" from exactly that, and a running max never forgets an outlier.
                                 if (!wasAggro && !_provoked.ContainsKey(hnd) && aggroNow - LastHitAtUtc > CombatWindow
-                                    && npc.MobId != 0)
+                                    && npc.MobId != 0 && prevWasWalk
+                                    && _mobAnchor.TryGetValue(hnd, out var calmAnc) && calmAnc.IdleConfirmed)
                                 {
                                     double ddx = (double)me.X - frX, ddy = (double)me.Y - frY;
                                     // aggroed us from more than the gap below: this mob is the NoLevel kind
