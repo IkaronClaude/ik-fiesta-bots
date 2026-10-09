@@ -3405,6 +3405,12 @@ public sealed class BotManager : IAsyncDisposable
                 // A revive re-runs the spawn handshake: hold walks until it lands (SpawnSettleMs).
                 zoneView.SpawnRequested += () => handle.LastSpawnUtc = DateTime.UtcNow;
 
+                // A CEASE_FIRE on us ends the server's swing stream; re-assert the selection before the next BASHSTART
+                // (which carries no target). Without this every restart was STOP + BASHSTART on a selection the bot
+                // only assumed the server still held: NewJoker 2026-10-09 08:46-09:03 sent ~950 such restarts on one
+                // Skeleton, each ceased within ~70 ms, and never once re-sent TARGETTING. A player re-clicks the mob.
+                zoneView.BashCeased += _ => handle.InvalidateTarget("server CEASE_FIRE ended our auto-attack");
+
                 zoneView.TargetInvalidated += why =>
                 {
                     if (!handle.TargetAsserted) return;
