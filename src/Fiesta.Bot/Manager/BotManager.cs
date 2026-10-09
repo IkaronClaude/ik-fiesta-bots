@@ -1312,6 +1312,7 @@ public sealed class BotManager : IAsyncDisposable
     private const double GateClickMaxDist = GateApproachDist * 4;
     private const int GateReapproachTries = 15;          // a hard cap only: the loop stops as soon as a try makes no progress
     private const double GateReapproachMinGain = 100.0;
+    private const int GateReapproachNoBestTries = 3;
     // In a scenario instance, an out-of-range cast target CLOSER than this is NOT client-approached — hold + autoAtt…
     private const double ScenarioHoldRange = 40.0;
     // How far SHORT of the target the instance combat-approach stops — closes into swing range without pathing onto…
@@ -1761,16 +1762,21 @@ public sealed class BotManager : IAsyncDisposable
                 // fire, the trip aborted, and the bot looped sell -> skills -> travel in Eld with 0 exp for 6 minutes.
                 // PROGRESS = THE WALK MOVED US, not "the straight-line gap shrank": a path that detours round a wall ends farther
                 // from the gate on the way (NewFighter 2026-10-08 16:12 EldGbl02: 3717 -> 4457u) and that was read as stuck.
-                double prevGap = double.MaxValue;
+                // ...BUT MOVING IS NOT ARRIVING: NewJoker 2026-10-09 01:34-01:44 EldGbl02 kept moving (its fight walks cancelled the
+                // travel walk under aggro) while the gap sat at ~5000u (4914, 5166, 5049, 5142, 5217) - 10 min, 0 exp. A detour
+                // may grow the gap for a try or two; three tries without a new BEST gap is not a detour.
+                double prevGap = double.MaxValue, bestGap = double.MaxValue;
+                int sinceBest = 0;
                 (uint X, uint Y)? prevPos = null;
                 for (int again = 1; again <= GateReapproachTries && !ct.IsCancellationRequested
                      && handle.Position is { } gp && Dist((gp.X, gp.Y), gate.X, gate.Y) > GateClickMaxDist; again++)
                 {
                     var gap = Dist((gp.X, gp.Y), gate.X, gate.Y);
                     var moved = prevPos is { } pp ? Dist((gp.X, gp.Y), pp.X, pp.Y) : double.MaxValue;
-                    if (prevGap - gap < GateReapproachMinGain && moved < GateReapproachMinGain)
+                    if (gap < bestGap - GateReapproachMinGain) { bestGap = gap; sinceBest = 0; } else sinceBest++;
+                    if ((prevGap - gap < GateReapproachMinGain && moved < GateReapproachMinGain) || sinceBest >= GateReapproachNoBestTries)
                     {
-                        handle.Log($"[travel] hop {hop + 1}: re-approach made no progress ({prevGap:F0} -> {gap:F0}u, moved {moved:F0}u) - stopping");
+                        handle.Log($"[travel] hop {hop + 1}: re-approach made no progress ({prevGap:F0} -> {gap:F0}u, moved {moved:F0}u, best {bestGap:F0}u, {sinceBest} tries without a better one) - stopping");
                         break;
                     }
                     prevGap = gap; prevPos = (gp.X, gp.Y);
