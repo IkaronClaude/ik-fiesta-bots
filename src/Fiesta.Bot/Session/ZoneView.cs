@@ -2569,6 +2569,12 @@ public sealed class ZoneView : IDisposable
                 var thp = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tp.Slice(3, 4));
                 var tmax = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tp.Slice(7, 4));
                 TargetConfirmedHandle = th; TargetConfirmedAtUtc = DateTime.UtcNow;
+                // THE SERVER'S SELECTION MOVED OFF OUR TARGET (2026-10-09): a self-heal / self-buff selects US server-side
+                // (TARGETINFO for our own handle), and BASHSTART then swings at that selection and is ceased ~65 ms later.
+                // NewCleric 13:05-13:15: 1,336 ceased auto-attacks, 0 kills, every restart skipping TARGETTING because the
+                // bot still believed the Marlone was selected. Our assertion is stale the moment the server says otherwise.
+                if (CurrentTargetHandle != 0 && th != CurrentTargetHandle)
+                    TargetInvalidated?.Invoke($"server selection moved to h={th} (was h={CurrentTargetHandle})");
                 // Free and worth having: this is the ONLY packet that states a target's max HP outright, so the target view stop…
                 _entityHp[th] = thp; _entityMaxHp[th] = tmax;
                 _logLevel?.Invoke(BotLogLevel.Verbose,
