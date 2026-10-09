@@ -1275,6 +1275,32 @@ public sealed class BotApi
     /// <summary>The mob's max HP from client MobInfo.shn, or -1 if unknown</summary>
     public int mobMaxHp(int mobId) => _mgr.ClientData?.Mob(mobId)?.MaxHp ?? -1;
 
+    /// <summary>The MEDIAN max HP of the normal (GradeType 0), enemy, spawning mobs of this level in client MobInfo.shn,
+    /// or -1 if none. "Typical for its level" (operator 2026-10-09, farming mode): a mob far above this is a tank that
+    /// pays the same drops for more time. Client data has HP only; damage and defence are learned in fights.</summary>
+    public int mobTypicalHp(int level)
+    {
+        var cd = _mgr.ClientData;
+        if (cd is null) return -1;
+        lock (TypicalHpLock)
+        {
+            if (TypicalHpByLevel is null)
+            {
+                var by = new Dictionary<int, List<int>>();
+                foreach (var id in cd.MobCoordinateMobIds)
+                {
+                    var m = cd.Mob(id);
+                    if (m is null || m.IsNpc || m.IsPlayerSide || m.GradeType != 0 || m.MaxHp <= 0) continue;
+                    (by.TryGetValue(m.Level, out var l) ? l : by[m.Level] = new List<int>()).Add(m.MaxHp);
+                }
+                TypicalHpByLevel = by.ToDictionary(kv => kv.Key, kv => { kv.Value.Sort(); return kv.Value[kv.Value.Count / 2]; });
+            }
+            return TypicalHpByLevel.TryGetValue(level, out var v) ? v : -1;
+        }
+    }
+    private static readonly object TypicalHpLock = new();
+    private static Dictionary<int, int>? TypicalHpByLevel;
+
     /// <summary>The mob's MobInfo.shn GradeType: 0 = normal grindable mob, &gt;=1 = a NAMED BOSS/ELITE</summary>
     public int mobGrade(int mobId) => _mgr.ClientData?.Mob(mobId)?.GradeType ?? -1;
 
