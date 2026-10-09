@@ -2619,8 +2619,13 @@ public sealed class BotManager : IAsyncDisposable
 
     /// <summary>Use an inventory item by slot (invenType: 0 = normal bag)</summary>
     public Task<ActionResult> UseItemAsync(string id, byte slot, byte invenType, CancellationToken ct = default)
-        => ActAsync(id, $"use item slot={slot} type={invenType}",
+    {
+        // the mount bag (type 9): the summon starts NOW - hold the walker until RIDE_ON / RIDE_OFF (ZoneView.ArmCastBar)
+        if (invenType == MountInvenType && _bots.TryGetValue(id, out var mh)) mh.ZoneView?.ArmCastBar();
+        return ActAsync(id, $"use item slot={slot} type={invenType}",
             s => s.SendAsync(new PROTO_NC_ITEM_USE_REQ { invenslot = slot, invenType = invenType }, ct));
+    }
+    private const byte MountInvenType = 9;
 
     /// <summary>Spend ONE unspent stat point on stat (0=STR,1=END,2=DEX,3=INT,4=MP — CHARSTATDISTSTR order)</summary>
     public Task<ActionResult> IncStatAsync(string id, byte stat, CancellationToken ct = default)

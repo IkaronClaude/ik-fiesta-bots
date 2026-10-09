@@ -809,6 +809,12 @@ public sealed class ZoneView : IDisposable
     /// <summary>Clear the in-flight cast bar (the cast finished or was cancelled)</summary>
     private void ClearCastBar() => CastBarStartedAtUtc = DateTime.MinValue;
 
+    /// <summary>Hold still from the moment WE start a summon, before the server's cast-bar packet arrives. 307 MOVEFAILs
+    /// (2026-10-09 00:14-00:44): a mount event preceded 26% of them vs 6% of random moments (x4.5), the rejection landing
+    /// 0.01-0.15 s after the mount item use - walk steps sent in the gap before the cast bar opened. RIDE_ON / RIDE_OFF
+    /// (or CastBarMaxWait) release it.</summary>
+    public void ArmCastBar() => CastBarStartedAtUtc = DateTime.UtcNow;
+
     private readonly ConcurrentDictionary<int, (int Max, int Count, long Sum)> _mobHits = new();
     // mobId -> (highest, second-highest) observed distance at which it damaged us
     private readonly ConcurrentDictionary<int, (double, double)> _mobRange = new();
