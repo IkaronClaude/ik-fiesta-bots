@@ -1115,6 +1115,26 @@ public sealed class ZoneView : IDisposable
     public DateTime TargetConfirmedAtUtc { get; private set; } = DateTime.MinValue;
     public uint? EntityHp(ushort handle) => _entityHp.TryGetValue(handle, out var v) ? v : null;
 
+    // ABNORMAL STATES ON OTHER ENTITIES (2026-10-09). The server already tells every client in view which abstates a mob
+    // carries and for how long (ABSTATESET/RESET, BRIEFINFO ABSTATE_CHANGE / _LIST); this was only logged. Kept so the
+    // rotation can see whether OUR slow / poison / bleed is still on the target before spending SP to refresh it.
+    // handle -> (abStataIndex -> expiry UTC; MaxValue = no duration given, held until a RESET)
+    private readonly ConcurrentDictionary<ushort, ConcurrentDictionary<uint, DateTime>> _entityAbstates = new();
+    private void EntityAbstate(ushort handle, uint idx, uint keepMs, bool on)
+    {
+        if (!on) { if (_entityAbstates.TryGetValue(handle, out var m)) m.TryRemove(idx, out _); return; }
+        _entityAbstates.GetOrAdd(handle, _ => new())[idx] = keepMs > 0 ? DateTime.UtcNow.AddMilliseconds(keepMs) : DateTime.MaxValue;
+    }
+    /// <summary>Remaining ms of abstate idx on an entity: null = not on it; long.MaxValue = on it with no known duration</summary>
+    public long? EntityAbstateRemainingMs(ushort handle, uint idx)
+    {
+        if (!_entityAbstates.TryGetValue(handle, out var m) || !m.TryGetValue(idx, out var until)) return null;
+        if (until == DateTime.MaxValue) return long.MaxValue;
+        var left = (long)(until - DateTime.UtcNow).TotalMilliseconds;
+        if (left <= 0) { m.TryRemove(idx, out _); return null; }
+        return left;
+    }
+
     // LIVE ENTITY CHANGE FEED (operator 2026-08-13) ──────────────────────────────────────────────── "Each entity is…
     private readonly ConcurrentDictionary<ushort, (uint FromX, uint FromY, uint ToX, uint ToY, double Speed, DateTime AtUtc)> _entityMove = new();
 
@@ -1135,6 +1155,7 @@ public sealed class ZoneView : IDisposable
 
     internal void NoteEntityGone(ushort handle)
     {
+        _entityAbstates.TryRemove(handle, out _);
         _entityMove.TryRemove(handle, out _);   // it is not walking anywhere; don't retain it per-handle
         try { EntityGone?.Invoke(handle); } catch { /* subscriber threw */ }
     }
@@ -2135,7 +2156,11 @@ public sealed class ZoneView : IDisposable
                 var idx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[2..]);
                 if (SelfHandle is { } self && target == self)
                     SelfAbstate(idx, 0, op == OpAbStateSet, "BAT");
-                else LogV($"[ZoneView] ABSTATE {(op == OpAbStateSet ? "SET" : "RESET")} idx={idx} on h={target}");
+                else
+                {
+                    EntityAbstate(target, idx, 0, op == OpAbStateSet);
+                    LogV($"[ZoneView] ABSTATE {(op == OpAbStateSet ? "SET" : "RESET")} idx={idx} on h={target}");
+                }
             }
         }
         else if (op == OpBriefAbstateChange)
@@ -2148,7 +2173,11 @@ public sealed class ZoneView : IDisposable
                 var idx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[2..]);
                 var keep = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[6..]);
                 if (SelfHandle is { } self && target == self) SelfAbstate(idx, keep, keep > 0, "BRIEF");
-                else LogV($"[ZoneView] ABSTATE CHANGE idx={idx} keep={keep}ms on h={target}");
+                else
+                {
+                    EntityAbstate(target, idx, keep, keep > 0);
+                    LogV($"[ZoneView] ABSTATE CHANGE idx={idx} keep={keep}ms on h={target}");
+                }
             }
         }
         else if (op == OpBriefAbstateChangeList)
@@ -2166,7 +2195,11 @@ public sealed class ZoneView : IDisposable
                     var idx = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[off..]);
                     var keep = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(p[(off + 4)..]);
                     if (self) SelfAbstate(idx, keep, keep > 0, "BRIEF_LIST");
-                    else LogV($"[ZoneView] ABSTATE LIST idx={idx} keep={keep}ms on h={target}");
+                    else
+                    {
+                        EntityAbstate(target, idx, keep, keep > 0);
+                        LogV($"[ZoneView] ABSTATE LIST idx={idx} keep={keep}ms on h={target}");
+                    }
                 }
             }
         }

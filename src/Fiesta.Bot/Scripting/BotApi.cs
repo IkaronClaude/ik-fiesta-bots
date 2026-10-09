@@ -108,6 +108,14 @@ public sealed class BotApi
         t["selfTargeted"] = si.LandsOn == 1;
         // dispel = the debuff level this skill clears (ActiveSkill special SS_DISPELONE), -1 if it dispels nothing (Mage Dispel)
         t["dispel"] = _mgr.ClientData?.SkillDispelLevel(id) ?? -1;
+        // WHAT IT DOES TO THE ENEMY, by effect (SubAbState actions), not by name: slow = move-speed-down (88), dot = damage
+        // per tick (27). The per-class SP budget keys on these (operator 2026-10-09).
+        {
+            bool slow = false, dot = false;
+            if (_mgr.ClientData is { } cdx)
+                foreach (var a in cdx.SkillAbstates(id)) { slow |= cdx.IsSlowAbstate(a); dot |= cdx.IsDotAbstate(a); }
+            t["slow"] = slow; t["dot"] = dot;
+        }
         return DynValue.NewTable(t);
     }
 
@@ -540,6 +548,14 @@ public sealed class BotApi
     public bool stunned() => View?.Stunned ?? false;
 
     /// <summary>The abnormal-state indices currently active on US (unexpired), as a Lua array</summary>
+    /// <summary>Remaining ms of abstate idx on entity h (from the server's broadcasts): nil = not on it, -1 = on it with no
+    /// known duration. A rotation checks its own slow / DoT is still on the target before paying to refresh it.</summary>
+    public DynValue entityAbstateMs(int h, double idx)
+    {
+        if (_handle.ZoneView?.EntityAbstateRemainingMs((ushort)h, (uint)idx) is not { } ms) return DynValue.Nil;
+        return DynValue.NewNumber(ms == long.MaxValue ? -1 : ms);
+    }
+
     public DynValue selfAbstates()
     {
         var t = NewTable();

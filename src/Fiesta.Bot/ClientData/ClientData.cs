@@ -594,6 +594,38 @@ public sealed class ClientData
         return _slowAbstates.Contains(abStataIndex);
     }
 
+    // DAMAGE OVER TIME (2026-10-09): an abstate whose SubAbState deals damage each tick - action 27, paired with the tick
+    // interval 26. Read from SubAbState: Poison Shot (StaPuryImpactStun), Bone Shot (StaBoneArrow), Venomous Shot, the mob
+    // poisons / bleeds all carry 26 + 27; the heal-over-time potions carry 26 + 30, so 26 alone is NOT damage.
+    private const int DamagePerTickActionIndex = 27;
+    private IReadOnlySet<uint>? _dotAbstates;
+    public bool IsDotAbstate(uint abStataIndex)
+    {
+        if (_dotAbstates is null)
+            lock (_abstateLock)
+            {
+                if (_dotAbstates is null)
+                {
+                    var set = new HashSet<uint>();
+                    var subs = new HashSet<string>(StringComparer.Ordinal);
+                    if (Table("SubAbState") is { } sub)
+                        foreach (var row in sub.Rows)
+                        {
+                            var inx = GetStr(row, "InxName");
+                            if (string.IsNullOrEmpty(inx)) continue;
+                            foreach (var c in new[] { "ActionIndexA", "ActionIndexB", "ActionIndexC", "ActionIndexD" })
+                                if (GetInt(row, c) == DamagePerTickActionIndex) { subs.Add(inx); break; }
+                        }
+                    if (Table("AbState") is { } ab)
+                        foreach (var row in ab.Rows)
+                            if (GetStr(row, "SubAbState") is { Length: > 0 } sn && subs.Contains(sn))
+                                set.Add((uint)GetInt(row, "AbStataIndex"));
+                    _dotAbstates = set;
+                }
+            }
+        return _dotAbstates.Contains(abStataIndex);
+    }
+
     /// <summary>The level of debuff a skill dispels (ActiveSkill SpecialIndexA..E == SS_DISPELONE, its SpecialValue), -1 if none</summary>
     public int SkillDispelLevel(int skillId)
     {
