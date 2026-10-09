@@ -1148,6 +1148,11 @@ public sealed class BotManager : IAsyncDisposable
             .ContinueWith(t => { if (_bots.TryGetValue(id, out var h)) h.PendingPartyInviter = null; return t.Result; });
     }
 
+    /// <summary>Leave our party (NC_PARTY_LEAVE_REQ 0x380A, empty body; the server answers NC_PARTY_LEAVE_ACK {memberid, err})</summary>
+    public Task<ActionResult> PartyLeaveAsync(string id, CancellationToken ct = default)
+        => WmActAsync(id, "party leave", s => s.SendAsync(new FiestaPacket(OpPartyLeave, Array.Empty<byte>()), ct));
+    private const ushort OpPartyLeave = (14 << 10) | 10;
+
     /// <summary>The explicit inviter name, or the tracked pending one if none was given</summary>
     private string? ResolveInviter(string id, string? inviterName)
     {

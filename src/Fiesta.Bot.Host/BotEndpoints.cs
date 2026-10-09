@@ -1085,6 +1085,10 @@ public static class BotEndpoints
             ToResult(await manager.PartyDeclineAsync(id, req?.Name), id, new { id, declined = req?.Name ?? "(pending invite)" }))
         .WithSummary("Decline a party invite (named inviter, or the tracked pending one if omitted)");
 
+        group.MapPost("/{id}/party/leave", async (string id) =>
+            ToResult(await manager.PartyLeaveAsync(id), id, new { id, left = true }))
+        .WithSummary("Leave the bot's party (NC_PARTY_LEAVE_REQ)");
+
         group.MapPost("/{id}/party/chat", async (string id, SayRequest req) =>
             string.IsNullOrEmpty(req.Text)
                 ? Results.ValidationProblem(new Dictionary<string, string[]> { ["text"] = ["text is required"] })

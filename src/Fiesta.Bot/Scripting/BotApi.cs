@@ -1970,6 +1970,8 @@ public sealed class BotApi
     public bool partyInvite(string name) => Ok(Wait(_mgr.PartyInviteAsync(Id, name)));
     public bool partyAccept(string name = null) => Ok(Wait(_mgr.PartyAcceptAsync(Id, name)));
     public bool partyDecline(string name = null) => Ok(Wait(_mgr.PartyDeclineAsync(Id, name)));
+    /// <summary>Leave our party</summary>
+    public bool partyLeave() => Ok(Wait(_mgr.PartyLeaveAsync(Id)));
     public string pendingInvite() => _handle.PendingPartyInviter ?? "";
     public bool partyChat(string text) => Ok(Wait(_mgr.PartyChatAsync(Id, text)));
 
