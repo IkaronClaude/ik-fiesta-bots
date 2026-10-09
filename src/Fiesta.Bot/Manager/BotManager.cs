@@ -1148,6 +1148,22 @@ public sealed class BotManager : IAsyncDisposable
             .ContinueWith(t => { if (_bots.TryGetValue(id, out var h)) h.PendingPartyInviter = null; return t.Result; });
     }
 
+    /// <summary>Pitch the mini-house tent to rest (NC_ACT_PITCHTENT_REQ 0x2027, empty). The real client STOPs first;
+    /// the result is NC_ACT_PITCHTENT_ACK (ZoneView.TentPitched / LastTentErr).</summary>
+    public async Task<ActionResult> PitchTentAsync(string id, CancellationToken ct = default)
+    {
+        if (!_bots.TryGetValue(id, out var handle)) return ActionResult.NotFound;
+        if (handle.Phase != BotPhase.InZone || handle.ZoneSession is not { } s) return ActionResult.NotInZone;
+        await StopOnlyAsync(handle, s, ct);
+        await s.SendAsync(new FiestaPacket(OpPitchTent, Array.Empty<byte>()), ct);
+        handle.Log(BotLogLevel.Info, "[tent] PITCH sent (stop + 0x2027)");
+        return ActionResult.Sent;
+    }
+    /// <summary>Fold the tent (NC_ACT_FOLDTENT_REQ 0x202A, empty) - before moving again</summary>
+    public Task<ActionResult> FoldTentAsync(string id, CancellationToken ct = default)
+        => ActAsync(id, "fold tent", s => s.SendAsync(new FiestaPacket(OpFoldTent, Array.Empty<byte>()), ct));
+    private const ushort OpPitchTent = (8 << 10) | 39, OpFoldTent = (8 << 10) | 42;
+
     /// <summary>Leave our party (NC_PARTY_LEAVE_REQ 0x380A, empty body; the server answers NC_PARTY_LEAVE_ACK {memberid, err})</summary>
     public Task<ActionResult> PartyLeaveAsync(string id, CancellationToken ct = default)
         => WmActAsync(id, "party leave", s => s.SendAsync(new FiestaPacket(OpPartyLeave, Array.Empty<byte>()), ct));

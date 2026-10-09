@@ -1085,6 +1085,14 @@ public static class BotEndpoints
             ToResult(await manager.PartyDeclineAsync(id, req?.Name), id, new { id, declined = req?.Name ?? "(pending invite)" }))
         .WithSummary("Decline a party invite (named inviter, or the tracked pending one if omitted)");
 
+        group.MapPost("/{id}/tent/pitch", async (string id) =>
+            ToResult(await manager.PitchTentAsync(id), id, new { id, tent = "pitch sent" }))
+        .WithSummary("Pitch the mini-house tent to rest (stop + NC_ACT_PITCHTENT_REQ); the ack is logged as [tent]");
+
+        group.MapPost("/{id}/tent/fold", async (string id) =>
+            ToResult(await manager.FoldTentAsync(id), id, new { id, tent = "fold sent" }))
+        .WithSummary("Fold the mini-house tent (NC_ACT_FOLDTENT_REQ)");
+
         group.MapPost("/{id}/party/leave", async (string id) =>
             ToResult(await manager.PartyLeaveAsync(id), id, new { id, left = true }))
         .WithSummary("Leave the bot's party (NC_PARTY_LEAVE_REQ)");

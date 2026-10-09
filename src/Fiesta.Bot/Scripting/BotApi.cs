@@ -1986,6 +1986,26 @@ public sealed class BotApi
     public bool partyInvite(string name) => Ok(Wait(_mgr.PartyInviteAsync(Id, name)));
     public bool partyAccept(string name = null) => Ok(Wait(_mgr.PartyAcceptAsync(Id, name)));
     public bool partyDecline(string name = null) => Ok(Wait(_mgr.PartyDeclineAsync(Id, name)));
+    /// <summary>Pitch the mini-house tent to rest (stop + 0x2027); the outcome arrives as tent().err</summary>
+    public bool pitchTent() => Ok(Wait(_mgr.PitchTentAsync(Id)));
+    /// <summary>Fold the tent (0x202A) before moving</summary>
+    public bool foldTent() => Ok(Wait(_mgr.FoldTentAsync(Id)));
+    /// <summary>{pitched, err (last ack code, nil if none), errText, ackAgoMs}</summary>
+    public DynValue tent()
+    {
+        var t = NewTable();
+        var z = _handle.ZoneView;
+        t["pitched"] = z?.TentPitched ?? false;
+        if (z?.LastTentErr is { } e)
+        {
+            t["err"] = (double)e; t["errText"] = Fiesta.Bot.Session.ZoneView.TentErrText(e);
+            t["ackAgoMs"] = (DateTime.UtcNow - z.LastTentAckUtc).TotalMilliseconds;
+        }
+        return DynValue.NewTable(t);
+    }
+    /// <summary>Item id of the active mini-house skin (inventory box 12), nil if none</summary>
+    public DynValue houseSkin() => _handle.ZoneView?.HouseSkinItem is { } i ? DynValue.NewNumber(i) : DynValue.Nil;
+
     /// <summary>Leave our party</summary>
     public bool partyLeave() => Ok(Wait(_mgr.PartyLeaveAsync(Id)));
     public string pendingInvite() => _handle.PendingPartyInviter ?? "";

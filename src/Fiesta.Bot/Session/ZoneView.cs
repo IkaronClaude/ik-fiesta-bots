@@ -1570,6 +1570,28 @@ public sealed class ZoneView : IDisposable
     /// <summary>The PERSONAL STORAGE (warehouse) container</summary>
     public const byte StorageBoxId = 6;
     private static byte BoxOf(int inven) => (byte)(inven >> 10);
+    /// <summary>The box holding the ACTIVE mini-house skin (Zone.exe MiniHouseStr::mhs_Init reads location 0x3000|slot;
+    /// the operator's capture shows House_MushRoom 31000 there). No skin = PITCHTENT refused 0x0A85.</summary>
+    private const byte MiniHouseBox = 12;
+    public ushort? HouseSkinItem { get; private set; }
+
+    // THE TENT / "home" button (2026-10-09; Z:/LongCaptureNoDc.pcapng t=277: STOP, PITCHTENT 0x2027 -> ACK 0x0A81, then SP
+    // every ~3 s; FOLDTENT 0x202A -> ACK 0x0A81). Resting in it regenerates HP/SP for free; the character cannot act.
+    public bool TentPitched { get; private set; }
+    public ushort? LastTentErr { get; private set; }
+    public DateTime LastTentAckUtc { get; private set; } = DateTime.MinValue;
+    private const ushort OpPitchTentAck = (8 << 10) | 40, OpFoldTentAck = (8 << 10) | 43, OpForceFoldTent = (8 << 10) | 61;
+    public const ushort TentOk = 0x0A81;
+    public static string TentErrText(ushort e) => e switch
+    {
+        0x0A81 => "ok",
+        0x0A82 => "not allowed in the current mode (moving / mounted / busy?)",
+        0x0A83 => "too close to an NPC or another mini house",
+        0x0A84 => "this map does not allow a mini house",
+        0x0A85 => "no mini-house skin (box 12 empty)",
+        0x0A86 => "cannot rest while feared",
+        _ => "unknown",
+    };
 
     /// <summary>Seed bag + worn-gear from the zone-login item list (captured by during the login burst, which the session loop…</summary>
     public void SeedItems(IEnumerable<(byte box, ushort inven, ushort itemId, int count)>? items)
@@ -1581,6 +1603,11 @@ public sealed class ZoneView : IDisposable
             // itemId 0 = the REAL item "Leather Boots" (a real occupied slot), NOT empty — the login list sends only occupie…
             var slot = (byte)(inven & 0xFF);
             if (box == EquipBox) { _equipment[slot] = itemId; eq++; }
+            else if (box == MiniHouseBox)
+            {
+                HouseSkinItem = itemId;
+                _log?.Invoke($"[ZoneView] mini-house skin in box {MiniHouseBox}: item {itemId} - the tent (rest) can be pitched");
+            }
             else if (box == MainBag) { ItemVersion++; _inventory[slot] = itemId; _invCount[slot] = count; bag++; } // ONLY
             // the main bag (other boxes — premium/mini-house — collide on slot and hide the real loot)
         }
@@ -2547,6 +2574,24 @@ public sealed class ZoneView : IDisposable
                 _logLevel?.Invoke(BotLogLevel.Verbose,
                     $"[combat] TARGETINFO — server CONFIRMED target h={th} ({thp}/{tmax} hp)");
             }
+        }
+        else if (op == OpPitchTentAck || op == OpFoldTentAck)
+        {
+            var p = pkt.Payload.Span;
+            if (p.Length >= 2)
+            {
+                var err = (ushort)(p[0] | (p[1] << 8));
+                LastTentErr = err; LastTentAckUtc = DateTime.UtcNow;
+                bool pitch = op == OpPitchTentAck;
+                if (err == TentOk) TentPitched = pitch;
+                _logLevel?.Invoke(BotLogLevel.Note,
+                    $"[tent] {(pitch ? "PITCH" : "FOLD")} ack 0x{err:X4} ({TentErrText(err)}) - pitched={TentPitched}");
+            }
+        }
+        else if (op == OpForceFoldTent)
+        {
+            TentPitched = false;
+            _logLevel?.Invoke(BotLogLevel.Note, "[tent] the server FOLDED our tent (NC_ACT_REINFORCE_FOLDTENT_CMD)");
         }
         else if (op == OpBatCeaseFire)
         {
