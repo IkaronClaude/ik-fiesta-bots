@@ -2568,13 +2568,18 @@ public sealed class ZoneView : IDisposable
                 var th = (ushort)(tp[1] | (tp[2] << 8));
                 var thp = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tp.Slice(3, 4));
                 var tmax = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tp.Slice(7, 4));
-                TargetConfirmedHandle = th; TargetConfirmedAtUtc = DateTime.UtcNow;
-                // THE SERVER'S SELECTION MOVED OFF OUR TARGET (2026-10-09): a self-heal / self-buff selects US server-side
-                // (TARGETINFO for our own handle), and BASHSTART then swings at that selection and is ceased ~65 ms later.
-                // NewCleric 13:05-13:15: 1,336 ceased auto-attacks, 0 kills, every restart skipping TARGETTING because the
-                // bot still believed the Marlone was selected. Our assertion is stale the moment the server says otherwise.
-                if (CurrentTargetHandle != 0 && th != CurrentTargetHandle)
-                    TargetInvalidated?.Invoke($"server selection moved to h={th} (was h={CurrentTargetHandle})");
+                // order 0 = OUR target, order 1 = our target's TARGET (wire 2026-10-09, NewCleric: every pair is
+                // '00 41 1E ..' = the Marlone h=7745 then '01 B3 20 ..' = the cleric itself, the mob's target). Only
+                // order 0 is our selection; reading order 1 as one overwrote the confirmation with OURSELVES and (0da61ea)
+                // invalidated the target twice a second for nothing.
+                if (tp[0] != 0) { LogV($"[combat] TARGETINFO order {tp[0]} - our target's target is h={th}"); }
+                else
+                {
+                    TargetConfirmedHandle = th; TargetConfirmedAtUtc = DateTime.UtcNow;
+                    // the server's own selection is not the target we believe we hold: re-assert before the next attack
+                    if (CurrentTargetHandle != 0 && th != CurrentTargetHandle)
+                        TargetInvalidated?.Invoke($"server selection is h={th}, not h={CurrentTargetHandle}");
+                }
                 // Free and worth having: this is the ONLY packet that states a target's max HP outright, so the target view stop…
                 _entityHp[th] = thp; _entityMaxHp[th] = tmax;
                 _logLevel?.Invoke(BotLogLevel.Verbose,
