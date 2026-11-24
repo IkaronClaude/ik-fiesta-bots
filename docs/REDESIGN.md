@@ -1,6 +1,9 @@
 # ik-fiesta-bots redesign
 
 The answer to `docs/REVIEW_2026-11.md`. Issue ids (P1, D1, C4, ...) refer to that document's index.
+Companion documents: `docs/API_SPEC.md` (the full API), `docs/SKELETON.md` (the compiling skeleton in `next/`,
+where the new host is named `Fiesta.Bot.Server` and the Roslyn generator/analyzers `Fiesta.Bot.CodeAnalysis`),
+`docs/LUA_BENCH.md` (the engine measurements).
 
 Priorities, in order: **performance** (no tick ever waits on the network; <= ~1 ms per bot per tick),
 **correct game rules**, **a brain the operator can see, edit, version and switch from the UI**, and clean

@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Fiesta.Bot.Fleet</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Fiesta.Bot.Brain/Fiesta.Bot.Brain.csproj" />
+  </ItemGroup>
+</Project>

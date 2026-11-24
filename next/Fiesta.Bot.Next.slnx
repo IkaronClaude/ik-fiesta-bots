@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Fiesta.Bot.Net/Fiesta.Bot.Net.csproj" />
+    <Project Path="src/Fiesta.Bot.Protocol/Fiesta.Bot.Protocol.csproj" />
+    <Project Path="src/Fiesta.Bot.Services/Fiesta.Bot.Services.csproj" />
+    <Project Path="src/Fiesta.Bot.Agent/Fiesta.Bot.Agent.csproj" />
+    <Project Path="src/Fiesta.Bot.Api/Fiesta.Bot.Api.csproj" />
+    <Project Path="src/Fiesta.Bot.Brain/Fiesta.Bot.Brain.csproj" />
+    <Project Path="src/Fiesta.Bot.Fleet/Fiesta.Bot.Fleet.csproj" />
+    <Project Path="src/Fiesta.Bot.Server/Fiesta.Bot.Server.csproj" />
+    <Project Path="src/Fiesta.Bot.CodeAnalysis/Fiesta.Bot.CodeAnalysis.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Fiesta.Bot.Next.Tests/Fiesta.Bot.Next.Tests.csproj" />
+  </Folder>
+</Solution>

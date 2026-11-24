@@ -1,0 +1,13 @@
+<Project>
+  <!-- Redesign skeleton (docs/REDESIGN.md, docs/SKELETON.md). Builds on its own via Fiesta.Bot.Next.slnx;
+       nothing in the current solution references these projects. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS0067;RS2008</NoWarn>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+</Project>

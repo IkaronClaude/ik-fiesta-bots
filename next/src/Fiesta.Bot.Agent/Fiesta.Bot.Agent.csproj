@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Fiesta.Bot.Agent</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Fiesta.Bot.Services/Fiesta.Bot.Services.csproj" />
+    <ProjectReference Include="../Fiesta.Bot.Protocol/Fiesta.Bot.Protocol.csproj" />
+  </ItemGroup>
+</Project>
