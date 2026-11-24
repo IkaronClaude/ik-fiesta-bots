@@ -9,11 +9,13 @@ using Fiesta.Bot.LuaBench;
 // Modes:
 //   micro            per-scenario ns and managed bytes per unit, every engine (Stopwatch + allocation counter)
 //   fleet [N] [T]    N bots x T ticks of the decision function per engine: tick p50/p99/max, GC counts, pauses
+//   logcost          cost of one log line today vs a level-gated handler
 //   bdn              BenchmarkDotNet run of the key scenarios (in-process, MemoryDiagnoser)
 var mode = args.Length > 0 ? args[0] : "micro";
 switch (mode)
 {
     case "micro": Micro.Run(); break;
+    case "logcost": LogCost.Run(); break;
     case "fleet":
         Fleet.Run(args.Length > 1 ? int.Parse(args[1]) : 100, args.Length > 2 ? int.Parse(args[2]) : 2000);
         break;

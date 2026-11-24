@@ -15,17 +15,17 @@ Net -> Protocol -> Services -> Agent -> Api -> Brain -> Fleet -> Server.
 | project | types | classes | interfaces | records | structs | enums | public members | enum values |
 |---|---|---|---|---|---|---|---|---|
 | Fiesta.Bot.Agent | 64 | 38 | 4 | 6 | 2 | 14 | 221 | 168 |
-| Fiesta.Bot.Api | 32 | 23 | 0 | 3 | 0 | 6 | 259 | 51 |
+| Fiesta.Bot.Api | 33 | 23 | 0 | 4 | 0 | 6 | 262 | 51 |
 | Fiesta.Bot.Brain | 42 | 14 | 1 | 21 | 0 | 6 | 147 | 32 |
 | Fiesta.Bot.CodeAnalysis | 3 | 3 | 0 | 0 | 0 | 0 | 3 | 0 |
 | Fiesta.Bot.Fleet | 19 | 5 | 4 | 8 | 0 | 2 | 86 | 16 |
 | Fiesta.Bot.Net | 14 | 2 | 6 | 3 | 1 | 2 | 31 | 9 |
 | Fiesta.Bot.Protocol | 16 | 10 | 3 | 0 | 2 | 1 | 30 | 43 |
 | Fiesta.Bot.Server | 13 | 5 | 0 | 7 | 0 | 1 | 33 | 6 |
-| Fiesta.Bot.Services | 23 | 5 | 5 | 9 | 0 | 4 | 87 | 22 |
+| Fiesta.Bot.Services | 38 | 13 | 5 | 13 | 1 | 6 | 148 | 39 |
 | Fiesta.Bot.Next.Tests | 4 | 4 | 0 | 0 | 0 | 0 | 13 | 0 |
 
-**10 projects, 230 types, 910 public members** (members counted as documented public declarations, record positional parameters and interface members; enum values separately).
+**10 projects, 246 types, 974 public members** (members counted as documented public declarations, record positional parameters and interface members; enum values separately).
 
 ## Fiesta.Bot.Agent
 
@@ -103,6 +103,7 @@ Net -> Protocol -> Services -> Agent -> Api -> Brain -> Fleet -> Server.
 - `Alloc` (enum, 4 values, Binding.cs): Allocation marks.
 - `IteratorKind` (enum, 7 values, Binding.cs): Iterator sources the generated bindings know how to walk without building tables.
 - `LuaIter` (record struct, 3 members, Binding.cs): A lazy iterator handed to Lua: the binding pushes a cached iterator closure plus this state; each step asks the module for the next item after the control value.
+- `LuaVarArgs` (record struct, 2 members, Binding.cs): Variadic Lua arguments left on the stack (first index, count); the binding reads them only when needed.
 - `ApiModule` (class, 1 members, Binding.cs): Base for modules: access to the bot's context for the current tick, and the calling layer.
 - `ApiErrors` (class, 3 members, Binding.cs): Pending error state for one VM, checked by the runner after a state call.
 - `ManifestFunction` (record, 7 members, Binding.cs): One function in the API manifest.
@@ -127,7 +128,7 @@ Net -> Protocol -> Services -> Agent -> Api -> Brain -> Fleet -> Server.
 - `TimeModule` (class, 4 members, Modules.cs): Lua module `time` (4 functions, API_SPEC 2).
 - `EvModule` (class, 4 members, Modules.cs): Lua module `ev` (4 functions, API_SPEC 2).
 - `WorldModule` (class, 1 members, Modules.cs): Lua module `world` (1 functions, API_SPEC 2).
-- `DbgModule` (class, 6 members, Modules.cs): Lua module `dbg` (6 functions, API_SPEC 2).
+- `DbgModule` (class, 7 members, Modules.cs): Lua module `dbg` (7 functions, API_SPEC 2).
 
 ## Fiesta.Bot.Brain
 
@@ -256,6 +257,21 @@ Net -> Protocol -> Services -> Agent -> Api -> Brain -> Fleet -> Server.
 
 ## Fiesta.Bot.Services
 
+- `LogLevel` (enum, 5 values, Logging.cs): Log levels; a level is enabled when it is at or below the threshold (REDESIGN 16.2).
+- `LogCategory` (enum, 12 values, Logging.cs): Log categories, each with its own runtime level per bot.
+- `LogEntry` (struct, 9 members, Logging.cs): One ring entry: arguments are stored, text is rendered when read (never on the tick).
+- `LogEventAttribute` (class, 4 members, Logging.cs): Marks a partial method whose body the generator emits as a structured log event.
+- `LogEventDef` (record, 12 members, Logging.cs): Registered event definitions (for rendering entries at read time).
+- `BotLogger` (class, 7 members, Logging.cs): Per-bot logger: level table, ring, repeat collapsing, rate limit; hands entries to the shared writer.
+- `LogCounters` (record, 4 members, Logging.cs): Logging counters exported as metrics.
+- `LogRing` (class, 3 members, Logging.cs): Fixed-capacity per-bot ring of entries (default 16,384), single writer (the tick), lock-free readers by sequence number.
+- `RepeatCollapser` (class, 3 members, Logging.cs): Collapses repeats of the same (category, event or template) within a window into one line with a count.
+- `LogRateLimiter` (class, 3 members, Logging.cs): Per-bot token bucket for Note/Info and Debug/Trace volumes; Crit always passes.
+- `LogWriter` (class, 4 members, Logging.cs): Process-wide background writer: drains entries from all bots, renders, writes batched, rotates by size, gzips, enforces retention. Never runs on tick or I/O threads.
+- `LogRetention` (record, 4 members, Logging.cs): Rotation and retention.
+- `LogRenderer` (class, 1 members, Logging.cs): Renders entries to text (with date, level, category, mob names) for files, HTTP and the UI.
+- `PacketCaptureSettings` (record, 4 members, Logging.cs): Packet capture settings for one bot (off by default; REDESIGN 16.4).
+- `PacketCapture` (class, 3 members, Logging.cs): Copies matching frames into pooled buffers on the I/O thread and hands them to the writer.
 - `IClock` (interface, Services.cs): Monotonic clock; the tick reads it once (replayable).
 - `SystemClock` (class, Services.cs): Real clock.
 - `MobInfoRow` (record, 8 members, Services.cs): Client MobInfo row (the fields the runtime uses).

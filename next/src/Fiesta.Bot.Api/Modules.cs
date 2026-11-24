@@ -741,22 +741,25 @@ public sealed class WorldModule(AgentContext ctx) : ApiModule(ctx)
     public int Version(int component) => throw new NotImplementedException();
 }
 
-/// <summary>Lua module `dbg` (6 functions, API_SPEC 2).</summary>
+/// <summary>Lua module `dbg` (7 functions, API_SPEC 2).</summary>
 [LuaModule("dbg")]
 public sealed class DbgModule(AgentContext ctx) : ApiModule(ctx)
 {
-    /// <summary>Note-level log line.</summary>
+    /// <summary>Note line in the script category of the calling layer; formatted in C# only when enabled; budgeted.</summary>
     [LuaFn(Cost = Cost.O1, Alloc = Alloc.Small, GlobalAlias = "log")]
-    public void Log(string text) => throw new NotImplementedException();
-    /// <summary>Info-level log line.</summary>
+    public void Log(string fmt, LuaVarArgs args) => throw new NotImplementedException();
+    /// <summary>Info line; formatted only when enabled.</summary>
     [LuaFn(Cost = Cost.O1, Alloc = Alloc.Small)]
-    public void Logi(string text) => throw new NotImplementedException();
-    /// <summary>Verbose log line (dropped unless enabled).</summary>
+    public void Logi(string fmt, LuaVarArgs args) => throw new NotImplementedException();
+    /// <summary>Debug line; formatted only when enabled.</summary>
     [LuaFn(Cost = Cost.O1, Alloc = Alloc.Small)]
-    public void Logv(string text) => throw new NotImplementedException();
-    /// <summary>CRIT line + debugger flag.</summary>
+    public void Logv(string fmt, LuaVarArgs args) => throw new NotImplementedException();
+    /// <summary>Crit line + debugger flag (never dropped, collapsed).</summary>
     [LuaFn(Cost = Cost.O1, Alloc = Alloc.Small)]
-    public void Crit(string text) => throw new NotImplementedException();
+    public void Crit(string fmt, LuaVarArgs args) => throw new NotImplementedException();
+    /// <summary>Is the level on for this layer's script category?</summary>
+    [LuaFn(Cost = Cost.O1, Alloc = Alloc.None)]
+    public bool Enabled(int level) => throw new NotImplementedException();
     /// <summary>Debugger watch value.</summary>
     [LuaFn(Cost = Cost.O1, Alloc = Alloc.None)]
     public void Watch(string name, double value) => throw new NotImplementedException();

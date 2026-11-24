@@ -1,0 +1,9 @@
+case                                                              ns/line     B/line
+current Log, short Note line, no file                                 819        413
+current Log, Verbose line nobody reads (no level check), no file        840        328
+current Log, 3.3 KB status line with mob tokens, no file            35359      66537
+current Log + BotLogFile (AutoFlush per line), short line            3506        368
+current Log + BotLogFile, 3.3 KB status line                        37263      66440
+gated handler, Verbose call filtered out                               24          0
+gated handler, Note call enabled, no file                             599        368
+current PacketLog dump, 200-byte frame (formatting only)            11051      13728

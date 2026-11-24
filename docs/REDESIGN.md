@@ -3,7 +3,8 @@
 The answer to `docs/REVIEW_2026-11.md`. Issue ids (P1, D1, C4, ...) refer to that document's index.
 Companion documents: `docs/API_SPEC.md` (the full API), `docs/SKELETON.md` (the compiling skeleton in `next/`,
 where the new host is named `Fiesta.Bot.Server` and the Roslyn generator/analyzers `Fiesta.Bot.CodeAnalysis`),
-`docs/LUA_BENCH.md` (the engine measurements).
+`docs/LUA_BENCH.md` (the engine measurements), `docs/LOGGING.md` (logging measurement and quick wins; the
+design is section 16 here).
 
 Priorities, in order: **performance** (no tick ever waits on the network; <= ~1 ms per bot per tick),
 **correct game rules**, **a brain the operator can see, edit, version and switch from the UI**, and clean
@@ -711,6 +712,7 @@ bots running live.
 | phase | content | keeps / rewrites | effort | risk |
 |---|---|---|---|---|
 | **0. Spikes and guards** (1 week) | KeraLua vs MoonSharp crossing benchmark in the container; replay recorder on the current host (inbound frames + clock) so later phases have fixtures; tick-step stats without batch averaging; fix the phase visit date display | keeps everything | 4-6 | low |
+| **0b. Logging quick wins** (2-3 days, current code) | `docs/LOGGING.md` section 7: gate the Lua status dump, level threshold + gated interpolation handler in `BotHandle.Log`, off-thread file writer with size rotation, repeat collapsing, read-time mob names, smaller ring, demotions, SLOW TICKS threshold, cheaper packet log | keeps everything | 2-3 | low |
 | **1. Immediate correctness** (1 week, can ship on the current code) | port the godot path search + goal snapping; load `.shab`; `GameRules` for bash/skill reach replacing the learned scalar; leash from last-hit point; MOVEFAIL desync vs blocked classification and per-bot overlays; `Refused` instead of `Sent` for local refusals | rewrites `NavMeshPath.Find`, parts of `ZoneView` and `CastAsync` | 6-8 | medium: live behaviour changes; A/B on two bots |
 | **2. Agent core** (3 weeks) | `Protocol` decoders split out of `ZoneView`; `WorldState` components with versions; `ActionSystem` + catalog; procedures for shop, dialogue, gate, dismount, revive, trade, tent, storage; `MoveController`, `CombatController`; tick workers + inbound/outbound rings; `BotApi` reimplemented on top (sync calls become intents; the Lua's `bool` contract kept by resolving "sent") | rewrites `ZoneView`, `BotManager` action code; keeps Net, login, cipher, FiestaLib, damage formula, ClientData | 15-20 | high: biggest surface; mitigated by replay fixtures from Phase 0 and running old and new decoders side by side, diffing WorldState |
 | **3. Lua engine + helper library** (2 weeks) | generated bindings, modules from section 4, compatibility shim, level_quest running unchanged on the new runtime | rewrites `BotScriptRunner`, `BotApi` surface | 8-12 | medium: Lua semantics differences between MoonSharp and Lua 5.4 (integer division, `#` on tables, `select('#')`); covered by running the leveller in replay |
@@ -720,7 +722,7 @@ bots running live.
 | **7. Knowledge estimators** (1-2 weeks) | interval estimators, shared store, offline validation report, family assist, mob reach/interval, damage fit | rewrites learners | 6-8 | low |
 | **8. Hardening** (1 week) | perf CI budgets, analyzers, health rules, graceful deploy drain | | 4-6 | low |
 
-Total ~80 to 105 engineer-days. Order rationale: Phase 1 fixes the S1 correctness items now, on the
+Total ~82 to 108 engineer-days. Order rationale: Phase 1 fixes the S1 correctness items now, on the
 current code, because they do not depend on the new architecture. Phase 0's recorder makes Phase 2
 safe. The leveller is split up last, by the people who use the debugger to do it.
 
@@ -747,6 +749,8 @@ region build (rectangles, portals, doors), minimap and icon rendering, the knowl
    when they are exact.
 7. **Server-only facts are learned with explicit estimators** and validated offline, never read at
    runtime.
+8. **Logging is zero-cost when off and structured when on**: state, transitions, actions and tick stats
+   are telemetry streams, not prose; log lines are for events a human reads (section 16).
 
 ## 15. Open questions for the operator
 
@@ -755,3 +759,69 @@ region build (rectangles, portals, doors), minimap and icon rendering, the knowl
   already depends on?
 - UI auth: keep the bearer token, or move to the same login as the other web tools?
 - Which bots may run candidate brains (A/B) on the live server?
+
+---
+
+## 16. Logging and telemetry
+
+Measured today (`docs/LOGGING.md`): 92 lines and 16.4 KB per bot-minute on average, 178 to 219 on active
+or looping bots; 75 % of lines repeat within 10 s; one Debug-level status line nobody reads is 38 % of the
+bytes and costs ~35 us and 66 KB on the C# side plus ~150 Lua crossings every 2 s; every call is formatted
+before any level check (840 ns and 328 B for a filtered line); the file is flushed per line and rotated by
+renaming up to 99 files on the calling thread; the ring keeps up to ~14 MB per bot in gen2; 2.1 GB on disk.
+
+### 16.1 Principles
+
+1. **Zero cost when off.** Every log call checks `IsEnabled(category, level)` (an array index) before
+   anything else. Formatting goes through an `[InterpolatedStringHandler]` (`LogHandler`) that formats
+   only when enabled, and through source-generated `[LogEvent]` methods (the `LoggerMessage` pattern)
+   for hot, fixed-shape events. Measured: **24 ns and 0 bytes** for a filtered call.
+2. **Structured where something consumes it.** State, transitions (with reason and values), actions and
+   their results, procedures, tick stats and sensor data are telemetry (`DebugFrame`, transition history,
+   `TickSample`, Prometheus), not log lines. The log does not duplicate them; the UI shows them from the
+   streams. A transition produces a log line only when the `brain` category is at Info or lower.
+3. **Store arguments, format later.** A ring entry is a `LogEntry` struct: timestamp, level, category,
+   event id, up to four numeric arguments and an optional string. Formatting to text happens when the
+   entry is read (UI, HTTP, file writer), never on the tick. Mob ids become names at read time.
+4. **Nothing on the tick touches a file, a lock shared with readers, or a regex.**
+
+### 16.2 Levels and categories
+
+- Levels: `Crit` (act now), `Note` (headline), `Info` (progress), `Debug` (per-decision detail),
+  `Trace` (per-frame). Default per bot: `Note` for every category; `Crit` is always on.
+- Categories: `core`, `net`, `packet`, `nav`, `combat`, `quest`, `item`, `social`, `brain`, `script`
+  (Lua, sub-keyed by layer), `prof`, `knowledge`.
+- **Per bot, per category, at runtime**, from the UI and `PUT /api/v3/bots/{id}/log-levels`; persisted
+  with the bot; optional expiry ("debug for 15 min") so a forgotten debug level reverts.
+
+### 16.3 Volume control
+
+- **Repeat collapsing:** a second line with the same (category, event id or template hash) within 10 s
+  increments a counter; the window closes with one line `... (x N in 10 s)`.
+- **Rate limit:** per bot token bucket (300 lines/min for Note+Info, burst 50; Debug/Trace 1,200/min);
+  drops are counted in a metric and announced once per minute. `Crit` is never dropped, only collapsed.
+- **Lua budget:** `dbg.*` is limited to 5 lines per tick and 60 per minute per layer; the excess is
+  counted and reported once. `dbg.enabled(level)` lets Lua skip building expensive text, and
+  `dbg.log(fmt, ...)` formats in C# only when enabled (Lua passes scalars).
+
+### 16.4 Storage
+
+- **Ring:** per bot, 16,384 `LogEntry` slots (struct array + string column), <= 4 MB; at the default
+  level that is many hours. The UI and `/log` read it.
+- **Files:** one background `LogWriter` for the process drains an MPSC channel of entries from all bots,
+  formats them, writes in batches, flushes every 1 s and right after a `Crit`, rotates by size (16 MB)
+  into date-stamped files, gzips rotated files, and keeps 3 days with a total cap of 1 GB (oldest
+  deleted first). Lines carry a date.
+- **Packet capture:** off by default; enabled per bot with an opcode/department filter, a duration
+  (auto-off, default 15 min) and a size cap. The I/O thread copies the raw frame into a pooled buffer;
+  the writer renders it (or writes a binary capture the UI and the pcap tools render). The setting
+  survives relogs.
+
+### 16.5 Targets and measurement
+
+At the default level: **<= 20 lines/min/bot** steady state, **<= 4 KB/min/bot**, **0 bytes and < 30 ns**
+for a filtered call, no file I/O on tick or I/O threads, ring <= 4 MB/bot, disk <= 1 GB with 3 days of
+history, logging < 1 % of tick time. Measured by metrics `fiestabot_log_lines_total{bot,category,level}`,
+`fiestabot_log_bytes_total`, `fiestabot_log_dropped_total{reason}`, `fiestabot_log_collapsed_total`, the
+ring fill, the writer queue depth and a `log` step in `TickSample`. CI benchmark: a filtered call
+allocates 0 bytes.

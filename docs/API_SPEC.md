@@ -335,13 +335,14 @@ Each estimator returns `estimate, low, high, samples`; `-1, -1, -1, 0` when unkn
 | `ev.last(kind)` | tick, arg1, arg2 | most recent, `-1` none |
 | `ev.chatText()` | name, text | for the latest `CHAT`/`WHISPER` event (lua-str) |
 | `world.version(component)` | integer | `world.SELF, ENTS, BAG, SKILLS, QUESTS, PARTY, MAP` |
-| `dbg.log(text)` / `dbg.logi(text)` / `dbg.logv(text)` | - | Note / Info / Verbose |
-| `dbg.crit(text)` | - | CRIT line + DebugFrame flag |
+| `dbg.log(fmt, ...)` / `dbg.logi(fmt, ...)` / `dbg.logv(fmt, ...)` | - | Note / Info / Debug in category `script.<layer>`; formatted in C# (`string.format` rules) only when enabled; budgeted (section 12.4) |
+| `dbg.crit(fmt, ...)` | - | Crit line + DebugFrame flag (never dropped, collapsed) |
+| `dbg.enabled(level)` | boolean | is that level on for this layer's script category (`dbg.NOTE/INFO/DEBUG/TRACE`); call before building expensive text |
 | `dbg.watch(name, value)` | - | shown in the debugger with history |
 | `dbg.mark(section)` | - | tick profiler section boundary |
 
-Total: **222 functions** in 16 modules (self 30, ents 26, threat 13, combat 13, skills 21, act 26,
-items 13, quests 16, nav 15, npc 11, social 14, know 9, time 4, ev 4, world 1, dbg 6).
+Total: **223 functions** in 16 modules (self 30, ents 26, threat 13, combat 13, skills 21, act 26,
+items 13, quests 16, nav 15, npc 11, social 14, know 9, time 4, ev 4, world 1, dbg 7).
 
 ---
 
@@ -723,3 +724,61 @@ STOP, RELOG, APPLY_VERSION(hash, keepState)`. Commands are drained at the start 
 `bot.cast(s, t)` -> `act.cast` and returns `true` when queued, etc. A single-state brain
 (`compat: true`) runs an unmodified API-2 script: its `tick()` becomes the state tick, `on_*` handlers are
 called from the matching events. Removed once the leveller is split up (REDESIGN Phase 6).
+
+---
+
+## 12. Logging API
+
+Design and measurements: `docs/REDESIGN.md` section 16, `docs/LOGGING.md`.
+
+### 12.1 Model
+
+| type | fields |
+|---|---|
+| `LogLevel` | `Crit = 0, Note = 1, Info = 2, Debug = 3, Trace = 4` (enabled when `level <= threshold`) |
+| `LogCategory` | `Core, Net, Packet, Nav, Combat, Quest, Item, Social, Brain, Script, Prof, Knowledge` |
+| `LogEntry` (struct) | `long At` (ms), `LogLevel`, `LogCategory`, `ushort EventId` (0 = free text), `byte Layer`, `long A0..A3`, `double D0..D1`, `string? Text`, `int Repeat` (collapsed count) |
+| `LogEventDef` | id, category, level, template (`"walkTo ({x},{y}) unreachable on {map}"`), argument names; generated from `[LogEvent]` methods |
+
+### 12.2 C# API (`Fiesta.Bot.Services.Logging`)
+
+```csharp
+public sealed class BotLogger
+{
+    public bool IsEnabled(LogCategory c, LogLevel l);                         // array lookup, no allocation
+    public void Log(LogCategory c, LogLevel l,
+        [InterpolatedStringHandlerArgument("", "c", "l")] ref LogHandler message); // formats only if enabled
+    public void Event(in LogEntry entry);                                      // structured (generated callers)
+    public void SetLevel(LogCategory c, LogLevel l, TimeSpan? expiry = null);
+}
+
+static partial class NavLog                                                    // generated bodies
+{
+    [LogEvent(Id = 101, Category = LogCategory.Nav, Level = LogLevel.Note,
+              Template = "walkTo ({x},{y}) unreachable on {map} after {ms} ms")]
+    public static partial void Unreachable(BotLogger log, int x, int y, int map, int ms);
+}
+```
+
+Rules: no `string.Format` or interpolation outside a `LogHandler`; no `ToString()` of collections in log
+arguments (log a count and an id; the UI shows the collection); `Crit` only for "a human should act".
+
+### 12.3 HTTP
+
+| method | path | body / query | returns |
+|---|---|---|---|
+| GET | `/api/v3/bots/{id}/log` | `level, category, from, to (ISO date-time), max, text` | formatted lines with dates (ring, then files) |
+| GET | `/api/v3/bots/{id}/log-levels` | - | `{category: {level, expiresAt}}` |
+| PUT | `/api/v3/bots/{id}/log-levels` | `{category, level, expiryMinutes?}` | updated map (persisted) |
+| POST | `/api/v3/bots/{id}/packet-capture` | `{enabled, opcodes?, depts?, minutes: 15, maxMb: 64, format: text or binary}` | capture state |
+| GET | `/api/v3/bots/{id}/packet-capture` | - | state and file list |
+| GET | `/api/v3/log/stats` | - | lines, bytes, drops, collapsed per bot and category (last 1/10/60 min) |
+
+The WebSocket topic `log` (section 8.4) streams entries rendered as `{t, level, category, text, repeat}`,
+at most 20 lines/s per subscription; Debug/Trace only while the subscriber asked for them.
+
+### 12.4 Lua budget and gating
+
+Per layer: 5 `dbg.*` lines per tick and 60 per minute; the excess is counted and reported once per minute
+as `script lines dropped: N`. `dbg.log(fmt, ...)` evaluates its arguments in Lua (scalars) and formats in
+C# only when enabled; text arguments over 512 bytes are truncated with a marker.

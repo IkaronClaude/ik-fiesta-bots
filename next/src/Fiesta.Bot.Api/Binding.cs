@@ -45,6 +45,9 @@ public enum IteratorKind : byte { Entities, Skills, BagSlots, ActiveQuests, Avai
 /// asks the module for the next item after the control value.</summary>
 public readonly record struct LuaIter(IteratorKind Kind, int ScratchStart, int Count);
 
+/// <summary>Variadic Lua arguments left on the stack (first index, count); the binding reads them only when needed.</summary>
+public readonly record struct LuaVarArgs(int First, int Count);
+
 /// <summary>Base for modules: access to the bot's context for the current tick, and the calling layer.</summary>
 public abstract class ApiModule
 {
