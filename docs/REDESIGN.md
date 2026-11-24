@@ -14,7 +14,7 @@ boundaries so that each of those stays true.
 |---|---|
 | tick never blocks on I/O | zero `await`/`Wait` on the tick thread; enforced by an analyzer (section 12.5) |
 | per-bot tick cost | p50 <= 0.3 ms, p99 <= 1.0 ms, hard cap 5 ms (Lua instruction budget aborts the tick and reports) |
-| allocation | <= 2 KB per tick in steady state (target 0 in the C# path) |
+| allocation | guideline: aim for zero allocation per tick (section 2.5); measured per tick, alarm when a bot's p95 exceeds 1 KB/tick over 1 min or any single tick exceeds 16 KB |
 | GC | no gen2 blocking collection during normal play; gen0 pause share < 0.5 % |
 | tick rate | 20 Hz per bot by default (combat layers), lower for planning layers; 100 bots on 4 cores |
 | decision latency | inbound packet -> brain sees it: <= 1 tick (50 ms) |
@@ -135,14 +135,36 @@ Steps 2 to 5 are C# and bounded by the number of events; step 6 is bounded by th
    `world.version("quests")`. There is no hand-kept list of what may be cached.
 5. **Layers run at their own rate.** The combat layer runs every tick; goal/errand layers every 250 to
    1,000 ms; their expensive planning goes to jobs whose results arrive as events.
-6. **Zero-allocation C# path.** Pooled buffers (`ArrayPool`), struct events, `Span`-based decoders, no
-   LINQ, no closures, no `DateTime.UtcNow` (one clock read per tick).
+6. **Allocation-aware C# path** (guideline, section 2.5): struct events, `Span`-based decoders, per-bot
+   lazily created scratch storage, no per-tick list/table building, no LINQ or capturing closures on hot
+   paths, no `DateTime.UtcNow` (one clock read per tick).
 7. **Budget enforcement.** The Lua engine's instruction-count hook fires every 10,000 instructions; a
    state tick over its budget (default 2 ms) is aborted with `BudgetExceeded`, the bot stays in its state,
    and the UI shows which function blew it. A bot over budget three ticks in a row is paused, not left to
    stall its worker's partition.
 
-### 2.5 How it is measured
+### 2.5 Allocation guideline
+
+The target is **"zero allocation per tick" as a guideline, not a literal rule**. What matters is large or
+repeated garbage, because every collection stops every bot in the process.
+
+- **Do care about:** building lists, arrays or Lua tables per tick (the 100 to 190 KB `nearbyMobs` shape);
+  LINQ and capturing closures on hot paths; boxing (`object` parameters, non-generic collections, `enum`
+  `HasFlag` on old runtimes, interface calls on structs); long string building, splitting or formatting
+  per tick (format log lines lazily, only when the level is enabled); per-call `params` arrays; events
+  that allocate a payload object per packet.
+- **Prefer reuse where it is natural:** per-bot fields created lazily on first use (a `List<T>` kept and
+  `Clear()`ed, a scratch `int[64]` for a query result, a `StringBuilder` for the log line), pooled
+  buffers for packets, struct events in rings.
+- **Do not contort the code:** a few hundred bytes of scratch per bot is fine; there is no need to
+  share one array across unrelated helpers, to avoid a short-lived small string (an error message, a
+  log line that is actually emitted), or to hand-roll collections to avoid an occasional small object.
+- **Measured:** `TickStats.AllocBytes` per tick (thread allocation counter delta) per bot, as an HDR
+  histogram; the host's gen0/gen1/gen2 counts and pause time per minute. **Alarm:** a bot whose p95
+  exceeds 1 KB/tick over a minute, any single tick over 16 KB, or any blocking gen2 during normal play.
+  The alarm names the tick step (decode, apply, actions, brain) that allocated.
+
+### 2.6 How it is measured
 
 - `TickStats` per tick: wall time per step (2 to 9), events applied, intents emitted, Lua instructions,
   allocated bytes (`GC.GetAllocatedBytesForCurrentThread` delta). Recorded into an HDR histogram per bot
@@ -451,13 +473,19 @@ layers:
 -- user/ikaron.lua  (a user library: shared helpers any state may call)
 local M = {}
 
-function M.isHealSkill(skill)
-  return skills.hasTag(skill, "heal") and not skills.hasTag(skill, "partyOnly")
+-- Subjective and tweakable: which heals I consider worth casting right now. canUse() (C#) answers
+-- "is it possible"; this answers "is it a good idea".
+function M.isGoodHealSkill(skill)
+  if not skills.hasTag(skill, "heal") or skills.hasTag(skill, "partyOnly") then return false end
+  local missing = self.maxHp() - self.hp()
+  -- don't burn a big, slow heal on a scratch, and keep SP for damage when nothing is on us
+  if skills.healAmount(skill) > missing * 2 and threat.onUs() == 0 then return false end
+  return skills.castTime(skill) < 1500 or threat.onUs() == 0
 end
 
-function M.bestHeal()
+function M.bestHeal(target)
   for s in skills.list("heal") do                 -- iterator, no table built
-    if skills.ready(s) and M.isHealSkill(s) then return s end
+    if canUse(s, target) and M.isGoodHealSkill(s) then return s end
   end
   return -1
 end
@@ -471,9 +499,10 @@ local my = require "user/ikaron"
 local S = {}
 
 function S.recoverTick()
-  local s = my.bestHeal()
-  if s >= 0 and canUse(s) and my.isHealSkill(s) then   -- canUse = core helper: ready, SP, not moving
-    act.cast(s, self.handle())
+  local me = self.handle()
+  local s = my.bestHeal(me)
+  if s >= 0 and canUse(s, me) and my.isGoodHealSkill(s) then   -- canUse: C#; isGoodHealSkill: user library
+    act.cast(s, me)
     return
   end
   local p = items.bestPotion(self.maxHp() - self.hp())
@@ -483,8 +512,13 @@ end
 return S
 ```
 
-`canUse(skill) and isHealSkill(skill)` works as written: `canUse` comes from `lib/core` (a default
-library shipped with the host, versioned with the API), `isHealSkill` from the user's library.
+`canUse(skill, target) and isGoodHealSkill(skill)` works as written. **`canUse` is a C# helper**
+(global alias of `skills.canUse`, see `docs/API_SPEC.md`): the generic, objective check of everything the
+game will refuse - learned, cooldown and cooldown group, SP/HP/LP cost, range with the target's body and
+the range tolerance, line of fire, our state (stunned, silenced, feared, mounted, casting, moving for a
+non-moving skill), weapon and shield requirements, target validity (alive, attackable or healable, same
+layer). It returns a boolean and, via `skills.whyNot(skill, target)`, the reason. **`isGoodHealSkill` is a
+user helper**: the subjective policy the operator tunes in the online editor.
 
 ---
 
@@ -607,7 +641,11 @@ tick p99. These are what "is the new brain better" is decided on.
 
 ## 11. Lua engine
 
-- **Decision: native Lua 5.4 through KeraLua** (the raw C API binding), behind an `ILuaEngine` interface,
+- **Measured (docs/LUA_BENCH.md):** per crossing 299 ns / 785 B (MoonSharp as used today) vs 25.6 ns / 0 B
+  (native Lua 5.4.9 with function-pointer bindings); a representative decision tick 43.5 us / 90.7 KB vs
+  4.2 us / 0 B; 100 bots x 2,000 ticks: 1,158 gen0 and 313 ms of pause vs none.
+- **Decision: native Lua 5.4 through KeraLua** (native libraries and VM management) with generated
+  `[UnmanagedCallersOnly]` function-pointer bindings on the hot path, behind an `ILuaEngine` interface,
   with MoonSharp kept as a second implementation for the compatibility layer during migration. The
   project plan chose MoonSharp for "no native dependencies under Wine/Docker"; the host now runs as a
   Linux container on the cluster, where KeraLua ships `linux-x64` native libraries. The choice is gated
@@ -646,7 +684,7 @@ deaths, low-water HP and damage taken; the bench is how kiting and pulling chang
 - BenchmarkDotNet micro-benchmarks: decode of the 20 most frequent packets, `WorldState.Apply`, spatial
   queries, each `[LuaFn]` crossing, path search on five maps.
 - Macro benchmark: 100 agents replaying recorded sessions on 4 worker threads; asserts tick p99 <= 1 ms,
-  allocation <= 2 KB/tick, no gen2.
+  allocation p95 <= 1 KB/tick (the alarm threshold of section 2.5), no gen2.
 - Budgets live in `perf-budgets.json`; CI fails on regression.
 
 ### 12.4 Rule tests

@@ -1,0 +1,41 @@
+engine               scenario          ns/unit     B/unit  unit
+moonsharp-userdata   calls_scalar       1107.9      784.8  crossing
+moonsharp-userdata   calls_arg           589.5      928.8  crossing
+moonsharp-userdata   iter_mobs           391.3      620.4  crossing
+moonsharp-userdata   table_mobs        72349.0   109431.2  50-mob table
+moonsharp-userdata   strings            1041.3     1939.2  map()+log()
+moonsharp-userdata   bb_access           738.8      960.8  iteration
+moonsharp-userdata   decide            44246.6    89914.7  tick
+moonsharp-userdata   decide_table      48646.0   127306.8  tick
+moonsharp-userdata   reload              10728us     5021KB  per 1,500-line module
+
+moonsharp-callback   calls_scalar        193.2      488.8  crossing
+moonsharp-callback   calls_arg           288.9      600.8  crossing
+moonsharp-callback   iter_mobs           192.7      435.4  crossing
+moonsharp-callback   table_mobs        33805.9   109159.2  50-mob table
+moonsharp-callback   strings             555.5     1339.2  map()+log()
+moonsharp-callback   bb_access           583.6      960.8  iteration
+moonsharp-callback   decide            29102.1    65260.7  tick
+moonsharp-callback   decide_table      43960.9   126316.8  tick
+moonsharp-callback   reload               8210us     5021KB  per 1,500-line module
+
+keralua              calls_scalar         32.2        0.0  crossing
+keralua              calls_arg            52.5        0.0  crossing
+keralua              iter_mobs            45.8        0.0  crossing
+keralua              table_mobs        29669.9        0.0  50-mob table
+keralua              strings             421.1      144.0  map()+log()
+keralua              bb_access            60.9        0.0  iteration
+keralua              decide             6364.3        5.6  tick
+keralua              decide_table      27531.0        5.6  tick
+keralua              reload               1238us       34KB  per 1,500-line module
+
+raw-fnptr            calls_scalar         25.8        0.0  crossing
+raw-fnptr            calls_arg            33.9        0.0  crossing
+raw-fnptr            iter_mobs            26.7        0.0  crossing
+raw-fnptr            table_mobs        17046.3        0.0  50-mob table
+raw-fnptr            strings             197.2        0.0  map()+log()
+raw-fnptr            bb_access            64.5        0.0  iteration
+raw-fnptr            decide             4266.6        0.0  tick
+raw-fnptr            decide_table      17073.3        0.0  tick
+raw-fnptr            reload               1100us       34KB  per 1,500-line module
+
