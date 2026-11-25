@@ -149,7 +149,11 @@ public static class ActionCatalog
         S(ActionKind.TradeTakeBack, Resource.Npc, T(19, 18, (a, e) => e.B == a.Arg0), 5000);
         S(ActionKind.TradeOfferMoney, Resource.Npc, T(23, 22), 5000);
         S(ActionKind.TradeLock, Resource.Npc, T(27, 26), 5000);
-        S(ActionKind.TradeConfirm, Resource.Npc, T(33, 32), 5000);
+        // the trade may complete before our own DECIDE_ACK arrives (seen live: the partner decided first, COMPLETE came
+        // in place of the ack)
+        var decide = T(33, 32);
+        S(ActionKind.TradeConfirm, Resource.Npc, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.TradeEvent && e.A == 36 ? (ActionState.Acked, (ushort)0) : decide.Match(a, e, w)), 5000);
         S(ActionKind.TradeCancel, Resource.None, new FnMatcher((a, e, w) => e.Kind == InboundKind.TradeEvent && e.A is 7 or 8 or 11 or 12 ? (ActionState.Acked, (ushort)0) : null), 5000);
         // production: one cast makes one lot (PRODUCE_MAKE 0x0B01), refused by its code; choosing a field answers 0x0B01
         S(ActionKind.Produce, Resource.Cast, new FnMatcher((a, e, w) =>

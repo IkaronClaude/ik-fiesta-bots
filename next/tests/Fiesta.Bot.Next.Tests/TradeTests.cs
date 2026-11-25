@@ -82,6 +82,17 @@ public class TradeTests
     }
 
     [Fact]
+    public void A_confirm_is_acked_by_the_completion_when_it_comes_first()
+    {
+        using var t = new TestBot();
+        t.Tick(2);
+        Trade(t, 9, b: 2001);
+        var dc = Step(t, ActionKind.TradeConfirm, 31);
+        Trade(t, 36);   // live: OPPOSIT_DECIDE, then COMPLETE right after our DECIDE, no DECIDE_ACK
+        Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(dc).State);
+    }
+
+    [Fact]
     public void A_partner_cancel_refuses_the_pending_step()
     {
         using var t = new TestBot();
