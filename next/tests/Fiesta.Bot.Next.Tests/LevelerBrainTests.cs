@@ -158,4 +158,29 @@ public class LevelerBrainTests
         Assert.NotEqual(first.Arg0, next.Arg0);
         Assert.Empty(b.Debug.Errors());
     }
+
+    private static (string Yaml, Dictionary<string, string> Modules)? LoadSupport()
+    {
+        var d = new DirectoryInfo(AppContext.BaseDirectory);
+        while (d is not null && !Directory.Exists(Path.Combine(d.FullName, "scripts", "brains", "support"))) d = d.Parent;
+        if (d is null) return null;
+        var dir = Path.Combine(d.FullName, "scripts", "brains", "support");
+        return (File.ReadAllText(Path.Combine(dir, "brain.yaml")),
+            Directory.GetFiles(dir, "*.lua").ToDictionary(f => "brain/support/" + Path.GetFileNameWithoutExtension(f), File.ReadAllText));
+    }
+
+    [Fact]
+    public void Support_brain_runs_and_answers_a_buff_request_once()
+    {
+        if (LoadSupport() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(5);
+        t.Ev(InboundKind.EntityAppeared, h: 2500, a: (long)Fiesta.Bot.Agent.EntityKind.Player, b: 1, x: 5050, y: 5000, text: "Friend");
+        var chat = InboundEvent.Of(InboundKind.Chat, 0x2002, t.Clock.NowMs); chat.Handle = 2500; chat.Text = "buff please";
+        t.In.TryWrite(chat);
+        t.Tick(40);
+        Assert.Single(b.Debug.Transitions(), r => r.Layer == "buffs" && r.To == "casting");
+        Assert.Empty(b.Debug.Errors().Where(e => !e.Error.Contains("E_BUDGET")));
+    }
 }
