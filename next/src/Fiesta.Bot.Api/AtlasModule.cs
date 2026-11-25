@@ -129,10 +129,16 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     public double SafeCost(string map, int maxMobLevel)
     {
         if (Ctx.Data.Map(map) is not { } m) return -1;
-        var (px, py) = W.Self.Pos;
         if (Ctx.Refused(m.Id)) return -1;
-        return Ctx.Atlas.Route(W.Map.MapId, px, py, m.Id, double.NaN, double.NaN, x => Ctx.Refused(x), a => Hostile(a.MobId) > maxMobLevel)?.Cost ?? -1;
+        // a route search with the danger test per walk is not cheap: answers are kept per (here, there, level) for 30 s
+        var key = (W.Map.MapId, m.Id, maxMobLevel);
+        if (_safe.TryGetValue(key, out var c) && Ctx.Now - c.At < 30_000) return c.Cost;
+        var (px, py) = W.Self.Pos;
+        var cost = Ctx.Atlas.Route(W.Map.MapId, px, py, m.Id, double.NaN, double.NaN, x => Ctx.Refused(x), a => Hostile(a.MobId) > maxMobLevel)?.Cost ?? -1;
+        _safe[key] = (cost, Ctx.Now);
+        return cost;
     }
+    private readonly Dictionary<(int, int, int), (double Cost, long At)> _safe = new();
 
     private int Hostile(int id) => Ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1;
 }

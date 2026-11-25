@@ -96,6 +96,8 @@ public static class Http
         string? health = b.State == SupervisorState.Offline ? null
             : b.Brain?.Suspended == true ? "brain suspended (budget)"
             : Cycle(b) is { } cyc ? cyc
+            : b.State == SupervisorState.InZone && b.Brain is not null && DateTime.UtcNow - b.LastProgressAt > TimeSpan.FromMinutes(10)
+                ? $"no progress: no exp, level or quest change for {(int)(DateTime.UtcNow - b.LastProgressAt).TotalMinutes} min"
             : b.Brain is { } br && br.LoadErrors.Count > 0 ? "brain load errors"
             : p99 > 1000 ? "tick over budget"
             : b.Agent is { LastTickAt: >= 0 } a && SystemClock.Instance.NowMs - a.LastTickAt > 2000 ? "no tick"

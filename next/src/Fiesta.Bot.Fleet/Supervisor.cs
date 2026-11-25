@@ -378,9 +378,23 @@ public sealed class BotRuntime
         _h.SaveKnowledge();
     }
 
+    /// <summary>Wall time of the last progress (exp, level, a quest accepted / done); the no-progress alarm reads it.</summary>
+    public DateTime LastProgressAt { get; private set; } = DateTime.UtcNow;
+    private long _progExp = -1, _progLevel = -1; private int _progQuests = -1;
+
     private void OnPublish(BotAgent a)
     {
         var now = a.Context.Now;
+        var w = a.Context.World;
+        if (w.Self.InWorld)
+        {
+            var qv = w.Version(WorldComponent.Quests);
+            if (w.Self.Exp != _progExp || w.Self.Level != _progLevel || qv != _progQuests)
+            {
+                if (_progExp >= 0) LastProgressAt = DateTime.UtcNow;
+                _progExp = w.Self.Exp; _progLevel = w.Self.Level; _progQuests = qv;
+            }
+        }
         var every = Watchers > 0 ? 200 : 1000;
         if (now - _lastFrameAt < every) return;
         _lastFrameAt = now;
