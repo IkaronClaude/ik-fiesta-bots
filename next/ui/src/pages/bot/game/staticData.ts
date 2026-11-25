@@ -50,13 +50,31 @@ function iconRoute(kind: string, d: any): string | null {
   return d.icon ? `/api/v3/icons/${kind}/${d.id}.png` : null;
 }
 
+/** The client-data fingerprint (GET /api/v3/static), fetched once per page; appended as ?v= to every static and
+ *  icon URL so a changed data set or host fix is picked up at once despite max-age caching. */
+let fingerprint: string | null = null;
+let fpPromise: Promise<string> | null = null;
+function loadFingerprint(): Promise<string> {
+  fpPromise ??= fetch('/api/v3/static', { headers: getToken() ? { Authorization: `Bearer ${getToken()}` } : {} })
+    .then(r => (r.ok ? r.json() : null)).then(d => (fingerprint = String(d?.fingerprint ?? '')))
+    .catch(() => (fingerprint = ''));
+  return fpPromise;
+}
+/** Append ?v=<fingerprint> (once known) to a static / icon URL. */
+export function versioned(u: string): string {
+  if (!fingerprint) return u;
+  return `${u}${u.includes('?') ? '&' : '?'}v=${encodeURIComponent(fingerprint)}`;
+}
+
 function get(url: string) {
   const tok = getToken();
+  url = versioned(url);
   return fetch(url, { headers: tok ? { Authorization: `Bearer ${tok}` } : {} }).then(r => (r.ok ? r.json() : null));
 }
 
 function flush() {
   scheduled = false;
+  if (fingerprint == null) { scheduled = true; loadFingerprint().then(flush); return; }
   const keys = [...queue]; queue.clear();
   const byKind = new Map<StaticKind, string[]>();
   for (const key of keys) { const [k, id] = key.split(':'); byKind.set(k as StaticKind, [...(byKind.get(k as StaticKind) ?? []), id]); }
@@ -107,7 +125,8 @@ export function useStatic<T>(kind: StaticKind, id: number | null | undefined): T
 export function iconUrl(u: string | null | undefined): string | undefined {
   if (!u) return undefined;
   const tok = getToken();
-  return tok ? `${u}${u.includes('?') ? '&' : '?'}token=${encodeURIComponent(tok)}` : u;
+  const v = versioned(u);
+  return tok ? `${v}${v.includes('?') ? '&' : '?'}token=${encodeURIComponent(tok)}` : v;
 }
 
 const images = new Map<string, HTMLImageElement | null>();

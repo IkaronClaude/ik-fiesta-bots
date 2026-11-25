@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, normDebugFrame } from '../../api/client';
 import type { BotSummary, DebugFrame, LogLine, SensorFrame, TickSample } from '../../api/types';
-import { useTopic, useTopicEvents, useWsStatus } from '../../api/ws';
+import { useHostState, useTopic, useTopicEvents, useWsStatus } from '../../api/ws';
 import { ActionButton, ConfirmButton, Empty, Field, StateBadge, Tabs, fmtDate, fmtNum, fmtTime, useAsync } from '../../components/ui';
 import { useApp } from '../../lib/app';
 import { go, href } from '../../lib/router';
@@ -26,6 +26,7 @@ export function BotPage({ id, tab }: { id: string; tab?: string }) {
   const polled = useAsync(() => api.bot(id), [id]);
   const b = fleet?.find(x => x.id === id) ?? polled.data;
   const ws = useWsStatus();
+  const hostState = useHostState();
   const [edit, setEdit] = useState(false);
   const [replay, setReplay] = useState<{ frames: DebugFrame[]; sensors: SensorFrame[]; label: string } | null>(null);
   if (!b) return <div className="page"><Empty>{polled.error ? polled.error : 'Loading...'}</Empty></div>;
@@ -74,7 +75,7 @@ export function BotPage({ id, tab }: { id: string; tab?: string }) {
           {t === 'replay' && <ReplayTab bot={id} onLoad={r => { setReplay(r); go(`/bots/${encodeURIComponent(id)}/debugger`); }} />}
         </>}
         </ErrorBoundary>
-        {['debugger', 'sensors', 'actions'].includes(t) && !offline && <ConnOverlay down={ws !== 'open' || !/InZone|Paused/i.test(b.state)} reason={ws !== 'open' ? 'connection to the host lost, reconnecting' : `bot is ${b.state}`} />}
+        {['debugger', 'sensors', 'actions'].includes(t) && !offline && <ConnOverlay down={hostState === 'restarting' || ws !== 'open' || !/InZone|Paused/i.test(b.state)} reason={hostState === 'restarting' ? 'host restarting / reconnecting' : ws !== 'open' ? 'connection to the host lost, reconnecting' : `bot is ${b.state}`} />}
       </div>
       {edit && <BotConfigModal bot={b} onClose={() => { setEdit(false); polled.reload(); }} />}
     </div>

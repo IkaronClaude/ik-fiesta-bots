@@ -4,7 +4,7 @@
 // static data by id from cacheable endpoints. Cooldowns / buff timers are end times animated locally (one rAF loop
 // that only touches the elements that are counting down).
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { hub, useWsStatus } from '../../../api/ws';
+import { hub, useHostState, useWsStatus } from '../../../api/ws';
 import { ConnOverlay } from '../../../components/ConnOverlay';
 import { applyOps, fromSnapshot } from './gameModel';
 import { Empty, fmtNum } from '../../../components/ui';
@@ -45,6 +45,7 @@ function useGame(bot: string): GameState | undefined {
 export function GameTab({ bot, botState }: { bot: string; botState?: string }) {
   const state = useGame(bot);
   const ws = useWsStatus();
+  const host = useHostState();
   const offset = useRef(0); // serverTime - Date.now(), so local animation follows the host clock
   const samples = useRef<number[]>([]);
   useEffect(() => {
@@ -81,10 +82,11 @@ export function GameTab({ bot, botState }: { bot: string; botState?: string }) {
   // stable, so memoised tiles do not re-render on every game update
   const onTip = useCallback((t: Tip | null, ev?: { clientX: number; clientY: number }) => setTip(t && ev ? { t, x: ev.clientX, y: ev.clientY } : null), []);
   const onEnt = useCallback((h: { ent: GameEnt; h: string; x: number; y: number } | null) => setTip(h ? { t: { kind: 'ent', h: h.h, e: h.ent }, x: h.x, y: h.y } : null), []);
-  const down = ws !== 'open' || !!state?.offline || (botState != null && !/InZone|Paused/i.test(botState));
-  const reason = ws !== 'open' ? `connection to the host ${ws === 'connecting' ? 'is being re-established' : 'lost, reconnecting'}`
+  const down = host === 'restarting' || ws !== 'open' || !!state?.offline || (botState != null && !/InZone|Paused/i.test(botState));
+  const reason = host === 'restarting' ? 'host restarting / reconnecting'
+    : ws !== 'open' ? `connection to the host ${ws === 'connecting' ? 'is being re-established' : 'lost, reconnecting'}`
     : botState && !/InZone|Paused/i.test(botState) ? `bot is ${botState}`
-    : state?.offline ? `the host reports the bot out of the world${state.offReason ? ` (${state.offReason})` : ''}` : '';
+    : state?.offline ? offText(state.offReason) : '';
   if (!state) return <div className="game"><Empty>Waiting for the game view...</Empty><ConnOverlay down={down} reason={reason} /></div>;
 
   return (
@@ -106,6 +108,17 @@ export function GameTab({ bot, botState }: { bot: string; botState?: string }) {
       {tip && <Tooltip tip={tip.t} x={tip.x} y={tip.y} offset={offset.current} />}
     </div>
   );
+}
+
+/** The host's `off` reasons (API_SPEC 14.1); unknown ones are shown as sent. */
+function offText(r?: string): string {
+  switch (r) {
+    case 'left-world': return 'the bot left the world (stopped / offline)';
+    case 'disconnected': return 'the connection to the game dropped; logging in again';
+    case 'host-stopping': return 'host restarting / reconnecting';
+    case undefined: case null: case '': return 'the bot is out of the world';
+    default: return r;
+  }
 }
 
 function stonesOf(s: GameState): GameState['stones'] {
@@ -235,9 +248,9 @@ function SkillBar({ skills, order, stones, onTip }: { skills: GameState['skills'
         {stones?.hp && <StoneTile which="hp" s={stones.hp} onTip={onTip} />}
         {stones?.sp && <StoneTile which="sp" s={stones.sp} onTip={onTip} />}
         {shown.map(r => <SkillTile key={r.s.id} s={r.s} onTip={onTip} />)}
-        {!shown.length && <span className="muted small skill-empty">no {tab} skills</span>}
+        {!shown.length && <span className="muted small skill-empty">{tab === 'passive' ? 'passive skills: not decoded by the host yet' : `no ${tab} skills`}</span>}
       </div>
-      {unclassified > 0 && <div className="hint">{unclassified} skill(s) without a category from the host (shown under Other).</div>}
+      {unclassified > 0 && <div className="hint">{unclassified} skill(s) the host has no record or category for (under Other).</div>}
     </div>
   );
 }

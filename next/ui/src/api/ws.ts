@@ -14,6 +14,8 @@ class Hub {
   private timer: number | undefined;
   status: 'connecting' | 'open' | 'closed' = 'closed';
   private statusListeners = new Set<() => void>();
+  /** connection-wide notices ({topic:'host', data:{state}}), e.g. 'restarting' before a host restart */
+  hostState: string | null = null;
 
   private setStatus(s: Hub['status']) { this.status = s; this.statusListeners.forEach(l => l()); }
   onStatus(l: () => void) { this.statusListeners.add(l); return () => { this.statusListeners.delete(l); }; }
@@ -26,11 +28,12 @@ class Hub {
     this.ws = ws;
     this.setStatus('connecting');
     ws.onopen = () => {
-      this.retry = 0; this.setStatus('open');
+      this.retry = 0; this.hostState = null; this.setStatus('open');
       for (const s of this.subs.values()) ws.send(JSON.stringify({ op: 'sub', ...s.msg }));
     };
     ws.onmessage = ev => {
       let m: any; try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.topic === 'host') { this.hostState = m.data?.state ?? null; console.debug('[ws] host', m.data); this.statusListeners.forEach(l => l()); return; }
       for (const s of this.subs.values()) {
         if (s.msg.topic !== m.topic) continue;
         if (s.msg.bot && m.bot && s.msg.bot !== m.bot) continue;
@@ -113,4 +116,9 @@ export function useTopicEvents(msg: Record<string, unknown> | null, onEvent: (d:
 
 export function useWsStatus() {
   return useSyncExternalStore(l => hub.onStatus(l), () => hub.status);
+}
+
+/** The host's connection-wide state notice ('restarting'), null when none. */
+export function useHostState() {
+  return useSyncExternalStore(l => hub.onStatus(l), () => hub.hostState);
 }

@@ -204,7 +204,7 @@ function gamePublish(sub, now, first = false) {
   const live = bot?.sim && bot.state !== 'Offline';
   if (sub.seq == null) sub.seq = -1;
   const send = (m) => { sub.seq++; sub.lastSent = now; sub.conn.send({ topic: 'game', bot: sub.bot, seq: sub.seq, now, ...m }); };
-  if (!live) { if (!sub.off && sub.prevGame) { sub.off = true; send({ t: 'off' }); } else sub.lastSent = now; return; }
+  if (!live) { if (!sub.off && sub.prevGame) { sub.off = true; send({ t: 'off', reason: 'left-world' }); } else sub.lastSent = now; return; }
   if (first || !sub.prevGame || sub.off || sub.prevSim !== bot.sim) {
     sub.off = false; sub.prevSim = bot.sim; sub.prevGame = gameModel(bot.sim); sub.lastBeat = now;
     send({ t: 'snap', data: gameSnapshot(bot.sim) }); return;

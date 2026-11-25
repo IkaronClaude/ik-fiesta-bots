@@ -15,13 +15,13 @@ export function item(id) {
     demandLv: (id % 30) + 1, maxLot: type === 'weapon' || type === 'armor' ? 1 : 99, buyPrice: 40 * id, sellPrice: 10 * id, icon: id % 13 !== 0 };
 }
 
-// Mock skill ids: 3001-3006 active (3001 / 3002 one family at ranks 1 and 2), 3007-3008 passive, 3012 "other"
+// Mock skill ids: 3001-3011 active (3001 / 3002 one family at ranks 1 and 2), 21001-21003 production, 3012 has no record (404 -> Other).
 // (in no skill table), 21001-21003 production. `category` and `rowKey` are the UI request U26 fields.
 export function skill(id) {
   const prod = id >= 21001 && id <= 21003;
-  if (!prod && (id < 3001 || id > 3012)) return null;
+  if (!prod && (id < 3001 || id > 3011)) return null; // 3012: no ActiveSkill row -> 404 -> Other
   const n = prod ? id - 21000 + 20 : id - 3000;
-  const category = prod ? 'production' : id <= 3006 ? 'active' : id <= 3008 ? 'passive' : id === 3012 ? 'other' : 'active';
+  const category = prod ? 'production' : 'active'; // the host: production from the Produce / Gather tables, else active (no passive list yet)
   const family = id === 3002 ? 3001 : id;
   const step = id === 3002 ? 2 : id === 3001 ? 1 : 1 + (n % 5);
   const name = prod ? `recipe #${id}` : `skill #${family}`;

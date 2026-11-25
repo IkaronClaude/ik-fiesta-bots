@@ -29,7 +29,7 @@ wide window (two columns; one column below 820 px).
 | minimap (canvas) | the client's minimap art placed by the map's `cover` rectangle, the bot as an arrow along its facing, the remaining path, mobs (aggro on us red with a ring, our target dashed ring, dead grey), players, NPCs and gates (diamonds) with name tags, scale bar, zoom 800 / 1600 / 3200 u / whole map, hover tooltip per entity |
 | target line | our target's name, level and HP, and how many mobs are on us |
 | buffs / debuffs | icons with time left (debuffs red-framed), tooltip with name and description |
-| skill panel | tabs Active (default) / Passive / Production / Other like the client's skill window: one row per skill family (highest learned rank), in learn order; HP / SP soul stone counts first, then the skills with icons and a cooldown sweep + seconds left. The category and family key come from the host's static skill data (API_SPEC 13.9 U26); until the host sends them every skill sits under Other with a note |
+| skill panel | tabs Active (default) / Passive / Production / Other like the client's skill window: one row per skill family (highest learned rank), in learn order; HP / SP soul stone counts first, then the skills with icons and a cooldown sweep + seconds left. The category (`production` from the client's Produce / Gather tables, else `active`) and the family key (`rowKey`) come from the host's static skill data (API_SPEC 14.2); a skill the host has no record for goes under Other; the host has no passive list yet, so Passive says "not decoded by the host yet" |
 | inventory | bag pages as tabs (like the client's bag), 6 wide, icons, stack counts, tooltips (name, type, level, price); equipped items |
 | stats | every stat the host sends (`-1` = not received yet shows `-`), unspent points |
 
@@ -37,7 +37,9 @@ Data path, per the operator's rule "no big blobs, deltas over the WebSocket, the
 - the `game` topic of API_SPEC **section 14** (defined by the runtime branch): one `snap`, then `d` op lists;
   `src/pages/bot/game/gameModel.ts` reassembles them with structural sharing (an op copies only the map it
   touches), a `seq` gap re-subscribes (fresh snapshot), `off` greys the view;
-- static data (items, skills, abstates, mobs incl. NPCs / gates, maps) by id from `/api/v3/static/...`: all ids
+- static data (items, skills, abstates, mobs incl. NPCs / gates, maps) by id from `/api/v3/static/...`, every
+  static, icon and map-art URL carrying `?v=<fingerprint>` (from `GET /api/v3/static`, fetched once) so new host
+  data is picked up at once despite max-age: all ids
   asked for in one frame go out as one `?ids=` batch per kind, kept in memory for the page and in the HTTP cache
   (ETag / max-age); icons and map art are plain `<img>` / canvas images from their cacheable URLs;
 - cooldowns and buff timers are end times on the host clock: one `requestAnimationFrame` loop updates only the
@@ -45,13 +47,15 @@ Data path, per the operator's rule "no big blobs, deltas over the WebSocket, the
 - the minimap draws from refs every animation frame and interpolates entity positions between updates, so
   movement never re-renders React; memoised tiles / slots re-render only when their own record changes.
 
-Connection state: a grey overlay with a throbber and "bot not connected" + the reason (socket reconnecting,
-bot state, or the stream's `off` with its reason) covers the Game, debugger, sensors and actions tabs. It is
+Connection state: a grey overlay with a throbber above a centred, box-less "bot not connected" + the reason
+(host restarting from the `host` notice, socket reconnecting, bot state, or the stream's `off` reason `left-world` /
+`disconnected` / `host-stopping`, unknown reasons as sent) covers the Game, debugger, sensors and actions tabs. It is
 absolutely positioned (never moves the layout), appears only when the down state lasts over 1.5 s and drops as
 soon as a snapshot arrives; each off / on transition and seq gap is logged with `console.debug`. It replaces the
 "bot left the world" line that used to be inserted above the HUD and flashed in and out (the operator's flicker).
 The bot header is now two fixed rows that never wrap (live numbers changing width used to re-wrap it).
-Checked on the real host for 60 s on the Game tab and 30 s on the debugger: no element moved or resized, no overlay.
+Checked on the real host (NextA: Active 14 / Production 1 rows, Passive "not decoded", all static URLs versioned) and
+for 60 s on the Game tab and 30 s on the debugger: no element moved or resized, no overlay.
 
 Measured on the mock: snapshot ~1.5 KB, deltas ~200 B on average at 4 Hz. The mock implements section 14
 exactly (snapshot, ops, keep-alive, `off`, static routes with ETag / 304, icon and minimap routes).
