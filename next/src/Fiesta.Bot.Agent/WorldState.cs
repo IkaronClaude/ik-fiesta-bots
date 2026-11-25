@@ -949,6 +949,10 @@ public sealed class WorldState
                 Quests.Drop((int)e.C);
                 Bump(WorldComponent.Quests);
                 break;
+            case InboundKind.StatPointSpent:
+                if (Self.StatPoints > 0) Self.StatPoints--;   // the client counts the point spent (no REMAINPOINT follows)
+                Bump(WorldComponent.Self);
+                break;
             case InboundKind.StoneShop:
                 Npc.StonePrices = ((int)e.A, (int)e.B, (int)e.C, (int)e.X, now);
                 break;

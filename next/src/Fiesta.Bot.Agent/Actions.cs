@@ -129,7 +129,8 @@ public static class ActionCatalog
         S(ActionKind.Equip, Resource.Inventory, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.ItemCell && e.Opcode == 0x3002 && e.A == 8 && e.C == a.Arg1 ? (ActionState.Acked, (ushort)0) : null), 3000);
         S(ActionKind.StatPoint, Resource.None, new FnMatcher((a, e, w) =>
-            e.Kind == InboundKind.StatPointSpent && e.A == a.Arg0 ? (ActionState.Acked, (ushort)0) : null), 3000);
+            e.Kind == InboundKind.StatPointSpent && e.A == a.Arg0 ? (ActionState.Acked, (ushort)0)
+            : e.Kind == InboundKind.StatPointRefused ? (ActionState.Refused, (ushort)e.A) : null), 3000);
         S(ActionKind.Talk, Resource.Npc, Controller, 20000);
         S(ActionKind.Storage, Resource.Npc, Controller, 6000);
         S(ActionKind.Gate, Resource.Movement, Controller, 20000);

@@ -147,6 +147,8 @@ public enum InboundKind : ushort
     StoneShop,
     /// <summary>A stat point spent (CHAR_STAT_INCPOINTSUC_ACK): A stat id (0 Str, 1 End, 2 Dex, 3 Int, 4 Spr).</summary>
     StatPointSpent,
+    /// <summary>A stat point refused (CHAR_STAT_INCPOINTFAIL_ACK 0x1061): A error code.</summary>
+    StatPointRefused,
     /// <summary>Not decoded but passed (raw logging).</summary>
     Raw,
 }
@@ -423,7 +425,7 @@ public sealed class SelfDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x2411, 0xCC02, 0xCC06];
+        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x1061, 0x2411, 0xCC02, 0xCC06];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -518,6 +520,7 @@ public sealed class SelfDecoder : IPacketDecoder
             }
             case 0x105B: if (p.Length < 1) return; e.Kind = InboundKind.StatPoints; e.A = p[0]; break;
             case 0x105F: if (p.Length < 1) return; e.Kind = InboundKind.StatPointSpent; e.A = p[0]; break;   // INCPOINTSUC {stat}
+            case 0x1061: if (p.Length < 2) return; e.Kind = InboundKind.StatPointRefused; e.A = Rd.U16(p, 0); break;   // INCPOINTFAIL {err}
             case 0xCC02: e.Kind = InboundKind.Mount; e.A = 1; e.Handle = Rd.U16(p, 0); break;
             case 0xCC06: e.Kind = InboundKind.Mount; e.A = 0; break;
             default: return;

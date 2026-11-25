@@ -203,7 +203,8 @@ server-side cause stays open.
   from the skill master, free stat points; service NPCs are found by role, learned from the window kind an NPC
   opens (probing unprobed NPCs in towns). Live: NextMageB found a healer and bought 7 HP + 1 SP stones.
 - A shop whose NPC answers the click with a quest page opens with the menu answer, as the client does (captured).
-- Open bug: the local 2026 server never answers CHAR_STAT_INCPOINT_REQ (a 2016 capture shows it acked); the free
-  points (STAT_REMAINPOINT, one per level) stay unspent. The brain stops asking after the first unanswered request.
-  CHAR_BASE's statdistribute block was wrongly read as free points before (fixed).
+- Stat points (resolved): the server did answer: INCPOINT_REQ {End} got CHAR_STAT_INCPOINTFAIL 0x1061 {0x0AC2},
+  which the bot did not decode, so it looked unanswered. INCPOINT {Int} is acked (0x105F) on the 2026 stack, the same
+  layout the 2016 capture and the Godot client's 2026 stat window use. The refusal is decoded now and the brain moves
+  on to the next stat of its class order. CHAR_BASE's statdistribute block was wrongly read as free points (fixed).
 - Open: gear upgrades (ItemInfo stats not loaded yet), storage (procedure not wired), potions.

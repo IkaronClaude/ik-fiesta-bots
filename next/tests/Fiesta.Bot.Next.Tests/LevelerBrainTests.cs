@@ -141,4 +141,21 @@ public class LevelerBrainTests
         t.Tick(400);   // 20 s
         Assert.True(b.Debug.Transitions().Count(r => r.Layer == "quest" && r.To == "grind") <= 1);
     }
+
+    [Fact]
+    public void A_refused_stat_point_moves_on_to_the_next_stat()
+    {
+        if (Load() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(5);
+        t.Ev(InboundKind.StatPoints, a: 2);
+        t.Tick(20);
+        var first = t.Ctx.Actions.Recent(20).First(r => r.Kind == Fiesta.Bot.Agent.ActionKind.StatPoint);
+        t.Ev(InboundKind.StatPointRefused, a: 0x0AC2);   // live: INCPOINTFAIL 0x0AC2 for End on a level-7 fighter
+        t.Tick(20);
+        var next = t.Ctx.Actions.Recent(20).First(r => r.Kind == Fiesta.Bot.Agent.ActionKind.StatPoint);
+        Assert.NotEqual(first.Arg0, next.Arg0);
+        Assert.Empty(b.Debug.Errors());
+    }
 }
