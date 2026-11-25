@@ -1042,3 +1042,13 @@ routes (the fingerprint includes the host's output version) is picked up at once
 Minimap placement: the image covers world `[cover.x0, cover.x1] x [cover.y0, cover.y1]`; the image's top edge is
 `cover.y1` (world Y grows upward, image Y downward). `world` is the walkable grid's extent (0..w, 0..h); `cover` is
 null when the client has no placement row for the map (then the image covers the whole `world`).
+
+### 13.11 Sub-graph forms on the host (U30 - U32, core branch 2026-11-25)
+
+Implemented in the brain runtime and linter: `to: "G/s"` (and deeper `G/s/t`) enters G and its sub-machine at s;
+`to: "^/t"` exits the inner states and the containing state, then enters t of the containing machine (in a named
+machine, t is resolved per use site); the transition record keeps the target as written and the inner depth.
+Lint codes: `TARGET_UNKNOWN` (was `TARGET`), `EXIT_TARGET_UNKNOWN`, `SUBGRAPH_NO_EXIT` (instead of `NO_EXIT` for a
+state with a sub-machine), `MACHINE_RECURSION`; `UNREACHABLE` counts `G/s` entries; named machines are linted on
+their own as well (layer `machine:<name>` in the lint rows). `^` alone pops to the parent as before (and no longer
+runs the inner exit functions twice). U33 (machines as versioned library entries) is not implemented.

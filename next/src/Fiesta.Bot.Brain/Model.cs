@@ -268,46 +268,126 @@ public static class BrainLinter
         {
             LintMachine(layer.Machine, layer.Name, brain, o, moduleNames, sensors);
         }
+        // named machines: entries through G/s at their use sites count as reachable; ^/t is checked per use site
+        foreach (var (mn, mm) in brain.Machines)
+        {
+            var entries = new List<string>();
+            void Collect(MachineDef x)
+            {
+                foreach (var st in x.States.Values)
+                {
+                    if (st.Machine is { } inner) Collect(inner);
+                    foreach (var t in st.Transitions)
+                        if (t.To.Contains('/') && !t.To.StartsWith('^') && x.States.TryGetValue(t.To.Split('/')[0], out var g) && g.Use == mn) entries.Add(t.To.Split('/')[1]);
+                }
+            }
+            foreach (var l in brain.Layers) Collect(l.Machine);
+            foreach (var other in brain.Machines.Values) Collect(other);
+            LintMachine(mm, "machine:" + mn, brain, o, moduleNames, sensors, true, null, entries, "machine:" + mn);
+        }
+        LintRecursion(brain, o);
         var names = brain.Layers.GroupBy(l => l.Name).Where(g => g.Count() > 1);
         foreach (var g in names) o.Add(new(LintSeverity.Error, "LAYER", $"duplicate layer '{g.Key}'", null, 0, g.Key, null));
         return o;
     }
 
-    private static void LintMachine(MachineDef m, string layer, BrainDefinition brain, List<LintResult> o, HashSet<string> moduleNames, IReadOnlySet<string>? sensors)
+    // the sub-machine of a state: inline or a named one (`use`)
+    private static MachineDef? SubOf(StateDef s, BrainDefinition brain) =>
+        s.Machine ?? (s.Use is { } u && brain.Machines.TryGetValue(u, out var nm) ? nm : null);
+
+    // inner exits (`^` or `^/t`) anywhere in a machine's own states
+    private static IEnumerable<TransitionDef> InnerExits(MachineDef m) =>
+        m.States.Values.SelectMany(st => st.Transitions).Where(t => t.To == "^" || t.To.StartsWith("^/", StringComparison.Ordinal));
+
+    /// <summary>Lint a machine. <paramref name="isSub"/>: it sits inside a state; <paramref name="parentStates"/>: the
+    /// states `^/t` can leave for (null = resolved per use site, a named machine); <paramref name="entries"/>: inner
+    /// states entered from outside through `G/s` (reachable).</summary>
+    private static void LintMachine(MachineDef m, string layer, BrainDefinition brain, List<LintResult> o, HashSet<string> moduleNames, IReadOnlySet<string>? sensors,
+        bool isSub = false, IReadOnlySet<string>? parentStates = null, IEnumerable<string>? entries = null, string? label = null)
     {
-        if (!m.States.ContainsKey(m.Initial)) o.Add(new(LintSeverity.Error, "INITIAL", $"initial state '{m.Initial}' does not exist", null, 0, layer, null));
+        if (!m.States.ContainsKey(m.Initial)) o.Add(new(LintSeverity.Error, "INITIAL", $"{label ?? layer}: initial state '{m.Initial}' does not exist", null, 0, layer, null));
         var reached = new HashSet<string> { m.Initial };
         if (m.Select is { } sel) foreach (var c in sel.Cases.Values) reached.Add(c);
+        foreach (var e in entries ?? []) if (m.States.ContainsKey(e)) reached.Add(e);
+        var names = new HashSet<string>(m.States.Keys);
         foreach (var (name, s) in m.States)
         {
-            foreach (var t in s.Transitions)
+            for (var i = 0; i < s.Transitions.Count; i++)
             {
-                var target = t.To.Contains(':') ? t.To[(t.To.IndexOf(':') + 1)..] : t.To;
-                if (t.To == "^") continue;
-                if (t.To.Contains(':'))
+                var t = s.Transitions[i];
+                var to = t.To;
+                bool ok;
+                if (to == "^") ok = isSub;
+                else if (to.StartsWith("^/", StringComparison.Ordinal)) ok = isSub && (parentStates is null || parentStates.Contains(to[2..]));
+                else if (to.Contains(':'))
                 {
-                    var mn = t.To[..t.To.IndexOf(':')];
-                    if (!brain.Machines.TryGetValue(mn, out var other) || !other.States.ContainsKey(target))
-                        o.Add(new(LintSeverity.Error, "TARGET", $"transition to unknown '{t.To}'", null, 0, layer, name));
+                    var mn = to[..to.IndexOf(':')];
+                    ok = brain.Machines.TryGetValue(mn, out var other) && other.States.ContainsKey(to[(to.IndexOf(':') + 1)..]);
                 }
-                else if (!m.States.ContainsKey(target)) o.Add(new(LintSeverity.Error, "TARGET", $"transition to unknown state '{t.To}'", null, 0, layer, name));
-                else reached.Add(target);
+                else if (to.Contains('/'))
+                {
+                    // G/s(/t...): every step must name a state of the sub-machine of the step before
+                    var parts = to.Split('/');
+                    ok = m.States.TryGetValue(parts[0], out var st);
+                    for (var k = 1; ok && k < parts.Length; k++)
+                    {
+                        var sub = SubOf(st!, brain);
+                        ok = sub is not null && sub.States.TryGetValue(parts[k], out st);
+                    }
+                    if (ok) reached.Add(parts[0]);
+                }
+                else { ok = m.States.ContainsKey(to); if (ok) reached.Add(to); }
+                if (!ok) o.Add(new(LintSeverity.Error, "TARGET_UNKNOWN", $"transition #{i + 1}: target '{to}' does not exist", null, 0, layer, name));
                 LintCondition(t.Condition, layer, name, o, sensors);
             }
+            var subm = SubOf(s, brain);
             var exits = s.Transitions.Any(t => t.To != name);
-            if (!exits && !s.Terminal) o.Add(new(LintSeverity.Error, "NO_EXIT", "state has no transition to another state and is not terminal", null, 0, layer, name));
-            var timed = s.Transitions.Any(t => HasKind(t.Condition, ConditionKind.Stuck) || HasKind(t.Condition, ConditionKind.After)) || s.TimeoutMs is not null;
+            if (subm is not null && !exits && !s.Terminal && !InnerExits(subm).Any())
+                o.Add(new(LintSeverity.Error, "SUBGRAPH_NO_EXIT", $"sub-graph '{name}' has no way out: no transition of its own and no inner exit (^ / ^/state)", null, 0, layer, name));
+            else if (subm is null && !exits && !s.Terminal)
+                o.Add(new(LintSeverity.Error, "NO_EXIT", "state has no transition to another state and is not terminal", null, 0, layer, name));
+            var timed = s.Transitions.Any(t => HasKind(t.Condition, ConditionKind.Stuck) || HasKind(t.Condition, ConditionKind.After)) || s.TimeoutMs is not null
+                || (subm is not null && InnerExits(subm).Any(t => HasKind(t.Condition, ConditionKind.Stuck) || HasKind(t.Condition, ConditionKind.After)));
             if (!s.Terminal && !timed)
                 o.Add(new(s.BudgetMs == 0 ? LintSeverity.Error : LintSeverity.Warning, "NO_TIMEOUT", "no stuck / after / timeout exit: the state can stall silently", null, 0, layer, name));
             foreach (var fn in new[] { s.Enter, s.Tick, s.Exit })
                 if (fn is not null && IsRef(fn) && fn.Contains('.') && !moduleNames.Contains(fn[..fn.LastIndexOf('.')]) && !ApiManifest.Names().Contains(fn))
                     o.Add(new(LintSeverity.Error, "FN_REF", $"'{fn}' refers to module '{fn[..fn.LastIndexOf('.')]}' which the brain does not load", null, 0, layer, name));
-            if (s.Machine is { } sub) LintMachine(sub, layer, brain, o, moduleNames, sensors);
-            if (s.Use is { } use && !use.Contains("${") && !brain.Machines.ContainsKey(use))
-                o.Add(new(LintSeverity.Error, "USE", $"`use: {use}` names no machine in `machines`", null, 0, layer, name));
+            if (s.Machine is { } inline)
+            {
+                var into = m.States.Values.SelectMany(x => x.Transitions).Select(t => t.To)
+                    .Where(x => x.StartsWith(name + "/", StringComparison.Ordinal)).Select(x => x.Split('/')[1]);
+                LintMachine(inline, layer, brain, o, moduleNames, sensors, true, names, into, $"{label ?? layer}/{name}");
+            }
+            if (s.Use is { } use && !use.Contains("${"))
+            {
+                if (!brain.Machines.TryGetValue(use, out var named))
+                    o.Add(new(LintSeverity.Error, "USE", $"`use: {use}` names no machine in `machines`", null, 0, layer, name));
+                else
+                    foreach (var t in InnerExits(named).Where(x => x.To != "^").Select(x => x.To[2..]).Distinct())
+                        if (!names.Contains(t))
+                            o.Add(new(LintSeverity.Error, "EXIT_TARGET_UNKNOWN", $"machine '{use}' exits to '{t}', which this graph does not have", null, 0, layer, name));
+            }
         }
         foreach (var s in m.States.Keys)
-            if (!reached.Contains(s)) o.Add(new(LintSeverity.Warning, "UNREACHABLE", "no transition leads here", null, 0, layer, s));
+            if (!reached.Contains(s)) o.Add(new(LintSeverity.Warning, "UNREACHABLE", $"{label ?? layer}: no transition leads to '{s}'", null, 0, layer, s));
+    }
+
+    // named machines that use themselves, directly or through others
+    private static void LintRecursion(BrainDefinition brain, List<LintResult> o)
+    {
+        static IEnumerable<string> Uses(MachineDef m) => m.States.Values.SelectMany(st => (st.Use is { } u ? new[] { u } : []).Concat(st.Machine is { } x ? Uses(x) : []));
+        foreach (var (name, m) in brain.Machines)
+        {
+            var seen = new HashSet<string>(); var stack = new Stack<string>(Uses(m));
+            while (stack.Count > 0)
+            {
+                var x = stack.Pop();
+                if (x == name) { o.Add(new(LintSeverity.Error, "MACHINE_RECURSION", $"machine '{name}' uses itself (directly or through other machines)", null, 0, null, null)); break; }
+                if (!seen.Add(x) || !brain.Machines.TryGetValue(x, out var mm)) continue;
+                foreach (var u in Uses(mm)) stack.Push(u);
+            }
+        }
     }
 
     private static void LintCondition(ConditionDef c, string layer, string state, List<LintResult> o, IReadOnlySet<string>? sensors)
@@ -329,7 +409,7 @@ public static class BrainLinter
     /// <summary>The name a module is reachable by in conditions and state functions: its last path segment.</summary>
     public static string ShortName(string path) => StripPin(path)[(StripPin(path).LastIndexOf('/') + 1)..];
 
-    private static readonly HashSet<string> ApiModules = ["self", "ents", "threat", "combat", "skills", "act", "items", "quests", "nav", "npc", "social", "know", "time", "ev", "world", "dbg"];
+    private static readonly HashSet<string> ApiModules = ["self", "ents", "threat", "combat", "skills", "act", "items", "quests", "nav", "npc", "social", "know", "time", "ev", "world", "dbg", "atlas"];
 
     private static IEnumerable<(int Line, string Ref)> ApiRefs(string src)
     {

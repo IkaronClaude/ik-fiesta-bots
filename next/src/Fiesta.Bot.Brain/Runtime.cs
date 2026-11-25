@@ -389,7 +389,7 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
 
     private void EnterMachine(LayerRuntime lr, MachineRuntime m, IReadOnlyList<string>? keepPath, int depth, string why)
     {
-        var name = keepPath is { } kp && depth < kp.Count && m.States.ContainsKey(kp[depth]) ? kp[depth] : SelectInitial(m.Def) ?? m.Def.Initial;
+        var name = keepPath is { } kp && depth < kp.Count && kp[depth] is { } kn && m.States.ContainsKey(kn) ? kn : SelectInitial(m.Def) ?? m.Def.Initial;
         if (!m.States.TryGetValue(name, out var s)) return;
         EnterState(lr, s, keepPath, depth);
     }
@@ -624,17 +624,25 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
         var to = t.Def.To;
         if (t.Cond.Def.Kind == ConditionKind.Stuck) ctx.Events.Raise(EventKind.Stuck, lr.Index, depth);
         var reason = Reason(t, value);
-        // exit leaf .. source, then enter the target
-        ExitDownFrom(lr, src);
+        // exit leaf .. source (or .. the containing state when leaving a sub-graph), then enter the target
         StateRuntime? target;
-        if (to == "^")
+        IReadOnlyList<string>? keep = null;
+        var enterDepth = depth;
+        if (to == "^" || to.StartsWith("^/", StringComparison.Ordinal))
         {
             var parent = depth > 0 ? lr.Path[depth - 1] : null;
-            if (parent is null) target = src;
-            else { ExitDownFrom(lr, parent); target = parent; }
+            if (parent is null) { ExitDownFrom(lr, src); target = src; }
+            else
+            {
+                ExitDownFrom(lr, parent);
+                enterDepth = depth - 1;
+                // `^` = pop to the parent (re-enter it); `^/t` = leave for the parent's sibling t (API_SPEC 13.10 U31)
+                target = to == "^" ? parent : parent.Owner.States.GetValueOrDefault(to[2..]);
+            }
         }
         else if (to.Contains(':'))
         {
+            ExitDownFrom(lr, src);
             var mn = to[..to.IndexOf(':')]; var sn = to[(to.IndexOf(':') + 1)..];
             MachineRuntime? m = null;
             for (var i = 0; i < lr.Path.Count; i++) if (lr.Path[i].Owner.Name == mn) { m = lr.Path[i].Owner; break; }
@@ -648,9 +656,19 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
             }
             target = m?.States.GetValueOrDefault(sn);
         }
-        else target = src.Owner.States.GetValueOrDefault(to);
-        if (target is null) { LogError(lr, src, $"transition target '{to}' not found"); target = src; }
-        EnterState(lr, target, null, depth);
+        else if (to.Contains('/'))
+        {
+            // `G/s(/t...)`: enter G, then its sub-machine at s instead of its initial (U30)
+            ExitDownFrom(lr, src);
+            var parts = to.Split('/');
+            target = src.Owner.States.GetValueOrDefault(parts[0]);
+            var k = new string[depth + parts.Length];
+            for (var i = 1; i < parts.Length; i++) k[depth + i] = parts[i];
+            keep = k;
+        }
+        else { ExitDownFrom(lr, src); target = src.Owner.States.GetValueOrDefault(to); }
+        if (target is null) { LogError(lr, src, $"transition target '{to}' not found"); target = src; enterDepth = depth; keep = null; }
+        EnterState(lr, target, keep, enterDepth);
         CollectPath(lr);
         var rec = new TransitionRecord(ctx.Tick, SystemClock.ToUtc(_now), lr.Name, fromPath, to, KindName(t.Cond.Def.Kind), reason,
             value is { } v ? new Dictionary<string, double> { ["value"] = v } : new Dictionary<string, double>(), depth, t.Index, leaf);

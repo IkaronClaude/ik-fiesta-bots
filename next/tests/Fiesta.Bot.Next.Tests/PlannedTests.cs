@@ -583,7 +583,7 @@ layers:
         t: {}
 """);
         var lint = BrainLinter.Lint(bad, new Dictionary<string, string>(), SensorRegistry.StaticPaths());
-        Assert.Contains(lint, l => l.Code == "TARGET");
+        Assert.Contains(lint, l => l.Code == "TARGET_UNKNOWN");
         Assert.Contains(lint, l => l.Code == "SENSOR");
         Assert.Contains(lint, l => l.Code == "NO_EXIT" && l.State == "t");
         var unknownApi = BrainLinter.Lint(BrainLoader.Parse(Two), new Dictionary<string, string> { ["brain/t/m"] = "local M = {} function M.f() return self.noSuchFn() end return M" });
