@@ -1,6 +1,7 @@
 # ik-fiesta-bots redesign
 
 The answer to `docs/REVIEW_2026-11.md`. Issue ids (P1, D1, C4, ...) refer to that document's index.
+Implementation status: `docs/NEXT_STATUS.md`; packet sets: `docs/WIRE_PROFILES.md`.
 Companion documents: `docs/API_SPEC.md` (the full API), `docs/SKELETON.md` (the compiling skeleton in `next/`,
 where the new host is named `Fiesta.Bot.Server` and the Roslyn generator/analyzers `Fiesta.Bot.CodeAnalysis`),
 `docs/LUA_BENCH.md` (the engine measurements), `docs/LOGGING.md` (logging measurement and quick wins; the

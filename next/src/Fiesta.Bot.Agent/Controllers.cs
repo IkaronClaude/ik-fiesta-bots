@@ -428,6 +428,12 @@ public sealed class CombatController
                 break;
             case InboundKind.BashStop when e.Handle == ctx.World.Self.Handle:
                 if (_bashWanted) _rearm = true;   // the swing stream ended; re-arm while the target lives
+                if (ctx.Log.IsEnabled(LogCategory.Combat, LogLevel.Info) && ctx.World.Entities.SlotOf(_bashTarget) is var bs and >= 0)
+                {
+                    var (tx, ty) = ctx.World.Entities.Pos(bs, ctx.Now);
+                    var (px, py) = ctx.World.Self.Pos;
+                    ctx.Log.Log(LogCategory.Combat, LogLevel.Info, $"cease fire on {_bashTarget}: us ({px:0},{py:0}) server ({ctx.World.Self.ServerPos.X},{ctx.World.Self.ServerPos.Y}) target ({tx:0},{ty:0}) moving {ctx.World.Entities.Velocity(bs, ctx.Now).Vx:0.#} dist {MoveController.Dist(px, py, tx, ty):0} reach {GameRules.BashReach(ctx.World.Entities.BodyOf(bs), GameRules.Weapon(ctx)):0}");
+                }
                 break;
             case InboundKind.EntityLeft when e.Handle == _assertedTarget:
             case InboundKind.EntityDied when e.Handle == _assertedTarget:

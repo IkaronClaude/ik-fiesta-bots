@@ -459,9 +459,9 @@ public sealed class BotAgent
         c.Procedures.Advance(c);
         var t3 = Stopwatch.GetTimestamp();
         // 4. movement, 5. combat
-        if (!Paused || _stepBudget > 0) c.Move.Advance(c);
+        c.Move.Advance(c);   // controllers run while the brain is paused (operator actions still move and fight)
         var t4 = Stopwatch.GetTimestamp();
-        if (!Paused || _stepBudget > 0) c.Combat.Advance(c);
+        c.Combat.Advance(c);
         var t5 = Stopwatch.GetTimestamp();
         // 6. brain
         long lua = 0;
@@ -622,7 +622,7 @@ public static class OperatorActions
             case "say": { Span<Intent> b = [IntentEncoder.Chat(a.GetValueOrDefault("text") ?? "", -1)]; id = c.Actions.Issue(ActionKind.Say, 0, 0, 0, b); break; }
             case "openshop": id = c.Procedures.Start(new OpenShopProcedure((int)L("npc"), (int)L("reply", 1)), ActionKind.OpenShop, 0, c); break;
             case "talk": id = c.Procedures.Start(new QuestDialogueProcedure((int)L("npc"), (int)L("quest"), (int)L("reward")), ActionKind.Talk, 0, c); break;
-            case "gate": id = c.Procedures.Start(new GateHopProcedure((int)L("gate"), a.GetValueOrDefault("map")), ActionKind.Gate, 0, c); break;
+            case "gate": id = c.Procedures.Start(new GateHopProcedure((int)L("gate"), a.GetValueOrDefault("map")), ActionKind.Gate, 0, c, GateHopProcedure.TimeoutFor(c, (int)L("gate"))); break;
             case "revive": id = c.Procedures.Start(new ReviveProcedure(), ActionKind.Revive, 0, c); break;
             case "buy": { Span<Intent> b = [IntentEncoder.Buy((ushort)L("item"), (uint)L("lot", 1), -1)]; id = c.Actions.Issue(ActionKind.Buy, 0, L("item"), L("lot", 1), b); break; }
             case "sell": { Span<Intent> b = [IntentEncoder.Sell((byte)L("slot"), (uint)L("lot", 1), -1)]; id = c.Actions.Issue(ActionKind.Sell, 0, L("slot"), L("lot", 1), b); break; }

@@ -777,7 +777,7 @@ public sealed partial class NavModule(AgentContext ctx) : ApiModule(ctx)
     {
         var g = GateTo(mapName);
         if (g < 0) return Ctx.Actions.Refuse(ActionKind.Travel, CallingLayer, LocalRefusal.NoPath).Value;
-        return Ctx.Procedures.Start(new GateHopProcedure(g, mapName), ActionKind.Gate, CallingLayer, Ctx).Value;
+        return Ctx.Procedures.Start(new GateHopProcedure(g, mapName), ActionKind.Gate, CallingLayer, Ctx, GateHopProcedure.TimeoutFor(Ctx, g)).Value;
     }
     /// <summary>A travel or gate procedure is running.</summary>
     [LuaFn] public bool Traveling() => Ctx.Actions.Pending(ActionKind.Gate).Value > 0 || Ctx.Actions.Pending(ActionKind.Travel).Value > 0;

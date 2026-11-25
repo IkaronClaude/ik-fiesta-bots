@@ -628,6 +628,14 @@ public sealed class GateHopProcedure(int gateHandle, string? destMap) : Procedur
     private int _mapAtStart = -1;
     /// <summary>Distance at which the gate answers a click.</summary>
     public const double ClickRange = 150;
+    /// <summary>The action budget: the walk to the gate at run speed plus the click and link (callers pass it to Start).</summary>
+    public static int TimeoutFor(AgentContext ctx, int gate)
+    {
+        var s = ctx.World.Entities.SlotOf(gate);
+        if (s < 0) return 20000;
+        var (x, y) = ctx.World.Entities.Pos(s, ctx.Now);
+        return 20000 + (int)(MoveController.Dist(x, y, ctx.World.Self.Pos.X, ctx.World.Self.Pos.Y) / Math.Max(30, ctx.World.Self.RunSpeed) * 2000);
+    }
 
     /// <inheritdoc/>
     public override void Advance(AgentContext ctx)
@@ -811,13 +819,13 @@ public sealed class ProcedureRunner
     private readonly List<(IProcedure P, long At)> _recent = new();
 
     /// <summary>Start a procedure bound to an action.</summary>
-    public ActionId Start(IProcedure procedure, ActionKind kind, byte layer, AgentContext ctx)
+    public ActionId Start(IProcedure procedure, ActionKind kind, byte layer, AgentContext ctx, int timeoutMs = -1)
     {
         var res = ActionCatalog.Get(kind)?.Resource ?? Resource.None;
         foreach (var p in _active)
             if (p.Status == ProcedureStatus.Running && (ActionCatalog.Get(ctx.Actions.Get(p.Action).Kind)?.Resource ?? Resource.None) == res && res != Resource.None)
                 return ctx.Actions.Refuse(kind, layer, LocalRefusal.Busy);
-        var id = ctx.Actions.Begin(kind, layer, 0, 0);
+        var id = ctx.Actions.Begin(kind, layer, 0, 0, timeoutMs);
         if (id.Value < 0) return id;
         procedure.Action = id;
         _active.Add(procedure);
