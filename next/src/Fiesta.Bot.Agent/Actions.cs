@@ -716,7 +716,15 @@ public sealed class GateHopProcedure(int gateHandle, string? destMap) : Procedur
         if (Step == "start")
         {
             _mapAtStart = ctx.World.Map.MapId;
-            if (ctx.World.Self.Mounted) { Fail("mounted: dismount first (a gate ignores a mounted rider)"); return; }
+            if (ctx.World.Self.Mounted)
+            {
+                // a gate ignores a mounted rider: get off first (using the mount item again), then go on
+                var m = Mounts.FindMount(ctx);
+                if (m < 0) { Fail("mounted, and no mount item in the bag to get off with"); return; }
+                ctx.Actions.Send(IntentEncoder.UseItem((byte)m, 9, Action.Value));
+                Go("dismount", ctx, 8000);
+                return;
+            }
             var s = ctx.World.Entities.SlotOf(GateHandle);
             if (s < 0) { Fail($"gate {GateHandle} not in view"); return; }
             var (gx, gy) = ctx.World.Entities.Pos(s, ctx.Now);
@@ -727,6 +735,12 @@ public sealed class GateHopProcedure(int gateHandle, string? destMap) : Procedur
                 Go("walk", ctx, 60000);
             }
             else Go("click", ctx, 0);
+            return;
+        }
+        if (Step == "dismount")
+        {
+            if (!ctx.World.Self.Mounted) { Go("start", ctx, 0); Advance(ctx); }
+            else if (Expired(ctx)) Fail("could not get off the mount");
             return;
         }
         if (Step == "walk")
@@ -801,7 +815,7 @@ public static class Mounts
         for (var i = 0; i < ctx.World.Bag.Size; i++)
         {
             var (item, _) = ctx.World.Bag.At(i);
-            if (item >= 0 && ctx.Data.Item(item) is { } it && it.InxName.Contains("Mount", StringComparison.OrdinalIgnoreCase)) return i;
+            if (item >= 0 && (ctx.Data as ClientData)?.IsMountItem(item) == true) return i;   // named by the client's mount tables
         }
         return -1;
     }

@@ -582,6 +582,7 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
         if (it.Equip > 0) m |= (int)ItemCategory.Equip;
         if (it.ItemUseSkill is not ("-" or "")) m |= (int)ItemCategory.Consumable;
         if (it.SellPrice == 0 && it.Equip == 0) m |= (int)ItemCategory.Quest;
+        if ((Ctx.Data as ClientData)?.IsMountItem(itemId) == true) m |= (int)ItemCategory.Mount;
         return m;
     }
     /// <summary>Count of an item id.</summary>
@@ -638,6 +639,9 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
 
     /// <summary>Buy price.</summary>
     [LuaFn] public int BuyPrice(int itemId) => Ctx.Data.Item(itemId)?.BuyPrice ?? -1;
+
+    /// <summary>Does using the item summon a mount (named by the client's MoverItem / Riding tables)?</summary>
+    [LuaFn] public bool IsMount(int itemId) => (Ctx.Data as ClientData)?.IsMountItem(itemId) == true;
 
     /// <summary>Equipment slot an item goes into (ItemInfo Equip; 0 = not equipment).</summary>
     [LuaFn] public int EquipSlot(int itemId) => Ctx.Data.Item(itemId)?.Equip ?? 0;

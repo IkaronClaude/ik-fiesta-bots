@@ -50,4 +50,13 @@ public class AtlasTests
         Assert.Equal(d.Map("Rou")!.Id, pey.MapId);
         Assert.NotEmpty(a.SpawnAreas(1));           // MushRoom
     }
+
+    [Fact]
+    public void Mount_items_are_the_ones_the_client_mount_tables_name()
+    {
+        if (Load() is not var (_, d)) return;
+        Assert.True(d.IsMountItem(38043));    // Wooden Horse (Pey's shop): MoverItem names WoodenHorse01
+        Assert.False(d.IsMountItem(2522));    // Floatation Stone
+        Assert.False(d.IsMountItem(4720));    // a skill book
+    }
 }

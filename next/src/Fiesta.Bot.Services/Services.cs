@@ -168,6 +168,7 @@ public sealed class ClientData : IClientData
         _quests = new(LoadQuests);
         _classes = new(LoadClasses);
         _useClass = new(() => T("UseClassTypeInfo"));
+        _mountItems = new(LoadMountItems);
     }
 
     private ShnTable? T(string name)
@@ -326,6 +327,19 @@ public sealed class ClientData : IClientData
 
     // a class line = the largest contiguous run of classes (at most five) that one UseClassTypeInfo row allows
     private readonly Lazy<ShnTable?> _useClass;
+    private readonly Lazy<HashSet<string>> _mountItems;
+
+    /// <summary>Does using this item summon a mount? The client's own tables name those items: MoverItem (ItemIDX, the
+    /// mover system) and Riding (ItemID, the older ride system).</summary>
+    public bool IsMountItem(int itemId) => Item(itemId) is { } it && _mountItems.Value.Contains(it.InxName);
+
+    private HashSet<string> LoadMountItems()
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        if (T("MoverItem") is { } mi) for (var r = 0; r < mi.RowCount; r++) if (mi.Str(r, "ItemIDX") is { Length: > 0 } s) set.Add(s);
+        if (T("Riding") is { } rd) for (var r = 0; r < rd.RowCount; r++) if (rd.Str(r, "ItemID") is { Length: > 0 } s) set.Add(s);
+        return set;
+    }
 
     /// <summary>May a class use something whose UseClass is this UseClassTypeInfo row (column k = class k)? True when the
     /// table or the row is missing.</summary>
