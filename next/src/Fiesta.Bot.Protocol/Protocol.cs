@@ -632,11 +632,13 @@ public sealed class ItemDecoder : IPacketDecoder
             }
             case 0x3C08:   // MENU_OPENSTORAGE_CMD (canonical) {cen u64, maxpage u8, curpage u8, opentype u8, count u8, records}
             {
+                // one frame PER PAGE, in any order (Z:/Storage.pcapng: pages 3, 0, 1, 2 back to back). The box is cleared
+                // once per window open (WorldState, on the first page), never per frame: clearing per frame wiped the
+                // pages that came first, the bot saw occupied cells as free and its deposits swapped stored items back
+                // into the bag (NextA, 21:58: seven 'deposits' all from bag slot 22)
                 if (p.Length < 12) return;
                 e.Kind = InboundKind.StorageList; e.A = Rd.U64(p, 0); e.B = p[8]; e.C = p[9]; e.X = p[11];
                 sink.TryWrite(e);
-                var clear = InboundEvent.Of(InboundKind.ItemCell, op, at); clear.A = StorageBox; clear.B = -1; clear.C = -1;
-                sink.TryWrite(clear);
                 Records(op, p, 12, p[11], at, sink);
                 return;
             }

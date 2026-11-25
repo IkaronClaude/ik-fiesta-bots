@@ -1160,6 +1160,8 @@ public sealed class WorldState
                 Skills.Fields.Add((int)e.A);
                 break;
             case InboundKind.StorageList:
+                // the first page of a window open clears the box; the other pages follow within moments
+                if (Bag.StorageOpenAt < 0 || now - Bag.StorageOpenAt > 2000) Bag.ClearBox(6);
                 Bag.StorageCen = e.A; Bag.StoragePages = (int)e.B; Bag.StorageOpenAt = now;
                 Bump(WorldComponent.Bag);
                 break;

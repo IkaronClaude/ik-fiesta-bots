@@ -36,9 +36,9 @@ public class StorageAndPotionTests
         var head = Assert.Single(sink.E, e => e.Kind == InboundKind.StorageList);
         Assert.Equal(1234, head.A); Assert.Equal(2, head.B); Assert.Equal(2u, head.X);
         var cells = sink.E.Where(e => e.Kind == InboundKind.ItemCell).ToList();
-        Assert.Equal(-1, cells[0].B);                                  // the box is cleared first
-        Assert.Equal((6L, 0L, 3005L, 7u), (cells[1].A, cells[1].B, cells[1].C, cells[1].X));
-        Assert.Equal((6L, 37L, 250L), (cells[2].A, cells[2].B, cells[2].C));
+        // (the box is cleared once per window by WorldState, not per page frame)
+        Assert.Equal((6L, 0L, 3005L, 7u), (cells[0].A, cells[0].B, cells[0].C, cells[0].X));
+        Assert.Equal((6L, 37L, 250L), (cells[1].A, cells[1].B, cells[1].C));
         t.Dispatch(0x300C, new byte[] { 0x4A, 0x02 }, 0, sink);
         Assert.Equal(0x024A, Assert.Single(sink.E, e => e.Kind == InboundKind.RelocAck).A);
         t.Dispatch(0x3C07, new byte[] { 0x01, 0x02 }, 0, sink);
@@ -189,5 +189,36 @@ return M
         Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(a).State);
         Assert.Equal((3005, 15), t.Ctx.World.Bag.At(21));
         Assert.Equal(25, t.Ctx.World.Bag.Count(3005));
+    }
+
+    [Fact]
+    public void A_storage_window_sent_page_by_page_keeps_every_page()
+    {
+        // Z:/Storage.pcapng: the window opens with one OPENSTORAGE frame per page, pages 3, 0, 1, 2 back to back. Page 0
+        // here carries two stored items (cells 0 and 1); the empty pages after it must not wipe them (NextA, 21:58: the
+        // bot saw occupied cells as free and its deposits swapped stored items back into bag slot 22, seven times)
+        byte[] Page(byte page, params byte[] records)
+        {
+            var count = (byte)(records.Length / 6);
+            return new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 0x10, page, 0, count }.Concat(records).ToArray();
+        }
+        var sink = new Sink();
+        var table = DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016));
+        table.Dispatch(0x3C08, Page(3), 0, sink);
+        table.Dispatch(0x3C08, Page(0, 5, 0x00, 0x18, 0x10, 0xA4, 1, 5, 0x01, 0x18, 0x11, 0xA4, 1), 0, sink);
+        table.Dispatch(0x3C08, Page(1), 0, sink);
+        table.Dispatch(0x3C08, Page(2), 0, sink);
+        using var t = new TestBot();
+        t.Tick(2);
+        foreach (var e in sink.E) t.In.TryWrite(e);
+        t.Tick();
+        Assert.Equal(42000, t.Ctx.World.Bag.StoreAt(0).ItemId);
+        Assert.Equal(42001, t.Ctx.World.Bag.StoreAt(1).ItemId);
+        Assert.Equal(2, new Fiesta.Bot.Api.NpcModule(t.Ctx).StorageFree(0));
+        // a window opened again later starts from a clean box
+        t.Tick(60);
+        t.In.TryWrite(sink.E[0]);
+        t.Tick();
+        Assert.Equal(-1, t.Ctx.World.Bag.StoreAt(0).ItemId);
     }
 }
