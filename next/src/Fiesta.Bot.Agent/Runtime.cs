@@ -188,6 +188,8 @@ public sealed record ControlCommand(ControlKind Kind, string? Layer = null, stri
     public IReadOnlyDictionary<string, string>? Args { get; init; }
     /// <summary>Completion for the poster (HTTP returns the result).</summary>
     public TaskCompletionSource<object?>? Reply { get; init; }
+    /// <summary>A read run on the tick thread (HTTP inspection of world state without races).</summary>
+    public Func<AgentContext, object?>? Query { get; init; }
 }
 
 /// <summary>Thread-safe queue of operator commands (HTTP -> tick).</summary>
@@ -209,8 +211,10 @@ public struct TickSample
     public long At;
     /// <summary>Step durations in microseconds.</summary>
     public float TotalUs, ControlUs, ApplyUs, ActionsUs, MoveUs, CombatUs, BrainUs, FlushUs, PublishUs;
-    /// <summary>Managed bytes allocated by this tick.</summary>
+    /// <summary>Managed bytes allocated by this tick (steps 1-7; the debug publishing step is counted apart).</summary>
     public long AllocBytes;
+    /// <summary>Managed bytes allocated by the publish step (snapshot, debug frame for the UI).</summary>
+    public long PublishAllocBytes;
     /// <summary>Counts.</summary>
     public int Events, Intents;
     /// <summary>Lua instructions executed.</summary>
@@ -393,6 +397,8 @@ public sealed class BotAgent
 
     /// <summary>The context.</summary>
     public AgentContext Context { get; }
+    /// <summary>Post an operator command (any thread).</summary>
+    public void ControlPost(ControlCommand command) => _control.Post(command);
     /// <summary>The brain (swappable by the supervisor between ticks).</summary>
     public IBrainTicker? Brain { get; set; }
     /// <summary>Tick statistics.</summary>
@@ -407,6 +413,8 @@ public sealed class BotAgent
     public long LastTickAt { get; private set; } = -1;
     /// <summary>Interval between ticks (ms).</summary>
     public int IntervalMs { get; set; } = 50;
+    /// <summary>Called on the tick thread at each publish (every 100 ms): the supervisor builds debug frames here.</summary>
+    public Action<BotAgent>? OnPublish { get; set; }
 
     private static double Us(long a, long b) => (b - a) * 1_000_000.0 / Stopwatch.Frequency;
 
@@ -464,14 +472,16 @@ public sealed class BotAgent
         }
         var t6 = Stopwatch.GetTimestamp();
         // 7. intents are already in the outbound ring; 8. publish
-        if (now - _lastPublish >= 100) { Publish(now); _lastPublish = now; }
+        var a1 = GC.GetAllocatedBytesForCurrentThread();
+        if (now - _lastPublish >= 100) { Publish(now); _lastPublish = now; OnPublish?.Invoke(this); }
         var t7 = Stopwatch.GetTimestamp();
+        s.PublishAllocBytes = GC.GetAllocatedBytesForCurrentThread() - a1;
         // 9. stats
         s.ControlUs = (float)Us(t0, t1); s.ApplyUs = (float)Us(t1, t2); s.ActionsUs = (float)Us(t2, t3);
         s.MoveUs = (float)Us(t3, t4); s.CombatUs = (float)Us(t4, t5); s.BrainUs = (float)Us(t5, t6); s.PublishUs = (float)Us(t6, t7);
         s.TotalUs = (float)Us(t0, t7);
         s.Events = events; s.LuaInstructions = lua;
-        s.AllocBytes = GC.GetAllocatedBytesForCurrentThread() - a0;
+        s.AllocBytes = a1 - a0;
         Stats.Record(s);
         LastTickAt = now;
     }
@@ -522,6 +532,11 @@ public sealed class BotAgent
         var c = Context;
         c.Events.Raise(EventKind.Operator, (long)cmd.Kind);
         object? result = null;
+        if (cmd.Query is { } q)
+        {
+            try { cmd.Reply?.TrySetResult(q(c)); } catch (Exception e) { cmd.Reply?.TrySetException(e); }
+            return;
+        }
         switch (cmd.Kind)
         {
             case ControlKind.Pause:
@@ -540,7 +555,8 @@ public sealed class BotAgent
                 result = OperatorActions.Run(cmd, c);
                 break;
             default:
-                result = Brain?.Control(cmd, c);
+                try { result = Brain?.Control(cmd, c); }
+                catch (Exception e) { cmd.Reply?.TrySetException(e); return; }
                 break;
         }
         cmd.Reply?.TrySetResult(result);

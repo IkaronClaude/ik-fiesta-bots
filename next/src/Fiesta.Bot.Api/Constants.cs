@@ -1,3 +1,4 @@
+using System.Text;
 using Fiesta.Bot.Agent;
 
 namespace Fiesta.Bot.Api;
@@ -21,22 +22,63 @@ public enum NpcRole : int { None = 0, Shop = 1, SoulStone = 2, Skill = 4, Smith 
 /// <summary>Constant tables pushed into each module table at VM creation.</summary>
 public static class LuaConstants
 {
+    /// <summary>"HpChanged" -> "HP_CHANGED".</summary>
+    public static string Upper(string name)
+    {
+        var sb = new StringBuilder(name.Length + 4);
+        for (var i = 0; i < name.Length; i++)
+        {
+            if (i > 0 && char.IsUpper(name[i]) && !char.IsUpper(name[i - 1])) sb.Append('_');
+            sb.Append(char.ToUpperInvariant(name[i]));
+        }
+        return sb.ToString();
+    }
+
+    private static Dictionary<string, long> Enum<T>(string prefix = "", bool skipNone = true) where T : struct, System.Enum
+    {
+        var d = new Dictionary<string, long>();
+        foreach (var v in System.Enum.GetValues<T>())
+        {
+            var n = v.ToString();
+            if (skipNone && n is "None") continue;
+            d[prefix + Upper(n)] = Convert.ToInt64(v);
+        }
+        return d;
+    }
+
+    private static readonly Lazy<Dictionary<string, Dictionary<string, long>>> Tables = new(() =>
+    {
+        var ents = Enum<EntityKind>();
+        var skills = Enum<SkillTag>();
+        foreach (var kv in Enum<CanUseReason>("R_", false)) skills[kv.Key] = kv.Value;
+        var act = Enum<ActionKind>();
+        foreach (var kv in Enum<LocalRefusal>("L_")) act[kv.Key] = kv.Value;
+        foreach (var kv in Enum<ActionState>("S_", false)) act[kv.Key] = kv.Value;
+        var dbg = new Dictionary<string, long> { ["CRIT"] = 0, ["NOTE"] = 1, ["INFO"] = 2, ["DEBUG"] = 3, ["TRACE"] = 4 };
+        var quests = new Dictionary<string, long> { ["KILL"] = 0, ["COLLECT"] = 1, ["TALK"] = 2, ["REACH_LEVEL"] = 3, ["OTHER"] = 4, ["HUNT"] = 10, ["HANDIN"] = 11, ["ACCEPT"] = 12, ["NONE"] = 13 };
+        return new Dictionary<string, Dictionary<string, long>>
+        {
+            ["ents"] = ents,
+            ["skills"] = skills,
+            ["items"] = Enum<ItemCategory>(),
+            ["npc"] = Enum<NpcRole>(),
+            ["quests"] = quests,
+            ["act"] = act,
+            ["ev"] = Enum<EventKind>(skipNone: false),
+            ["world"] = Enum<WorldComponent>(skipNone: false),
+            ["dbg"] = dbg,
+            ["self"] = new Dictionary<string, long>(),
+        };
+    });
+
+    /// <summary>Constants of a module, null when none.</summary>
+    public static IReadOnlyDictionary<string, long>? For(string module) => Tables.Value.GetValueOrDefault(module);
+    /// <summary>Every module's constants.</summary>
+    public static IReadOnlyDictionary<string, Dictionary<string, long>> All() => Tables.Value;
     /// <summary>`ents.*` filter values.</summary>
-    public static IReadOnlyDictionary<string, long> Ents => throw new NotImplementedException();
-    /// <summary>`skills.*` tag values and `skills.R_*` reason codes (<see cref="CanUseReason"/>).</summary>
-    public static IReadOnlyDictionary<string, long> Skills => throw new NotImplementedException();
-    /// <summary>`items.*` categories.</summary>
-    public static IReadOnlyDictionary<string, long> Items => throw new NotImplementedException();
-    /// <summary>`npc.*` roles.</summary>
-    public static IReadOnlyDictionary<string, long> Npc => throw new NotImplementedException();
-    /// <summary>`quests.*` objective and plan kinds.</summary>
-    public static IReadOnlyDictionary<string, long> Quests => throw new NotImplementedException();
-    /// <summary>`act.*` action kinds and `act.L_*` local refusals.</summary>
-    public static IReadOnlyDictionary<string, long> Act => throw new NotImplementedException();
+    public static IReadOnlyDictionary<string, long> Ents => Tables.Value["ents"];
+    /// <summary>`skills.*` tag values and `skills.R_*` reason codes.</summary>
+    public static IReadOnlyDictionary<string, long> Skills => Tables.Value["skills"];
     /// <summary>`ev.*` event kinds.</summary>
-    public static IReadOnlyDictionary<string, long> Ev => throw new NotImplementedException();
-    /// <summary>`world.*` component ids.</summary>
-    public static IReadOnlyDictionary<string, long> World => throw new NotImplementedException();
-    /// <summary>`self.STAT_*` ids.</summary>
-    public static IReadOnlyDictionary<string, long> Self => throw new NotImplementedException();
+    public static IReadOnlyDictionary<string, long> Ev => Tables.Value["ev"];
 }

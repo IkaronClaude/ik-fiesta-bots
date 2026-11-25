@@ -44,7 +44,15 @@ public sealed record MobInfoRow(int Id, string InxName, string Name, int Level, 
 public sealed record ActiveSkillRow(int Id, string InxName, string Name, int Step, int Range, int Area, int TargetNumber,
     int CastTimeMs, int DelayMs, int DelayGroup, int DelayGroupMs, int Sp, int Hp, bool IsMovingSkill, int UsableDegree,
     int DemandType, int SkillTargetState, int EffectType, int UseClass, int MinWc, int MaxWc, int MinMa, int MaxMa,
-    string Family, string StaNameA, string StaNameB, string StaNameC, string StaNameD);
+    string Family, string StaNameA, string StaNameB, string StaNameC, string StaNameD)
+{
+    /// <summary>First special effect (index, value): index 1 = heal amount.</summary>
+    public int SpecialIndexA { get; init; }
+    /// <summary>Value of the first special effect.</summary>
+    public int SpecialValueA { get; init; }
+    /// <summary>Maximum rank of the family.</summary>
+    public int MaxStep { get; init; }
+}
 
 /// <summary>Client ItemInfo row.</summary>
 public sealed record ItemInfoRow(int Id, string InxName, string Name, int Type, int ItemClass, int Equip, int DemandLevel,
@@ -180,7 +188,8 @@ public sealed class ClientData : IClientData
                 I("CastTime"), I("DlyTime"), I("DlyGroupNum"), I("DlyTimeGroup"), I("SP"), I("HP"), I("IsMovingSkill") != 0,
                 I("UsableDegree"), I("DemandType"), I("SkillTargetState"), I("EffectType"), I("UseClass"),
                 I("MinWC"), I("MaxWC"), I("MinMA"), I("MaxMA"), FamilyOf(inx),
-                t.Str(r, "StaNameA") ?? "-", t.Str(r, "StaNameB") ?? "-", t.Str(r, "StaNameC") ?? "-", t.Str(r, "StaNameD") ?? "-");
+                t.Str(r, "StaNameA") ?? "-", t.Str(r, "StaNameB") ?? "-", t.Str(r, "StaNameC") ?? "-", t.Str(r, "StaNameD") ?? "-")
+            { SpecialIndexA = I("SpecialIndexA"), SpecialValueA = I("SpecialValueA"), MaxStep = I("MaxStep") };
         }
         return d;
     }

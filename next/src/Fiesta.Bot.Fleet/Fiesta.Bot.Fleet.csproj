@@ -4,5 +4,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Fiesta.Bot.Brain/Fiesta.Bot.Brain.csproj" />
+    <ProjectReference Include="../../../lib/FiestaLib-Reloaded/src/FiestaLibReloaded.Networking/FiestaLibReloaded.Networking.csproj" />
   </ItemGroup>
 </Project>

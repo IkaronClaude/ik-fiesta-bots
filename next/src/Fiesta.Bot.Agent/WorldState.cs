@@ -104,6 +104,9 @@ public sealed class SelfState
         if (on && _abN < _abId.Length) { _abId[_abN] = id; _abUntil[_abN] = until; _abN++; }
     }
 
+    /// <summary>Seed the identity known from the character list (before zone entry).</summary>
+    public void Seed(string name, int classId, int classFamily, int level) { Name = name; ClassId = classId; ClassFamily = classFamily; Level = level; }
+
     /// <summary>Abstate present?</summary>
     public bool HasAbstate(int id, long now) => AbstateLeftMs(id, now) != -1;
     /// <summary>Remaining time of an abstate, -1 if absent, long.MaxValue when unknown duration.</summary>
@@ -164,6 +167,8 @@ public sealed class EntityTable
     public int Capacity => Cap;
     /// <summary>Entities in view.</summary>
     public int Count => LiveN;
+    /// <summary>The i-th live slot (0 .. Count-1).</summary>
+    public int LiveSlot(int i) => Live[i];
     /// <summary>Slot of a handle, -1 when not in view.</summary>
     public int SlotOf(int handle) => (uint)handle < 65536 ? _slotOf[handle] : -1;
     /// <summary>Handle of a slot.</summary>

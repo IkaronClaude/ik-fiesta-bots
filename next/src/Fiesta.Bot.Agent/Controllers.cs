@@ -14,7 +14,7 @@ public enum MoveFailKind : byte
 }
 
 /// <summary>What the movement controller is asked to do.</summary>
-public sealed record MoveOrder(double X, double Y, bool UsePath, double ArriveWithin, ActionId Action);
+public readonly record struct MoveOrder(double X, double Y, bool UsePath, double ArriveWithin, ActionId Action);
 
 /// <summary>Owns MOVERUN/STOP: requests the path (a job), streams legs at the client's pace, keeps the believed position
 /// within the game's tolerance, classifies MOVEFAIL, and tells the combat controller about moves.</summary>
@@ -57,6 +57,10 @@ public sealed class MoveController
         var kind = order.UsePath ? ActionKind.Move : ActionKind.MoveDirect;
         var d = Dist(ctx.World.Self.Pos.X, ctx.World.Self.Pos.Y, order.X, order.Y);
         var timeout = (int)(d / Math.Max(30, ctx.World.Self.RunSpeed) * 1000 * 2.5) + 5000;
+        // the same destination again (a state tick re-issuing its move): keep the running order and its action
+        if (_order is { } cur && _action.Value > 0 && cur.UsePath == order.UsePath && Dist(cur.X, cur.Y, order.X, order.Y) < Math.Max(25, order.ArriveWithin * 0.5)
+            && !ctx.Actions.Preempted(layer, Resource.Movement))
+            return _action;
         var id = order.Action.Value > 0 ? order.Action : ctx.Actions.Begin(kind, layer, (long)order.X, (long)order.Y, timeout);
         if (id.Value < 0) return id;
         if (_action.Value > 0 && _action != id) ctx.Actions.Resolve(_action, ActionState.Cancelled, 0);
@@ -69,7 +73,7 @@ public sealed class MoveController
 
     private void Plan(AgentContext ctx)
     {
-        var o = _order!;
+        var o = _order!.Value;
         _jobDone = false;
         if (!o.UsePath || ctx.Nav.Layer(ctx.World.Map.MapName) is null)
         {
@@ -129,7 +133,7 @@ public sealed class MoveController
             _path.Clear();
             foreach (var p in r.Waypoints) _path.Add(p);
             if (ctx.Log.IsEnabled(LogCategory.Nav, LogLevel.Debug))
-                ctx.Log.Log(LogCategory.Nav, LogLevel.Debug, $"path to ({_order.X:0},{_order.Y:0}): {_path.Count} waypoints, {r.Length:0} u{(r.Partial ? " (partial: goal not reachable, walking to the nearest point)" : "")}");
+                ctx.Log.Log(LogCategory.Nav, LogLevel.Debug, $"path to ({_order.Value.X:0},{_order.Value.Y:0}): {_path.Count} waypoints, {r.Length:0} u{(r.Partial ? " (partial: goal not reachable, walking to the nearest point)" : "")}");
         }
         _leg = 0;
         StartLeg(ctx);
@@ -162,7 +166,7 @@ public sealed class MoveController
     private void NextLeg(AgentContext ctx)
     {
         _leg++;
-        if (_order is not null && Dist(ctx.World.Self.Pos.X, ctx.World.Self.Pos.Y, _order.X, _order.Y) <= _order.ArriveWithin && _leg < _path.Count)
+        if (_order is { } ord && Dist(ctx.World.Self.Pos.X, ctx.World.Self.Pos.Y, ord.X, ord.Y) <= ord.ArriveWithin && _leg < _path.Count)
         {
             Stop(ctx, resolveCancelled: false);
             Arrive(ctx);
@@ -233,7 +237,7 @@ public sealed class MoveController
     public static MoveFailKind Classify((uint X, uint Y) sentFrom, (uint X, uint Y) carried)
         => Dist(sentFrom.X, sentFrom.Y, carried.X, carried.Y) > GameRules.MoveFromTolerance ? MoveFailKind.Desync : MoveFailKind.Blocked;
 
-    internal static double Dist(double ax, double ay, double bx, double by) => Math.Sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
+    public static double Dist(double ax, double ay, double bx, double by) => Math.Sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
 }
 
 /// <summary>Owns battle mode, targeting, BASHSTART/STOP and the cast state (reach from GameRules, nothing learned).</summary>
