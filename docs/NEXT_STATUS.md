@@ -459,6 +459,16 @@ Promotion); to be confirmed on a live hand-in.
   every 10 s and never left `plan` (NextA, 21:40-21:51). The upkeep idle state now clears it on entry, and a pick
   while the upkeep has the legs waits without scoring.
 - Two bots ending sessions at once collided writing knowledge-npcs.json (IOException): saved under a lock.
+- Tent rest PROVEN live: NextA pitched on RouCos03 at 22:01:32 (HP 58 %) and folded at 22:01:56 at 96 % (24 s).
+- Storage deposit PROVEN live: NextA at the keeper in Rou, 21:58:04-06, put 7 spare / other-class gear pieces and a
+  recipe of a field it does not work into cells 0-7 (RELOC_ACK 0x0241 moved; the items left the bag). Open question:
+  every gear piece was logged as moved from bag slot 22, one after another; the bag model and the server agreed (each
+  move acked on slot 22's cell change), so the server seems to refill the slot - not understood yet.
+- The economy ledger is saved per bot (econ-<bot>.json) at session end and restored at the next session, so rates and
+  per-mob costs survive reconnects and host restarts.
+- Tick cost on this machine: brain ticks with 0 Lua instructions still took 6-13 ms at times and trivial phases
+  2.5 ms, with the host CPU at ~76 % (the stack's containers): part of the remaining budget overruns are the machine,
+  not the planner. Steady picks measure 4-6 ms (accepts is the largest part).
 
 #### Efficiency per bot (live, local stack)
 
