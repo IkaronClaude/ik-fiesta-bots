@@ -1224,10 +1224,12 @@ public sealed partial class KnowModule(AgentContext ctx) : ApiModule(ctx)
 public sealed partial class TimeModule(AgentContext ctx) : ApiModule(ctx)
 {
     private readonly Dictionary<long, long> _every = new();
-    /// <summary>Tick-start clock (ms, monotonic).</summary>
-    [LuaFn] public long Now() => Ctx.Now;
-    /// <summary>Ms since t.</summary>
-    [LuaFn] public long Since(long t) => Ctx.Now - t;
+    /// <summary>Tick-start clock as Unix milliseconds. Brains keep times in bb.bot (skip deadlines, the last death...),
+    /// which outlives the host process: a process-relative clock started over at every restart, so a stored time lay
+    /// hours in the future (a grind wait that never ended, quests skipped far too long).</summary>
+    [LuaFn] public long Now() => SystemClock.UnixMs(Ctx.Now);
+    /// <summary>Ms since t (a time.now() value).</summary>
+    [LuaFn] public long Since(long t) => SystemClock.UnixMs(Ctx.Now) - t;
     /// <summary>Tick counter.</summary>
     [LuaFn] public long Tick() => Ctx.Tick;
     /// <summary>True at most once per ms per key (per layer).</summary>
