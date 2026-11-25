@@ -183,4 +183,19 @@ public class LevelerBrainTests
         Assert.Single(b.Debug.Transitions(), r => r.Layer == "buffs" && r.To == "casting");
         Assert.Empty(b.Debug.Errors().Where(e => !e.Error.Contains("E_BUDGET")));
     }
+
+    [Fact]
+    public void A_scenario_area_the_server_asks_about_is_confirmed()
+    {
+        if (Load() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(5);
+        var e = InboundEvent.Of(InboundKind.Scenario, 0x6C05, t.Clock.NowMs); e.A = 5; e.Text = "Zone_Mob01";
+        t.In.TryWrite(e);
+        t.Tick(10);
+        Assert.Contains(IntentEncoder.OpAreaEntryAck, t.Sent);
+        Assert.True(t.Ctx.World.Scenario.Confirmed.Contains("Zone_Mob01"));
+        Assert.Empty(b.Debug.Errors().Where(x => !x.Error.Contains("E_BUDGET")));
+    }
 }
