@@ -497,3 +497,5 @@ Promotion); to be confirmed on a live hand-in.
 | 21:58 (5 min after a restart) | NextM | 12 | 0 | 0 | 0 | 0 | 0 | hunt q30 Karl's Mysterious Sword (8.6 exp/s, 673 over 78 s) |
 
 The ledger lives in memory: a host restart starts the hour over (the rates read 0 until the bot earns again).
+| 22:52 (after two stack restarts) | NextA | 13 | 2940 | 517 | 6780 | 0 | 0 | accept q65479 (event, 0.9 exp/s) - unmeasured mobs undervalued; fixed: they now take the measured average |
+| 22:52 (after two stack restarts) | NextM | 12 | 7585 | 250 | 4004 | 0 | 0 | hunt q416 Despicable Little Ones (4.0 exp/s) |
