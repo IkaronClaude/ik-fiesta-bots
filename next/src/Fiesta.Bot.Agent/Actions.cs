@@ -417,6 +417,8 @@ public static class ErrorCodes
         0x0346 => "bag full",
         0x0241 => "moved",
         0x0441 => "split",
+        0x070B => "the skill is learned already (seen: a second book of a skill just learned)",
+        0x0717 => "the recipe's production field is not chosen (seen: read after choosing the field)",
         0x0B01 => "made / chosen",
         0x024A => "the item cannot go there",
         _ => "",

@@ -87,4 +87,18 @@ layers:
         }
         finally { ticks.Dispose(); }
     }
+
+    [Fact]
+    public void A_skill_learned_from_a_book_is_in_the_skill_book_at_once()
+    {
+        // captured: ITEM_USE_ACK 0x0700 for Fire Bolt [02], then SKILL_LEARNSUC {0x1799, 0}
+        var sink = new Sink();
+        DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016)).Dispatch(0x4804, new byte[] { 0x99, 0x17, 0x00 }, 0, sink);
+        Assert.Equal((InboundKind.SkillLearned, 6041L), (sink.E[0].Kind, sink.E[0].A));
+        using var t = new TestBot();
+        t.Tick(2);
+        t.In.TryWrite(sink.E[0]);
+        t.Tick();
+        Assert.True(t.Ctx.World.Skills.Has(6041));
+    }
 }

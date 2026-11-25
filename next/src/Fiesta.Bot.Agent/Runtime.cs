@@ -553,6 +553,12 @@ public sealed class BotAgent
                     _ => $"SCENARIO notice {e.B}",
                 });
                 break;
+            case InboundKind.SkillLearned when e.C == 1:
+                log.Log(LogCategory.Core, LogLevel.Note, $"learned skill {e.A} ({Context.Data.Skill((int)e.A)?.Name ?? "?"})");
+                break;
+            case InboundKind.SkillLearnFail:
+                log.Log(LogCategory.Core, LogLevel.Note, $"SKILL_LEARNFAIL 0x{e.A:X4}");
+                break;
             case InboundKind.SplitAck:
                 log.Log(LogCategory.Item, e.A == 0x0441 ? LogLevel.Info : LogLevel.Note, $"SPLIT_ACK 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
                 break;
