@@ -167,6 +167,8 @@ public enum InboundKind : ushort
     /// <summary>The map we stand on is a player-fight area (MAP_FREEPKZONE_ON / PARTYBATTLEZONE_ON) or no longer one
     /// (the OFF commands): A = 1 on / 0 off, B = 2 free player kill, 1 party battle.</summary>
     PvpZone,
+    /// <summary>A stack split answered (ITEM_SPLIT_ACK): A code (0x0441 split; captured after the two cell changes).</summary>
+    SplitAck,
     /// <summary>Not decoded but passed (raw logging).</summary>
     Raw,
 }
@@ -586,7 +588,7 @@ public sealed class ItemDecoder : IPacketDecoder
 
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x1047, 0x3001, 0x3002, 0x3016, 0x3004, 0x3005, 0x5003, 0x5004, 0x5005, 0x5006, 0x5008, 0x500A, 0x300A, 0x0700, 0x3C07, 0x3C08, 0x300C];
+        [0x1047, 0x3001, 0x3002, 0x3016, 0x3004, 0x3005, 0x5003, 0x5004, 0x5005, 0x5006, 0x5008, 0x500A, 0x300A, 0x0700, 0x3C07, 0x3C08, 0x300C, 0x300E];
 
     /// <summary>The storage box id in item locations.</summary>
     public const int StorageBox = 6;
@@ -621,6 +623,9 @@ public sealed class ItemDecoder : IPacketDecoder
                 break;
             case 0x300C:   // ITEM_RELOC_ACK {err u16}
                 e.Kind = InboundKind.RelocAck; e.A = p.Length >= 2 ? Rd.U16(p, 0) : -1;
+                break;
+            case 0x300E:   // ITEM_SPLIT_ACK {err u16}
+                e.Kind = InboundKind.SplitAck; e.A = p.Length >= 2 ? Rd.U16(p, 0) : -1;
                 break;
             case 0x3001:   // CELLCHANGE {exchange, location u16, itemid u16, attr}
             {
@@ -927,7 +932,7 @@ public static class IntentEncoder
         OpChangeMode = 0x2008, OpCastObj = 0x2440, OpCastFld = 0x2441, OpBashStart = 0x242B, OpBashStop = 0x2432,
         OpItemUse = 0x3015, OpBuy = 0x3003, OpSell = 0x3006, OpNpcClick = 0x200A, OpChat = 0x2001, OpPick = 0x3009,
         OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpQuestScriptAck = 0x4402,
-        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B, OpProduceCast = 0x2035, OpProductField = 0x4822,
+        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B, OpSplit = 0x300D, OpProduceCast = 0x2035, OpProductField = 0x4822,
         OpLoginComplete = 0x1803;
 
     private static Intent Make(ushort op, int action, ReadOnlySpan<byte> payload)
@@ -1030,6 +1035,14 @@ public static class IntentEncoder
     /// <summary>A trade request (dept 19 command) with an optional payload: 1 PROPOSE {partner u16}, 6 yes / 3 no to an
     /// ask, 13 UPBOARD {bag slot}, 17 DOWNBOARD {board slot}, 21 CENBOARDING {money u64}, 25 BOARDLOCK, 31 DECIDE, 10 CANCEL.</summary>
     public static Intent Trade(int cmd, ReadOnlySpan<byte> payload, int actionId) => Make((ushort)((TradeDecoder.Dept << 10) | cmd), actionId, payload);
+    /// <summary>ITEM_SPLIT_REQ {from u16, to u16, lot u32}: part of a stack into an empty cell (item locations).</summary>
+    public static Intent Split(ushort from, ushort to, uint lot, int actionId)
+    {
+        Span<byte> b = stackalloc byte[8];
+        BinaryPrimitives.WriteUInt16LittleEndian(b, from); BinaryPrimitives.WriteUInt16LittleEndian(b[2..], to);
+        BinaryPrimitives.WriteUInt32LittleEndian(b[4..], lot);
+        return Make(OpSplit, actionId, b);
+    }
     /// <summary>Raw opcode + payload.</summary>
     public static Intent Raw(ushort opcode, ReadOnlySpan<byte> payload, int actionId) => Make(opcode, actionId, payload);
 }

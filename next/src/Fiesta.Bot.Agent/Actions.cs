@@ -20,7 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
-    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack, Produce, ProductField,
+    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack, Produce, ProductField, Split,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -161,6 +161,8 @@ public static class ActionCatalog
             : e.Kind == InboundKind.ProduceFail ? (ActionState.Refused, (ushort)e.A) : null), 10000);
         S(ActionKind.ProductField, Resource.None, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.ProduceField && e.A == a.Arg0 ? (e.B == 0x0B01 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.B)) : null), 3000);
+        S(ActionKind.Split, Resource.Inventory, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.SplitAck ? (e.A == 0x0441 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.A)) : null), 3000);
         S(ActionKind.Talk, Resource.Npc, Controller, 20000);
         S(ActionKind.Storage, Resource.Npc, Controller, 6000);
         S(ActionKind.Gate, Resource.Movement, Controller, 20000);
@@ -414,6 +416,7 @@ public static class ErrorCodes
         0x0341 => "picked up",
         0x0346 => "bag full",
         0x0241 => "moved",
+        0x0441 => "split",
         0x0B01 => "made / chosen",
         0x024A => "the item cannot go there",
         _ => "",

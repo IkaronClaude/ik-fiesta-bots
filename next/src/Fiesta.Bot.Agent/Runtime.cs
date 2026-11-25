@@ -538,6 +538,9 @@ public sealed class BotAgent
                 log.Log(LogCategory.Social, e.A is 15 or 16 or 19 or 20 or 23 or 24 or 27 or 28 or 29 or 30 or 33 or 34 ? LogLevel.Info : LogLevel.Note,
                     $"TRADE {TradeName((int)e.A)} b={e.B} c={e.C}{(e.A == 16 ? $" x{e.X}" : "")} [{e.Text}] -> {Context.World.Trade.Phase} partner {Context.World.Trade.Partner} cen {Context.World.Trade.MyCen}/{Context.World.Trade.TheirCen} lock {Context.World.Trade.MyLocked}/{Context.World.Trade.TheirLocked} decide {Context.World.Trade.MyDecided}/{Context.World.Trade.TheirDecided}");
                 break;
+            case InboundKind.SplitAck:
+                log.Log(LogCategory.Item, e.A == 0x0441 ? LogLevel.Info : LogLevel.Note, $"SPLIT_ACK 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
+                break;
             case InboundKind.ProduceMade:
                 log.Log(LogCategory.Item, e.B == 0x0B01 ? LogLevel.Info : LogLevel.Note, $"PRODUCE_MAKE item {e.A} 0x{e.B:X4} {ErrorCodes.Describe((ushort)e.B)}");
                 break;

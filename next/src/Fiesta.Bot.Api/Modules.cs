@@ -590,6 +590,19 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn(Alloc = Alloc.LuaString)] public string Name(int itemId) => Ctx.Data.Item(itemId)?.Name ?? $"item {itemId}";
     /// <summary>Count of an item id.</summary>
     [LuaFn] public int Count(int itemId) => B.Count(itemId);
+    /// <summary>The first empty bag slot, -1 none.</summary>
+    [LuaFn] public int FreeSlot() { for (var i = 0; i < B.Size; i++) if (B.At(i).ItemId < 0) return i; return -1; }
+    /// <summary>Split lot items off a bag stack into an empty bag slot (ITEM_SPLIT_REQ); acked on SPLIT_ACK 0x0441
+    /// (after the two cell changes), refused with its code.</summary>
+    [LuaFn]
+    public int Split(int slot, int lot, int toSlot)
+    {
+        var (it, have) = B.At(slot);
+        if (it < 0 || lot <= 0 || lot >= have || B.At(toSlot).ItemId >= 0) return Ctx.Actions.Refuse(ActionKind.Split, CallingLayer, LocalRefusal.InvalidTarget).Value;
+        _split[0] = IntentEncoder.Split((ushort)((ItemDecoder.BagBox << 10) | slot), (ushort)((ItemDecoder.BagBox << 10) | toSlot), (uint)lot, -1);
+        return Ctx.Actions.Issue(ActionKind.Split, CallingLayer, slot, toSlot, _split).Value;
+    }
+    private readonly Intent[] _split = new Intent[1];
     /// <summary>First slot, -1 none.</summary>
     [LuaFn] public int Find(int itemId) => B.Find(itemId);
     /// <summary>Occupied slots matching the category mask (0 = all).</summary>

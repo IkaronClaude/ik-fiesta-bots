@@ -166,4 +166,28 @@ return M
         Assert.Equal((1L, 230L), (s["k"]!.GetValue<long>(), s["v"]!.GetValue<long>()));
         Assert.False(s["scroll"]!.GetValue<bool>());
     }
+
+    [Fact]
+    public void A_split_resolves_on_its_ack_after_the_two_cell_changes()
+    {
+        // captured: SPLIT_REQ {0x2402, 0x2415, 15} -> CELLCHANGE slot 2 lot 10, CELLCHANGE slot 21 lot 15 -> SPLIT_ACK 0x0441
+        var enc = IntentEncoder.Split(0x2402, 0x2415, 15, -1);
+        Assert.Equal(IntentEncoder.OpSplit, enc.Opcode);
+        Assert.Equal(new byte[] { 0x02, 0x24, 0x15, 0x24, 0x0F, 0, 0, 0 }, enc.Inline[..enc.Length].ToArray());
+        var sink = new Sink();
+        DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016)).Dispatch(0x300E, new byte[] { 0x41, 0x04 }, 0, sink);
+        Assert.Equal((InboundKind.SplitAck, 0x0441L), (sink.E[0].Kind, sink.E[0].A));
+        using var t = new TestBot();
+        t.Ev(InboundKind.ItemCell, a: 9, b: 2, c: 3005, x: 25);
+        t.Tick(2);
+        var a = t.Ctx.Actions.Issue(ActionKind.Split, 1, 2, 21, [enc]);
+        t.Tick();
+        t.Ev(InboundKind.ItemCell, a: 9, b: 2, c: 3005, x: 10);
+        t.Ev(InboundKind.ItemCell, a: 9, b: 21, c: 3005, x: 15);
+        t.Ev(InboundKind.SplitAck, a: 0x0441);
+        t.Tick();
+        Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(a).State);
+        Assert.Equal((3005, 15), t.Ctx.World.Bag.At(21));
+        Assert.Equal(25, t.Ctx.World.Bag.Count(3005));
+    }
 }

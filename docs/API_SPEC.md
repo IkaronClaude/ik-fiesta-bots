@@ -251,6 +251,8 @@ GROUND, SELF, PARTY, MOVING, DOT, SLOW, DISPEL, REVIVE, TOGGLE`.
 | `items.isPotion(itemId, kind)` | boolean | O(1) | 0 | ItemUseSkill `UsePotion`, an instant restore of the kind (client ItemUseEffect), our level and class |
 | `items.useEffect(itemId)` | kind, value | O(1) | 0 | client ItemUseEffect UseEffectA / UseValueA (`-1, 0` none) |
 | `items.name(itemId)` | string | O(1) | lua-str | for logs |
+| `items.freeSlot()` | slot | O(n) | 0 | first empty bag slot, `-1` none |
+| `items.split(slot, lot, toSlot)` | action | Inventory | ITEM_SPLIT_REQ: `lot` items of a stack into an empty slot; acked on SPLIT_ACK `0x0441` (after the two cell changes), refused with its code |
 | `items.junkValue()` | integer | cached | 0 | what selling all junk would fetch |
 | `items.equipUpgrade()` | slot | cached | 0 | best bag item that improves an equipment slot |
 | `items.equipped(equipSlot)` | itemId | O(1) | 0 | |
