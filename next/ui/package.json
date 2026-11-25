@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "mock": "node mock/server.mjs",
-    "test": "node --test mock/test/"
+    "test": "node --test mock/test/mock.test.mjs"
   },
   "dependencies": {
     "@xyflow/react": "12.3.6",

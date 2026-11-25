@@ -14,6 +14,7 @@ node-based brain editor with Lua, libraries, versions. Contract with the runtime
 | mock host | `node next/ui/mock/server.mjs --port 5199 --static dist [--token T]`: every endpoint of API_SPEC 8 / 12.3 / 13, WebSocket with RFC 6902 deltas, fixture brains / libraries / bots, and a fake brain runtime that executes any brain definition's layers, machines and transitions (sensors and events are random numbers, not game data) |
 | dev loop | `npm run mock` + `npm run dev` (Vite on :5198, proxies `/api` and the WebSocket to `BOT_HOST`, default the mock) |
 | manifest in the mock | generated at start from `docs/API_SPEC.md` sections 2 and 3 (223 functions + 2 aliases, 34 events, 36 sensors), so it follows the spec |
+| mock tests | `npm test` (node:test): manifest = 223 spec functions + 2 aliases, fixture brains lint clean, linter catches syntax / unknown API / bad targets, JSON patch + unified diff, the fake runtime records transitions with depth and index |
 | headless smoke driver | `node next/ui/mock/cdp.mjs <steps.mjs>` drives headless Edge/Chrome over CDP (screenshots, clicks, console) |
 | dependencies | 6 runtime + 4 dev packages, exact versions in `package.json` / `package-lock.json`; `node_modules` ~150 MB (Monaco is most of it) |
 
@@ -80,4 +81,5 @@ default `FIESTA_WIRE` else 2016) matches U5/U6. Point the dev server at it with
 - Visual check in the operator's Chrome when the extension is connected.
 - Large brains: graph layout is a simple layered BFS (no edge-crossing minimisation); positions persist once dragged.
 - No undo history in the graph beyond Revert (Monaco has its own undo).
+- Edge labels close to a node can still slip partly under it on dense graphs (labels render below nodes).
 - Bundle is one ~4 MB chunk (Monaco); could be split if load time matters.

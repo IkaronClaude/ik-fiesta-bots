@@ -181,7 +181,14 @@ function GraphInner(p: Props) {
   }, [stateNames.join('|'), machine, positions, selection, live, mode, lintBy, externalTargets, p.onOpenSub]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<Node<SNodeData>>(buildNodes());
-  useEffect(() => { setNodes(buildNodes()); }, [buildNodes, setNodes]);
+  // keep React Flow's measurements when rebuilding (a node without `measured` is hidden until re-measured,
+  // and the live view rebuilds several times a second)
+  useEffect(() => {
+    setNodes(prev => {
+      const byId = new Map(prev.map(n => [n.id, n]));
+      return buildNodes().map(n => { const p = byId.get(n.id); return p ? { ...p, ...n, measured: p.measured, width: p.width, height: p.height } : n; });
+    });
+  }, [buildNodes, setNodes]);
 
   const edges: Edge<TEdgeData>[] = useMemo(() => {
     const pairCount = new Map<string, number>(); const pairIdx = new Map<string, number>();
@@ -259,7 +266,7 @@ function GraphInner(p: Props) {
     else if (s.edges.length === 1) { const [from, i] = s.edges[0].id.split('#'); if (!(selection?.kind === 'edge' && selection.from === from && selection.index === Number(i))) onSelect({ kind: 'edge', from, index: Number(i) }); }
   }, [onSelect, selection]);
 
-  useEffect(() => { const t = window.setTimeout(() => rf.fitView({ padding: 0.2, maxZoom: 1.1 }), 30); return () => window.clearTimeout(t); }, [scope.kind, (scope as any).layer, (scope as any).name, scope.path.join('/'), rf]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { const t = window.setTimeout(() => rf.fitView({ padding: 0.2, maxZoom: 1.1 }), 80); return () => window.clearTimeout(t); }, [scope.kind, (scope as any).layer, (scope as any).name, scope.path.join('/'), rf]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="graph" style={{ height: p.height ?? '100%' }}>
@@ -268,7 +275,7 @@ function GraphInner(p: Props) {
         onNodesChange={onNodesChange} onNodeDragStop={onNodeDragStop} onConnect={onConnect} onConnectEnd={onConnectEnd} onDelete={onDelete}
         onSelectionChange={onSelectionChange} onPaneClick={() => onSelect(null)}
         nodesDraggable nodesConnectable={mode === 'edit'} elementsSelectable deleteKeyCode={mode === 'edit' ? ['Delete', 'Backspace'] : null}
-        minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} colorMode="dark"
+        fitView fitViewOptions={{ padding: 0.2, maxZoom: 1.1 }} minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} colorMode="dark"
       >
         <Background gap={24} size={1} />
         <Controls showInteractive={false} />
