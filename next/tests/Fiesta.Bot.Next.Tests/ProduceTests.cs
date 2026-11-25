@@ -41,4 +41,30 @@ public class ProduceTests
         t.Tick();
         Assert.Equal((ActionState.Refused, (ushort)0x0B05), (t.Ctx.Actions.Get(b).State, t.Ctx.Actions.Get(b).Code));
     }
+
+    [Fact]
+    public void A_call_to_a_missing_function_of_any_api_module_fails_the_lint()
+    {
+        var mods = typeof(Fiesta.Bot.Api.ProduceModule).Assembly.GetTypes()
+            .Select(t => t.GetCustomAttributes(false).FirstOrDefault(a => a.GetType().Name == "LuaModuleAttribute"))
+            .Where(a => a is not null).Select(a => (string)a!.GetType().GetProperties().First(p => p.PropertyType == typeof(string)).GetValue(a)!).ToList();
+        Assert.Contains("produce", mods);
+        var src = "local M = {}\nfunction M.t()\n" + string.Concat(mods.Select(m => $"  {m}.zzNope()\n")) + "end\nreturn M\n";
+        const string yaml = """
+brain: x
+api: 3
+modules: [brain/x/m]
+layers:
+  - name: l
+    priority: 1
+    machine:
+      initial: s
+      states:
+        s:
+          tick: m.t
+          terminal: true
+""";
+        var lint = Fiesta.Bot.Brain.BrainLinter.Lint(Fiesta.Bot.Brain.BrainLoader.Parse(yaml), new Dictionary<string, string> { ["brain/x/m"] = src });
+        foreach (var m in mods) Assert.Contains(lint, l => l.Code == "API_NAME" && l.Message.Contains($"{m}.zzNope"));
+    }
 }
