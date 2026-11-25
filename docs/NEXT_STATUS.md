@@ -2,7 +2,7 @@
 
 Branch `redesign-2026-11-core`. What is implemented against `docs/REDESIGN.md`, what was measured and proven live,
 the bug log, and what is open. Build: `dotnet build next/Fiesta.Bot.Next.slnx`; tests:
-`dotnet test next/tests/Fiesta.Bot.Next.Tests` (36 tests).
+`dotnet test next/tests/Fiesta.Bot.Next.Tests` (78 tests).
 
 ## Running it
 
@@ -26,7 +26,7 @@ FIESTA_WIRE=2016|2026 ASPNETCORE_URLS=http://127.0.0.1:5098 dotnet next/src/Fies
 | 2.1-2.3 threading, queues, tick | I/O threads decode into a per-bot SPSC `InboundRing` (+ an MPSC lane for job results); the tick enqueues into an SPSC `OutboundRing` drained by the link's writer; operator commands through `ControlQueue`; K tick workers (`TickScheduler`, 50 ms) own a partition of agents; the tick runs control, apply, actions + procedures, move, combat, brain, publish, stats. Nothing on the tick awaits. Off-tick HTTP reads of world state go through tick-side queries (`ControlCommand.Query`). |
 | 2.4-2.6 budget, allocation, measurement | `TickSample` per tick (per-step us, allocated bytes, publish step apart, events, Lua instructions); `TickStats` ring + per-minute log-bucket histograms; `/tick`, `/metrics`, debug frame `tickStats`. Instruction-count hook enforces a wall-clock budget per state call. |
 | 3.1 actions / handles | `ActionSystem` with `ActionCatalog` matchers per kind (cast start / cast-fail code, bash first swing, target info, item use 0x0700, stones, pick 0x0341, buy 0x0201, sell 0x0381, mount ride on/off); local refusals with reasons; timeouts; link-down failure; resource claims (`L_PREEMPTED`). |
-| 3.2 procedures | OpenShop, QuestDialogue (answers derived from the quest script's `IF RESULT` branches, `[MENU]` select, terminal ACCEPT / DONE), GateHop, Dismount, Revive. Trade, Tent, Storage, Travel (multi-map route) fail with "not wired". |
+| 3.2 procedures | OpenShop, QuestDialogue (answers derived from the quest script's `IF RESULT` branches, `[MENU]` select, terminal ACCEPT / DONE), GateHop, Dismount, Revive, Storage (the keeper's window), Travel (multi-map route; waits while another layer holds the legs). Trade runs as step actions (no procedure). Tent fails with "not wired". |
 | 3.3 controllers | `MoveController` (path job, legs streamed at run speed, split at 800 u, spawn settle 1 s, MOVEFAIL desync vs blocked with the per-bot overlay, re-plan up to 4 refusals, same-destination re-orders kept). `CombatController` (target / battle mode once per zone session / STOP + BASHSTART, re-arm after moves and cease-fire, cast with face-step for skills with a usable arc, cast bar). |
 | 3.4 GameRules | bash and skill reach, mob body, 3x3 target and two-sample segment rules, line of fire (`.shab`), leash left, `CanUse` (learned, cooldown + group, SP, HP, dead, mounted, casting, target, range, line of fire). |
 | 4 helper library | 16 modules, 223 functions + `canUse` / `log` aliases, bound by the `[LuaFn]` source generator as `[UnmanagedCallersOnly]` function pointers; iterators over a per-call arena (no tables built); manifest generated. Functions whose data is not decoded / learned yet return their "none" value and say so in their doc (stats, empower, routeDist, assist, armour, equipUpgrade, party/trade/whisper actions). |
@@ -211,4 +211,59 @@ server-side cause stays open.
   has occurred."). Live evidence: with REMAINPOINT 6 the server refused every End request with 0x0AC2, and accepted
   Int at level 8; a 2016 capture shows Str accepted ten times in a row. The rule behind the End refusal is not
   identified; the brain learns refused stats per level instead of assuming one.
-- Open: gear upgrades (ItemInfo stats not loaded yet), storage (procedure not wired), potions.
+- Gear, storage, potions: see the next section.
+
+### Leveller port, step 3 (2026-11-25: potions, storage, selling / gear live, trade, team aid, production)
+
+Runtime (committed): storage window (MENU_OPENSTORAGE) and bag <-> storage moves (ITEM_RELOC_REQ, acked when the
+source cell changes, refused with the RELOC_ACK code); ItemUseEffect per item (`items.isPotion / bestPotion / potions /
+useEffect`); player trade (TradeDecoder for dept 19, TradeState, `social.trade*` step actions each resolved by its own
+ack / fail, events tradeAsked / tradeStarted / tradeEnded); the host-wide team board (`team.*`); production (Produce
+table, `produce.*`, PRODUCE_MAKE / CAST_FAIL / PRODUCTFIELD / SKILLEXP decoded); `npc.close`.
+
+Brain (private): potions.lua (HP potions after the stones, SP stones then SP potions for SP users, potion buying at
+any open shop that sells one), storage.lua + upkeep `storage` (keeper by role), aid.lua + layer `team` (asks for SP
+potions / stone money; a teammate claims, walks over, trades), craft.lua + upkeep `craft` (known recipes whose
+materials we hold, potions or when the bag is short), grind rounds no longer end every few seconds (`objectiveMet` was
+true for grind tasks: the bot re-planned the grind spot every 10 s), trips refused because a higher layer holds the
+legs are retried instead of given up (PREEMPTED).
+
+Proven live (local 2026 stack):
+- Selling and gear buying, triggered by the bag (5 free slots) and money: NextA 17:00:57 sold its loot at the Rou
+  merchant (money 22 -> about 350), 17:01:11 opened the smith (`gear: buying 6 (+13)`, Chain Pants, 200 cen; money
+  -> 151) and 17:01:13 equipped it (`gear: equipping 6 (score 21)`; equipment slot 19 = Chain Pants, Leather Pants
+  back in the bag).
+- Storage keeper discovered by role: NextM probed RouStoreRaina (npc 108) at 17:35:58, the keeper's quest page was
+  answered with the menu and the storage window opened (`storage open at npc 21708: page 1/16, 0 items, 0 cen`).
+- Team aid: NextM (Mage, 4 SP potions) asked for 6 SP potions; NextA (Fighter, 8 SP potions it never drinks) claimed
+  the ask, walked over and traded at 17:51:46-47: PROPOSE -> the asker's PROPOSE_ASK answered yes -> START ->
+  UPBOARD_ACK (SP Potion x18, bag 21) / OPPOSIT_UPBOARD (item 3505 x18) -> both BOARDLOCK -> OPPOSIT_DECIDE ->
+  DECIDE -> TRADECOMPLETE in 0.9 s; NextM's SP potions 7 -> 25, NextA's 18 -> 0 (the game boards a whole bag slot,
+  so the stack went, not the 6 asked).
+- Before that, ten proposals came back PROPOSENO 0x06C8 while NextA still had the smith's window open from its gear
+  visit; closing its own window before proposing fixed it (the asker's window was closed already). 0x06C8 is the
+  game's generic "rejected" (the client shows "Trade was rejected by the other."); an open NPC window on either side
+  is one cause.
+
+Bugs found and fixed on the way:
+
+| # | symptom | cause | fix | commit |
+|---|---|---|---|---|
+| 17 | quest trips gave up within a second ("GIVE-UP ... no answer from the NPC") while the bot fought | a trip start refused because a higher layer holds the legs returns -1; the brain read that as a failed trip | the brain marks such a start PREEMPTED and retries it | (brain) |
+| 18 | travels failed with "could not reach: Cancelled" / "the gate to the next map never came into view" after fights on the way | a higher layer's move cancels the travel's own walk, which the travel counted as a failure | the travel waits while the legs are held and plans again; test `A_trip_whose_walk_another_layer_takes_over_waits_instead_of_failing` (fails without the fix) | 629fa88 |
+| 19 | the storage window closed itself at once | the 2026 server sends MENU_OPENSTORAGE_FAIL {01 08} right after a successful window (and once more later) | it no longer closes the window; logged with the window state | b1d4fe6 |
+| 21 | trade proposals refused PROPOSENO 0x06C8 | the proposer's own NPC window (the last shop) was still open | the giver closes its window (END_OF_TRADE) before proposing | (brain) |
+| 22 | a trade confirm timed out although the trade completed | TRADECOMPLETE came instead of our DECIDE_ACK (the partner had decided first) | COMPLETE acks the confirm; test `A_confirm_is_acked_by_the_completion_when_it_comes_first` | 8014f13 |
+| 23 | a brain calling `produce.*` passed the lint on a host without the module, then failed every tick | the linter's API module list missed `team` / `produce` | both added; test lints a missing function of every `[LuaModule]` | 0b74f9a |
+| 20 | a grind round ended every 10 s and re-planned the same spot | `hunt.objectiveMet` was true for grind tasks (no quest) | grind rounds end on level-up or after 90 s | (brain) |
+
+Open:
+- Storage deposits not exercised live yet (they need a bag that selling cannot clear); the meaning of the 2026
+  0x3C07 {01 08} is not identified; storage cell capacity per page is learned from refusals, not assumed.
+- Production not exercised live (the bots know no recipe yet); the producer's commission / price-list selling of the
+  old scripts is not ported.
+- JCQ (level 20) and the instance / scenario driver: not started (the bots are level 8-10; nothing can be proven
+  live before level 20). The JCQ chain's plain quests are covered by the leveller; the scenario part needs the
+  instance driver (areas, waves, the clone fight).
+- The aid asker waits 15 min for its helper; a helper that loses its claim (the ask was re-posted) only notices when
+  it arrives.
