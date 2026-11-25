@@ -506,6 +506,28 @@ Promotion); to be confirmed on a live hand-in.
   exp/h, no deaths; money -6906 / -10020 per hour with 9786 / 15300 per hour on stones (the top-up rule's first
   restock after the restarts; watching whether it settles).
 
+#### Natural regeneration while standing: measured, NOT confirmed as game behaviour (possible server-port bug)
+
+Two measurements, both "no regeneration out of combat while not in the tent":
+- 21:43:00-21:43:45 UTC, BEFORE the switch to all-native Linux servers (the zones still ran the earlier build):
+  NextA on RouCos03 / Rou, HP 208/455 unchanged for 45 s, standing out of combat; the full packet log of those 45 s
+  has no HP or SP change at all (only stat-parameter 0x1035 and movement frames).
+- 23:32:57-23:33:58 UTC, on the all-native Linux stack: NextA on RouVal01, HP 465/484 unchanged for 61 s, out of
+  combat (walking to a merchant); no NC_BAT_HPCHANGE in the packet log for that minute.
+(The private Lua drivers recorded the same on the cluster in October: a character standing at 29 % for 9 minutes.)
+In the tent HP does come back (NextA 58 % -> 96 % in 24 s, 22:01).
+Status: an open question for the server side, not a rule. The leveller's `rest` state pitches the tent whenever it
+needs HP between fights; it does not depend on standing regeneration being absent (the tent is the faster recovery
+either way), and nothing else in the bot assumes it. If standing regeneration is confirmed and fixed server-side, the
+rest state can also stand without the tent where a tent is refused.
+
+#### Open: storage deposits all logged from bag slot 22 (possible server-port bug)
+
+NextA, 21:58:04-06 (before the all-native switch): every deposited item was logged as moved from bag slot 22 in turn,
+each move acked by slot 22's cell change, and the items left the bag. To be captured with full packet logs at the next
+deposit (both bots' packet logs are on since 23:32) and sent to the server side with the raw C->S RELOC requests and
+every S->C cell change / ack.
+
 #### Efficiency per bot (live, local stack)
 
 | time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
