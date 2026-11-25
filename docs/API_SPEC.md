@@ -379,6 +379,12 @@ the client's .aid file), `scenario.areaCount()`, `scenario.doors()` (iter of doo
 of paths through the nav overlay.
 All scenario frames are logged under `quest`.
 
+### 2.11e `econ`
+
+`econ.rates(minutes)` -> expH, moneyH, deathsH, stonesH: per-hour rates over the last 1..60 minutes from one-minute
+buckets (exp gained, money earned minus spent, deaths, money spent on soul stones: the drop that goes with a stone
+buy ack). The guard a brain builds against a death spiral / a draining purse reads it.
+
 ### 2.12 `know` (9) — learned knowledge (shared host-wide)
 
 Each estimator returns `estimate, low, high, samples`; `-1, -1, -1, 0` when unknown.

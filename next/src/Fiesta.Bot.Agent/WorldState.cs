@@ -708,6 +708,8 @@ public sealed class WorldState
     public PartyState Party { get; } = new();
     /// <summary>Trade.</summary>
     public TradeState Trade { get; } = new();
+    /// <summary>Exp, money, stone spend and deaths over the last hour.</summary>
+    public Economy Economy { get; } = new();
     /// <summary>Instance scenario state.</summary>
     public ScenarioState Scenario { get; } = new();
     /// <summary>Map.</summary>
@@ -878,12 +880,13 @@ public sealed class WorldState
                 break;
             case InboundKind.SelfExp:
                 Self.Exp += e.A;
-                if (e.A > 0) Self.ExpGained += e.A;
+                if (e.A > 0) { Self.ExpGained += e.A; Economy.Exp(e.A, now); }
                 Bump(WorldComponent.Self);
                 break;
             case InboundKind.SelfMoney:
             {
                 var d = e.A - Self.Money;
+                if (Self.MoneyKnown && Self.InWorld) { Economy.Money(d, now); Economy.MoneyAfterStones(d, now); }
                 Self.Money = e.A; Self.MoneyKnown = true;
                 Bump(WorldComponent.Self);
                 ev.Raise(EventKind.MoneyChanged, e.A, d);
@@ -979,6 +982,7 @@ public sealed class WorldState
                 if (e.C == 0x0346) ev.Raise(EventKind.BagFull);
                 break;
             case InboundKind.StoneReserve:
+                if (e.C == 1) Economy.StonesBought(now);
                 if (e.A == 0) Self.HpStones = (int)e.B; else Self.SpStones = (int)e.B;
                 Bag.Stones = (Self.HpStones, Self.SpStones);
                 Bump(WorldComponent.Self);
@@ -1067,6 +1071,7 @@ public sealed class WorldState
             }
             case InboundKind.DeadMenu:
                 Self.Dead = true; Self.Deaths++; Self.Hp = 0;
+                Economy.Death(now);
                 Npc.DeadMenu = (e.A, now);
                 Bump(WorldComponent.Self);
                 ev.Raise(EventKind.Died, e.A);

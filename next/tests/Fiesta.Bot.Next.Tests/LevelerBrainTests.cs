@@ -274,4 +274,46 @@ public class LevelerBrainTests
         Assert.Equal(2, t.Ctx.World.Self.ClassId);
         Assert.Empty(b.Debug.Errors().Where(x => !x.Error.Contains("E_BUDGET")));
     }
+
+    [Fact]
+    public void A_scripted_death_spiral_is_caught_and_turned_into_caution_and_safe_earning()
+    {
+        if (Load() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Ev(InboundKind.SelfBase, a: 10, b: 0, c: 400);   // logged in with 400
+        t.Tick(5);
+        // die, revive, buy stones, die again ... the purse drains
+        for (var k = 0; k < 3; k++)
+        {
+            t.Ev(InboundKind.DeadMenu, a: 30);
+            t.Tick(5);
+            t.Ev(InboundKind.Revive, a: 0, x: 5000, y: 5000);
+            t.Tick(5);
+            t.Ev(InboundKind.SelfMoney, a: 400 - 100 * (k + 1));
+            t.Ev(InboundKind.StoneReserve, a: 0, b: 10, c: 1);
+            t.Tick(5);
+        }
+        t.Tick(240, 50);   // 12 s: the guard checks
+        var bot = b.BlackboardJson()["bot"]!;
+        Assert.True(bot["caution"]!.GetValue<long>() >= 3);                 // a step per death (and one for the draining purse)
+        Assert.True(bot["econSafe"]?.GetValue<bool>() == true, bot.ToJsonString() + " rates " + t.Ctx.World.Economy.Rates(30, t.Clock.NowMs) + " money " + t.Ctx.World.Self.Money + " log " + Diag(t));                    // money 100 and falling: safe earning
+        var (_, moneyH, deathsH, stonesH) = t.Ctx.World.Economy.Rates(30, t.Clock.NowMs);
+        Assert.True(moneyH < 0 && deathsH > 0 && stonesH > 0, $"{moneyH} {deathsH} {stonesH}");
+        // reversal: the purse grows again (loot sold, quests paid) and no death for long: safe earning ends, caution falls
+        var before = bot["caution"]!.GetValue<long>();
+        for (var k = 1; k <= 10; k++) { t.Ev(InboundKind.SelfMoney, a: 100 + 200 * k); t.Tick(60, 1000); }   // 10 min
+        t.Tick(2400, 1000);  // 40 more minutes without a death (the deaths leave the 30-minute window, then a step decays)
+        bot = b.BlackboardJson()["bot"]!;
+        Assert.False(bot["econSafe"]!.GetValue<bool>());
+        Assert.True(bot["caution"]!.GetValue<long>() < before);
+        Assert.Empty(b.Debug.Errors().Where(x => !x.Error.Contains("E_BUDGET")));
+    }
+
+    private static string Diag(TestBot t)
+    {
+        var buf = new Fiesta.Bot.Services.Logging.LogEntry[400];
+        var n = t.Ctx.Log.Ring.Read(Fiesta.Bot.Services.Logging.LogLevel.Trace, null, 0, long.MaxValue, buf);
+        return string.Join(" / ", buf.Take(n).Select(e => Fiesta.Bot.Services.Logging.LogRenderer.Render(e)).Where(x => x.Contains("ECON") || x.Contains("CAUTION") || x.Contains("econ")));
+    }
 }
