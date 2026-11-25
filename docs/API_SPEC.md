@@ -1014,7 +1014,9 @@ have no icon in the client data (`IconFile` "-"), so `icon` is false and the til
 ### 14.2 Static data (cacheable)
 
 All responses carry `ETag` (from the client-data fingerprint and the id) and `Cache-Control: public,
-max-age=86400`; `If-None-Match` answers 304. Unknown ids answer 404. Names come from the bot host's client data
+max-age=86400`; `If-None-Match` answers 304. The browser fetches `GET /api/v3/static` once per page load and
+appends `?v=<fingerprint>` to every static and icon URL, so a changed client data set or a host fix to these
+routes (the fingerprint includes the host's output version) is picked up at once instead of after the max-age. Unknown ids answer 404. Names come from the bot host's client data
 (the client the bots play), so they match what the game shows.
 
 | route | response |
