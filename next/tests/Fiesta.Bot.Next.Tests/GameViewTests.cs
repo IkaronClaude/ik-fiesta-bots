@@ -120,4 +120,19 @@ public class GameViewTests
         s.HostStopping(0);
         Assert.Equal("host-stopping", got[^1].GetProperty("reason").GetString());
     }
+
+    [Fact]
+    public void Skill_categories_follow_the_client_skill_window()
+    {
+        const string res = "Z:/Client2026patched_10_6_6/ressystem";
+        if (!Directory.Exists(res)) return;   // client data is BYO
+        var h = new Fiesta.Bot.Fleet.HostServices { XorTable = [], RessystemDir = res, ClientRoot = Path.GetDirectoryName(res)!, DataDir = Path.GetTempPath() };
+        var gs = new GameStatic(h);
+        var data = new Fiesta.Bot.Services.ClientData(res);
+        // NextBotA's learned skills (local stack, 2026-11-25)
+        int[] ids = [29001, 29206, 29209, 29349, 29430, 29468, 29469, 29480, 29482, 29484, 29498, 29499, 29500, 29613, 29614, 29644, 29645, 29745, 29746];
+        foreach (var id in ids)
+            Assert.Equal(id == 29001 ? "production" : "other", gs.SkillCategory(id, data.Skill(id)!.InxName));
+        Assert.Equal("active", gs.SkillCategory(6000, data.Skill(6000)!.InxName));   // Magic Missile [01]
+    }
 }

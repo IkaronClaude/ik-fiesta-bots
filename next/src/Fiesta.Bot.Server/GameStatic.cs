@@ -20,7 +20,7 @@ public sealed class GameStatic
     private readonly ConcurrentDictionary<int, byte[]?> _minimaps = new();
 
     /// <summary>Bumped whenever these routes change what they return for the same client data (busts browser caches).</summary>
-    public const int OutputVersion = 3;
+    public const int OutputVersion = 4;
 
     /// <summary>Client-data fingerprint (part of every ETag).</summary>
     public string Fingerprint { get; }
@@ -143,10 +143,26 @@ public sealed class GameStatic
         if (vr >= 0 && _skillView.Value!.Col("Descript") >= 0) desc = _skillView.Value.Str(vr, "Descript");
         return new
         {
-            id, inx = r.InxName, name = r.Name, category = _productionIds.Value.Contains(id) ? "production" : "active", rowKey = r.Family, step = r.Step, maxStep = r.MaxStep, sp = r.Sp, hp = r.Hp, cooldownMs = r.DelayMs,
+            id, inx = r.InxName, name = r.Name, category = SkillCategory(id, r.InxName), rowKey = r.Family, step = r.Step, maxStep = r.MaxStep, sp = r.Sp, hp = r.Hp, cooldownMs = r.DelayMs,
             groupCooldownMs = r.DelayGroup > 0 ? r.DelayGroupMs : 0, range = r.Range, castMs = r.CastTimeMs, description = desc,
             icon = SkillIcon(id) is { } c && _iconFiles.Value.ContainsKey(c.File),
         };
+    }
+
+    // The game client's skill window (2016 client): Skill::IsProduceSkill (0x69EE30) treats ids 20000..29998 as produce
+    // skills, which never appear on the active page; SkillWin::ResetContents (0x591280) lists the learned ActiveSkill rows
+    // outside that range except SummonMate01. These mirror client code, so the constants stand as client facts.
+    private const int ProduceFirst = 20000, ProduceLast = 29998;
+    private const string HiddenActive = "SummonMate01";
+
+    /// <summary>active / production / other (hidden in the client's skill window).</summary>
+    public string SkillCategory(int id, string inx)
+    {
+        if (id is >= ProduceFirst and <= ProduceLast)
+            // GUESS: which produce-range skills the production page lists is not confirmed from the client yet; the ids the
+            // client's own production tables name (Produce recipes, Gather) are taken as the listed ones
+            return _productionIds.Value.Contains(id) ? "production" : "other";
+        return inx == HiddenActive ? "other" : "active";
     }
 
     /// <summary>Abstate by wire index.</summary>
