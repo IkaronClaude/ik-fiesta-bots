@@ -90,7 +90,7 @@ public static class Http
         var hours = Math.Max(1.0 / 60, (DateTime.UtcNow - b.SessionStart).TotalHours);
         var lt = f?.LastTransitions.FirstOrDefault();
         var paused = snap?.Paused == true || f?.Paused == true;
-        var state = paused ? "Paused" : b.State.ToString();
+        var state = paused && b.State == SupervisorState.InZone ? "Paused" : b.State.ToString();   // a stopped bot keeps its last frame
         var stats = b.Agent?.Stats;
         var p99 = stats is null ? 0 : stats.RecentQuantile(x => x.TotalUs, 0.99, 1200);
         string? health = b.State == SupervisorState.Offline ? null

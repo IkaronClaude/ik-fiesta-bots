@@ -179,6 +179,7 @@ public sealed class ZoneSession : IFrameSink, IAsyncDisposable
             if (_wm is not null) await _wm.SendAsync(_wire.Opcode(OutMsg.NormalLogout), bye, ct);
             await z.SendAsync(_wire.Opcode(OutMsg.NormalLogout), bye, ct);
             await Task.Delay(300, ct);
+            _log("[zone] logged out (NORMALLOGOUT sent)");
         }
         catch (Exception e) { _log($"[zone] logout: {e.Message}"); }
         finally
