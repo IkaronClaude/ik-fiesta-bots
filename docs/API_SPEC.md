@@ -272,6 +272,7 @@ GROUND, SELF, PARTY, MOVING, DOT, SLOW, DISPEL, REVIVE, TOGGLE`.
 | `quests.levels(q)` | min, max | O(1) | 0 | |
 | `quests.giver(q)` | npcId | O(1) | 0 | |
 | `quests.repeatable(q)` / `quests.exp(q)` | boolean / integer | O(1) | 0 | |
+| `quests.kind(q)` | qtype, startItem | O(1) | 0 | QuestData Q_TYPE and ItemID |
 | `quests.slotsFree()` | integer | O(1) | 0 | free quest-log slots (the log holds 40) |
 | `quests.plan(policyId)` | ticket | job | 0 | scores candidates; result: `quests.planResult(t)` |
 | `quests.planResult(t)` | questId, kind | O(1) | 0 | kind: `HUNT, HANDIN, ACCEPT, NONE` |

@@ -104,6 +104,10 @@ public sealed record QuestDef(int Id, string Name, int MinLevel, int MaxLevel, b
     /// <summary>The quest's QuestReward rows in table order: selectable (2 = one of several to choose), type (0 exp, 1 money,
     /// 2 item), value (exp / money / item id).</summary>
     public IReadOnlyList<(int Selectable, int Type, int Value)> Rewards { get; init; } = [];
+    /// <summary>QuestData Q_TYPE (the client's quest kind number) and the item that starts the quest (ItemID, 0 none).</summary>
+    public int QType { get; init; }
+    /// <summary>The item that starts the quest (QuestData ItemID; 0 none).</summary>
+    public int StartItem { get; init; }
 
     /// <summary>The server's counter (1-based) for objective i (0-based): the server counts only the kill objectives, in
     /// order, so a talk objective listed first does not take counter 1 (observed: "Master Zach" {talk, kill 5 slimes}
@@ -384,7 +388,7 @@ public sealed class ClientData : IClientData
             d[id] = new QuestDef(id, name, I("LvlStart"), I("LvlEnd"), I("RepeatType") != 0, I("NPCID"),
                 obj.TryGetValue(id, out var o) ? o : Array.Empty<QuestObjectiveDef>(), exp.GetValueOrDefault(id), I("PrevQuestID"),
                 I("StartClassID"), I("EndClassID"), t.Str(r, "Script") ?? "")
-            { Rewards = rewards.TryGetValue(id, out var rr) ? rr : [] };
+            { Rewards = rewards.TryGetValue(id, out var rr) ? rr : [], QType = I("Q_TYPE"), StartItem = I("ItemID") };
         }
         return d;
     }

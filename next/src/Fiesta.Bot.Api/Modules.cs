@@ -781,6 +781,8 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public int Giver(int q) => Ctx.Data.Quest(q)?.StartNpc ?? -1;
     /// <summary>Repeatable.</summary>
     [LuaFn] public bool Repeatable(int q) => Ctx.Data.Quest(q)?.Repeatable ?? false;
+    /// <summary>The quest's kind number (QuestData Q_TYPE, -1 unknown) and the item that starts it (0 none).</summary>
+    [LuaFn] public (int QType, int StartItem) Kind(int q) => Ctx.Data.Quest(q) is { } d ? (d.QType, d.StartItem) : (-1, 0);
     /// <summary>Reward exp.</summary>
     [LuaFn] public long Exp(int q) => Ctx.Data.Quest(q)?.Exp ?? -1;
     /// <summary>Give a quest up (QUEST_GIVE_UP_REQ; the ack 0x0B41 drops it from the log).</summary>
