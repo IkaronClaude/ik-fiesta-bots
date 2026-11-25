@@ -60,6 +60,20 @@ for 60 s on the Game tab and 30 s on the debugger: no element moved or resized, 
 Measured on the mock: snapshot ~1.5 KB, deltas ~200 B on average at 4 Hz. The mock implements section 14
 exactly (snapshot, ops, keep-alive, `off`, static routes with ETag / 304, icon and minimap routes).
 
+## Sub-graphs in the brain editor (operator request 2026-11-25)
+
+| feature | how |
+|---|---|
+| group | select states (Shift+drag box, Ctrl / Shift+click) or tick them in the "Group..." dialog; name the new state, pick the entry when several inner states are entered from outside; incoming edges retarget to the group (or `group/state`), outgoing ones become inner exits `^/state` drawn as dashed edges leaving the group node; option "make it a named, reusable machine" |
+| ungroup | inlines the sub-graph back (name clashes renamed, `^/t` back to `t`, `group/s` back to `s`, the group's own transitions copied first onto each inner state); refused when the group has its own enter / tick / exit. Group then ungroup gives back the identical definition (checked) |
+| reuse | "make reusable..." moves an inline sub-graph to the brain's named machines; the palette (Machines) places one in the current graph (recursion refused); "used in N" lists every use with links; editing the machine edits every use; "make local copy" inlines a copy to diverge; "import from another brain..." copies a machine from another brain's latest version (linked reuse across brains needs U33) |
+| navigate | double-click a sub-graph node or its "sub-graph" button / "open"; breadcrumb `brain > layer > group > ...` to any outer level; Esc / Backspace goes up one level; each level keeps its own pan / zoom; the debugger follows the active state into sub-graphs, the outer node shows "inside: <inner path>", Esc goes up there too |
+| lint | unreachable inner states (counting `G/s` entries), sub-graph without exit, named-machine exits missing at a use site, recursion, bad `G/s` / `^/t` targets (mock; the host needs U30-U32) |
+
+Format additions this needs from the runtime (API_SPEC 13.10): `to: "G/s"` (enter a sub-graph at an inner state),
+`to: "^/t"` (leave it for the containing machine's state `t`), and the linter checks above. The real host's
+linter rejects both target forms today.
+
 ## Pages and features vs REDESIGN 9 and the operator's asks
 
 | REDESIGN 9 / ask | status |

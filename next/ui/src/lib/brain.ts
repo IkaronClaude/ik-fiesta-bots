@@ -176,7 +176,7 @@ export function deleteState(m: MachineDef, name: string): MachineDef {
   const states: Record<string, StateDef> = {};
   for (const [k, v] of Object.entries(m.states)) {
     if (k === name) continue;
-    states[k] = { ...v, transitions: v.transitions?.filter(t => t.to !== name) };
+    states[k] = { ...v, transitions: v.transitions?.filter(t => t.to.split('/')[0] !== name) };
   }
   const initial = m.initial === name ? Object.keys(states)[0] ?? '' : m.initial;
   return { ...m, initial, states };

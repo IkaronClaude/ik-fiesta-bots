@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../../api/client';
 import type { DebugFrame, LayerTrace, SensorFrame, TransitionRecord } from '../../api/types';
 import { BrainGraph, type GraphSelection, type LiveInfo } from '../../components/BrainGraph';
@@ -45,6 +45,18 @@ export function DebuggerTab({ bot, replay }: { bot: string; replay?: { frames: D
   }, [replay, history, stream.transitions]);
 
   useEffect(() => { if (!layerName && frame?.layers?.length) setLayerName(frame.layers[0].name); }, [frame, layerName]);
+  // Esc / Backspace: up one sub-graph level (same as the editor); reads the current path through a ref so the hook
+  // can sit before the early return
+  const pathRef = useRef<string[]>([]);
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      const el = e.target;
+      if (el instanceof Element && el.closest('input, textarea, select, [contenteditable=true]')) return;
+      if ((e.key === 'Escape' || e.key === 'Backspace') && pathRef.current.length > 0) { e.preventDefault(); setScopePath(pathRef.current.slice(0, -1)); }
+    };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, []);
   if (!frame) return <Empty>{stream.error ? `No debug frame: ${stream.error}` : 'Waiting for the first debug frame...'}</Empty>;
 
   const layer = frame.layers.find(l => l.name === layerName) ?? frame.layers[0];
@@ -53,6 +65,7 @@ export function DebuggerTab({ bot, replay }: { bot: string; replay?: { frames: D
   // resolve the machine at the scope; the layer path may pass through `use` machines
   const resolved = d && layer ? resolveScope(d, layer.name, path) : null;
   const depth = path.length;
+  pathRef.current = path;
   const frameNow = cursor == null && !replay && !frame.paused ? now : Date.parse(frame.t);
   const live: LiveInfo | undefined = layer ? {
     active: layer.path[depth] ?? null,
@@ -60,6 +73,7 @@ export function DebuggerTab({ bot, replay }: { bot: string; replay?: { frames: D
     conditions: layer.conditions.filter(c => (c.depth ?? 0) === depth || (c.depth == null && c.state === layer.path[depth])),
     flashes: transitions.filter(t => t.layer === layer.name && (t.depth ?? 0) === depth && frameNow - Date.parse(t.at) < 1600 && frameNow >= Date.parse(t.at)).map(t => ({ from: t.from, index: t.index ?? -1, at: Date.parse(t.at) })),
     claims: layer.claims,
+    activeInner: layer.path.slice(depth + 1),
     now: frameNow,
     visited: Object.fromEntries(transitions.filter(t => t.layer === layer.name && frameNow - Date.parse(t.at) < 8000).map(t => [t.leafFrom ?? t.from, Date.parse(t.at)])),
   } : undefined;
@@ -116,7 +130,7 @@ export function DebuggerTab({ bot, replay }: { bot: string; replay?: { frames: D
           </div>
           {def.error && <div className="banner err">definition: {def.error}</div>}
           {resolved ? (
-            <BrainGraph def={d!} scope={resolved.scope} machine={resolved.machine} mode="live" selection={sel} onSelect={setSel} live={live}
+            <BrainGraph def={d!} scope={resolved.scope} machine={resolved.machine} mode="live" selection={sel} onSelect={setSel} live={live} viewportKey={`live:${bot}:${layer?.name}:${path.join('/')}`}
               onOpenSub={s => setScopePath([...path, s])} />
           ) : <Empty>{d ? 'This state path is not in the definition.' : 'Loading the definition...'}</Empty>}
         </main>

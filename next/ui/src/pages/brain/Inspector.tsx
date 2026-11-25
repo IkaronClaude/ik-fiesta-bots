@@ -6,6 +6,7 @@ import {
   type BrainDef, type LayerDef, type MachineDef, type StateDef, type Transition, condKind, condText, isFnRef, renameState, stripUndefined, uniqueName,
 } from '../../lib/brain';
 import type { LintResult } from '../../api/types';
+import { renameRefs } from '../../lib/subgraph';
 import { ConditionForm } from './ConditionForm';
 
 const numOrUndef = (s: string) => (s === '' ? undefined : Number(s));
@@ -64,7 +65,7 @@ export function StatePanel({ def, machine, name, onMachine, onRename, fnRefs, ma
       <Field label="name">
         <div className="row">
           <input aria-label="state name" value={nameDraft} onChange={e => setNameDraft(e.target.value.replace(/[^A-Za-z0-9_-]/g, ''))}
-            onBlur={() => { if (nameDraft && nameDraft !== name && !machine.states[nameDraft]) { onMachine(renameState(machine, name, nameDraft)); onRename(nameDraft); } else setNameDraft(name); }} />
+            onBlur={() => { if (nameDraft && nameDraft !== name && !machine.states[nameDraft]) { const r = renameState(machine, name, nameDraft); onMachine(r === machine ? machine : renameRefs(r, name, nameDraft)); onRename(nameDraft); } else setNameDraft(name); }} />
           {machine.initial === name ? <span className="tag init">initial</span> : <button className="btn sm" onClick={() => onMachine({ ...machine, initial: name })}>make initial</button>}
         </div>
       </Field>

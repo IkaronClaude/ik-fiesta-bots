@@ -242,12 +242,19 @@ export class BotSim {
     let target = String(t.to);
     let machine = fr.machine;
     let d = depth;
+    let innerPath = [];
     if (target === '^') { d = Math.max(0, depth - 1); machine = L.path[d].machine; target = machine.initial; }
+    else if (target.startsWith('^/')) { d = Math.max(0, depth - 1); machine = L.path[d].machine; target = target.slice(2); } // leave for the parent's state
+    else if (target.includes('/')) { [target, ...innerPath] = target.split('/'); }                                          // enter a sub-graph at an inner state
     else if (target.includes(':')) { const [mn, sn] = target.split(':'); machine = this.def.machines?.[mn] || machine; target = sn; }
     const reason = (t.reason || defaultReason(t, c)).replace(/\{([^}]+)\}/g, (_, s) => String(this.sensor(s)));
     const values = {};
     if (c.value != null) values[t.value || c.kind] = c.value;
     this.enter(L, d, machine, target, reason);
+    for (let i = 0; i < innerPath.length; i++) {
+      const fr = L.path[d + i]; const sub = fr && this.machineOf(fr.machine.states[fr.state]);
+      if (sub?.states?.[innerPath[i]]) this.enter(L, d + i + 1, sub, innerPath[i], reason);
+    }
     const rec = { tick: this.tick, at: new Date(this.now).toISOString(), layer: L.name, from: fromOuter, leafFrom: from, to: target,
       depth: d, index: idx, kind: c.kind, reason, values };
     this.transitions.push(rec);

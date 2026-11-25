@@ -70,3 +70,31 @@ test('game view: snapshot shape and small deltas (API_SPEC 14.1)', async () => {
   prev = model(sim);
   assert.deepEqual(diffOps(prev, model(sim)), []);
 });
+
+test('lint: sub-graph targets, exits and recursion (U30-U32)', () => {
+  const def = `brain: sg
+api: 3
+machines:
+  loop: { initial: a, states: { a: { use: loop, transitions: [ { to: "^", after: 1 } ] } } }
+  out: { initial: x, states: { x: { transitions: [ { to: "^/nowhere", after: 1 } ] } } }
+layers:
+  - name: main
+    priority: 50
+    machine:
+      initial: idle
+      states:
+        idle: { transitions: [ { to: grp/b, after: 1 }, { to: grp/zz, after: 1 }, { to: dead, after: 2 } ] }
+        grp:
+          machine: { initial: a, states: { a: { transitions: [ { to: "^/idle", after: 1 } ] }, b: { transitions: [ { to: a, after: 1 } ] } } }
+        dead: { machine: { initial: q, states: { q: { terminal: true } } } }
+        user: { use: out, transitions: [ { to: idle, after: 1 } ] }
+`;
+  const r = lintBrain(def, {}, manifest, {});
+  const codes = r.map(x => x.code);
+  assert.ok(codes.includes('MACHINE_RECURSION'), 'recursion');
+  assert.ok(r.some(x => x.code === 'TARGET_UNKNOWN' && x.message.includes('grp/zz')), 'bad inner entry');
+  assert.ok(r.some(x => x.code === 'SUBGRAPH_NO_EXIT' && x.state === 'dead'), 'no exit');
+  assert.ok(r.some(x => x.code === 'EXIT_TARGET_UNKNOWN' && x.state === 'user'), 'named exit target missing at the use site');
+  assert.ok(!r.some(x => x.code === 'UNREACHABLE' && x.state === 'b'), 'b is entered through grp/b');
+  assert.ok(!r.some(x => x.code === 'NO_EXIT' && x.state === 'grp'), 'grp exits through ^/idle');
+});

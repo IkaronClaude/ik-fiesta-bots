@@ -139,27 +139,49 @@ export function lintBrain(definitionText, modules, manifest, libraries = {}) {
     for (const k of ['all', 'any']) if (Array.isArray(c[k])) c[k].forEach((cc, i) => checkCond(cc, layer, state, `${where}.${k}[${i}]`));
     if (c.not) checkCond(c.not, layer, state, `${where}.not`);
   };
-  const lintMachine = (m, layer, label, isSub) => {
+  // sub-graphs (API_SPEC 5.2 + U30 / U31): "G/s" enters G's sub-machine at s, "^/t" leaves for the parent's t
+  const subOf = st => (st?.machine ? st.machine : st?.use && machines[st.use] ? machines[st.use] : null);
+  const exitsOf = m => Object.values(m?.states || {}).flatMap(st => (st.transitions || []).filter(t => t.to === '^' || String(t.to).startsWith('^/')));
+  // entries into named machines through "G/s" at their use sites, and the use sites themselves
+  const namedEntries = {};
+  const collect = (m) => {
+    for (const st of Object.values(m?.states || {})) {
+      if (st.machine) collect(st.machine);
+      for (const t of st.transitions || []) {
+        const [h, inner] = String(t.to).split('/');
+        const tgt = m.states?.[h];
+        if (inner != null && h !== '^' && tgt?.use) (namedEntries[tgt.use] ||= []).push(inner);
+      }
+    }
+  };
+  for (const l of def.layers || []) collect(l.machine);
+  for (const m of Object.values(machines)) collect(m);
+
+  const lintMachine = (m, layer, label, isSub, parentStates = null, extraEntries = []) => {
     if (!m || typeof m !== 'object') { out.push({ ...e('DEF_SCHEMA', `${label}: machine missing`), layer }); return; }
     const states = m.states || {};
     const names = Object.keys(states);
     if (!names.length) out.push({ ...e('DEF_SCHEMA', `${label}: no states`), layer });
     if (!(m.initial in states)) out.push({ ...e('INITIAL_MISSING', `${label}: initial state '${m.initial}' does not exist`), layer });
-    const reach = new Set([m.initial]);
+    const reach = new Set([m.initial, ...extraEntries.filter(x => x in states)]);
     let changed = true;
     while (changed) {
       changed = false;
       for (const n of [...reach]) for (const t of states[n]?.transitions || []) {
-        if (t.to in states && !reach.has(t.to)) { reach.add(t.to); changed = true; }
+        const h = String(t.to).split('/')[0];
+        if (h in states && !reach.has(h)) { reach.add(h); changed = true; }
       }
     }
     for (const [sn, s] of Object.entries(states)) {
       if (!s || typeof s !== 'object') continue;
       const ts = s.transitions || [];
+      const sub = subOf(s);
+      const innerExits = sub ? exitsOf(sub) : [];
       if (!reach.has(sn)) out.push({ ...w('UNREACHABLE', `${label}: state '${sn}' is unreachable from '${m.initial}'`), layer, state: sn });
       const exits = ts.filter(t => t.to !== sn);
-      if (!exits.length && !s.terminal) out.push({ ...e('NO_EXIT', `state '${sn}' has no transition to another state and is not terminal`), layer, state: sn });
-      const hasEscape = ts.some(t => t.stuck || t.after != null) || s.timeout != null;
+      if (sub && !exits.length && !innerExits.length && !s.terminal) out.push({ ...e('SUBGRAPH_NO_EXIT', `sub-graph '${sn}' has no way out: no transition of its own and no inner exit (^ / ^/state)`), layer, state: sn });
+      else if (!sub && !exits.length && !s.terminal) out.push({ ...e('NO_EXIT', `state '${sn}' has no transition to another state and is not terminal`), layer, state: sn });
+      const hasEscape = ts.some(t => t.stuck || t.after != null) || s.timeout != null || (sub && innerExits.some(t => t.stuck || t.after != null));
       if (!s.terminal && !hasEscape) {
         const item = (s.budget === 0 ? e : w)('NO_STUCK_EXIT', `state '${sn}' has no stuck/after/timeout exit`);
         out.push({ ...item, layer, state: sn });
@@ -170,10 +192,18 @@ export function lintBrain(definitionText, modules, manifest, libraries = {}) {
         for (const x of lintLua('return ' + s.progress, manifest, { layer, state: sn, extraGlobals: [...exportsByShort.keys()] })) out.push({ ...x, message: `progress: ${x.message}` });
       } else if (s.progress && isFnRef(s.progress) && !sensors.has(s.progress)) checkFn(s.progress, layer, sn, 'progress');
       if (s.use && !s.use.includes('${') && !(s.use in machines)) out.push({ ...e('MACHINE_UNKNOWN', `use: no machine named '${s.use}'`), layer, state: sn });
+      if (s.use && machines[s.use]) for (const t of new Set(exitsOf(machines[s.use]).filter(x => x.to !== '^').map(x => String(x.to).slice(2)))) {
+        if (!(t in states)) out.push({ ...e('EXIT_TARGET_UNKNOWN', `machine '${s.use}' exits to '${t}', which this graph does not have`), layer, state: sn });
+      }
       if (s.onError && !(s.onError in states)) out.push({ ...e('TARGET_UNKNOWN', `onError: no state '${s.onError}'`), layer, state: sn });
       ts.forEach((t, i) => {
         const tgt = String(t.to ?? '');
-        const ok = tgt in states || (tgt === '^' && isSub) || tgt.includes(':');
+        let ok;
+        if (tgt === '^') ok = isSub;
+        else if (tgt.startsWith('^/')) ok = isSub && (parentStates == null || parentStates.has(tgt.slice(2)));
+        else if (tgt.includes(':')) ok = true;
+        else if (tgt.includes('/')) { const [h, inner] = tgt.split('/'); const sm = subOf(states[h]); ok = !!sm && inner in (sm.states || {}); }
+        else ok = tgt in states;
         if (!ok) out.push({ ...e('TARGET_UNKNOWN', `transition #${i + 1}: target '${tgt}' does not exist`), layer, state: sn });
         const kinds = ['when', 'on', 'procedure', 'job', 'after', 'every', 'value', 'stuck', 'always', 'all', 'any', 'not'].filter(k => t[k] != null);
         if (kinds.length === 0) out.push({ ...e('COND_MISSING', `transition #${i + 1} to '${tgt}' has no condition`), layer, state: sn });
@@ -183,16 +213,25 @@ export function lintBrain(definitionText, modules, manifest, libraries = {}) {
         }
         checkCond(t, layer, sn, `transition #${i + 1}`);
       });
-      if (s.machine) lintMachine(s.machine, layer, `${label}/${sn}`, true);
+      if (s.machine) {
+        const entries = Object.values(states).flatMap(o => (o.transitions || []).map(t => String(t.to))).filter(x => x.startsWith(sn + '/')).map(x => x.split('/')[1]);
+        lintMachine(s.machine, layer, `${label}/${sn}`, true, new Set(names), entries);
+      }
     }
   };
+  // recursion: a named machine that uses itself, directly or through other machines
+  const usesOf = mm => { const r = []; const scan = x => { for (const st of Object.values(x?.states || {})) { if (st.use) r.push(st.use); if (st.machine) scan(st.machine); } }; scan(mm); return r; };
+  for (const mn of Object.keys(machines)) {
+    const seen = new Set(); const stack = [...usesOf(machines[mn])];
+    while (stack.length) { const x = stack.pop(); if (x === mn) { out.push(e('MACHINE_RECURSION', `machine '${mn}' uses itself (directly or through other machines)`)); break; } if (seen.has(x) || !machines[x]) continue; seen.add(x); stack.push(...usesOf(machines[x])); }
+  }
   for (const l of def.layers || []) {
     if (!l.name) out.push(e('DEF_SCHEMA', 'layer without a name'));
     if (typeof l.priority !== 'number' || l.priority < 0 || l.priority > 100) out.push({ ...e('DEF_SCHEMA', `layer ${l.name}: priority must be 0..100`), layer: l.name });
     if (l.rate != null && l.rate !== 'tick' && !(Number.isInteger(l.rate) && l.rate >= 50)) out.push({ ...e('DEF_SCHEMA', `layer ${l.name}: rate must be 'tick' or >= 50 ms`), layer: l.name });
     lintMachine(l.machine, l.name, l.name, false);
   }
-  for (const [mn, m] of Object.entries(machines)) lintMachine(m, null, `machines.${mn}`, true);
+  for (const [mn, m] of Object.entries(machines)) lintMachine(m, null, `machines.${mn}`, true, null, namedEntries[mn] || []);
   return out;
 
   function e(code, message) { return { severity: 'error', code, message, module: null, line: 0, layer: null, state: null }; }

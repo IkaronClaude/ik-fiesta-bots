@@ -12,6 +12,8 @@ import { moduleExports } from '../lib/luaLint';
 import { setBrainModules } from '../lib/monaco';
 import { go, href } from '../lib/router';
 import { LayerPanel, StatePanel, TransitionPanel, addState } from './brain/Inspector';
+import { GroupModal, ImportMachineModal, SubgraphBar } from './brain/Subgraph';
+import { placeMachine, usesMachine } from '../lib/subgraph';
 
 type Tab = 'graph' | 'yaml' | `mod:${string}`;
 
@@ -48,7 +50,13 @@ function Editor({ version, versions, onSaved, initialDef }: { version: BrainVers
   const [def, setDef] = useState<BrainDef>(baseDef);
   const [modules, setModules] = useState<Record<string, string>>(baseModules);
   const [tab, setTab] = useState<Tab>('graph');
-  const [scope, setScope] = useState<Scope>({ kind: 'layer', layer: baseDef.layers[0]?.name ?? '', path: [] });
+  // drill-down trail: each entry is one level of the breadcrumb (Esc / Backspace goes up one)
+  const [trail, setTrail] = useState<{ scope: Scope; label: string }[]>([{ scope: { kind: 'layer', layer: baseDef.layers[0]?.name ?? '', path: [] }, label: `layer ${baseDef.layers[0]?.name ?? ''}` }]);
+  const scope = trail[trail.length - 1].scope;
+  const setScope = (sc: Scope) => setTrail([{ scope: sc, label: sc.kind === 'layer' ? `layer ${sc.layer}` : `machine ${sc.name}` }]);
+  const [multi, setMulti] = useState<string[]>([]);
+  const [grouping, setGrouping] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [sel, setSel] = useState<GraphSelection>(null);
   const [lint, setLint] = useState<LintResult[]>(version?.lint ?? []);
   const [linting, setLinting] = useState(false);
@@ -90,6 +98,8 @@ function Editor({ version, versions, onSaved, initialDef }: { version: BrainVers
   }, [text, modules]);
 
   const machine = machineAt(def, scope);
+  // a selection that no longer exists (ungrouped, deleted, renamed elsewhere) is dropped
+  useEffect(() => { if (sel?.kind === 'state' && machine && !(sel.state in machine.states)) setSel(null); }, [sel, machine]);
   const isSub = scope.path.length > 0 || scope.kind === 'machine';
   const layer = scope.kind === 'layer' ? def.layers.find(l => l.name === scope.layer) : undefined;
   const scopeLint = lint.filter(l => scope.kind === 'layer' ? l.layer === scope.layer : l.layer == null);
@@ -98,9 +108,33 @@ function Editor({ version, versions, onSaved, initialDef }: { version: BrainVers
   const onMachine = useCallback((m: MachineDef) => setDef(d => updateMachine(d, scope, () => m)), [scope]);
   const openSub = (state: string) => {
     const st = machine?.states[state]; if (!st) return;
-    if (st.machine) { setScope({ ...scope, path: [...scope.path, state] }); setSel(null); }
-    else if (st.use && def.machines?.[st.use]) { setScope({ kind: 'machine', name: st.use, path: [] }); setSel(null); }
+    if (st.machine) { setTrail(t => [...t, { scope: { ...scope, path: [...scope.path, state] }, label: state }]); setSel(null); setMulti([]); }
+    else if (st.use && def.machines?.[st.use]) { setTrail(t => [...t, { scope: { kind: 'machine', name: st.use!, path: [] }, label: `${state} (${st.use})` }]); setSel(null); setMulti([]); }
     else if (st.use) toast(`'${st.use}' is resolved at runtime (contains \${expr}) or is not defined under machines`, 'info');
+  };
+  const goUp = useCallback(() => {
+    setTrail(t => {
+      if (t.length > 1) return t.slice(0, -1);
+      const sc = t[0].scope;
+      if (sc.path.length) { const up = { ...sc, path: sc.path.slice(0, -1) }; return [{ scope: up, label: up.path.length ? up.path[up.path.length - 1] : sc.kind === 'layer' ? `layer ${sc.layer}` : `machine ${sc.name}` }]; }
+      return t;
+    });
+    setSel(null); setMulti([]);
+  }, []);
+  useEffect(() => {
+    if (tab !== 'graph') return;
+    const k = (e: KeyboardEvent) => {
+      const el = e.target;
+      if (el instanceof Element && (el.closest('input, textarea, select, .monaco-editor, [contenteditable=true]'))) return;
+      if (e.key === 'Escape' || e.key === 'Backspace') { e.preventDefault(); goUp(); }
+    };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [tab, goUp]);
+  const place = (name: string) => {
+    // a machine may not contain itself, directly or through the machines it uses
+    if (scope.kind === 'machine' && (scope.name === name || usesMachine(def, name, scope.name))) { toast(`'${name}' would contain itself`, 'error'); return; }
+    const [d, st] = placeMachine(def, scope, name); setDef(d); setSel({ kind: 'state', state: st }); setTab('graph');
   };
 
   const save = async (message: string) => {
@@ -175,9 +209,13 @@ function Editor({ version, versions, onSaved, initialDef }: { version: BrainVers
           }}>+ layer</button>
           <div className="side-h">Machines <span className="muted">reusable (use)</span></div>
           {Object.keys(def.machines || {}).map(n => (
-            <button key={n} className={'side-item' + (scope.kind === 'machine' && scope.name === n && tab === 'graph' ? ' on' : '')}
-              onClick={() => { setScope({ kind: 'machine', name: n, path: [] }); setSel(null); setTab('graph'); setInspector('scope'); }}>{n}</button>
+            <div key={n} className="palette-row">
+              <button className={'side-item' + (scope.kind === 'machine' && scope.name === n && tab === 'graph' ? ' on' : '')} title="edit this machine (everywhere it is used)"
+                onClick={() => { setScope({ kind: 'machine', name: n, path: [] }); setSel(null); setTab('graph'); setInspector('scope'); }}>{n}</button>
+              <button className="btn sm ghost" title={`place '${n}' in the current graph`} onClick={() => place(n)}>+ place</button>
+            </div>
           ))}
+          <button className="btn sm ghost" onClick={() => setImporting(true)}>import from another brain...</button>
           <button className="btn sm ghost" onClick={() => {
             const n = uniqueName(Object.keys(def.machines || {}), 'machine');
             setDef(d => ({ ...d, machines: { ...(d.machines || {}), [n]: { initial: 'start', states: { start: { transitions: [{ to: '^', after: 1000 }] } } } } }));
@@ -214,14 +252,31 @@ function Editor({ version, versions, onSaved, initialDef }: { version: BrainVers
           {tab === 'graph' && (
             <div className="graph-wrap">
               <div className="graph-bar">
-                <Breadcrumb scope={scope} onScope={s => { setScope(s); setSel(null); }} />
+                <div className="crumbs">
+                  <span className="muted">{def.brain}</span>
+                  {trail.map((c, i) => {
+                    const root = i === 0 ? [c.label, ...c.scope.path] : [c.label];
+                    return root.map((lbl, j) => {
+                      const last = i === trail.length - 1 && j === root.length - 1;
+                      const go = () => {
+                        if (i === 0) setTrail([{ scope: { ...trail[0].scope, path: trail[0].scope.path.slice(0, j) }, label: trail[0].label }]);
+                        else setTrail(trail.slice(0, i + 1));
+                        setSel(null); setMulti([]);
+                      };
+                      return <span key={`${i}-${j}`}> &rsaquo; {last ? <strong>{lbl}</strong> : <button className="linkish" onClick={go}>{lbl}</button>}</span>;
+                    });
+                  })}
+                  {(trail.length > 1 || scope.path.length > 0) && <span className="muted small"> (Esc: up)</span>}
+                </div>
                 <div className="grow" />
+                {machine && Object.keys(machine.states).length > 1 && <button className={'btn sm ' + (multi.length > 1 ? 'primary' : 'ghost')} title="select states with a box (Shift+drag) or Ctrl+click, or pick them in the dialog" onClick={() => setGrouping(true)}>{multi.length > 1 ? `Group ${multi.length} into sub-graph` : 'Group...'}</button>}
+                {machine && sel?.kind === 'state' && <SubgraphBar def={def} scope={scope} state={sel.state} onDef={setDef} onOpen={() => openSub(sel.state)} onNavigate={(sc, st) => { setScope(sc); setSel({ kind: 'state', state: st }); }} />}
                 {machine && <button className="btn sm" onClick={() => { const [m, n] = addState(machine); onMachine(m); setSel({ kind: 'state', state: n }); }}>+ state</button>}
                 {machine && <button className="btn sm ghost" onClick={() => setDef(d => setLayout(d, scope, autoLayout(machine)))}>auto layout</button>}
               </div>
               {machine ? (
                 <BrainGraph def={def} scope={scope} machine={machine} mode="edit" selection={sel} onSelect={s => { setSel(s); setInspector('scope'); }} onChange={setDef}
-                  onOpenSub={openSub} lint={scopeLint} />
+                  onOpenSub={openSub} lint={scopeLint} onMultiSelect={setMulti} viewportKey={`edit:${def.brain}:${scopeKey(scope)}`} />
               ) : <Empty>No machine here.</Empty>}
             </div>
           )}
@@ -271,18 +326,11 @@ function Editor({ version, versions, onSaved, initialDef }: { version: BrainVers
           ) : <div className="panel"><div className="hint">Completion lists the C# helpers from the API manifest (Ctrl+Space), the brain's modules and the libraries; hover a name for its docs.</div></div>}
         </aside>
       </div>
+      {grouping && machine && <GroupModal def={def} scope={scope} machine={machine} names={multi.length ? multi : sel?.kind === 'state' ? [sel.state] : []} onClose={() => setGrouping(false)}
+        onDone={(d, g) => { setDef(d); setGrouping(false); setMulti([]); setSel({ kind: 'state', state: g }); }} />}
+      {importing && <ImportMachineModal def={def} onClose={() => setImporting(false)} onDone={d => { setDef(d); setImporting(false); }} />}
       {saving && <SaveModal onClose={() => setSaving(false)} onSave={save} warnings={warnings} />}
       {applying && version && <ApplyModal brain={def.brain} hash={version.hash} onClose={() => setApplying(false)} />}
-    </div>
-  );
-}
-
-function Breadcrumb({ scope, onScope }: { scope: Scope; onScope: (s: Scope) => void }) {
-  const root = scope.kind === 'layer' ? `layer ${scope.layer}` : `machine ${scope.name}`;
-  return (
-    <div className="crumbs">
-      <button className="linkish" onClick={() => onScope({ ...scope, path: [] })}>{root}</button>
-      {scope.path.map((p, i) => <span key={i}> / <button className="linkish" onClick={() => onScope({ ...scope, path: scope.path.slice(0, i + 1) })}>{p}</button></span>)}
     </div>
   );
 }

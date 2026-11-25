@@ -1,10 +1,10 @@
 // The state-machine canvas (React Flow): states as nodes, transitions as edges labelled with condition + priority.
 // Edit mode: drag, connect (creates a transition), delete, select. Live mode: active state highlighted with time in
 // state, outgoing conditions coloured by their last evaluation, edges flash when taken.
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Handle, Position, BaseEdge, EdgeLabelRenderer,
-  useInternalNode, useNodesState, useReactFlow, MarkerType,
+  useInternalNode, useNodesState, useReactFlow, useUpdateNodeInternals, MarkerType,
   type Node, type Edge, type NodeProps, type EdgeProps, type Connection, type NodeChange, type OnSelectionChangeParams,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -12,6 +12,7 @@ import {
   type BrainDef, type MachineDef, type Scope, type Transition, condKind, condText, layoutFor, setLayout, updateMachine, deleteState,
 } from '../lib/brain';
 import type { ConditionTrace, LintResult } from '../api/types';
+import { head, innerExits, subMachineOf, usages } from '../lib/subgraph';
 import { fmtDuration } from './ui';
 
 export type GraphSelection = { kind: 'state'; state: string } | { kind: 'edge'; from: string; index: number } | null;
@@ -23,6 +24,8 @@ export interface LiveInfo {
   flashes: { from: string; index: number; at: number }[];
   claims: string[];
   visited?: Record<string, number>; // state -> last left (epoch ms) for the fading trail
+  /** active path below the active state (its sub-machine's active inner states) */
+  activeInner?: string[];
   now?: number;                     // frame time (epoch ms): live = wall clock, replay / paused = the frame's time
 }
 
@@ -35,6 +38,10 @@ interface Props {
   onSelect: (s: GraphSelection) => void;
   onChange?: (def: BrainDef) => void;
   onOpenSub?: (state: string) => void;
+  /** several states selected (box / shift / ctrl) */
+  onMultiSelect?: (states: string[]) => void;
+  /** key under which this level's viewport is remembered (pan / zoom per drill level) */
+  viewportKey?: string;
   live?: LiveInfo;
   lint?: LintResult[];
   height?: number | string;
@@ -42,7 +49,7 @@ interface Props {
 
 type SNodeData = {
   name: string; initial: boolean; terminal: boolean; claims: string[]; fns: string[]; sub: string | null; budget?: number;
-  active: boolean; activeSince: number | null; activeMs: number; live: boolean; issues: number; errors: number; trail: number; onOpenSub?: (s: string) => void;
+  active: boolean; activeSince: number | null; activeMs: number; live: boolean; usedIn?: number; activeInner?: string[]; exits?: number; issues: number; errors: number; trail: number; onOpenSub?: (s: string) => void;
   external?: boolean;
 };
 
@@ -71,7 +78,8 @@ const StateNode = memo(function StateNode({ data, selected }: NodeProps<Node<SNo
         {d.claims.length > 0 && <span title="claims">{d.claims.join(' ')}</span>}
         {d.budget != null && <span title="budget (ms without progress before stuck)">budget {fmtDuration(d.budget)}</span>}
       </div>
-      {d.sub && <button className="snode-sub nodrag" onClick={e => { e.stopPropagation(); d.onOpenSub?.(d.name); }} title="open the sub-machine">sub-machine: {d.sub} &rarr;</button>}
+      {d.sub && <button className="snode-sub nodrag" onClick={e => { e.stopPropagation(); d.onOpenSub?.(d.name); }} title="open the sub-graph (or double-click the node)">sub-graph: {d.sub}{d.usedIn && d.usedIn > 1 ? ` · used in ${d.usedIn}` : ''} &rarr;</button>}
+      {d.active && d.activeInner && d.activeInner.length > 0 && <div className="snode-inner">inside: {d.activeInner.join(' / ')}</div>}
       {d.active && <div className="snode-live">active {fmtDuration(d.activeMs)}</div>}
       <Handle type="source" position={Position.Right} className="h" />
     </div>
@@ -157,7 +165,7 @@ function GraphInner(p: Props) {
 
   const externalTargets = useMemo(() => {
     const s = new Set<string>();
-    for (const st of Object.values(machine.states)) for (const t of st.transitions || []) if (!(t.to in machine.states)) s.add(t.to);
+    for (const st of Object.values(machine.states)) for (const t of st.transitions || []) if (!(head(t.to) in machine.states)) s.add(t.to);
     return [...s];
   }, [machine]);
 
@@ -167,40 +175,58 @@ function GraphInner(p: Props) {
       const st = machine.states[n];
       const fns = (['enter', 'tick', 'exit'] as const).filter(f => st[f]).map(f => `${f}`);
       const left = live?.visited?.[n];
+      const sub = subMachineOf(def, st);
       return {
         id: n, type: 'state', position: { x: positions[n][0], y: positions[n][1] }, selected: selection?.kind === 'state' && selection.state === n,
-        data: { name: n, initial: machine.initial === n, terminal: !!st.terminal, claims: st.claims || [], fns, sub: st.use ?? (st.machine ? '(inline)' : null),
+        data: { name: n, initial: machine.initial === n, terminal: !!st.terminal, claims: st.claims || [], fns, sub: st.use ?? (st.machine ? 'inline' : null),
+          usedIn: st.use ? usages(def, st.use).length : undefined, activeInner: live?.active === n ? live.activeInner : undefined, exits: sub ? innerExits(sub.machine).length : undefined,
           budget: st.budget, active: live?.active === n, activeSince: live?.active === n ? live.activeSince : null, activeMs: live?.active === n && live.activeSince ? (live.now ?? now) - live.activeSince : 0, live: mode === 'live',
           issues: lintBy[n]?.w ?? 0, errors: lintBy[n]?.e ?? 0, trail: left ? Math.max(0, 1 - ((live?.now ?? now) - left) / 8000) : 0, onOpenSub: p.onOpenSub },
       };
     });
     const maxX = Math.max(0, ...Object.values(positions).map(v => v[0]));
     externalTargets.forEach((t, i) => ns.push({ id: `ext:${t}`, type: 'state', position: { x: maxX + 320, y: 40 + i * 110 }, draggable: false, selectable: false,
-      data: { name: t, initial: false, terminal: false, claims: [], fns: [], sub: null, active: false, activeSince: null, activeMs: 0, live: false, issues: 0, errors: 0, trail: 0, external: true } }));
+      data: { name: t.startsWith('^/') ? `exit to ${t.slice(2)}` : t, initial: false, terminal: false, claims: [], fns: [], sub: null, active: false, activeSince: null, activeMs: 0, live: false, issues: 0, errors: 0, trail: 0, external: true } }));
     return ns;
-  }, [stateNames.join('|'), machine, positions, selection, live, mode, lintBy, externalTargets, p.onOpenSub]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [stateNames.join('|'), machine, positions, selection, live, mode, lintBy, externalTargets, p.onOpenSub, def]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<Node<SNodeData>>(buildNodes());
   // keep React Flow's measurements when rebuilding (a node without `measured` is hidden until re-measured,
   // and the live view rebuilds several times a second)
+  // ...but only within one graph level: a node of another level with the same name must be measured afresh, or
+  // React Flow keeps stale handle bounds and draws none of its edges
+  const levelRef = useRef('');
+  const level = scopeKeyOf(scope);
   useEffect(() => {
+    const fresh = levelRef.current !== level;
+    levelRef.current = level;
     setNodes(prev => {
+      if (fresh) return buildNodes();
       const byId = new Map(prev.map(n => [n.id, n]));
-      return buildNodes().map(n => { const p = byId.get(n.id); return p ? { ...p, ...n, measured: p.measured, width: p.width, height: p.height } : n; });
+      return buildNodes().map(n => { const p = byId.get(n.id); return p ? { ...p, ...n } : n; });
     });
-  }, [buildNodes, setNodes]);
+  }, [buildNodes, setNodes, level]);
+  // when the set of states changes (group / ungroup / add / delete), re-measure every node's handles: a state that
+  // comes back under an earlier name otherwise keeps stale handle bounds and its edges are not drawn
+  const updateNodeInternals = useUpdateNodeInternals();
+  const idsKey = stateNames.join('|') + '#' + externalTargets.join('|');
+  useEffect(() => {
+    const ids = [...stateNames, ...externalTargets.map(t => `ext:${t}`)];
+    const r = requestAnimationFrame(() => updateNodeInternals(ids));
+    return () => cancelAnimationFrame(r);
+  }, [idsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const edges: Edge<TEdgeData>[] = useMemo(() => {
     const pairCount = new Map<string, number>(); const pairIdx = new Map<string, number>();
     const key = (a: string, b: string) => [a, b].sort().join('->');
     for (const [from, st] of Object.entries(machine.states)) for (const t of st.transitions || []) {
-      const to = t.to in machine.states ? t.to : `ext:${t.to}`;
+      const to = head(t.to) in machine.states ? head(t.to) : `ext:${t.to}`;
       pairCount.set(key(from, to), (pairCount.get(key(from, to)) ?? 0) + 1);
     }
     const out: Edge<TEdgeData>[] = [];
     for (const [from, st] of Object.entries(machine.states)) {
       (st.transitions || []).forEach((t, index) => {
-        const to = t.to in machine.states ? t.to : `ext:${t.to}`;
+        const to = head(t.to) in machine.states ? head(t.to) : `ext:${t.to}`;
         const k = key(from, to); const pi = pairIdx.get(k) ?? 0; pairIdx.set(k, pi + 1);
         const ct = live && live.active === from ? live.conditions.find(c => c.index === index || (c.index == null && c.to === t.to)) : undefined;
         const flash = live?.flashes.filter(f => f.from === from && f.index === index).map(f => f.at).sort().at(-1) ?? 0;
@@ -212,13 +238,24 @@ function GraphInner(p: Props) {
         out.push({
           id: `${from}#${index}`, source: from, target: to, type: 'transition', selected: selection?.kind === 'edge' && selection.from === from && selection.index === index,
           markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
-          data: { t, index, label: condText(t), prio: t.priority ?? 0, parallel: pairCount.get(k)!, parallelIdx: pi, self: from === to, kind: condKind(t),
+          data: { t, index, label: (t.to.includes('/') && !t.to.startsWith('^') ? `-> ${t.to.split('/').slice(1).join('/')}: ` : '') + condText(t), prio: t.priority ?? 0, parallel: pairCount.get(k)!, parallelIdx: pi, self: from === to, kind: condKind(t),
             evalResult: ct ? ct.result : undefined, evalText, flashAt: flash, live: mode === 'live' && live?.active === from },
         });
       });
     }
+    // a sub-graph's inner exits (`^/t`) drawn as edges leaving the sub-graph node (read-only here; edit them inside)
+    for (const [g, st] of Object.entries(machine.states)) {
+      const sub = subMachineOf(def, st); if (!sub) continue;
+      innerExits(sub.machine).forEach(x => {
+        if (x.to === '^' || !(x.to in machine.states)) return;
+        out.push({ id: `exit:${g}:${x.from}:${x.index}`, source: g, target: x.to, type: 'transition', deletable: false, selectable: false,
+          markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14 }, className: 'exit-edge',
+          data: { t: x.t, index: x.index, label: `from ${x.from}: ${condText(x.t)}`, prio: x.t.priority ?? 0, parallel: 1, parallelIdx: 0, self: g === x.to, kind: 'exit',
+            evalResult: undefined, flashAt: 0, live: false } });
+      });
+    }
     return out;
-  }, [machine, live, selection, mode]);
+  }, [machine, live, selection, mode, def]);
 
   const onNodesChange = useCallback((changes: NodeChange<Node<SNodeData>>[]) => {
     onNodesChangeBase(changes.filter(c => c.type !== 'remove'));
@@ -253,7 +290,7 @@ function GraphInner(p: Props) {
     let next = def;
     // edges first, highest index first so indices stay valid
     const byState = new Map<string, number[]>();
-    for (const e of de) { const [from, i] = e.id.split('#'); byState.set(from, [...(byState.get(from) || []), Number(i)]); }
+    for (const e of de.filter(x => !x.id.startsWith('exit:'))) { const [from, i] = e.id.split('#'); byState.set(from, [...(byState.get(from) || []), Number(i)]); }
     for (const [from, idxs] of byState) {
       next = updateMachine(next, scope, m => ({ ...m, states: { ...m.states, [from]: { ...m.states[from], transitions: (m.states[from].transitions || []).filter((_, i) => !idxs.includes(i)) } } }));
     }
@@ -262,19 +299,32 @@ function GraphInner(p: Props) {
   }, [mode, onChange, def, scope, onSelect]);
 
   const onSelectionChange = useCallback((s: OnSelectionChangeParams) => {
+    const states = s.nodes.filter(n => !n.id.startsWith('ext:')).map(n => n.id);
+    p.onMultiSelect?.(states.length > 1 ? states : []);
+    if (states.length > 1) return;
     if (s.nodes.length === 1 && !s.nodes[0].id.startsWith('ext:')) { if (!(selection?.kind === 'state' && selection.state === s.nodes[0].id)) onSelect({ kind: 'state', state: s.nodes[0].id }); }
     else if (s.edges.length === 1) { const [from, i] = s.edges[0].id.split('#'); if (!(selection?.kind === 'edge' && selection.from === from && selection.index === Number(i))) onSelect({ kind: 'edge', from, index: Number(i) }); }
-  }, [onSelect, selection]);
+  }, [onSelect, selection, p.onMultiSelect]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { const t = window.setTimeout(() => rf.fitView({ padding: 0.2, maxZoom: 1.1 }), 80); return () => window.clearTimeout(t); }, [scope.kind, (scope as any).layer, (scope as any).name, scope.path.join('/'), rf]); // eslint-disable-line react-hooks/exhaustive-deps
+  // each drill level keeps its own pan / zoom; a level seen for the first time is fitted
+  const vpKey = p.viewportKey ?? scopeKeyOf(scope);
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      const saved = VIEWPORTS.get(vpKey);
+      if (saved) rf.setViewport(saved); else rf.fitView({ padding: 0.2, maxZoom: 1.1 });
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [vpKey, rf]);
 
   return (
     <div className="graph" style={{ height: p.height ?? '100%' }}>
       <ReactFlow
         nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} onNodeDragStop={onNodeDragStop} onConnect={onConnect} onConnectEnd={onConnectEnd} onDelete={onDelete}
-        onSelectionChange={onSelectionChange} onPaneClick={() => onSelect(null)}
-        nodesDraggable nodesConnectable={mode === 'edit'} elementsSelectable deleteKeyCode={mode === 'edit' ? ['Delete', 'Backspace'] : null}
+        onSelectionChange={onSelectionChange} onPaneClick={() => onSelect(null)} onMoveEnd={(_, vp) => VIEWPORTS.set(vpKey, vp)}
+        onNodeDoubleClick={(_, n) => { if (!n.id.startsWith('ext:') && subMachineOf(def, machine.states[n.id])) p.onOpenSub?.(n.id); }}
+        selectionKeyCode="Shift" multiSelectionKeyCode={['Control', 'Meta', 'Shift']} zoomOnDoubleClick={false}
+        nodesDraggable nodesConnectable={mode === 'edit'} elementsSelectable deleteKeyCode={mode === 'edit' ? ['Delete'] : null}
         fitView fitViewOptions={{ padding: 0.2, maxZoom: 1.1 }} minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} colorMode="dark"
       >
         <Background gap={24} size={1} />
@@ -285,6 +335,11 @@ function GraphInner(p: Props) {
   );
 }
 
+const VIEWPORTS = new Map<string, { x: number; y: number; zoom: number }>();
+const scopeKeyOf = (s: Scope) => (s.kind === 'layer' ? `layer:${s.layer}` : `machine:${s.name}`) + '/' + s.path.join('/');
+
 export function BrainGraph(p: Props) {
-  return <ReactFlowProvider><GraphInner {...p} /></ReactFlowProvider>;
+  // one React Flow instance per graph level: React would otherwise reuse a node's DOM element for a same-named
+  // state of another level, no resize fires, React Flow never re-measures its handles and draws none of its edges
+  return <ReactFlowProvider key={scopeKeyOf(p.scope)}><GraphInner {...p} /></ReactFlowProvider>;
 }

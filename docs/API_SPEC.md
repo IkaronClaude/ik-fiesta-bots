@@ -915,3 +915,39 @@ completion / hover / signature help come only from this manifest; nothing is bak
 - **U28. `self.dir`** convention: degrees, 0 = +x (east), counter-clockwise, world y up (how the minimap draws it).
 - **U29. UI caching:** serve `index.html` with `Cache-Control: no-cache` and `/assets/*` (hashed names) as
   `public, max-age=31536000, immutable`; without it a browser can keep an old bundle after a rebuild.
+
+### 13.10 Sub-graphs (brain editor, operator request 2026-11-25)
+
+The editor groups states into a sub-graph (a state with an inline `machine`), ungroups it, turns it into a named
+machine (`use`) placed in several graphs, and makes local copies. Rewiring a group needs two target forms the
+format does not have yet; the linter needs to know them and three new checks.
+
+- **U30. Enter a sub-graph at an inner state: `to: "G/s"`.** Enter the state `G` (its `enter`), then its
+  sub-machine at the inner state `s` instead of the sub-machine's `initial` (and `s`'s own initial sub-states).
+  Deeper paths `G/s/t` follow the same rule. Used when a transition from outside targets an inner state that is
+  not the group's entry. `TransitionRecord.to` carries the path as written.
+- **U31. Leave a sub-graph for a sibling of the containing state: `to: "^/t"`.** Exit the inner states and the
+  state that holds this sub-machine, then enter `t` of the machine that contains that state (the same layer).
+  Used for transitions that left the grouped states. In a named machine (`machines:` + `use`), `t` is resolved at
+  each use site (every graph that uses the machine must have a state `t`; lint error otherwise). `^` alone keeps its
+  API_SPEC 5.2 meaning ("pop to the parent"); the editor never generates it. The runtime should treat a `^/t` exit
+  like any transition of the inner state for priorities and `hold` / `cooldown`, and record it with
+  `depth` = the inner depth (the live graph draws it as an edge leaving the sub-graph node).
+- **U32. Lint** (the mock implements all of these):
+  - `TARGET_UNKNOWN`: `G/s` where `G` has no sub-machine or no inner state `s`; `^/t` where the parent machine has
+    no `t` (inline sub-machines).
+  - `EXIT_TARGET_UNKNOWN` (error): a named machine exits to `^/t` and a graph that uses it has no state `t`.
+  - `SUBGRAPH_NO_EXIT` (error): a non-terminal state with a sub-machine that has neither a transition of its own
+    nor any inner exit (`^`, `^/t`). Replaces `NO_EXIT` for such states (a group whose only exits are inner
+    `^/t` transitions is fine; the real host's linter reports `NO_EXIT` for it today).
+  - `MACHINE_RECURSION` (error): a named machine that uses itself, directly or through other named machines.
+  - `UNREACHABLE` inside a sub-machine counts states entered from outside through `G/s` as reachable.
+- **U33. Machines shared across brains** (not implemented, for later): a named machine lives in one brain
+  definition; the editor's "import from another brain" copies it. Linked reuse across brains would need machines as
+  versioned library entries (e.g. `use: "lib:<owner>/<machine>@<hash>"` resolved like Lua modules).
+- The node positions of each level stay in `ui.layout` under the level's scope key (`layer:<name>/<state>/...`,
+  `machine:<name>/...`), as before.
+
+Checked against the real host (127.0.0.1:5300, brain `grinder`, not saved): grouping `recover` + `dead` produced
+`TARGET transition to unknown state 'trouble/dead'`, `... '^/ok'` and `NO_EXIT ... trouble` from the host's
+linter, so U30-U32 are needed before such a version can be saved there.
