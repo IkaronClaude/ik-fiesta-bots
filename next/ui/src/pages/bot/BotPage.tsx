@@ -8,16 +8,19 @@ import { go, href } from '../../lib/router';
 import { BotConfigModal } from '../Fleet';
 import { DebuggerTab, StepBar } from './Debugger';
 import { SensorView } from './SensorView';
+import { GameTab } from './game/GameTab';
+import { ErrorBoundary } from '../../components/ErrorBoundary';
 
-type Tab = 'debugger' | 'sensors' | 'actions' | 'log' | 'packets' | 'inventory' | 'quests' | 'skills' | 'metrics' | 'versions' | 'replay';
+type Tab = 'game' | 'debugger' | 'sensors' | 'actions' | 'log' | 'packets' | 'inventory' | 'quests' | 'skills' | 'metrics' | 'versions' | 'replay';
 const TABS: { id: Tab; label: string }[] = [
+  { id: 'game', label: 'Game' },
   { id: 'debugger', label: 'Brain debugger' }, { id: 'sensors', label: 'Sensors' }, { id: 'actions', label: 'Actions' }, { id: 'log', label: 'Log' },
   { id: 'packets', label: 'Packets' }, { id: 'inventory', label: 'Inventory' }, { id: 'quests', label: 'Quests' }, { id: 'skills', label: 'Skills' },
   { id: 'metrics', label: 'Metrics' }, { id: 'versions', label: 'Versions' }, { id: 'replay', label: 'Replay' },
 ];
 
 export function BotPage({ id, tab }: { id: string; tab?: string }) {
-  const t = (TABS.find(x => x.id === tab)?.id ?? 'debugger') as Tab;
+  const t = (TABS.find(x => x.id === tab)?.id ?? 'game') as Tab;
   const fleet = useTopic<BotSummary[]>({ topic: 'fleet' });
   const polled = useAsync(() => api.bot(id), [id]);
   const b = fleet?.find(x => x.id === id) ?? polled.data;
@@ -49,7 +52,9 @@ export function BotPage({ id, tab }: { id: string; tab?: string }) {
       </div>
       <Tabs<Tab> tabs={TABS} value={t} onChange={x => go(`/bots/${encodeURIComponent(id)}/${x}`)} />
       <div className="bot-body">
+        <ErrorBoundary resetKey={t}>
         {offline && !['versions', 'log', 'packets', 'replay'].includes(t) ? <Empty>The bot is offline. Start it to see live data.</Empty> : <>
+          {t === 'game' && <GameTab bot={id} />}
           {t === 'debugger' && (replay ? <DebuggerTab bot={id} replay={{ ...replay, onClose: () => setReplay(null) }} /> : <DebuggerTab bot={id} />)}
           {t === 'sensors' && <SensorView bot={id} />}
           {t === 'actions' && <ActionsTab bot={id} />}
@@ -62,6 +67,7 @@ export function BotPage({ id, tab }: { id: string; tab?: string }) {
           {t === 'versions' && <VersionsTab bot={id} b={b} />}
           {t === 'replay' && <ReplayTab bot={id} onLoad={r => { setReplay(r); go(`/bots/${encodeURIComponent(id)}/debugger`); }} />}
         </>}
+        </ErrorBoundary>
       </div>
       {edit && <BotConfigModal bot={b} onClose={() => { setEdit(false); polled.reload(); }} />}
     </div>

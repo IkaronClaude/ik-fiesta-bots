@@ -5,7 +5,7 @@ import { getToken } from './client';
 import { applyPatch } from './patch';
 
 type Listener = (data: any) => void;
-interface Sub { key: string; msg: Record<string, unknown>; listeners: Set<Listener>; data: any }
+interface Sub { key: string; msg: Record<string, unknown>; listeners: Set<Listener>; data: any; raw?: boolean }
 
 class Hub {
   private ws: WebSocket | null = null;
@@ -34,6 +34,7 @@ class Hub {
       for (const s of this.subs.values()) {
         if (s.msg.topic !== m.topic) continue;
         if (s.msg.bot && m.bot && s.msg.bot !== m.bot) continue;
+        if (s.raw) { s.listeners.forEach(l => l(m)); continue; } // topic with its own protocol (game)
         if (m.full === false && Array.isArray(m.patch)) {
           if (s.data === undefined) continue; // wait for a full frame
           try { s.data = applyPatch(s.data, m.patch); } catch { continue; }
@@ -52,11 +53,18 @@ class Hub {
     ws.onerror = () => ws.close();
   }
 
-  subscribe(msg: Record<string, unknown>, l: Listener): () => void {
-    const key = JSON.stringify(msg);
+  /** Resend the subscription (the server answers with a fresh snapshot): resync after a gap. */
+  resubscribe(msg: Record<string, unknown>) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify({ op: 'unsub', ...msg }));
+    this.ws.send(JSON.stringify({ op: 'sub', ...msg }));
+  }
+
+  subscribe(msg: Record<string, unknown>, l: Listener, raw = false): () => void {
+    const key = (raw ? 'raw:' : '') + JSON.stringify(msg);
     let s = this.subs.get(key);
     if (!s) {
-      s = { key, msg, listeners: new Set(), data: undefined };
+      s = { key, msg, listeners: new Set(), data: undefined, raw };
       this.subs.set(key, s);
       if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ op: 'sub', ...msg }));
     }

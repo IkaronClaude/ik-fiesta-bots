@@ -18,6 +18,36 @@ node-based brain editor with Lua, libraries, versions. Contract with the runtime
 | headless smoke driver | `node next/ui/mock/cdp.mjs <steps.mjs>` drives headless Edge/Chrome over CDP (screenshots, clicks, console) |
 | dependencies | 6 runtime + 4 dev packages, exact versions in `package.json` / `package-lock.json`; `node_modules` ~150 MB (Monaco is most of it) |
 
+## Game tab (operator request 2026-11-25)
+
+The first and default tab of a bot's page: a compact HUD of what the game client shows, laid out for a ~950 px
+wide window (two columns; one column below 820 px).
+
+| part | what it shows |
+|---|---|
+| HUD | level, name, map name + position, state flags (dead / combat / mounted / moving), money, HP / SP (LP when sent) bars with numbers, exp bar as progress within the level |
+| minimap (canvas) | the client's minimap art placed by the map's `cover` rectangle, the bot as an arrow along its facing, the remaining path, mobs (aggro on us red with a ring, our target dashed ring, dead grey), players, NPCs and gates (diamonds) with name tags, scale bar, zoom 800 / 1600 / 3200 u / whole map, hover tooltip per entity |
+| target line | our target's name, level and HP, and how many mobs are on us |
+| buffs / debuffs | icons with time left (debuffs red-framed), tooltip with name and description |
+| skill bar | HP / SP soul stone counts, then every skill with its icon and a cooldown sweep + seconds left |
+| inventory | bag pages as tabs (like the client's bag), 6 wide, icons, stack counts, tooltips (name, type, level, price); equipped items |
+| stats | every stat the host sends (`-1` = not received yet shows `-`), unspent points |
+
+Data path, per the operator's rule "no big blobs, deltas over the WebSocket, the browser reassembles":
+- the `game` topic of API_SPEC **section 14** (defined by the runtime branch): one `snap`, then `d` op lists;
+  `src/pages/bot/game/gameModel.ts` reassembles them with structural sharing (an op copies only the map it
+  touches), a `seq` gap re-subscribes (fresh snapshot), `off` greys the view;
+- static data (items, skills, abstates, mobs incl. NPCs / gates, maps) by id from `/api/v3/static/...`: all ids
+  asked for in one frame go out as one `?ids=` batch per kind, kept in memory for the page and in the HTTP cache
+  (ETag / max-age); icons and map art are plain `<img>` / canvas images from their cacheable URLs;
+- cooldowns and buff timers are end times on the host clock: one `requestAnimationFrame` loop updates only the
+  elements that are counting down (CSS conic-gradient sweep through a custom property); no polling;
+- the minimap draws from refs every animation frame and interpolates entity positions between updates, so
+  movement never re-renders React; memoised tiles / slots re-render only when their own record changes.
+
+Measured on the mock: snapshot ~1.5 KB, deltas ~200 B on average at 4 Hz. The mock implements section 14
+exactly (snapshot, ops, keep-alive, `off`, static routes with ETag / 304, icon and minimap routes).
+
 ## Pages and features vs REDESIGN 9 and the operator's asks
 
 | REDESIGN 9 / ask | status |
@@ -25,7 +55,7 @@ node-based brain editor with Lua, libraries, versions. Contract with the runtime
 | **Fleet** page: class/level/map, active state per layer with time in state **and date**, last transition + reason, ticks/s, p99, deaths/h, exp/h, version + channel, errors | done (live over `fleet` topic, polling fallback) |
 | Fleet controls: spawn, start, stop, relog, pause/resume brain, apply version, edit config, delete | done (delete via in-button two-step confirm, no dialogs) |
 | **wire 2016 / 2026 per bot** (operator 2026-11-25) | done: select in spawn and edit forms (options + default from `GET /host`), shown in the fleet table and the bot header; spec U5-U7 |
-| **Bot** page header with live vitals; tabs debugger, sensors, actions, log, packets, inventory, quests, skills, metrics (+ versions, replay) | done; inventory / quests / skills need U21 on the real host |
+| **Bot** page header with live vitals; tabs game (default, above), debugger, sensors, actions, log, packets, inventory, quests, skills, metrics (+ versions, replay) | done; inventory / quests / skills need U21 on the real host |
 | **Brain editor**: graph canvas per layer (states as nodes, transitions as edges labelled with condition kind, text and priority / order) | done (React Flow; drag, connect by dragging handle onto a state, Delete removes, auto layout, positions saved under `ui.layout`) |
 | hierarchy: sub-machines (inline `machine` and named `use` machines), named machines list, breadcrumb drill-in, `^` pop-to-parent and `machine:state` targets | done |
 | side panel: state `enter`/`tick`/`exit` as module function ref or inline Lua (Monaco), budget, progress (sensor / function / expression), minDwell, timeout, onError, claims, terminal, initial, rename, transition order | done |
@@ -73,6 +103,15 @@ Real host: the runtime branch (`redesign-2026-11-core`, last checked at `9c9ac84
 default `FIESTA_WIRE` else 2016) matches U5/U6. Point the dev server at it with
 `BOT_HOST=http://127.0.0.1:<port> npm run dev` once endpoints exist.
 
+### Game tab against the real host (127.0.0.1:5300, bot NextA on the local stack)
+
+Checked in Chrome (own tab; the operator's tab untouched): the `game` topic delivers the snapshot and keep-alives,
+the tab shows NextBotA (Lv 4, Roumen, HP 104/114, SP 41/41, money 43, 4 unspent points, 19 skills, 15/48 bag
+with the client's item icons and tooltips, the equipped weapon, stats), the minimap shows the Roumen art with
+the town NPCs and gates on it at the right places and the bot at the map's south edge. No console errors.
+Not yet seen live: cooldown sweeps, buffs, aggro, path and entity movement (the bot stood idle in town); those
+were checked on the mock.
+
 ## Open
 
 - Run against the real host as its endpoints land; adjust normalisers (`src/api/client.ts`) where its JSON
@@ -83,3 +122,8 @@ default `FIESTA_WIRE` else 2016) matches U5/U6. Point the dev server at it with
 - No undo history in the graph beyond Revert (Monaco has its own undo).
 - Edge labels close to a node can still slip partly under it on dense graphs (labels render below nodes).
 - Bundle is one ~4 MB chunk (Monaco); could be split if load time matters.
+- Game tab, needs from the runtime: skill names come through as `?? ??` for many skills (text not decoded from
+  the client data's encoding) and many skills have `icon: false`; the convention of `self.dir` (the UI draws it as
+  degrees, 0 = +x / east, counter-clockwise, world y up) should be written into section 14; `index.html` is
+  served without `Cache-Control`, so a browser can keep a stale bundle after a rebuild (serve it `no-cache`, and
+  `/assets/*` as immutable).

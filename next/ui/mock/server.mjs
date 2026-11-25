@@ -12,6 +12,8 @@ import { BotSim } from './sim.mjs';
 import { acceptUpgrade, diff } from './ws.mjs';
 import { unifiedDiff } from './textdiff.mjs';
 import * as F from './fixtures.mjs';
+import { initGame, stepGame, snapshot as gameSnapshot, model as gameModel, diffOps } from './game.mjs';
+import * as S from './static.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) => {
@@ -113,6 +115,7 @@ function startSim(bot) {
   bot.rec.versionHash = v.hash;
   bot.sim = new BotSim(bot.rec, parseDefinition(v.definition), `${v.brain}@${v.hash}`, (cat, lvl, text) => pushLog(bot, cat, lvl, text));
   bot.sim.onTransition = r => broadcast('transition', bot.rec.id, r);
+  initGame(bot.sim);
 }
 
 function addBot(rec, state = 'InZone') {
@@ -158,8 +161,8 @@ setInterval(() => {
   const now = Date.now();
   for (const bot of bots.values()) {
     const s = bot.sim; if (!s || bot.state === 'Offline') continue;
-    if (!s.paused) s.step(50);
-    else if (s.pendingSteps > 0) { s.step(50); s.pendingSteps--; }
+    if (!s.paused) { s.step(50); stepGame(s); }
+    else if (s.pendingSteps > 0) { s.step(50); stepGame(s); s.pendingSteps--; }
   }
   if (now - lastDebug >= 200) {
     lastDebug = now;
@@ -172,6 +175,8 @@ setInterval(() => {
       broadcast('debug', bot.rec.id, f);
     }
   }
+  // game view (API_SPEC 14.1): snapshot on subscribe, then op lists at 4 Hz; keep-alive every 5 s; 'off' when offline
+  for (const sub of subs) if (sub.topic === 'game' && now - (sub.lastSent || 0) >= 250) gamePublish(sub, now);
   if (now - lastSensors >= 100) {
     lastSensors = now;
     for (const sub of subs) if (sub.topic === 'sensors' && now - (sub.lastSent || 0) >= 1000 / (sub.hz || 5)) {
@@ -192,6 +197,22 @@ function sendDelta(sub, data) {
     if (patch.length) sub.conn.send({ topic: sub.topic, bot: sub.bot ?? undefined, full: false, patch });
   }
   sub.prev = JSON.parse(JSON.stringify(data));
+}
+function gamePublish(sub, now, first = false) {
+  if (sub.conn.closed) { subs.delete(sub); return; }
+  const bot = bots.get(sub.bot);
+  const live = bot?.sim && bot.state !== 'Offline';
+  if (sub.seq == null) sub.seq = -1;
+  const send = (m) => { sub.seq++; sub.lastSent = now; sub.conn.send({ topic: 'game', bot: sub.bot, seq: sub.seq, now, ...m }); };
+  if (!live) { if (!sub.off && sub.prevGame) { sub.off = true; send({ t: 'off' }); } else sub.lastSent = now; return; }
+  if (first || !sub.prevGame || sub.off || sub.prevSim !== bot.sim) {
+    sub.off = false; sub.prevSim = bot.sim; sub.prevGame = gameModel(bot.sim); sub.lastBeat = now;
+    send({ t: 'snap', data: gameSnapshot(bot.sim) }); return;
+  }
+  const cur = gameModel(bot.sim);
+  const ops = diffOps(sub.prevGame, cur);
+  sub.prevGame = cur;
+  if (ops.length || now - (sub.lastBeat || 0) >= 5000) { sub.lastBeat = now; send({ t: 'd', ops }); } else sub.lastSent = now;
 }
 function broadcast(topic, bot, data, filter) {
   for (const sub of subs) {
@@ -221,7 +242,9 @@ function serveStatic(req, res, path) {
   if (!p.startsWith(STATIC)) return false;
   if (!existsSync(p) || statSync(p).isDirectory()) p = join(STATIC, 'index.html');
   if (!existsSync(p)) return false;
-  res.writeHead(200, { 'content-type': MIME[extname(p)] || 'application/octet-stream' });
+  // hashed assets are immutable; index.html must be revalidated or a rebuilt UI keeps loading the old bundle
+  const immutable = p.includes(join('dist', 'assets'));
+  res.writeHead(200, { 'content-type': MIME[extname(p)] || 'application/octet-stream', 'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache' });
   res.end(readFileSync(p));
   return true;
 }
@@ -448,6 +471,37 @@ route('GET', '/bots/{id}/skills', (p) => { needSim(p); return [1, 2, 3, 4].map(i
 route('GET', '/knowledge/mobs/{mobId}', (p) => ({ mobId: Number(p.mobId), detect: [240, 200, 280, 14], leash: [1500, 1300, 1700, 6], reach: [60, 50, 70, 30], interval: [1800, 1600, 2000, 40] }));
 route('GET', '/metrics', () => '# mock host\nfiestabot_tick_us{bot="MockArcher",step="total",quantile="0.99"} 690\n');
 
+// static game data (API_SPEC 14.2): immutable by id, cacheable (ETag + max-age, 304 on If-None-Match)
+const FP = 'mock-1';
+const cached = (req, etag, type, body) => {
+  if (req.headers['if-none-match'] === etag) return { __raw: true, status: 304, headers: { etag }, body: '' };
+  return { __raw: true, headers: { 'content-type': type, etag, 'cache-control': 'public, max-age=86400' }, body };
+};
+const STATIC_DATA = { items: S.item, skills: S.skill, abstates: S.abstate, mobs: S.mob };
+route('GET', '/static', () => ({ fingerprint: FP, items: 61, skills: 12, mobs: 11, abstates: 13, maps: 1 }));
+route('GET', '/static/classes/{id}', (p, b, q, req) => cached(req, `"${FP}-c${p.id}"`, 'application/json', JSON.stringify({ id: Number(p.id), name: `class ${p.id}` })));
+route('GET', '/static/maps/{id}/minimap.png', (p, b, q, req) => { if (Number(p.id) !== S.MAP.id) throw httpErr(404, 'no map art'); return cached(req, `"${FP}-mm${p.id}"`, 'image/svg+xml', S.mapSvg()); });
+route('GET', '/static/maps/{id}', (p, b, q, req) => {
+  if (Number(p.id) !== S.MAP.id) throw httpErr(404, 'unknown map');
+  return cached(req, `"${FP}-map${p.id}"`, 'application/json', JSON.stringify({ id: S.MAP.id, mapName: S.MAP.short, name: S.MAP.name, minimap: true, world: { w: S.MAP.size, h: S.MAP.size }, cover: S.MAP.cover }));
+});
+route('GET', '/static/{kind}/{id}', (p, b, q, req) => {
+  const fn = STATIC_DATA[p.kind]; const v = fn && fn(Number(p.id)); if (!v) throw httpErr(404, 'unknown id');
+  return cached(req, `"${FP}-${p.kind}${p.id}"`, 'application/json', JSON.stringify(v));
+});
+route('GET', '/static/{kind}', (p, b, q, req) => {
+  const fn = STATIC_DATA[p.kind]; if (!fn || !q.get('ids')) throw httpErr(404, 'unknown static kind');
+  const ids = q.get('ids').split(',').map(Number).filter(n => Number.isFinite(n));
+  const out = {}; for (const id of ids) { const v = fn(id); if (v) out[id] = v; }
+  return cached(req, `"${FP}-${p.kind}-${ids.join('.')}"`, 'application/json', JSON.stringify(out));
+});
+route('GET', '/icons/{kind}/{file}', (p, b, q, req) => {
+  const id = parseInt(p.file, 10);
+  const v = { item: S.item, skill: S.skill, abstate: S.abstate }[p.kind]?.(id);
+  if (!v || !v.icon) throw httpErr(404, 'no icon');
+  return cached(req, `"${FP}-i${p.kind}${id}"`, 'image/svg+xml', S.iconSvg(p.kind, id)); // a PNG on the real host; SVG here
+});
+
 // ---------------------------------------------------------------- server
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -459,7 +513,8 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = ['POST', 'PUT', 'PATCH'].includes(req.method) ? await readBody(req) : {};
       if (body === null) return send(res, 400, problem(400, 'body is not JSON'));
-      const out = await r.fn(m.groups || {}, body, url.searchParams);
+      const out = await r.fn(m.groups || {}, body, url.searchParams, req);
+      if (out && out.__raw) { res.writeHead(out.status || 200, out.headers || {}); return res.end(out.body); }
       if (Array.isArray(out) && out.length === 2 && typeof out[0] === 'number') return out[0] === 204 ? (res.writeHead(204), res.end()) : send(res, out[0], out[1]);
       return send(res, 200, out);
     } catch (e) { return send(res, e.status || 500, problem(e.status || 500, e.message)); }
@@ -478,6 +533,7 @@ server.on('upgrade', (req, socket) => {
       subs.add(sub); mine.add(sub);
       if (msg.topic === 'fleet') sendDelta(sub, [...bots.values()].map(summary));
       if (msg.topic === 'debug') { const b = bots.get(msg.bot); if (b?.sim) sendDelta(sub, b.sim.debugFrame()); }
+      if (msg.topic === 'game') gamePublish(sub, Date.now(), true);
     } else if (msg.op === 'unsub') {
       for (const s of [...mine]) if (s.topic === msg.topic && (!msg.bot || s.bot === msg.bot)) { subs.delete(s); mine.delete(s); }
     }

@@ -54,3 +54,19 @@ test('sim runs a brain and records transitions with depth and index', () => {
   assert.ok(sim.transitions.length > 0);
   assert.ok(sim.transitions.every(t => typeof t.index === 'number' && typeof t.depth === 'number'));
 });
+
+test('game view: snapshot shape and small deltas (API_SPEC 14.1)', async () => {
+  const { initGame, stepGame, snapshot, model, diffOps } = await import('../game.mjs');
+  const sim = new BotSim({ id: 'G', classFamily: 11, level: 30 }, parseDefinition(F.LEVELLER_V1), 'leveller@test', () => {});
+  initGame(sim);
+  const snap = snapshot(sim);
+  for (const k of ['self', 'stats', 'abstates', 'skills', 'bag', 'equip', 'target', 'path', 'ents']) assert.ok(k in snap, k);
+  assert.ok(snap.ents.every(r => r.length === 8 && 'mnpgd'.includes(r[1])));
+  let prev = model(sim);
+  for (let i = 0; i < 40; i++) { sim.step(50); stepGame(sim); }
+  const ops = diffOps(prev, model(sim));
+  assert.ok(ops.every(o => typeof o[0] === 'string'));
+  assert.ok(ops.filter(o => o[0] === 'ep').every(o => o.length === 4));
+  prev = model(sim);
+  assert.deepEqual(diffOps(prev, model(sim)), []);
+});
