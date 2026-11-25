@@ -137,6 +137,7 @@ public sealed class ClientData : IClientData
         _dialogs = new(LoadDialogs);
         _quests = new(LoadQuests);
         _classes = new(LoadClasses);
+        _useClass = new(() => T("UseClassTypeInfo"));
     }
 
     private ShnTable? T(string name)
@@ -286,6 +287,19 @@ public sealed class ClientData : IClientData
     }
 
     // a class line = the largest contiguous run of classes (at most five) that one UseClassTypeInfo row allows
+    private readonly Lazy<ShnTable?> _useClass;
+
+    /// <summary>May a class use something whose UseClass is this UseClassTypeInfo row (column k = class k)? True when the
+    /// table or the row is missing.</summary>
+    public bool ClassAllowed(int useClass, int classId)
+    {
+        if (_useClass.Value is not { } u || useClass < 0) return true;
+        var idc = u.Columns.Length > 0 ? 0 : -1;
+        for (var r = 0; r < u.RowCount; r++)
+            if (u.Num(r, idc) == useClass) return classId > 0 && classId < u.Columns.Length && u.Num(r, classId) != 0;
+        return true;
+    }
+
     private (int[], string[]) LoadClasses()
     {
         var names = new string[64]; var fam = new int[64];
@@ -511,6 +525,8 @@ public sealed class KnowledgeStore : IKnowledgeStore
     /// <inheritdoc/>
     public void LearnNpcRole(int npcId, int roleMask, int mapId, uint x, uint y)
         => _npc.AddOrUpdate(npcId, (roleMask, mapId, x, y), (_, o) => (o.Mask | roleMask, mapId, x, y));
+    /// <summary>Every NPC with a learned role (any map).</summary>
+    public IEnumerable<(int NpcId, int Mask, int Map, uint X, uint Y)> KnownNpcs() => _npc.Select(kv => (kv.Key, kv.Value.Mask, kv.Value.Map, kv.Value.X, kv.Value.Y));
     /// <inheritdoc/>
     public (int NpcId, uint X, uint Y)? KnownNpc(int roleMask, int mapId)
     {

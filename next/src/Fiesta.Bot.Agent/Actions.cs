@@ -20,7 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
-    MenuReply,
+    MenuReply, BuyStones, StatPoint,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -121,6 +121,12 @@ public static class ActionCatalog
         S(ActionKind.Sell, Resource.Npc, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.BuySellAck && e.B == 1 ? (e.A == 0x0381 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.A)) : null), 2000);
         S(ActionKind.OpenShop, Resource.Npc, Controller, 6000);
+        // soul stones: HP_BUY_ACK / SP_BUY_ACK carry the new total; BUYFAIL the reason
+        S(ActionKind.BuyStones, Resource.Npc, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.StoneReserve && e.A == a.Arg0 ? (ActionState.Acked, (ushort)0)
+            : e.Kind == InboundKind.StoneUse && e.A == 3 ? (ActionState.Refused, (ushort)e.B) : null), 3000);
+        S(ActionKind.StatPoint, Resource.None, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.StatPointSpent && e.A == a.Arg0 ? (ActionState.Acked, (ushort)0) : null), 3000);
         S(ActionKind.Talk, Resource.Npc, Controller, 20000);
         S(ActionKind.Storage, Resource.Npc, Controller, 6000);
         S(ActionKind.Gate, Resource.Movement, Controller, 20000);
@@ -441,6 +447,16 @@ public abstract class ProcedureBase : IProcedure
 /// <summary>Open an NPC's shop: END_OF_TRADE -> NPCCLICK -> answer the NPC menu (or a server menu) -> the shop list.</summary>
 public sealed class OpenShopProcedure(int npcHandle, int menuReply = 1) : ProcedureBase
 {
+    /// <summary>The NPC role a shop window shows (the SHOPOPEN* opcode): weapon = smith, skill = skill master,
+    /// soul stone = healer, item = merchant (npc role bits as in the Lua `npc.*` constants).</summary>
+    public static int RoleOfShop(int opcode) => opcode switch
+    {
+        0x3C03 or 0x3C09 => 8,    // SHOPOPENWEAPON / TABLE_WEAPON
+        0x3C04 or 0x3C0A => 4,    // SHOPOPENSKILL / TABLE_SKILL
+        0x3C05 => 2,              // SHOPOPENSOULSTONE
+        _ => 1,                   // SHOPOPENITEM / TABLE_ITEM
+    };
+
     /// <summary>NPC handle.</summary>
     public int NpcHandle { get; } = npcHandle;
     /// <inheritdoc/>
@@ -479,7 +495,7 @@ public sealed class OpenShopProcedure(int npcHandle, int menuReply = 1) : Proced
                 break;
             case InboundKind.ShopList when e.Handle == NpcHandle || e.Handle < 0:
                 ctx.Knowledge.LearnNpcRole(ctx.World.Entities.SlotOf(NpcHandle) is var s and >= 0 ? ctx.World.Entities.MobId(s) : -1,
-                    e.A == 0x3C05 ? 2 : 1, ctx.World.Map.MapId, (uint)ctx.World.Self.Pos.X, (uint)ctx.World.Self.Pos.Y);
+                    RoleOfShop((int)e.A), ctx.World.Map.MapId, (uint)ctx.World.Self.Pos.X, (uint)ctx.World.Self.Pos.Y);
                 Done();
                 break;
         }

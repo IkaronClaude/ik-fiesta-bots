@@ -79,6 +79,25 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>Is a map avoided for this bot now?</summary>
     [LuaFn] public bool Avoided(string map) => Ctx.Data.Map(map) is { } m && Ctx.Refused(m.Id);
 
+    /// <summary>The nearest NPC (by route) whose learned role matches the mask (npc.SHOP / SOUL_STONE / SKILL / SMITH ...):
+    /// map, x, y, npc id ("" none known).</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached, Alloc = Alloc.LuaString)]
+    public (string Map, double X, double Y, int NpcId) ServiceSpot(int roleMask)
+    {
+        if (Ctx.Knowledge is not Fiesta.Bot.Services.KnowledgeStore ks) return ("", -1, -1, -1);
+        (int Map, double X, double Y, int Id)? best = null; var bc = double.PositiveInfinity;
+        foreach (var (id, mask, map, x, y) in ks.KnownNpcs())
+        {
+            if ((mask & roleMask) == 0 || Ctx.Refused(map)) continue;
+            var c = CostTo(map, x, y);
+            if (c < bc) { bc = c; best = (map, x, y, id); }
+        }
+        return best is { } b ? (MapName(b.Map), b.X, b.Y, b.Id) : ("", -1, -1, -1);
+    }
+
+    /// <summary>Learned role mask of an NPC id (0 = not probed or no shop).</summary>
+    [LuaFn] public int NpcRole(int npcId) => Ctx.Knowledge.NpcRole(npcId);
+
     /// <summary>A mob's level from MobInfo (-1 unknown).</summary>
     [LuaFn] public int MobLevel(int mobId) => Ctx.Data.Mob(mobId)?.Level ?? -1;
 

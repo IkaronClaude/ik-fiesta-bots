@@ -27,7 +27,7 @@ public class LevelerBrainTests
         t.Tick(40);
         Assert.Empty(b.Debug.Errors());
         // no quest data, no atlas: the quest layer falls back to grinding and keeps re-planning, never wedges
-        Assert.Contains(b.Layers[2].ActivePath[0].Name, new[] { "plan", "grind" });
+        Assert.Contains(b.Layers.First(l => l.Name == "quest").ActivePath[0].Name, new[] { "plan", "grind" });
     }
 
     [Fact]
@@ -39,12 +39,12 @@ public class LevelerBrainTests
         t.Tick(5);
         t.Ev(InboundKind.SelfHp, a: 20);
         t.Tick(10);
-        Assert.Equal("recover", b.Layers[0].ActivePath[0].Name);
+        Assert.Equal("recover", b.Layers.First(l => l.Name == "survival").ActivePath[0].Name);
         // a mob hits us: the combat layer takes it on
         t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 5050, y: 5000);
         t.Ev(InboundKind.Damage, h: 2000, h2: 1000, a: 5, b: 15);
         t.Tick(5);
-        Assert.Equal("fight", b.Layers[1].ActivePath[0].Name);
+        Assert.Equal("fight", b.Layers.First(l => l.Name == "combat").ActivePath[0].Name);
         Assert.Empty(b.Debug.Errors());
     }
 
@@ -58,11 +58,11 @@ public class LevelerBrainTests
         t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 5050, y: 5000);
         t.Ev(InboundKind.Damage, h: 2000, h2: 1000, a: 5, b: 15);   // 15 of 100 hp, no stones, no heal skill
         t.Tick(40);
-        Assert.Equal("flee", b.Layers[0].ActivePath[0].Name);
+        Assert.Equal("flee", b.Layers.First(l => l.Name == "survival").ActivePath[0].Name);
         Assert.True(t.Sent.Contains(IntentEncoder.OpMoveRun), string.Join(",", t.Sent.Select(x => x.ToString("X4"))) + " | " + string.Join(" / ", t.Ctx.Actions.Recent(10).Select(r => $"{r.Kind} {r.State} {r.Code}")));
         t.Ev(InboundKind.EntityLeft, h: 2000);
         t.Tick(120);   // 6 s with nothing on us
-        Assert.NotEqual("flee", b.Layers[0].ActivePath[0].Name);
+        Assert.NotEqual("flee", b.Layers.First(l => l.Name == "survival").ActivePath[0].Name);
         Assert.Empty(b.Debug.Errors());
     }
 
@@ -83,6 +83,19 @@ public class LevelerBrainTests
             t.Tick(3);
         }
         Assert.True(t.Ctx.Refused(t.Ctx.World.Map.MapId));
+        Assert.Empty(b.Debug.Errors());
+    }
+
+    [Fact]
+    public void Spends_free_stat_points()
+    {
+        if (Load() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(5);
+        t.Ev(InboundKind.StatPoints, a: 2);
+        t.Tick(30);
+        Assert.Contains(IntentEncoder.OpStatPoint, t.Sent);
         Assert.Empty(b.Debug.Errors());
     }
 }

@@ -138,6 +138,11 @@ public enum InboundKind : ushort
     Mount,
     /// <summary>Stat points left A.</summary>
     StatPoints,
+    /// <summary>The soul stone merchant's window (SHOPOPENSOULSTONE): A HP stone price, B HP stone cap, C SP stone price,
+    /// X SP stone cap.</summary>
+    StoneShop,
+    /// <summary>A stat point spent (CHAR_STAT_INCPOINTSUC_ACK): A stat id (0 Str, 1 End, 2 Dex, 3 Int, 4 Spr).</summary>
+    StatPointSpent,
     /// <summary>Not decoded but passed (raw logging).</summary>
     Raw,
 }
@@ -414,7 +419,7 @@ public sealed class SelfDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x2411, 0xCC02, 0xCC06];
+        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x2411, 0xCC02, 0xCC06];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -506,6 +511,7 @@ public sealed class SelfDecoder : IPacketDecoder
                 return;
             }
             case 0x105B: if (p.Length < 1) return; e.Kind = InboundKind.StatPoints; e.A = p[0]; break;
+            case 0x105F: if (p.Length < 1) return; e.Kind = InboundKind.StatPointSpent; e.A = p[0]; break;   // INCPOINTSUC {stat}
             case 0xCC02: e.Kind = InboundKind.Mount; e.A = 1; e.Handle = Rd.U16(p, 0); break;
             case 0xCC06: e.Kind = InboundKind.Mount; e.A = 0; break;
             default: return;
@@ -702,9 +708,16 @@ public sealed class QuestMenuDecoder : IPacketDecoder
                 e.Options = opts; e.A = n;
                 break;
             }
-            case 0x3C05:   // SHOPOPENSOULSTONE: a soul stone merchant opened its window
-                e.Kind = InboundKind.ShopList; e.A = op; e.Handle = p.Length >= 2 ? Rd.U16(p, 0) : -1; e.B = 0;
-                break;
+            case 0x3C05:   // SHOPOPENSOULSTONE {hp {price u32, cap u32, u32}, sp {price u32, cap u32, u32}} (24)
+            {
+                e.Kind = InboundKind.ShopList; e.A = op; e.Handle = -1; e.B = 0;
+                sink.TryWrite(e);
+                if (p.Length < 20) return;
+                var m = InboundEvent.Of(InboundKind.StoneShop, op, at);
+                m.A = Rd.U32(p, 0); m.B = Rd.U32(p, 4); m.C = Rd.U32(p, 12); m.X = Rd.U32(p, 16);
+                sink.TryWrite(m);
+                return;
+            }
             case 0x3C03 or 0x3C04 or 0x3C06 or 0x3C09 or 0x3C0A or 0x3C0B:   // SHOPOPEN tables (canonical {n u16, npc u16, n x {slot u8, item u16}})
             {
                 if (p.Length < 4) return;
@@ -797,7 +810,7 @@ public static class IntentEncoder
         OpChangeMode = 0x2008, OpCastObj = 0x2440, OpCastFld = 0x2441, OpBashStart = 0x242B, OpBashStop = 0x2432,
         OpItemUse = 0x3015, OpBuy = 0x3003, OpSell = 0x3006, OpNpcClick = 0x200A, OpChat = 0x2001, OpPick = 0x3009,
         OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpQuestScriptAck = 0x4402,
-        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009,
+        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C,
         OpLoginComplete = 0x1803;
 
     private static Intent Make(ushort op, int action, ReadOnlySpan<byte> payload)

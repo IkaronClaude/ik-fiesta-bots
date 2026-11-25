@@ -516,6 +516,22 @@ public sealed partial class ActModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public int Use(int slot) => One(ActionKind.UseItem, slot, Ctx.World.Bag.At(slot).ItemId, IntentEncoder.UseItem((byte)slot, 9, -1));
     /// <summary>Use the first bag slot holding an item id.</summary>
     [LuaFn] public int UseItem(int itemId) { var s = Ctx.World.Bag.Find(itemId); return s < 0 ? Id(Ctx.Actions.Refuse(ActionKind.UseItem, CallingLayer, LocalRefusal.InvalidTarget)) : Use(s); }
+    /// <summary>Buy n HP (sp = false) or SP soul stones from the open soul stone window; resolves on the new total.</summary>
+    [LuaFn]
+    public int BuyStones(bool sp, int n)
+    {
+        Span<byte> b = stackalloc byte[2]; b[0] = (byte)n; b[1] = (byte)(n >> 8);
+        return One(ActionKind.BuyStones, sp ? 1 : 0, n, IntentEncoder.Raw(sp ? IntentEncoder.OpStoneBuySp : IntentEncoder.OpStoneBuyHp, b, -1));
+    }
+    /// <summary>Spend one stat point (0 Str, 1 End, 2 Dex, 3 Int, 4 Spr); resolves on the server's ack.</summary>
+    [LuaFn]
+    public int StatPoint(int stat)
+    {
+        Span<byte> b = stackalloc byte[1]; b[0] = (byte)stat;
+        return One(ActionKind.StatPoint, stat, 0, IntentEncoder.Raw(IntentEncoder.OpStatPoint, b, -1));
+    }
+    /// <summary>Soul stone prices / caps from the last stone window (-1 never seen): hpPrice, hpCap, spPrice, spCap.</summary>
+    [LuaFn] public (int HpPrice, int HpCap, int SpPrice, int SpCap) StonePrices() { var p = Ctx.World.Npc.StonePrices; return (p.HpPrice, p.HpCap, p.SpPrice, p.SpCap); }
     /// <summary>HP soul stone.</summary>
     [LuaFn] public int StoneHp() => One(ActionKind.StoneHp, 0, 0, IntentEncoder.Raw(IntentEncoder.OpStoneHp, default, -1));
     /// <summary>SP soul stone.</summary>
@@ -550,6 +566,7 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
 {
     private Inventory B => Ctx.World.Bag;
     /// <summary>Item category mask of an item id (derived from ItemInfo: equip slot -> EQUIP, use skill -> CONSUMABLE).</summary>
+    [LuaFn]
     public int Category(int itemId)
     {
         var it = Ctx.Data.Item(itemId);
@@ -597,6 +614,23 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
         for (var i = 0; i < B.Size; i++) { var (it, lot) = B.At(i); if (it >= 0 && Category(it) == 0) v += (long)(Ctx.Data.Item(it)?.SellPrice ?? 0) * lot; }
         return v;
     }
+    /// <summary>The skill an item teaches when used (its ItemUseSkill names an ActiveSkill row), -1 none.</summary>
+    [LuaFn]
+    public int TeachesSkill(int itemId)
+    {
+        if (Ctx.Data.Item(itemId) is not { ItemUseSkill: { Length: > 1 } inx }) return -1;
+        _skillByInx ??= (Ctx.Data as Fiesta.Bot.Services.ClientData)?.Skills.GroupBy(s => s.InxName).ToDictionary(g => g.Key, g => g.First().Id) ?? new();
+        return _skillByInx.TryGetValue(inx, out var id) ? id : -1;
+    }
+    private Dictionary<string, int>? _skillByInx;
+
+    /// <summary>May our class use this item (ItemInfo UseClass against UseClassTypeInfo)?</summary>
+    [LuaFn]
+    public bool ClassOk(int itemId) => Ctx.Data.Item(itemId) is not { } it || (Ctx.Data as Fiesta.Bot.Services.ClientData)?.ClassAllowed(it.UseClass, Ctx.World.Self.ClassId) != false;
+
+    /// <summary>Buy price.</summary>
+    [LuaFn] public int BuyPrice(int itemId) => Ctx.Data.Item(itemId)?.BuyPrice ?? -1;
+
     /// <summary>Best bag item that improves an equipment slot (not modelled yet: -1).</summary>
     [LuaFn] public int EquipUpgrade() => -1;
     /// <summary>Equipped item id by equipment slot, -1 none.</summary>
@@ -902,6 +936,9 @@ public sealed partial class NpcModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>Open an NPC's shop (procedure; resolves when the list arrived).</summary>
     [LuaFn] public int OpenShop(int h, int reply = 1) => Ctx.Procedures.Start(new OpenShopProcedure(h, reply), ActionKind.OpenShop, CallingLayer, Ctx).Value;
     /// <summary>The open shop sells the item.</summary>
+    /// <summary>Item ids the open shop sells.</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.Ok, Alloc = Alloc.Iterator)]
+    public LuaIter ShopItems() { var s = Ctx.Scratch(256); var n = 0; foreach (var (_, it) in W.Npc.ShopItems) if (n < s.Length) s[n++] = it; return ApiScope.Iter(s[..n]); }
     [LuaFn] public bool ShopHas(int itemId) { foreach (var (_, it) in W.Npc.ShopItems) if (it == itemId) return true; return false; }
     /// <summary>Buy from the open shop.</summary>
     [LuaFn] public int Buy(int itemId, int lot = 1) { _one[0] = IntentEncoder.Buy((ushort)itemId, (uint)lot, -1); return Ctx.Actions.Issue(ActionKind.Buy, CallingLayer, itemId, lot, _one).Value; }

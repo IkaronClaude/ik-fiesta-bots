@@ -160,6 +160,24 @@ public class WireTests
     }
 
     [Fact]
+    public void Soul_stone_window_carries_prices_and_shop_kinds_name_roles()
+    {
+        // captured SHOPOPENSOULSTONE: hp {832, cap 179, ...}, sp {1156, ...}
+        var p = new byte[24];
+        BinaryPrimitives.WriteUInt32LittleEndian(p, 832); BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), 179);
+        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), 1156); BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(16), 120);
+        var sink = new Sink();
+        DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016)).Dispatch(0x3C05, p, 0, sink);
+        var m = Assert.Single(sink.E, e => e.Kind == InboundKind.StoneShop);
+        Assert.Equal(832, m.A); Assert.Equal(179, m.B); Assert.Equal(1156, m.C); Assert.Equal(120u, m.X);
+        Assert.Contains(sink.E, e => e.Kind == InboundKind.ShopList);
+        Assert.Equal(2, OpenShopProcedure.RoleOfShop(0x3C05));
+        Assert.Equal(4, OpenShopProcedure.RoleOfShop(0x3C0A));
+        Assert.Equal(8, OpenShopProcedure.RoleOfShop(0x3C03));
+        Assert.Equal(1, OpenShopProcedure.RoleOfShop(0x3C0B));
+    }
+
+    [Fact]
     public void Someone_swing_carries_rest_hp_not_damage()
     {
         // PDB layout: attacker u16, defender u16, flag u8, resthp u32 @5, order u16, index u8, sequence u8 (13 B);

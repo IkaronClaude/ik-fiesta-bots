@@ -520,6 +520,8 @@ public sealed class MapState
 /// <summary>The open shop / menu / dialogue state the NPC procedures read.</summary>
 public sealed class NpcState
 {
+    /// <summary>The last soul stone window: HP price, HP cap, SP price, SP cap, when (ms; -1 never).</summary>
+    public (int HpPrice, int HpCap, int SpPrice, int SpCap, long At) StonePrices { get; internal set; } = (-1, -1, -1, -1, -1);
     /// <summary>Shop list: npc handle, opened at, items (slot, item id).</summary>
     public int ShopNpc { get; internal set; } = -1;
     /// <summary>Opcode of the shop table.</summary>
@@ -929,6 +931,9 @@ public sealed class WorldState
                 break;
             case InboundKind.StatPoints:
                 Self.StatPoints = (int)e.A;
+                break;
+            case InboundKind.StoneShop:
+                Npc.StonePrices = ((int)e.A, (int)e.B, (int)e.C, (int)e.X, now);
                 break;
             case InboundKind.LinkChanged:
                 LinkUp = e.A == (long)Fiesta.Bot.Net.LinkState.Ready;
