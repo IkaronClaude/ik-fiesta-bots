@@ -34,6 +34,9 @@ public sealed class SystemClock : IClock
     public DateTime UtcNow => DateTime.UtcNow;
     /// <summary>Wall time of a monotonic stamp.</summary>
     public static DateTime ToUtc(long ms) => StartUtc.AddMilliseconds(ms);
+    private static readonly long StartUnixMs = new DateTimeOffset(StartUtc).ToUnixTimeMilliseconds();
+    /// <summary>Unix milliseconds of a monotonic stamp.</summary>
+    public static long UnixMs(long ms) => StartUnixMs + ms;
 }
 
 /// <summary>A clock the test or the replayer moves.</summary>

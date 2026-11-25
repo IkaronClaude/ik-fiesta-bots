@@ -42,6 +42,8 @@ public sealed class MoveController
 
     /// <summary>Moving now?</summary>
     public bool Moving => _leg >= 0 && _leg < _path.Count;
+    /// <summary>Index of the path point being walked to (-1 standing).</summary>
+    public int Leg => _leg;
     /// <summary>Waiting for a path job.</summary>
     public bool Planning => _order is not null && _ticket.Value >= 0 && !_jobDone;
     /// <summary>Current waypoint list (sensor view; the list object is reused).</summary>

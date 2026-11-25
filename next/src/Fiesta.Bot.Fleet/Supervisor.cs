@@ -123,6 +123,8 @@ public sealed class BotRuntime
     public DateTime SessionStart { get; private set; } = DateTime.UtcNow;
     /// <summary>Anyone watching debug/sensors (5 Hz frames); otherwise 1 Hz.</summary>
     public int Watchers;
+    /// <summary>The game view tap (API_SPEC 14); survives sessions, handed to each new agent.</summary>
+    public GameTap GameTap { get; } = new();
     /// <summary>Raised with each new debug frame (any thread; must not block).</summary>
     public event Action<BotRuntime, DebugFrame>? FrameReady;
     /// <summary>Raised on each transition.</summary>
@@ -297,6 +299,8 @@ public sealed class BotRuntime
             }
             catch (Exception e) { Log.Text(LogCategory.Brain, LogLevel.Crit, $"brain load failed: {e.Message}"); LastError = e.Message; }
         }
+        Interlocked.Increment(ref GameTap.Session);
+        agent.Game = GameTap;
         Agent = agent;
         Session = new ZoneSession(wire, _h.Decoders(wire), _h.XorTable, inbound, outbound, _h.Checksums(wire), () => _h.Clock.NowMs,
             s => Log.Text(LogCategory.Net, LogLevel.Info, s)) { Tap = (o, op, p) => Capture.OnFrame(o, op, p) };

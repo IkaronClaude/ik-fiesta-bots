@@ -119,7 +119,16 @@ public sealed class SelfState
     /// <summary>Abstates held (for snapshots).</summary>
     public int AbstateCount => _abN;
     /// <summary>Displayed stat by id (not decoded yet: -1).</summary>
-    public double Stat(int statId) => -1;
+    public double Stat(int statId) => (uint)statId < (uint)_stats.Length ? _stats[statId] : -1;
+    private readonly long[] _stats = InitStats();
+    private static long[] InitStats() { var a = new long[0x23]; Array.Fill(a, -1L); return a; }
+    internal bool SetStat(int id, long v) { if ((uint)id >= (uint)_stats.Length || _stats[id] == v) return false; _stats[id] = v; return true; }
+    /// <summary>Fame (-1 until the character base arrived).</summary>
+    public long Fame => _stats[0x20];
+    /// <summary>Soul stone capacity (-1 unknown).</summary>
+    public (long Hp, long Sp) MaxStones => (_stats[0x21], _stats[0x22]);
+    /// <summary>Active abstate i (0 .. AbstateCount-1): wire id and end (monotonic ms, long.MaxValue = no end).</summary>
+    public (int Id, long Until) AbstateAt(int i) => (_abId[i], _abUntil[i]);
 }
 
 /// <summary>Entities in view as struct-of-arrays with a handle -> slot map (no per-entity objects).</summary>
@@ -424,6 +433,10 @@ public sealed class SkillBook
     }
     /// <summary>Empower levels (not decoded yet: zeros).</summary>
     public (int Dmg, int Sp, int Dur, int Cd) Empower(int skillId) => (0, 0, 0, 0);
+    /// <summary>Monotonic time the skill itself is ready again (0 = never cast).</summary>
+    public long ReadyAt(int skill) => _readyAt.TryGetValue(skill, out var r) ? r : 0;
+    /// <summary>Monotonic time a cooldown group is ready again (0 = none).</summary>
+    public long GroupReadyAt(int group) => group > 0 && _groupReadyAt.TryGetValue(group, out var g) ? g : 0;
     internal void Learn(int skill, long readyAt) { if (!_readyAt.ContainsKey(skill)) _learned.Add(skill); _readyAt[skill] = readyAt; Version++; }
     internal void Started(int skill, long nowMs, int cooldownMs, int group, int groupMs)
     {
@@ -909,6 +922,9 @@ public sealed class WorldState
             case InboundKind.Mount:
                 Self.Mounted = e.A == 1;
                 Bump(WorldComponent.Self);
+                break;
+            case InboundKind.SelfStat:
+                if (Self.SetStat((int)e.A, e.B)) Bump(WorldComponent.Self);
                 break;
             case InboundKind.StatPoints:
                 Self.StatPoints = (int)e.A;

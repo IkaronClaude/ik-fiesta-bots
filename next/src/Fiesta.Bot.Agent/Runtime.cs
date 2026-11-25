@@ -416,6 +416,8 @@ public sealed class BotAgent
     public int IntervalMs { get; set; } = 50;
     /// <summary>Called on the tick thread at each publish (every 100 ms): the supervisor builds debug frames here.</summary>
     public Action<BotAgent>? OnPublish { get; set; }
+    /// <summary>The game view tap (API_SPEC 14); null = no game view.</summary>
+    public GameTap? Game { get; set; }
 
     private static double Us(long a, long b) => (b - a) * 1_000_000.0 / Stopwatch.Frequency;
 
@@ -476,6 +478,7 @@ public sealed class BotAgent
         // 7. intents are already in the outbound ring; 8. publish
         var a1 = GC.GetAllocatedBytesForCurrentThread();
         if (now - _lastPublish >= 100) { Publish(now); _lastPublish = now; OnPublish?.Invoke(this); }
+        Game?.MaybeCapture(c);
         var t7 = Stopwatch.GetTimestamp();
         s.PublishAllocBytes = GC.GetAllocatedBytesForCurrentThread() - a1;
         // 9. stats

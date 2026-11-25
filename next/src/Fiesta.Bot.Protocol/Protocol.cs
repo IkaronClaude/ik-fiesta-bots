@@ -35,6 +35,10 @@ public enum InboundKind : ushort
     SelfSp,
     /// <summary>Our max HP A / max SP B (parameter change).</summary>
     SelfMaxHpSp,
+    /// <summary>A character stat: A stat id (0 Str, 1 End, 2 Dex, 3 Int, 5 Spr, 6/7 WC min/max, 8 defence, 9 aim, 10 evasion,
+    /// 11/12 MA min/max, 13 magic defence, 14 magic aim, 15 magic evasion; 0x20 fame, 0x21 max HP stones, 0x22 max SP stones),
+    /// B value.</summary>
+    SelfStat,
     /// <summary>Character base: A level, B exp, C money, X hp stones, Y sp stones, Text = login map name.</summary>
     SelfBase,
     /// <summary>Level up to A (H = mob whose kill did it); B = prev exp, C = next exp of the new level.</summary>
@@ -426,8 +430,11 @@ public sealed class SelfDecoder : IPacketDecoder
                 long mh = -1, ms = -1;
                 for (int i = 0, n = p[0]; i < n && 1 + 5 * (i + 1) <= p.Length; i++)
                 {
+                    // ids 0..15 are the CHAR_PARAMETER_DATA stats in order (checked on a capture against the map login
+                    // values: id 0 = Str 290, 1 = End 250, 2 = Dex 214, 3 = Int 143, 5 = Spr 241, 6 = WC min 295 ...)
                     var id = p[1 + 5 * i]; var v = Rd.U32(p, 2 + 5 * i);
                     if (id == 0x10) mh = v; else if (id == 0x11) ms = v;
+                    else if (id < 16) { var st = InboundEvent.Of(InboundKind.SelfStat, op, at); st.A = id; st.B = v; sink.TryWrite(st); }
                 }
                 if (mh < 0 && ms < 0) return;
                 e.Kind = InboundKind.SelfMaxHpSp; e.A = mh; e.B = ms;
@@ -442,6 +449,8 @@ public sealed class SelfDecoder : IPacketDecoder
                 sink.TryWrite(e);
                 var hp = InboundEvent.Of(InboundKind.SelfHp, op, at); hp.A = Rd.U32(p, 42); sink.TryWrite(hp);
                 var sp = InboundEvent.Of(InboundKind.SelfSp, op, at); sp.A = Rd.U32(p, 46); sink.TryWrite(sp);
+                var fame = InboundEvent.Of(InboundKind.SelfStat, op, at); fame.A = 0x20; fame.B = Rd.U32(p, 54); sink.TryWrite(fame);
+                if (p.Length >= 93) { var pts = InboundEvent.Of(InboundKind.StatPoints, op, at); pts.A = p[92]; sink.TryWrite(pts); }
                 return;
             }
             case 0x240C:   // LEVELUP {level u8, mob u16, CHAR_PARAMETER_DATA {prevExp u64, nextExp u64, ...}}
@@ -468,6 +477,17 @@ public sealed class SelfDecoder : IPacketDecoder
                 {
                     var b = InboundEvent.Of(InboundKind.SelfExpBand, op, at); b.A = Rd.U64(p, 2); b.B = Rd.U64(p, 10);
                     sink.TryWrite(b);
+                }
+                // CHAR_PARAMETER_DATA @2: 16 stats {base u32, value u32} from @16; max HP / SP stones @160 / @164
+                if (p.Length >= 2 + 168)
+                {
+                    for (var i = 0; i < 16; i++)
+                    {
+                        if (i == 4) continue;   // the unused fifth stat carries no value
+                        var st = InboundEvent.Of(InboundKind.SelfStat, op, at); st.A = i; st.B = Rd.U32(p, 2 + 16 + 8 * i + 4); sink.TryWrite(st);
+                    }
+                    var mh = InboundEvent.Of(InboundKind.SelfStat, op, at); mh.A = 0x21; mh.B = Rd.U32(p, 2 + 160); sink.TryWrite(mh);
+                    var ms = InboundEvent.Of(InboundKind.SelfStat, op, at); ms.A = 0x22; ms.B = Rd.U32(p, 2 + 164); sink.TryWrite(ms);
                 }
                 return;
             }

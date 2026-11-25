@@ -12,7 +12,7 @@ using LogLevel = Fiesta.Bot.Services.Logging.LogLevel;
 namespace Fiesta.Bot.Server;
 
 /// <summary>WebSocket topics (API_SPEC 8.4).</summary>
-public enum WsTopic : byte { Fleet, Debug, Transition, Sensors, Log, Alert }
+public enum WsTopic : byte { Fleet, Debug, Transition, Sensors, Log, Alert, Game }
 
 /// <summary>One subscription from a client.</summary>
 public sealed class WsSubscription(WsTopic topic, string? bot, int hz, LogLevel level)
@@ -40,7 +40,12 @@ public sealed class WebSocketHub
     {
         public readonly Channel<string> Out = Channel.CreateBounded<string>(new BoundedChannelOptions(512) { FullMode = BoundedChannelFullMode.DropOldest });
         public readonly List<WsSubscription> Subs = new();
+        public readonly List<(GameStream Stream, GameViewer Viewer)> Games = new();
     }
+    private readonly ConcurrentDictionary<string, GameStream> _games = new();
+
+    /// <summary>The game streams (for status / measurement).</summary>
+    public IEnumerable<GameStream> GameStreams => _games.Values;
     private readonly ConcurrentDictionary<Conn, byte> _conns = new();
     private readonly BotSupervisor _sup;
     private readonly HashSet<BotRuntime> _hooked = new();
@@ -130,6 +135,10 @@ public sealed class WebSocketHub
         {
             await Task.Delay(100);
             foreach (var b in _sup.Bots) Hook(b);
+            var unix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            foreach (var g in _games.Values)
+                try { g.Pump(unix, _sup.Get(g.Bot)?.State == SupervisorState.InZone); }
+                catch (Exception e) { Console.Error.WriteLine($"game stream {g.Bot}: {e}"); }
             var now = Environment.TickCount64;
             JsonNode? fleet = null;
             foreach (var c in _conns.Keys)
@@ -182,6 +191,7 @@ public sealed class WebSocketHub
         finally
         {
             _conns.TryRemove(c, out _);
+            lock (c.Games) foreach (var (g, v) in c.Games) g.Remove(v);
             lock (c.Subs) foreach (var s in c.Subs) if (s.Bot is not null && s.Topic is WsTopic.Debug or WsTopic.Sensors && _sup.Get(s.Bot) is { } b) Interlocked.Decrement(ref b.Watchers);
             c.Out.Writer.TryComplete();
             try { await writer; } catch { }
@@ -194,6 +204,22 @@ public sealed class WebSocketHub
         var topicName = m.TryGetProperty("topic", out var t) ? t.GetString() : null;
         if (!Enum.TryParse<WsTopic>(topicName, true, out var topic)) return;
         var bot = m.TryGetProperty("bot", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString() : null;
+        if (topic == WsTopic.Game)
+        {
+            if (bot is null || _sup.Get(bot) is not { } rt) { c.Out.Writer.TryWrite("{\"topic\":\"error\",\"data\":\"game needs a known bot\"}"); return; }
+            lock (c.Games)
+            {
+                foreach (var (g, v) in c.Games.Where(x => x.Stream.Bot == bot).ToList()) { g.Remove(v); c.Games.Remove((g, v)); }
+                if (op == "sub")
+                {
+                    var stream = _games.GetOrAdd(bot, id => new GameStream(id, rt.GameTap));
+                    var viewer = new GameViewer(s => c.Out.Writer.TryWrite(s));
+                    stream.Add(viewer);
+                    c.Games.Add((stream, viewer));
+                }
+            }
+            return;
+        }
         if (op == "sub")
         {
             var hz = m.TryGetProperty("hz", out var h) && h.TryGetInt32(out var hv) ? hv : 5;

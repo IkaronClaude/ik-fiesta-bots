@@ -9,5 +9,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Fiesta.Bot.Fleet/Fiesta.Bot.Fleet.csproj" />
+    <ProjectReference Include="../../src/Fiesta.Bot.Server/Fiesta.Bot.Server.csproj" />
   </ItemGroup>
 </Project>

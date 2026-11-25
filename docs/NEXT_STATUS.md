@@ -109,3 +109,28 @@ by unit tests).
 The host serves the built UI (`UI_DIR`, SPA fallback) and the API + `/api/v3/ws` on one port; the long-lived
 instance runs on http://127.0.0.1:5300 (loopback, no token). The Brain debugger page (`#/bots/<id>`, live
 following), Fleet, Log and Inventory pages render against this host without a mismatch found so far.
+
+## Game view (API_SPEC 14)
+
+Implemented on the host: the `game` WebSocket topic (snapshot, then op-list deltas, `off` when the bot leaves the
+world), the static data routes with ETag / `Cache-Control: public, max-age=86400` (304 on `If-None-Match`), item /
+skill / abstate icons cut from the client's atlases (`<client root>/resmenu/Icon`), minimap art
+(`<client root>/resmenu/minimap/<MapName>.dds`) with its placement from MapViewInfo.
+
+How it is produced: `GameTap` (Agent) fills a preallocated `GameCapture` on the tick at most every 100 ms and only
+while someone watches, and hands it over through a lock-free triple buffer; `GameStream` (Server) keeps the state
+the viewers have and writes the differences on the WebSocket pump thread, once per bot for all viewers.
+
+Measured (local 2026 stack, NextBotA in Roumen, 54 entities in view, 19 skills, 15 bag cells):
+- snapshot 3.1 KB; deltas 77 - 113 B/s (0.8 - 1.1 messages/s) while roaming; nothing is sent while nothing changes,
+  plus a keep-alive every 5 s;
+- capture cost 18 us per fill with 100 entities (Release), 0 bytes allocated (test
+  `Capture_does_not_allocate_on_the_tick`); at 10 Hz that is ~9 us per tick on average; tick p50 61 -> 65 us
+  with one viewer (within noise; another tab was watching the debug view at the same time).
+
+New decodes for it: the character stats (CHAR_PARAMETER_DATA in MAP_LOGIN_ACK; live changes through
+CHANGEPARAMCHANGE ids 0..15, the id = the stat's position, checked on a capture), fame and free stat points from
+CHAR_BASE, soul stone capacity.
+
+Open: CHANGEPARAMCHANGE ids 0x12..0x1B and 0x24 (values 0 in the capture) are not named yet; player entities
+carry no class id yet (`id` -1 for players); drop entities carry the item id only where the drop decode has it.
