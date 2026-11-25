@@ -96,23 +96,39 @@ public sealed class NavOverlay
 {
     private readonly Dictionary<long, long> _blocked = new();
     private readonly Dictionary<string, bool> _doors = new();
+    private readonly Dictionary<string, HashSet<long>> _doorTiles = new(StringComparer.Ordinal);
+    private int _doorTileCount;
     /// <summary>Version (changes on every learn / clear).</summary>
     public int Version { get; private set; }
     /// <summary>Learned blocks.</summary>
-    public int Count => _blocked.Count;
+    public int Count => _blocked.Count + _doorTileCount;
+    /// <summary>The tiles a door blocks in its current state beyond the map's own blocks (replaces the door's previous
+    /// tiles; empty = the door blocks nothing extra).</summary>
+    public void SetDoorTiles(string door, HashSet<long> tiles)
+    {
+        if (_doorTiles.TryGetValue(door, out var old)) _doorTileCount -= old.Count;
+        _doorTiles[door] = tiles; _doorTileCount += tiles.Count; Version++;
+    }
     /// <summary>Record a server-refused segment end as blocked for a time.</summary>
     public void LearnBlocked(int tx, int ty, long untilMs) { _blocked[((long)tx << 32) | (uint)ty] = untilMs; Version++; }
     /// <summary>Observed door state.</summary>
     public void SetDoor(string door, bool closed) { _doors[door] = closed; Version++; }
     /// <summary>Is the tile blocked by the overlay at time now?</summary>
-    public bool Blocked(int tx, int ty, long nowMs) => _blocked.Count > 0 && _blocked.TryGetValue(((long)tx << 32) | (uint)ty, out var until) && until > nowMs;
+    public bool Blocked(int tx, int ty, long nowMs)
+    {
+        var k = ((long)tx << 32) | (uint)ty;
+        if (_blocked.Count > 0 && _blocked.TryGetValue(k, out var until) && until > nowMs) return true;
+        if (_doorTileCount > 0) foreach (var t in _doorTiles.Values) if (t.Contains(k)) return true;
+        return false;
+    }
     /// <summary>Forget everything (map change).</summary>
-    public void Clear() { _blocked.Clear(); _doors.Clear(); Version++; }
+    public void Clear() { _blocked.Clear(); _doors.Clear(); _doorTiles.Clear(); _doorTileCount = 0; Version++; }
     /// <summary>A copy for a path job (jobs must not read the tick's live overlay).</summary>
     public HashSet<long> SnapshotBlocked(long nowMs)
     {
         var s = new HashSet<long>();
         foreach (var kv in _blocked) if (kv.Value > nowMs) s.Add(kv.Key);
+        foreach (var t in _doorTiles.Values) foreach (var k in t) s.Add(k);
         return s;
     }
 }
@@ -235,6 +251,18 @@ public static class PathSearch
 
     /// <summary>Find a path from world (fx,fy) to (tx,ty). Blocked endpoints are snapped to the nearest free tile
     /// (ring search, 48 tiles); an unreachable goal yields a partial path to the reachable point nearest it.</summary>
+    // does a leg (tile coordinates) pass over a tile the predicate blocks? sampled every half tile
+    private static bool SegmentHits(Func<int, int, bool> blocked, double ax, double ay, double bx, double by)
+    {
+        var n = (int)Math.Ceiling(Hyp(bx - ax, by - ay) * 2) + 1;
+        for (var i = 0; i <= n; i++)
+        {
+            double t = (double)i / n;
+            if (blocked((int)Math.Floor(ax + (bx - ax) * t), (int)Math.Floor(ay + (by - ay) * t))) return true;
+        }
+        return false;
+    }
+
     public static PathResult Find(NavMesh mesh, double fx, double fy, double tx, double ty, Func<int, int, bool>? extraBlocked = null)
     {
         const double T = BlockLayer.WorldPerTile;
@@ -269,6 +297,9 @@ public static class PathSearch
                 double px = pt.Vertical ? pt.At : o, py = pt.Vertical ? o : pt.At;
                 var nd = dist[cur] + Hyp(px - e.X, py - e.Y);
                 if (nd >= dist[pt.To]) continue;
+                // the overlay's tiles (a closed door, a refused spot) inside the free rectangles: a crossing whose leg runs
+                // over one is not taken (the rectangles come from the map's own blocks only)
+                if (extraBlocked is not null && SegmentHits(extraBlocked, e.X, e.Y, px, py)) continue;
                 dist[pt.To] = nd; prev[pt.To] = cur; entry[pt.To] = new V(px, py);
                 open.Enqueue(pt.To, nd + Hyp(px - gx, py - gy));
             }
@@ -415,6 +446,8 @@ public interface INavService
     bool Ready(string mapName);
     /// <summary>The trigger areas of a map (its .aid), empty when it has none (read once per map, a small file).</summary>
     IReadOnlyList<ScenarioArea> Areas(string mapName) => [];
+    /// <summary>The doors of a map (its .sbi), empty when it has none.</summary>
+    IReadOnlyList<MapDoor> Doors(string mapName) => [];
 }
 
 /// <summary>Default nav service over a client root.</summary>
@@ -423,6 +456,9 @@ public sealed class NavService(string clientRoot, IJobScheduler jobs, Func<strin
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyList<ScenarioArea>> _areas = new(StringComparer.OrdinalIgnoreCase);
     /// <inheritdoc/>
     public IReadOnlyList<ScenarioArea> Areas(string mapName) => _areas.GetOrAdd(mapName, m => ScenarioAreaFile.Load(clientRoot, m, folderOf?.Invoke(m)));
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyList<MapDoor>> _doorFiles = new(StringComparer.OrdinalIgnoreCase);
+    /// <inheritdoc/>
+    public IReadOnlyList<MapDoor> Doors(string mapName) => _doorFiles.GetOrAdd(mapName, m => MapDoorFile.Load(clientRoot, m, folderOf?.Invoke(m)));
     private readonly ConcurrentDictionary<string, Lazy<(BlockLayer? L, NavMesh? M)>> _maps = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, bool> _ready = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Paths computed / total ms.</summary>

@@ -195,3 +195,32 @@ public sealed class AtlasLearner : ILearner
         if (e.Kind is InboundKind.MapLoginAck or InboundKind.MapLink) _mapBefore = e.Kind == InboundKind.MapLink ? (int)e.A : ctx.World.Map.MapId;
     }
 }
+
+/// <summary>Instance doors in the paths: a door's state (BUILDDOOR names its block in the map's .sbi, DOORSTATE switches
+/// it) selects that door's bitmap; the tiles it blocks beyond the map's own blocks go into the bot's nav overlay, so
+/// paths go around a closed door and through an open one.</summary>
+public sealed class DoorLearner : ILearner
+{
+    private readonly Dictionary<int, string> _block = new();
+
+    /// <inheritdoc/>
+    public void Observe(in InboundEvent e, AgentContext ctx)
+    {
+        if (e.Kind == InboundKind.MapLink || e.Kind == InboundKind.MapLoginAck) { _block.Clear(); return; }
+        if (e.Kind != InboundKind.Scenario || e.A is not (9 or 1000)) return;
+        if (e.A == 1000 && e.Text is { Length: > 0 } b) _block[e.Handle] = b;
+        if (!_block.TryGetValue(e.Handle, out var name)) return;
+        var map = ctx.World.Map.MapName;
+        MapDoor? door = null;
+        foreach (var d in ctx.Nav.Doors(map)) if (string.Equals(d.Name, name, StringComparison.OrdinalIgnoreCase)) { door = d; break; }
+        if (door is null) { ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"door {e.Handle} '{name}' is not in {map}'s door file: paths ignore it"); return; }
+        var layer = ctx.Nav.Layer(map);
+        var tiles = new HashSet<long>();
+        var state = (int)e.B;
+        for (var ty = door.Y0; ty <= door.Y1; ty++)
+            for (var tx = door.X0; tx <= door.X1; tx++)
+                if (door.Blocked(state, tx, ty) && (layer is null || !layer.Blocked(tx, ty))) tiles.Add(((long)tx << 32) | (uint)ty);
+        ctx.Overlay.SetDoorTiles(name, tiles);
+        ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"door '{name}' state {state}: {tiles.Count} tiles blocked beyond the map's own");
+    }
+}

@@ -48,4 +48,63 @@ public class ScenarioTests
         Assert.True(areas[1].Contains(3404 + 4000, 6403 - 3000));
         Assert.False(areas[1].Contains(3404 + 4700, 6403));
     }
+
+    // one door "Door02" over tiles x 8..23, y 4..5: state 0 blocks every tile, state 1 blocks nothing
+    private static byte[] SbiFile()
+    {
+        var b = new List<byte>(BitConverter.GetBytes(1u));
+        var name = new byte[32]; "Door02"u8.ToArray().CopyTo(name, 0); b.AddRange(name);
+        foreach (var v in new uint[] { 8, 4, 23, 5, 4, 0 }) b.AddRange(BitConverter.GetBytes(v));
+        b.AddRange(new byte[] { 0xFF, 0xFF, 0xFF, 0xFF });   // state 0: 2 bytes x 2 rows
+        b.AddRange(new byte[] { 0, 0, 0, 0 });               // state 1
+        return b.ToArray();
+    }
+
+    [Fact]
+    public void Door_files_are_read_and_a_closed_door_blocks_its_tiles_in_the_paths()
+    {
+        var doors = MapDoorFile.Parse(SbiFile());
+        var d = Assert.Single(doors);
+        Assert.Equal(("Door02", 8, 4, 23, 5, 2), (d.Name, d.X0, d.Y0, d.X1, d.Y1, d.RowBytes));
+        Assert.True(d.Blocked(0, 15, 5));
+        Assert.False(d.Blocked(1, 15, 5));
+        Assert.False(d.Blocked(0, 24, 5));
+        var file = Path.Combine(Path.GetTempPath(), "TestMap.sbi");
+        File.WriteAllBytes(file, SbiFile());
+        try
+        {
+            using var t = new TestBot();
+            t.Ctx.Learners.Add(new DoorLearner());
+            t.Ev(InboundKind.SelfBase, a: 10, b: 0, c: 100, text: "TestMap");
+            t.Tick(2);
+            void Door(long a, long state, string? block)
+            {
+                var e = InboundEvent.Of(InboundKind.Scenario, 0, t.Clock.NowMs); e.A = a; e.Handle = 0x509F; e.B = state; e.Text = block;
+                t.In.TryWrite(e);
+                t.Tick();
+            }
+            Door(1000, 0, "Door02");   // BUILDDOOR, closed
+            Assert.True(t.Ctx.Overlay.Blocked(10, 4, t.Clock.NowMs));
+            Assert.Equal(32, t.Ctx.Overlay.Count);
+            Door(9, 1, null);          // DOORSTATE open
+            Assert.False(t.Ctx.Overlay.Blocked(10, 4, t.Clock.NowMs));
+            Assert.Equal(0, t.Ctx.Overlay.Count);
+        }
+        finally { File.Delete(file); }
+    }
+
+    [Fact]
+    public void A_path_goes_around_a_closed_door_and_through_it_when_open()
+    {
+        // a wall at x = 30 with two gaps: a near one (y 10..13) and a far one (y 50..63); the door closes the near one
+        var layer = BlockLayer.FromBits("t", 64, 64, (x, y) => x == 30 && !(y is >= 10 and <= 13) && y < 50);
+        var mesh = NavMesh.Build(layer);
+        bool Door(int x, int y) => x is >= 29 and <= 31 && y is >= 10 and <= 13;
+        var open = PathSearch.Find(mesh, 10 * 6.25, 11 * 6.25, 50 * 6.25, 11 * 6.25);
+        var closed = PathSearch.Find(mesh, 10 * 6.25, 11 * 6.25, 50 * 6.25, 11 * 6.25, Door);
+        Assert.Equal(PathStatus.Ready, open.Status);
+        Assert.DoesNotContain(open.Waypoints, p => p.Y / 6.25 >= 49);    // straight through the near gap
+        Assert.Equal(PathStatus.Ready, closed.Status);
+        Assert.Contains(closed.Waypoints, p => p.Y / 6.25 >= 49);        // around by the far gap
+    }
 }

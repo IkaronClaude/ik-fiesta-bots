@@ -309,6 +309,7 @@ public sealed class BotRuntime
         ctx.World.Self.Seed(login.CharacterName, login.ClassId, _h.Data.ClassFamily(login.ClassId), login.Level);
         ctx.Learners.Add(new AggroLearner());
         ctx.Learners.Add(new AtlasLearner());
+        ctx.Learners.Add(new DoorLearner());
         var agent = new BotAgent(ctx, inbound, outbound, new ControlQueue(), null, _h.Clock);
         agent.OnPublish = OnPublish;
         agent.Lifecycle = cmd => { if (cmd.Kind == ControlKind.Relog) _ = RelogAsync(); else _ = StopAsync(true); };
