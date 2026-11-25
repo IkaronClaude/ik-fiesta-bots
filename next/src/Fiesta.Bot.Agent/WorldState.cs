@@ -1054,9 +1054,9 @@ public sealed class WorldState
                 Bag.StorageCen = e.A; Bag.StoragePages = (int)e.B; Bag.StorageOpenAt = now;
                 Bump(WorldComponent.Bag);
                 break;
-            case InboundKind.StorageFail:
-                Bag.StorageOpenAt = -1;
-                break;
+            // MENU_OPENSTORAGE_FAIL {01 08} arrives on the 2026 wire right after a successful storage window (and once more
+            // later on its own): not a refusal there, so it does not close the window here; a procedure still waiting for
+            // the window fails on it
             case InboundKind.TradeEvent:
             {
                 var was = Trade.Phase;

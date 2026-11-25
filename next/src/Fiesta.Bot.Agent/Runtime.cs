@@ -551,7 +551,7 @@ public sealed class BotAgent
                 log.Log(LogCategory.Item, LogLevel.Info, $"mastery of skill {e.A}: {e.B}");
                 break;
             case InboundKind.StorageFail:
-                log.Log(LogCategory.Item, LogLevel.Note, $"STORAGE window refused 0x{e.A:X4}");
+                log.Log(LogCategory.Item, LogLevel.Note, $"MENU_OPENSTORAGE_FAIL 0x{e.A:X4} (storage window {(Context.World.Bag.StorageOpenAt >= 0 ? "open" : "not open")})");
                 break;
             case InboundKind.RelocAck:
                 log.Log(LogCategory.Item, e.A == 0x0241 ? LogLevel.Info : LogLevel.Note, $"RELOC_ACK 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
