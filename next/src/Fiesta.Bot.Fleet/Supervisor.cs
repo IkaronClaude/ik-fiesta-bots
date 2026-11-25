@@ -172,7 +172,16 @@ public sealed class BotRuntime
             if (_loop is { IsCompleted: false }) return;
             _stopRequested = false;
             _cts = new CancellationTokenSource();
-            _loop = Task.Run(() => LoopAsync(_cts.Token));
+            var token = _cts.Token;
+            _loop = Task.Run(async () =>
+            {
+                try { await LoopAsync(token); }
+                catch (Exception e)
+                {
+                    Log.Text(LogCategory.Core, LogLevel.Crit, $"lifecycle loop died: {e.GetType().Name}: {e.Message}");
+                    LastError = e.Message; State = SupervisorState.Failed;
+                }
+            });
         }
     }
     private readonly object _startGate = new();
@@ -268,7 +277,13 @@ public sealed class BotRuntime
                 Log.Text(LogCategory.Net, LogLevel.Crit, $"session failed: {e.Message}");
                 Alert?.Invoke(this, "disconnect", e.Message);
             }
-            finally { EndSession(); }
+            finally
+            {
+                // nothing may escape here: an exception would end the lifecycle loop silently and leave the bot
+                // "in zone" without a session (seen live once the avoid list was saved while a tick still wrote it)
+                try { EndSession(); }
+                catch (Exception e) { Log.Text(LogCategory.Core, LogLevel.Crit, $"session teardown failed: {e.GetType().Name}: {e.Message}"); Agent = null; }
+            }
             if (_stopRequested || ct.IsCancellationRequested) break;
             if (_relogRequested) { _relogRequested = false; continue; }
             State = SupervisorState.Reconnecting;
@@ -357,7 +372,8 @@ public sealed class BotRuntime
             var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); var nowMs = _h.Clock.NowMs;
             File.WriteAllLines(AvoidFile, ctx.RefusedMaps.Where(kv => kv.Value > nowMs).Select(kv => $"{kv.Key}	{nowUnix + (kv.Value - nowMs)}"));
         }
-        catch (IOException e) { Log.Text(LogCategory.Core, LogLevel.Note, $"avoid list not saved: {e.Message}"); }
+        catch (Exception e) when (e is IOException or InvalidOperationException or UnauthorizedAccessException)
+        { Log.Text(LogCategory.Core, LogLevel.Note, $"avoid list not saved: {e.Message}"); }
     }
 
     private void EndSession()
