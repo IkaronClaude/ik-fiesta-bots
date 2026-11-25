@@ -328,7 +328,17 @@ public sealed unsafe class NativeLuaEngine : ILuaEngine
             case null: Lua54.lua_pushnil(L); break;
             case JsonObject o:
                 Lua54.lua_createtable(L, 0, o.Count);
-                if (depth < 8) foreach (var kv in o) { Push(kv.Value, depth + 1); LuaRegistrar.SetField(L, -2, kv.Key); }
+                // integer keys were written as their decimal text (JSON has string keys only): restore them as integers,
+                // or `t[20000]` misses after a resume / hot swap (skip lists, refused books, unstorable items...)
+                if (depth < 8)
+                    foreach (var kv in o)
+                    {
+                        if (long.TryParse(kv.Key, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out var ik) && ik.ToString(System.Globalization.CultureInfo.InvariantCulture) == kv.Key)
+                        {
+                            Lua54.lua_pushinteger(L, ik); Push(kv.Value, depth + 1); Lua54.lua_settable(L, -3);
+                        }
+                        else { Push(kv.Value, depth + 1); LuaRegistrar.SetField(L, -2, kv.Key); }
+                    }
                 break;
             case JsonArray a:
                 Lua54.lua_createtable(L, a.Count, 0);

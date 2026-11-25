@@ -41,4 +41,28 @@ public class BlackboardTests
         t.Tick(10);
         Assert.Contains("\"got\":7", b.BlackboardJson().ToJsonString());
     }
+
+    [Fact]
+    public void Numeric_keys_of_a_blackboard_table_survive_a_hot_swap()
+    {
+        var mods = new Dictionary<string, string>
+        {
+            ["brain/t/m"] = """
+                local M = {}
+                function M.write() if type(bb.bot.t) ~= "table" then bb.bot.t = {} end bb.bot.t[20000] = 7 end
+                function M.read() bb.bot.got = bb.bot.t[20000] or -1 end
+                return M
+                """,
+        };
+        using var t = new TestBot();
+        var b = t.Load(Brain, mods);
+        t.Tick(3);
+        var cp = b.Checkpoint();
+        // a new instance restores bb.bot from its JSON (what a resume and a hot swap do), then only reads
+        var mods2 = new Dictionary<string, string> { ["brain/t/m"] = mods["brain/t/m"].Replace("bb.bot.t[20000] = 7", "") };
+        var b2 = t.Load(Brain, mods2);
+        b2.Resume(cp);
+        t.Tick(10);
+        Assert.Contains("\"got\":7", b2.BlackboardJson().ToJsonString());
+    }
 }
