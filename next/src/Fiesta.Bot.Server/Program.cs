@@ -67,7 +67,13 @@ api.MapObservationEndpoints();
 api.MapGameStaticEndpoints();
 app.MapWebSocketHub();
 app.MapUi();
-app.Lifetime.ApplicationStopping.Register(() => supervisor.DrainAsync().Wait(TimeSpan.FromSeconds(20)));
+app.Lifetime.ApplicationStopping.Register(() =>
+{
+    app.Services.GetRequiredService<WebSocketHub>().HostStopping();
+    supervisor.DrainAsync().Wait(TimeSpan.FromSeconds(20));
+});
+// graceful stop for restarts: viewers are told "host restarting", bots log out cleanly
+api.MapPost("/host/shutdown", (IHostApplicationLifetime life) => { _ = Task.Run(async () => { await Task.Delay(100); life.StopApplication(); }); return Results.Accepted(); });
 app.Lifetime.ApplicationStopped.Register(() => host.DisposeAsync().AsTask().Wait(TimeSpan.FromSeconds(5)));
 app.Run();
 return 0;

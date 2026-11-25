@@ -44,6 +44,23 @@ public sealed class WebSocketHub
     }
     private readonly ConcurrentDictionary<string, GameStream> _games = new();
 
+    /// <summary>Tell the viewers the host is going down (before the bots are logged out), then give the writers a moment.</summary>
+    public void HostStopping()
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        foreach (var g in _games.Values) g.HostStopping(now);
+        foreach (var c in _conns.Keys) c.Out.Writer.TryWrite("{\"topic\":\"host\",\"data\":{\"state\":\"restarting\"}}");
+        Thread.Sleep(200);
+    }
+
+    /// <summary>Why a bot has no game view: null = in the world.</summary>
+    public static string? GameOffReason(SupervisorState? s) => s switch
+    {
+        SupervisorState.InZone or SupervisorState.Handoff or SupervisorState.Paused => null,
+        SupervisorState.LoggingIn or SupervisorState.World or SupervisorState.Reconnecting => "disconnected",
+        _ => "left-world",
+    };
+
     /// <summary>The game streams (for status / measurement).</summary>
     public IEnumerable<GameStream> GameStreams => _games.Values;
     private readonly ConcurrentDictionary<Conn, byte> _conns = new();
@@ -137,7 +154,7 @@ public sealed class WebSocketHub
             foreach (var b in _sup.Bots) Hook(b);
             var unix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             foreach (var g in _games.Values)
-                try { g.Pump(unix, _sup.Get(g.Bot)?.State == SupervisorState.InZone); }
+                try { g.Pump(unix, GameOffReason(_sup.Get(g.Bot)?.State)); }
                 catch (Exception e) { Console.Error.WriteLine($"game stream {g.Bot}: {e}"); }
             var now = Environment.TickCount64;
             JsonNode? fleet = null;

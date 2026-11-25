@@ -14,6 +14,8 @@ public sealed class GameViewer(Func<string, bool> send)
     public long Seq;
     /// <summary>Needs a snapshot before any delta.</summary>
     public bool NeedSnap = true;
+    /// <summary>This viewer was told the bot is out of the world (not repeated).</summary>
+    public bool ToldOff;
 }
 
 /// <summary>The `game` topic of one bot (API_SPEC 14.1): takes the tick's captures, keeps the state last sent, and
@@ -30,7 +32,8 @@ public sealed class GameStream(string bot, GameTap tap)
     private readonly List<GameViewer> _viewers = new();
     private readonly ArrayBufferWriter<byte> _buf = new(4096);
     // the state the viewers have
-    private bool _has, _off = true;
+    private bool _has;
+    private string? _offReason;
     private int _session = -1, _mapId = int.MinValue, _target = -1, _x, _y, _bagSize = -1, _bagPages = -1;
     private readonly Dictionary<string, long> _self = new();
     private readonly long[] _stats = new long[16];
@@ -60,28 +63,32 @@ public sealed class GameStream(string bot, GameTap tap)
     public void Remove(GameViewer v) { lock (_viewers) if (_viewers.Remove(v)) Interlocked.Decrement(ref Tap.Viewers); }
 
     /// <summary>One pump step (pump thread): read the newest capture, send snapshots / deltas / keep-alives.</summary>
-    public void Pump(long nowUnixMs, bool botInWorld)
+    public void Pump(long nowUnixMs, string? offReason)
     {
         GameViewer[] viewers;
         lock (_viewers) { if (_viewers.Count == 0) return; viewers = _viewers.ToArray(); }
         var cap = Tap.TakeNewest();
         string? delta = null;
-        if (cap is not null)
+        if (offReason is not null)
         {
+            // the bot is really out of the world (stopped, disconnected, reconnecting): say so once, with the reason
+            if (_offReason != offReason) { _offReason = offReason; _has = false; Broadcast(viewers, "off", offReason, nowUnixMs); }
+        }
+        else if (cap is not null && cap.InWorld)
+        {
+            // a capture between two zone servers (map handoff) has InWorld false: skipped, the view just waits
             _lastNow = cap.Now;
-            if (!cap.InWorld) { if (!_off) { _off = true; _has = false; Broadcast(viewers, "off", null, cap.Now); } }
-            else if (!_has || cap.Session != _session) { Load(cap); _has = true; _off = false; foreach (var v in viewers) v.NeedSnap = true; }
+            if (!_has || cap.Session != _session) { Load(cap); _has = true; _offReason = null; foreach (var v in viewers) v.NeedSnap = true; }
             else delta = Diff(cap);
         }
-        else if (!botInWorld && !_off) { _off = true; _has = false; Broadcast(viewers, "off", null, nowUnixMs); }
 
         foreach (var v in viewers)
         {
             if (v.NeedSnap)
             {
                 if (_has) { v.NeedSnap = false; Send(v, "snap", Snapshot(), _lastNow); }
-                else if (_off && v.Seq == 0) Send(v, "off", null, nowUnixMs);
-                continue;
+                else if (_offReason is not null && !v.ToldOff) { v.ToldOff = true; Send(v, "off", _offReason, nowUnixMs); }
+                continue;   // in the world but nothing captured yet: the snapshot follows within 100 ms
             }
             if (delta is not null) Send(v, "d", delta, _lastNow);
         }
@@ -89,9 +96,21 @@ public sealed class GameStream(string bot, GameTap tap)
         else if (_has && nowUnixMs - _lastMsgAt >= KeepAliveMs) { _lastMsgAt = nowUnixMs; Broadcast(viewers, "d", "[]", nowUnixMs); }
     }
 
+    /// <summary>The host is shutting down: tell every viewer (any thread; the pump stops with the host).</summary>
+    public void HostStopping(long nowUnixMs)
+    {
+        GameViewer[] viewers;
+        lock (_viewers) viewers = _viewers.ToArray();
+        foreach (var v in viewers) Send(v, "off", "host-stopping", nowUnixMs);
+    }
+
     private void Broadcast(GameViewer[] viewers, string t, string? body, long now)
     {
-        foreach (var v in viewers) if (!v.NeedSnap || t == "off") Send(v, t, body, now);
+        foreach (var v in viewers)
+        {
+            if (t == "off") { v.ToldOff = true; v.NeedSnap = true; Send(v, t, body, now); }
+            else if (!v.NeedSnap) Send(v, t, body, now);
+        }
     }
 
     private void Send(GameViewer v, string t, string? body, long now)
@@ -99,7 +118,8 @@ public sealed class GameStream(string bot, GameTap tap)
         var sb = new StringBuilder(64 + (body?.Length ?? 0));
         sb.Append("{\"topic\":\"game\",\"bot\":").Append(JsonSerializer.Serialize(Bot)).Append(",\"t\":\"").Append(t)
           .Append("\",\"seq\":").Append(++v.Seq).Append(",\"now\":").Append(now);
-        if (body is not null) sb.Append(t == "snap" ? ",\"data\":" : ",\"ops\":").Append(body);
+        if (t == "off") sb.Append(",\"reason\":\"").Append(body ?? "left-world").Append('"');
+        else if (body is not null) sb.Append(t == "snap" ? ",\"data\":" : ",\"ops\":").Append(body);
         sb.Append('}');
         var s = sb.ToString();
         if (v.Send(s)) { BytesSent += s.Length; MessagesSent++; }

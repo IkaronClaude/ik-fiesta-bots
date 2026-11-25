@@ -941,7 +941,7 @@ Server -> client (this topic does not use the RFC 6902 envelope of U3; it has it
 |---|---|
 | `{"topic":"game","bot","t":"snap","seq":n,"now":ms,"data":GameSnapshot}` | full state; the first message after a subscribe, and again after a map change into a new session |
 | `{"topic":"game","bot","t":"d","seq":n,"now":ms,"ops":[op...]}` | changes since `seq - 1`; empty `ops` = keep-alive (every 5 s, carries `now` for clock sync) |
-| `{"topic":"game","bot","t":"off","seq":n,"now":ms}` | the bot left the world (offline, reconnecting); the view keeps its last state greyed; a `snap` follows when it is back |
+| `{"topic":"game","bot","t":"off","seq":n,"now":ms,"reason":r}` | the view has no live state; sent once per outage, only when the bot is really out of the world: `reason` `"left-world"` = stopped / offline, `"disconnected"` = the connection dropped and the bot is logging in again, `"host-stopping"` = the host is restarting (the WebSocket closes next; reconnect and re-subscribe). A map change through a gate (a zone handoff) is NOT an outage: no `off`, the next `snap` / `map` op follows. A viewer that subscribes while the bot is in the world gets no `off` first, only the `snap` (within 100 ms). The view keeps its last state greyed; a `snap` follows when the bot is back |
 
 `seq` increases by one per message of this bot's stream. A gap (a dropped message) means: re-subscribe.
 `now` and every time in the stream are the host's clock in unix milliseconds; the browser keeps
@@ -1010,6 +1010,9 @@ Positions are world units rounded to integers. World Y grows upward (north on th
 Names: the US client data carries some untranslated names as question marks (`"?? ??"`, e.g. internal skills
 like WorldLink_N); the static routes then return the InxName as `name`. Some skills (event / item-use skills)
 have no icon in the client data (`IconFile` "-"), so `icon` is false and the tile shows text.
+
+Before a host restart every connection also gets `{"topic":"host","data":{"state":"restarting"}}` (not tied to a
+subscription). `POST /api/v3/host/shutdown` stops the host gracefully (viewers notified, bots logged out cleanly).
 
 ### 14.2 Static data (cacheable)
 

@@ -156,11 +156,17 @@ public sealed class BotRuntime
     /// <summary>Start the lifecycle loop (no-op when running).</summary>
     public void Start()
     {
-        if (_loop is { IsCompleted: false }) return;
-        _stopRequested = false;
-        _cts = new CancellationTokenSource();
-        _loop = Task.Run(() => LoopAsync(_cts.Token));
+        // one lifecycle loop per bot: two concurrent starts (autostart + an operator start) used to run two loops that
+        // logged the same account in turn and kicked each other in a reconnect loop
+        lock (_startGate)
+        {
+            if (_loop is { IsCompleted: false }) return;
+            _stopRequested = false;
+            _cts = new CancellationTokenSource();
+            _loop = Task.Run(() => LoopAsync(_cts.Token));
+        }
     }
+    private readonly object _startGate = new();
 
     /// <summary>Stop: brain stop, flee/stop moving, clean logout.</summary>
     public async Task StopAsync(bool logout)
