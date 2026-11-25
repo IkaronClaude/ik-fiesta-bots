@@ -532,6 +532,18 @@ public sealed class BotAgent
             case InboundKind.BuySellAck:
                 log.Log(LogCategory.Item, LogLevel.Info, $"{(e.B == 0 ? "BUY" : "SELL")}_ACK 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
                 break;
+            case InboundKind.StorageFail:
+                log.Log(LogCategory.Item, LogLevel.Note, $"STORAGE window refused 0x{e.A:X4}");
+                break;
+            case InboundKind.RelocAck:
+                log.Log(LogCategory.Item, e.A == 0x0241 ? LogLevel.Info : LogLevel.Note, $"RELOC_ACK 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
+                break;
+            case InboundKind.ItemCell when e.A == ItemDecoder.StorageBox && e.B >= 0 && e.Opcode != 0x3C08 && log.IsEnabled(LogCategory.Item, LogLevel.Info):
+                log.Log(LogCategory.Item, LogLevel.Info, $"storage cell {e.B} <- item {e.C} x{e.X}");
+                break;
+            case InboundKind.ItemUseResult when log.IsEnabled(LogCategory.Item, LogLevel.Info):
+                log.Log(LogCategory.Item, LogLevel.Info, $"ITEM_USE_ACK 0x{e.A:X4} item {e.B} {ErrorCodes.Describe((ushort)e.A)}");
+                break;
             case InboundKind.CastFail when log.IsEnabled(LogCategory.Combat, LogLevel.Info):
                 log.Log(LogCategory.Combat, LogLevel.Info, $"cast refused 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
                 break;

@@ -149,6 +149,13 @@ public enum InboundKind : ushort
     StatPointSpent,
     /// <summary>A stat point refused (CHAR_STAT_INCPOINTFAIL_ACK 0x1061): A error code.</summary>
     StatPointRefused,
+    /// <summary>The storage keeper's window (MENU_OPENSTORAGE_CMD): A money held in storage, B pages, C current page,
+    /// X item count. The items follow as <see cref="ItemCell"/> events of the storage box, after a clear of that box.</summary>
+    StorageList,
+    /// <summary>The storage window was refused (MENU_OPENSTORAGE_FAIL_CMD): A error code.</summary>
+    StorageFail,
+    /// <summary>The answer to an item move between boxes (ITEM_RELOC_ACK): A code (0x0241 moved).</summary>
+    RelocAck,
     /// <summary>Not decoded but passed (raw logging).</summary>
     Raw,
 }
@@ -568,7 +575,10 @@ public sealed class ItemDecoder : IPacketDecoder
 
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x1047, 0x3001, 0x3002, 0x3016, 0x3004, 0x3005, 0x5003, 0x5004, 0x5005, 0x5006, 0x5008, 0x500A, 0x300A, 0x0700];
+        [0x1047, 0x3001, 0x3002, 0x3016, 0x3004, 0x3005, 0x5003, 0x5004, 0x5005, 0x5006, 0x5008, 0x500A, 0x300A, 0x0700, 0x3C07, 0x3C08, 0x300C];
+
+    /// <summary>The storage box id in item locations.</summary>
+    public const int StorageBox = 6;
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -579,23 +589,28 @@ public sealed class ItemDecoder : IPacketDecoder
             case 0x1047:   // CLIENT_ITEM (canonical) {count u8, box u8, flag u8, records {datasize, location u16, itemid u16, attr..}}
             {
                 if (p.Length < 3) return;
-                int n = p[0], box = p[1], off = 3;
                 // an empty-box marker so a fresh login clears the box first
-                var clear = InboundEvent.Of(InboundKind.ItemCell, op, at); clear.A = box; clear.B = -1; clear.C = -1;
+                var clear = InboundEvent.Of(InboundKind.ItemCell, op, at); clear.A = p[1]; clear.B = -1; clear.C = -1;
                 sink.TryWrite(clear);
-                for (var i = 0; i < n && off + 5 <= p.Length; i++)
-                {
-                    int ds = p[off];
-                    var c = InboundEvent.Of(InboundKind.ItemCell, op, at);
-                    var loc = Rd.U16(p, off + 1);
-                    c.A = loc >> 10; c.B = loc & 0x3FF; c.C = Rd.U16(p, off + 3);
-                    if (c.C == 0xFFFF) c.C = -1;
-                    c.X = (uint)Lot(p.Slice(off + 5, Math.Max(0, Math.Min(ds - 4, p.Length - off - 5))));
-                    sink.TryWrite(c);
-                    off += 1 + ds;
-                }
+                Records(op, p, 3, p[0], at, sink);
                 return;
             }
+            case 0x3C08:   // MENU_OPENSTORAGE_CMD (canonical) {cen u64, maxpage u8, curpage u8, opentype u8, count u8, records}
+            {
+                if (p.Length < 12) return;
+                e.Kind = InboundKind.StorageList; e.A = Rd.U64(p, 0); e.B = p[8]; e.C = p[9]; e.X = p[11];
+                sink.TryWrite(e);
+                var clear = InboundEvent.Of(InboundKind.ItemCell, op, at); clear.A = StorageBox; clear.B = -1; clear.C = -1;
+                sink.TryWrite(clear);
+                Records(op, p, 12, p[11], at, sink);
+                return;
+            }
+            case 0x3C07:   // MENU_OPENSTORAGE_FAIL_CMD {err u16}
+                e.Kind = InboundKind.StorageFail; e.A = p.Length >= 2 ? Rd.U16(p, 0) : p.Length == 1 ? p[0] : -1;
+                break;
+            case 0x300C:   // ITEM_RELOC_ACK {err u16}
+                e.Kind = InboundKind.RelocAck; e.A = p.Length >= 2 ? Rd.U16(p, 0) : -1;
+                break;
             case 0x3001:   // CELLCHANGE {exchange, location u16, itemid u16, attr}
             {
                 if (p.Length < 6) return;
@@ -631,6 +646,23 @@ public sealed class ItemDecoder : IPacketDecoder
             default: return;
         }
         sink.TryWrite(e);
+    }
+
+    // item records {datasize, location u16, itemid u16, attr}: datasize counts location + item, not itself
+    private static void Records(ushort op, ReadOnlySpan<byte> p, int off, int n, long at, IEventSink sink)
+    {
+        for (var i = 0; i < n && off + 5 <= p.Length; i++)
+        {
+            int ds = p[off];
+            var c = InboundEvent.Of(InboundKind.ItemCell, op, at);
+            var loc = Rd.U16(p, off + 1);
+            c.A = loc >> 10; c.B = loc & 0x3FF; c.C = Rd.U16(p, off + 3);
+            if (c.C == 0xFFFF) c.C = -1;
+            c.X = (uint)Lot(p.Slice(off + 5, Math.Max(0, Math.Min(ds - 4, p.Length - off - 5))));
+            sink.TryWrite(c);
+            if (ds == 0) return;
+            off += 1 + ds;
+        }
     }
 
     // the lot is the attribute byte(s) right after the item id for stackables: 1 byte or 2 bytes; gear has more
@@ -819,7 +851,7 @@ public static class IntentEncoder
         OpChangeMode = 0x2008, OpCastObj = 0x2440, OpCastFld = 0x2441, OpBashStart = 0x242B, OpBashStop = 0x2432,
         OpItemUse = 0x3015, OpBuy = 0x3003, OpSell = 0x3006, OpNpcClick = 0x200A, OpChat = 0x2001, OpPick = 0x3009,
         OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpQuestScriptAck = 0x4402,
-        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411,
+        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B,
         OpLoginComplete = 0x1803;
 
     private static Intent Make(ushort op, int action, ReadOnlySpan<byte> payload)
@@ -911,6 +943,13 @@ public static class IntentEncoder
         b[1] = (byte)n;
         for (var i = 0; i < n; i++) b[2 + i] = (byte)text[i];
         return new Intent { Opcode = OpChat, ActionId = actionId, Heap = b };
+    }
+    /// <summary>ITEM_RELOC_REQ {from u16, to u16}: item locations ((box &lt;&lt; 10) | slot).</summary>
+    public static Intent Reloc(ushort from, ushort to, int actionId)
+    {
+        Span<byte> b = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt16LittleEndian(b, from); BinaryPrimitives.WriteUInt16LittleEndian(b[2..], to);
+        return Make(OpReloc, actionId, b);
     }
     /// <summary>Raw opcode + payload.</summary>
     public static Intent Raw(ushort opcode, ReadOnlySpan<byte> payload, int actionId) => Make(opcode, actionId, payload);

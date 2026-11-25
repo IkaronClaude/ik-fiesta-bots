@@ -246,7 +246,11 @@ GROUND, SELF, PARTY, MOVING, DOT, SLOW, DISPEL, REVIVE, TOGGLE`.
 | `items.class(itemId)` / `items.levelReq(itemId)` | integer | O(1) | 0 | client ItemInfo |
 | `items.sellPrice(itemId)` | integer | O(1) | 0 | |
 | `items.isQuestItem(itemId)` | boolean | O(1) | 0 | |
-| `items.bestPotion(deficit, kindMask)` | slot | O(n) cached | 0 | smallest potion that covers the deficit |
+| `items.bestPotion(deficit, kind)` | slot | O(n) | 0 | potion of a kind (0 HP, 1 SP) to drink: the smallest that covers the deficit, else the largest |
+| `items.potions(kind)` | integer | O(n) | 0 | potions of a kind we may drink now (count) |
+| `items.isPotion(itemId, kind)` | boolean | O(1) | 0 | ItemUseSkill `UsePotion`, an instant restore of the kind (client ItemUseEffect), our level and class |
+| `items.useEffect(itemId)` | kind, value | O(1) | 0 | client ItemUseEffect UseEffectA / UseValueA (`-1, 0` none) |
+| `items.name(itemId)` | string | O(1) | lua-str | for logs |
 | `items.junkValue()` | integer | cached | 0 | what selling all junk would fetch |
 | `items.equipUpgrade()` | slot | cached | 0 | best bag item that improves an equipment slot |
 | `items.equipped(equipSlot)` | itemId | O(1) | 0 | |
@@ -305,7 +309,13 @@ TELEPORT, GATE`.
 | `npc.shopHas(itemId)` | boolean | O(1) | 0 | currently open shop |
 | `npc.buy(itemId, lot)` / `npc.sell(slot, lot)` | action | Npc | |
 | `npc.talk(h, questId)` | action | Npc | QuestDialogueProcedure (accept or hand in) |
-| `npc.storage(h)` | action | Npc | StorageProcedure |
+| `npc.storage(h [, reply])` | action | Npc | StorageProcedure: click, the keeper's menu answer, resolves when the storage window (MENU_OPENSTORAGE) arrived; fails on OPENSTORAGE_FAIL or when the NPC opens a shop instead |
+| `npc.storageOpen()` | boolean | O(1) | 0 | the storage window is open (no other NPC window or map change since) |
+| `npc.storageCells()` | iter of cell | O(n) | iter | occupied storage cells (last window + moves since) |
+| `npc.storageAt(cell)` | itemId, lot | O(1) | 0 | `-1, 0` empty |
+| `npc.storageFree([from])` | cell | O(n) | 0 | first empty cell at or after `from`; capacity is the server's (a cell beyond it is refused) |
+| `npc.storageInfo()` | pages, cen | O(1) | 0 | from the last window |
+| `npc.deposit(bagSlot, cell)` / `npc.withdraw(cell, bagSlot)` | action | Npc | ITEM_RELOC_REQ; acked when the source cell changes, refused with the RELOC_ACK code (`0x024A` = the item cannot go there) |
 
 ### 2.11 `social` (14)
 

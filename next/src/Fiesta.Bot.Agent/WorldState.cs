@@ -373,7 +373,7 @@ public sealed class Inventory
     private int _used;
 
     /// <summary>Create.</summary>
-    public Inventory() { Array.Fill(_bag, -1); Array.Fill(_equip, -1); }
+    public Inventory() { Array.Fill(_bag, -1); Array.Fill(_equip, -1); Array.Fill(_store, -1); }
     /// <summary>Bag pages (the base bag is two pages; expansions arrive as charged buffs, not decoded yet).</summary>
     public int Pages { get; set; } = 2;
     /// <summary>Item id and lot at a slot ((-1,0) empty; item id 0 is real).</summary>
@@ -393,16 +393,41 @@ public sealed class Inventory
     /// <summary>HP/SP soul stone reserves (mirrors SelfState).</summary>
     public (int Hp, int Sp) Stones { get; internal set; }
 
+    // ---- personal storage (box 6), as of the keeper's window and the cell changes since
+    private readonly int[] _store = new int[StoreCells], _storeLot = new int[StoreCells];
+    /// <summary>Storage cells addressable in an item location (10 bits).</summary>
+    public const int StoreCells = 1024;
+    /// <summary>Storage cell contents ((-1,0) empty or never seen).</summary>
+    public (int ItemId, int Lot) StoreAt(int cell) => (uint)cell < StoreCells && _store[cell] >= 0 ? (_store[cell], _storeLot[cell]) : (-1, 0);
+    /// <summary>Money held in storage (last window).</summary>
+    public long StorageCen { get; internal set; }
+    /// <summary>Storage pages the keeper's window reported (0 = never opened).</summary>
+    public int StoragePages { get; internal set; }
+    /// <summary>When the storage window opened (ms), -1 = not open (closed by another window, a map change).</summary>
+    public long StorageOpenAt { get; internal set; } = -1;
+    /// <summary>Occupied storage cells.</summary>
+    public int StoreUsed { get; private set; }
+
     internal void ClearBox(int box)
     {
         if (box == 9) { Array.Fill(_bag, -1); Array.Clear(_lot); _count.Clear(); _used = 0; }
         else if (box == 8) Array.Fill(_equip, -1);
+        else if (box == 6) { Array.Fill(_store, -1); Array.Clear(_storeLot); StoreUsed = 0; }
     }
 
     /// <summary>Set a cell; returns (old item, old lot).</summary>
     internal (int Item, int Lot) Set(int box, int slot, int item, int lot)
     {
         if (box == 8) { if ((uint)slot < 64) { var o = _equip[slot]; _equip[slot] = item; return (o, 1); } return (-1, 0); }
+        if (box == 6)
+        {
+            if ((uint)slot >= StoreCells) return (-1, 0);
+            var o = (_store[slot], _storeLot[slot]);
+            if (o.Item1 >= 0) StoreUsed--;
+            _store[slot] = item; _storeLot[slot] = item >= 0 ? Math.Max(1, lot) : 0;
+            if (item >= 0) StoreUsed++;
+            return o;
+        }
         if (box != 9 || (uint)slot >= 256) return (-1, 0);
         var old = (_bag[slot], _lot[slot]);
         if (old.Item1 >= 0) { _used--; var c = _count[old.Item1] - old.Item2; if (c <= 0) _count.Remove(old.Item1); else _count[old.Item1] = c; }
@@ -905,6 +930,7 @@ public sealed class WorldState
             {
                 var prev = Map.MapId;
                 Entities.Clear(); Grid.Clear();
+                Bag.StorageOpenAt = -1;
                 var name = Data?.Map((int)e.A)?.MapName ?? "";
                 SetMap((int)e.A, name);
                 Self.ServerPos = (e.X, e.Y); Self.Pos = (e.X, e.Y);
@@ -952,6 +978,13 @@ public sealed class WorldState
             case InboundKind.StatPointSpent:
                 if (Self.StatPoints > 0) Self.StatPoints--;   // the client counts the point spent (no REMAINPOINT follows)
                 Bump(WorldComponent.Self);
+                break;
+            case InboundKind.StorageList:
+                Bag.StorageCen = e.A; Bag.StoragePages = (int)e.B; Bag.StorageOpenAt = now;
+                Bump(WorldComponent.Bag);
+                break;
+            case InboundKind.StorageFail:
+                Bag.StorageOpenAt = -1;
                 break;
             case InboundKind.StoneShop:
                 Npc.StonePrices = ((int)e.A, (int)e.B, (int)e.C, (int)e.X, now);

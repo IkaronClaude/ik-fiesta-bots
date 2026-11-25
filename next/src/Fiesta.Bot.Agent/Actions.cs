@@ -20,7 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
-    MenuReply, BuyStones, StatPoint, Equip,
+    MenuReply, BuyStones, StatPoint, Equip, StorageMove,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -131,6 +131,11 @@ public static class ActionCatalog
         S(ActionKind.StatPoint, Resource.None, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.StatPointSpent && e.A == a.Arg0 ? (ActionState.Acked, (ushort)0)
             : e.Kind == InboundKind.StatPointRefused ? (ActionState.Refused, (ushort)e.A) : null), 3000);
+        // a move between the bag and storage (ITEM_RELOC_REQ): done when the source cell changes; RELOC_ACK other than
+        // 0x0241 is the refusal (0x0241 without the source cell changing is not done: it times out)
+        S(ActionKind.StorageMove, Resource.Npc, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.ItemCell && e.B >= 0 && e.A == a.Arg0 >> 10 && e.B == (a.Arg0 & 0x3FF) ? (ActionState.Acked, (ushort)0)
+            : e.Kind == InboundKind.RelocAck && e.A != 0x0241 ? (ActionState.Refused, (ushort)e.A) : null), 3000);
         S(ActionKind.Talk, Resource.Npc, Controller, 20000);
         S(ActionKind.Storage, Resource.Npc, Controller, 6000);
         S(ActionKind.Gate, Resource.Movement, Controller, 20000);
@@ -383,6 +388,8 @@ public static class ErrorCodes
         0x0201 => "bought",
         0x0341 => "picked up",
         0x0346 => "bag full",
+        0x0241 => "moved",
+        0x024A => "the item cannot go there",
         _ => "",
     };
 }
@@ -450,7 +457,7 @@ public abstract class ProcedureBase : IProcedure
 }
 
 /// <summary>Open an NPC's shop: END_OF_TRADE -> NPCCLICK -> answer the NPC menu (or a server menu) -> the shop list.</summary>
-public sealed class OpenShopProcedure(int npcHandle, int menuReply = 1) : ProcedureBase
+public class OpenShopProcedure(int npcHandle, int menuReply = 1) : ProcedureBase
 {
     /// <summary>The NPC role a shop window shows (the SHOPOPEN* opcode): weapon = smith, skill = skill master,
     /// soul stone = healer, item = merchant (npc role bits as in the Lua `npc.*` constants).</summary>
@@ -459,6 +466,7 @@ public sealed class OpenShopProcedure(int npcHandle, int menuReply = 1) : Proced
         0x3C03 or 0x3C09 => 8,    // SHOPOPENWEAPON / TABLE_WEAPON
         0x3C04 or 0x3C0A => 4,    // SHOPOPENSKILL / TABLE_SKILL
         0x3C05 => 2,              // SHOPOPENSOULSTONE
+        0x3C08 => 16,             // MENU_OPENSTORAGE (the storage keeper)
         _ => 1,                   // SHOPOPENITEM / TABLE_ITEM
     };
 
@@ -475,6 +483,7 @@ public sealed class OpenShopProcedure(int npcHandle, int menuReply = 1) : Proced
         {
             _started = true;
             ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
+            ctx.World.Bag.StorageOpenAt = -1;
             ctx.Actions.Send(IntentEncoder.NpcClick((ushort)NpcHandle, Action.Value));
             Go("awaitMenuOrShop", ctx, 5000);
             return;
@@ -507,12 +516,26 @@ public sealed class OpenShopProcedure(int npcHandle, int menuReply = 1) : Proced
                 Go("awaitShop", ctx, 5000);
                 break;
             case InboundKind.ShopList when e.Handle == NpcHandle || e.Handle < 0:
-                ctx.Knowledge.LearnNpcRole(ctx.World.Entities.SlotOf(NpcHandle) is var s and >= 0 ? ctx.World.Entities.MobId(s) : -1,
-                    RoleOfShop((int)e.A), ctx.World.Map.MapId, (uint)ctx.World.Self.Pos.X, (uint)ctx.World.Self.Pos.Y);
-                Done();
+                Learn(ctx, RoleOfShop((int)e.A));
+                Opened(ctx, false);
+                break;
+            case InboundKind.StorageList:
+                Learn(ctx, RoleOfShop(0x3C08));
+                ctx.Log.Log(LogCategory.Item, LogLevel.Note, $"storage open at npc {NpcHandle}: page {e.C}/{e.B}, {e.X} items, {e.A} cen");
+                Opened(ctx, true);
+                break;
+            case InboundKind.StorageFail:
+                Fail($"the storage window was refused 0x{e.A:X4}");
                 break;
         }
     }
+
+    private void Learn(AgentContext ctx, int role) =>
+        ctx.Knowledge.LearnNpcRole(ctx.World.Entities.SlotOf(NpcHandle) is var s and >= 0 ? ctx.World.Entities.MobId(s) : -1,
+            role, ctx.World.Map.MapId, (uint)ctx.World.Self.Pos.X, (uint)ctx.World.Self.Pos.Y);
+
+    /// <summary>The window arrived: a shop list or (<paramref name="storage"/>) the storage window.</summary>
+    protected virtual void Opened(AgentContext ctx, bool storage) => Done();
 }
 
 /// <summary>Quest dialogue page by page: click the NPC, select the quest when the NPC lists several, answer every
@@ -544,7 +567,7 @@ public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewar
             if (QuestId >= 0 && ctx.Data.Quest(QuestId) is { } q) _answers = QuestScripts.MenuAnswers(q.Script);
             if (NpcHandle >= 0)
             {
-                ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
+                ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value)); ctx.World.Bag.StorageOpenAt = -1;
                 ctx.Actions.Send(IntentEncoder.NpcClick((ushort)NpcHandle, Action.Value));
             }
             Go("awaitPage", ctx, 4000);
@@ -757,7 +780,7 @@ public sealed class GateHopProcedure(int gateHandle, string? destMap) : Procedur
         if (Step == "click" && !_clicked)
         {
             _clicked = true;
-            ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
+            ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value)); ctx.World.Bag.StorageOpenAt = -1;
             ctx.Actions.Send(IntentEncoder.NpcClick((ushort)GateHandle, Action.Value));
             Go("awaitMenu", ctx, 6000);
             return;
@@ -869,17 +892,17 @@ public sealed class TentProcedure : ProcedureBase
     public override void Apply(in InboundEvent evt, AgentContext ctx) { }
 }
 
-/// <summary>Open the storage keeper: click, answer the menu, wait for the storage list.</summary>
-public sealed class StorageProcedure(int keeperHandle) : ProcedureBase
+/// <summary>Open the storage keeper: click, answer the menu (the keeper's menu answer opens the storage, as the shop
+/// answer opens a merchant's shop), wait for the storage window. A shop list instead fails: that NPC keeps no storage.</summary>
+public sealed class StorageProcedure(int keeperHandle, int menuReply = 1) : OpenShopProcedure(keeperHandle, menuReply)
 {
-    /// <summary>Keeper handle.</summary>
-    public int KeeperHandle { get; } = keeperHandle;
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.Storage;
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => Fail("storage is not wired in this runtime yet");
-    /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt, AgentContext ctx) { }
+    protected override void Opened(AgentContext ctx, bool storage)
+    {
+        if (storage) Done(); else Fail($"npc {NpcHandle} opened a shop, not a storage");
+    }
 }
 
 /// <summary>Runs the bot's active procedures (at most one per resource).</summary>

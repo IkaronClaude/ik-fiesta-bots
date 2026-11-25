@@ -585,6 +585,8 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
         if ((Ctx.Data as ClientData)?.IsMountItem(itemId) == true) m |= (int)ItemCategory.Mount;
         return m;
     }
+    /// <summary>The item's client name (for logs; allocates a string).</summary>
+    [LuaFn(Alloc = Alloc.LuaString)] public string Name(int itemId) => Ctx.Data.Item(itemId)?.Name ?? $"item {itemId}";
     /// <summary>Count of an item id.</summary>
     [LuaFn] public int Count(int itemId) => B.Count(itemId);
     /// <summary>First slot, -1 none.</summary>
@@ -607,12 +609,40 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public int SellPrice(int itemId) => Ctx.Data.Item(itemId)?.SellPrice ?? -1;
     /// <summary>Quest item (no sell price, not equipment).</summary>
     [LuaFn] public bool IsQuestItem(int itemId) => (Category(itemId) & (int)ItemCategory.Quest) != 0;
-    /// <summary>Smallest consumable stack slot (category mask) - potion amounts are not modelled yet: the first match.</summary>
+    /// <summary>What using an item does (client ItemUseEffect): kind (0 restores HP, 1 restores SP, other kinds as the
+    /// client table numbers them; -1 none) and amount.</summary>
+    [LuaFn] public (int Kind, int Value) UseEffect(int itemId) => Ctx.Data.Item(itemId) is { } i ? (i.UseEffect, i.UseValue) : (-1, 0);
+
+    /// <summary>Is the item a potion of a kind (0 HP, 1 SP) that we may drink now: used through the potion skill
+    /// (ItemInfo ItemUseSkill "UsePotion"), an instant restore of that kind, our level and class?</summary>
+    [LuaFn]
+    public bool IsPotion(int itemId, int kind) => Ctx.Data.Item(itemId) is { ItemUseSkill: "UsePotion" } i && i.UseEffect == kind
+        && i.UseValue > 0 && i.DemandLevel <= Ctx.World.Self.Level && ClassOk(itemId);
+
+    /// <summary>The bag slot of the potion of a kind (0 HP, 1 SP) to drink for a deficit: the smallest that covers it,
+    /// else the largest; -1 none.</summary>
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.On)]
-    public int BestPotion(double deficit, int kindMask = 1)
+    public int BestPotion(double deficit, int kind = 0)
     {
-        for (var i = 0; i < B.Size; i++) { var (it, _) = B.At(i); if (it >= 0 && (Category(it) & kindMask) != 0) return i; }
-        return -1;
+        int cover = -1, coverV = int.MaxValue, big = -1, bigV = 0;
+        for (var i = 0; i < B.Size; i++)
+        {
+            var (it, _) = B.At(i);
+            if (it < 0 || !IsPotion(it, kind)) continue;
+            var v = Ctx.Data.Item(it)!.UseValue;
+            if (v >= deficit && v < coverV) { cover = i; coverV = v; }
+            if (v > bigV) { big = i; bigV = v; }
+        }
+        return cover >= 0 ? cover : big;
+    }
+
+    /// <summary>How many potions of a kind (0 HP, 1 SP) we carry that we may drink now.</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.On)]
+    public int Potions(int kind = 0)
+    {
+        var n = 0;
+        for (var i = 0; i < B.Size; i++) { var (it, lot) = B.At(i); if (it >= 0 && IsPotion(it, kind)) n += lot; }
+        return n;
     }
     /// <summary>What selling all non-equipment, non-quest items would fetch.</summary>
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.On)]
@@ -998,8 +1028,38 @@ public sealed partial class NpcModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public int Sell(int slot, int lot = 1) { _one[0] = IntentEncoder.Sell((byte)slot, (uint)lot, -1); return Ctx.Actions.Issue(ActionKind.Sell, CallingLayer, slot, lot, _one).Value; }
     /// <summary>Quest dialogue with an NPC (accept or hand in), procedure.</summary>
     [LuaFn] public int Talk(int h, int questId = -1, int reward = -1) => Ctx.Procedures.Start(new QuestDialogueProcedure(h, questId, reward), ActionKind.Talk, CallingLayer, Ctx).Value;
-    /// <summary>Storage keeper (not wired: refused with a reason).</summary>
-    [LuaFn] public int Storage(int h) => Ctx.Procedures.Start(new StorageProcedure(h), ActionKind.Storage, CallingLayer, Ctx).Value;
+    /// <summary>Open a storage keeper's storage (procedure: click, menu answer, the storage window; fails when the NPC
+    /// opens a shop instead or the window is refused).</summary>
+    [LuaFn] public int Storage(int h, int reply = 1) => Ctx.Procedures.Start(new StorageProcedure(h, reply), ActionKind.Storage, CallingLayer, Ctx).Value;
+    /// <summary>Is the storage window open now (opened, and no other NPC window or map change since)?</summary>
+    [LuaFn] public bool StorageOpen() => W.Bag.StorageOpenAt >= 0;
+    /// <summary>Occupied storage cells as of the last window and the moves since.</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.On, Alloc = Alloc.Iterator)]
+    public LuaIter StorageCells()
+    {
+        var s = Ctx.Scratch(Inventory.StoreCells); var n = 0;
+        for (var c = 0; c < Inventory.StoreCells; c++) if (W.Bag.StoreAt(c).ItemId >= 0) s[n++] = c;
+        return ApiScope.Iter(s[..n]);
+    }
+    /// <summary>Item id and lot in a storage cell ((-1, 0) empty).</summary>
+    [LuaFn] public (int ItemId, int Lot) StorageAt(int cell) => W.Bag.StoreAt(cell);
+    /// <summary>The first empty storage cell at or after a cell (-1 none). Capacity is the server's: a move into a cell
+    /// beyond it is refused, and the caller moves on.</summary>
+    [LuaFn] public int StorageFree(int from = 0) { for (var c = Math.Max(0, from); c < Inventory.StoreCells; c++) if (W.Bag.StoreAt(c).ItemId < 0) return c; return -1; }
+    /// <summary>Storage pages (0 = never opened) and money held in storage, from the last window.</summary>
+    [LuaFn] public (int Pages, long Cen) StorageInfo() => (W.Bag.StoragePages, W.Bag.StorageCen);
+    /// <summary>Move a bag slot into a storage cell (the storage window must be open); acked when the bag cell changes,
+    /// refused with the server's RELOC code.</summary>
+    [LuaFn] public int Deposit(int bagSlot, int cell) => Move(ItemDecoder.BagBox, bagSlot, ItemDecoder.StorageBox, cell);
+    /// <summary>Move a storage cell into a bag slot.</summary>
+    [LuaFn] public int Withdraw(int cell, int bagSlot) => Move(ItemDecoder.StorageBox, cell, ItemDecoder.BagBox, bagSlot);
+    private int Move(int fromBox, int fromSlot, int toBox, int toSlot)
+    {
+        if (W.Bag.StorageOpenAt < 0) return Ctx.Actions.Refuse(ActionKind.StorageMove, CallingLayer, LocalRefusal.NotReady).Value;
+        var from = (ushort)((fromBox << 10) | (fromSlot & 0x3FF)); var to = (ushort)((toBox << 10) | (toSlot & 0x3FF));
+        _one[0] = IntentEncoder.Reloc(from, to, -1);
+        return Ctx.Actions.Issue(ActionKind.StorageMove, CallingLayer, from, to, _one).Value;
+    }
 }
 
 /// <summary>Lua module `social` (party / trade are not wired yet; chat reads work).</summary>

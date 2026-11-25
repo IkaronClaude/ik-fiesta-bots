@@ -78,7 +78,8 @@ public sealed class TestData : IClientData
     public static readonly ActiveSkillRow S = new(0, "TestHit01", "Test Hit", 1, 100, 0, 1, 0, 1000, 0, 0, 5, 0, false, 0, 0, 0, 0, 0, 10, 20, 0, 0, "TestHit", "-", "-", "-", "-");
     public MobInfoRow? Mob(int id) => id == 1 ? M : null;
     public ActiveSkillRow? Skill(int id) => id == 0 ? S : null;
-    public ItemInfoRow? Item(int id) => null;
+    public readonly Dictionary<int, ItemInfoRow> Items = new();
+    public ItemInfoRow? Item(int id) => Items.GetValueOrDefault(id);
     public static readonly MapInfoRow MapRow = new(7, "TestMap", "Test Map", false, 5000, 5000);
     public MapInfoRow? Map(int id) => id == 7 ? MapRow : null;
     public MapInfoRow? Map(string mapName) => mapName == "TestMap" ? MapRow : null;

@@ -82,6 +82,11 @@ public sealed record ItemInfoRow(int Id, string InxName, string Name, int Type, 
     public int MaxMa { get; init; }
     /// <summary>Magic defence.</summary>
     public int Mr { get; init; }
+    /// <summary>What using the item does (ItemUseEffect UseEffectA by InxName): 0 restores HP, 1 restores SP, other
+    /// kinds as the table numbers them; -1 when the item has no use effect row.</summary>
+    public int UseEffect { get; init; } = -1;
+    /// <summary>The amount of <see cref="UseEffect"/> (ItemUseEffect UseValueA).</summary>
+    public int UseValue { get; init; }
 }
 
 /// <summary>Client MapInfo row.</summary>
@@ -243,14 +248,20 @@ public sealed class ClientData : IClientData
     {
         var d = new Dictionary<int, ItemInfoRow>();
         if (T("ItemInfo") is not { } t) return d;
+        // ItemUseEffect: InxName -> (UseEffectA, UseValueA)
+        var use = new Dictionary<string, (int, int)>(StringComparer.Ordinal);
+        if (T("ItemUseEffect") is { } ue)
+            for (var r = 0; r < ue.RowCount; r++)
+                if (ue.Str(r, "ItemIndex") is { Length: > 0 } ix) use.TryAdd(ix, ((int)ue.Num(r, "UseEffectA"), (int)ue.Num(r, "UseValueA")));
         for (var r = 0; r < t.RowCount; r++)
         {
             int I(string c) => (int)t.Num(r, c);
             var inx = t.Str(r, "InxName") ?? "";
             var nm = Name(t, r, "Name");
+            var (eff, val) = use.TryGetValue(inx, out var u) ? u : (-1, 0);
             d[I("ID")] = new ItemInfoRow(I("ID"), inx, nm.Length > 0 ? nm : inx, I("Type"), I("Class"), I("Equip"), I("DemandLv"),
                 I("WeaponType"), I("SellPrice"), I("BuyPrice"), I("MaxLot"), I("UseClass"), t.Str(r, "ItemUseSkill") ?? "-")
-            { MinWc = I("MinWC"), MaxWc = I("MaxWC"), Ac = I("AC"), MinMa = I("MinMA"), MaxMa = I("MaxMA"), Mr = I("MR") };
+            { MinWc = I("MinWC"), MaxWc = I("MaxWC"), Ac = I("AC"), MinMa = I("MinMA"), MaxMa = I("MaxMA"), Mr = I("MR"), UseEffect = eff, UseValue = val };
         }
         return d;
     }
