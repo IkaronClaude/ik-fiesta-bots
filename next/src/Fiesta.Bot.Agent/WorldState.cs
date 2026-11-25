@@ -967,7 +967,15 @@ public sealed class WorldState
                 break;
             }
             case InboundKind.CastFail:
+                // 0x0FC0: the server has us out of battle mode (we only thought we were in it): the next cast re-enters
+                // it (CHANGEMODE). NextM cast into 0x0FC0 every 10 s for 15 minutes (live 22:58-23:12) before this.
+                if (e.A == 0x0FC0) Self.BattleMode = false;
                 ev.Raise(EventKind.CastResult, -1, e.A);
+                break;
+            case InboundKind.EntityMode when e.Handle == me && me >= 0:
+                // SOMEONECHANGEMODE for us: mode 2 battle, 1 normal (the server leaves battle mode on its own)
+                Self.BattleMode = e.A == 2;
+                Bump(WorldComponent.Self);
                 break;
             case InboundKind.SwingStart:
                 if (e.Handle2 == me)

@@ -225,4 +225,22 @@ layers:
         Assert.Equal(70, e.Mob(1).Exp);
         Assert.True(e.Rates(30, 5_000).ExpH > 0);
     }
+
+    [Fact]
+    public void Battle_mode_follows_the_server()
+    {
+        // live 22:58-23:12: NextM believed it was in battle mode and cast into 0x0FC0 every 10 s for 15 minutes
+        using var t = new TestBot();
+        t.Tick(2);
+        t.Ctx.World.Self.GetType().GetProperty("BattleMode")!.SetValue(t.Ctx.World.Self, true);
+        t.Ev(InboundKind.CastFail, a: 0x0FC0);
+        t.Tick();
+        Assert.False(t.Ctx.World.Self.BattleMode);
+        t.Ev(InboundKind.EntityMode, h: 1000, a: 2);
+        t.Tick();
+        Assert.True(t.Ctx.World.Self.BattleMode);
+        t.Ev(InboundKind.EntityMode, h: 1000, a: 1);
+        t.Tick();
+        Assert.False(t.Ctx.World.Self.BattleMode);
+    }
 }

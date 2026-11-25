@@ -562,6 +562,9 @@ public sealed class BotAgent
             case InboundKind.Promoted:
                 log.Log(LogCategory.Core, LogLevel.Note, $"PROMOTED: class {e.A} ({Context.Data.ClassName((int)e.A)})");
                 break;
+            case InboundKind.EntityMode when e.Handle == Context.World.Self.Handle:
+                log.Log(LogCategory.Combat, LogLevel.Info, $"our mode -> {(e.A == 2 ? "battle" : $"normal ({e.A})")} (server 0x2009)");
+                break;
             case InboundKind.Tent:
                 log.Log(LogCategory.Core, e.B == 0x0A81 ? LogLevel.Info : LogLevel.Note,
                     $"tent: {(e.A == 1 ? "PITCH" : e.A == 0 ? "FOLD" : "folded by the server")} 0x{e.B:X4} {ErrorCodes.Describe((ushort)e.B)}");
