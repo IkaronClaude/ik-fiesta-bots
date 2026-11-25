@@ -310,7 +310,7 @@ public sealed class TickScheduler : IDisposable
     private sealed class Worker
     {
         public readonly List<BotAgent> Agents = new();
-        public readonly ConcurrentQueue<(BotAgent A, bool Add)> Changes = new();
+        public readonly ConcurrentQueue<(BotAgent A, bool Add, CountdownEvent? Done)> Changes = new();
         public double Busy; public Thread Thread = null!; public int Count;
     }
     private readonly Worker[] _w;
@@ -327,9 +327,18 @@ public sealed class TickScheduler : IDisposable
         for (var i = 0; i < _w.Length; i++) _w[i] = new Worker();
     }
     /// <summary>Add an agent to the least loaded worker.</summary>
-    public void Add(BotAgent agent) { var w = _w.OrderBy(x => x.Count).First(); Interlocked.Increment(ref w.Count); w.Changes.Enqueue((agent, true)); }
+    public void Add(BotAgent agent) { var w = _w.OrderBy(x => x.Count).First(); Interlocked.Increment(ref w.Count); w.Changes.Enqueue((agent, true, null)); }
     /// <summary>Remove an agent.</summary>
-    public void Remove(BotAgent agent) { foreach (var w in _w) w.Changes.Enqueue((agent, false)); }
+    public void Remove(BotAgent agent) { foreach (var w in _w) w.Changes.Enqueue((agent, false, null)); }
+    /// <summary>Remove an agent and wait until no worker ticks it any more (every worker took the change between two
+    /// ticks), so its brain and state may be read and disposed safely. Not to be called from a tick worker.</summary>
+    public bool RemoveAndWait(BotAgent agent, TimeSpan timeout)
+    {
+        if (_stop || Thread.CurrentThread.Name?.StartsWith("tick-", StringComparison.Ordinal) == true) { Remove(agent); return false; }
+        using var done = new CountdownEvent(_w.Length);
+        foreach (var w in _w) w.Changes.Enqueue((agent, false, done));
+        return done.Wait(timeout);
+    }
     /// <summary>Start the workers.</summary>
     public void Start()
     {
@@ -351,6 +360,7 @@ public sealed class TickScheduler : IDisposable
             {
                 if (c.Add) { if (!w.Agents.Contains(c.A)) w.Agents.Add(c.A); }
                 else if (w.Agents.Remove(c.A)) Interlocked.Decrement(ref w.Count);
+                c.Done?.Signal();
             }
             var t0 = sw.ElapsedTicks;
             for (var i = 0; i < w.Agents.Count; i++)

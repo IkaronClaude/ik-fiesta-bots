@@ -386,7 +386,10 @@ public sealed class BotRuntime
     {
         if (Agent is { } a)
         {
-            _h.Ticks.Remove(a);
+            // wait until no worker ticks it: the checkpoint below reads the Lua state and Dispose frees it (a crash seen
+            // live: a tick still building the debug frame read a brain this thread had just disposed)
+            if (!_h.Ticks.RemoveAndWait(a, TimeSpan.FromSeconds(5)))
+                Log.Text(LogCategory.Core, LogLevel.Note, "session teardown: the tick worker did not release the agent in 5 s");
             SaveAvoids(a.Context);   // after the tick stopped touching it
             if (Brain is { } br)
             {

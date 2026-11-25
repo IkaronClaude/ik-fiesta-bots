@@ -67,4 +67,24 @@ layers:
         var lint = Fiesta.Bot.Brain.BrainLinter.Lint(Fiesta.Bot.Brain.BrainLoader.Parse(yaml), new Dictionary<string, string> { ["brain/x/m"] = src });
         foreach (var m in mods) Assert.Contains(lint, l => l.Code == "API_NAME" && l.Message.Contains($"{m}.zzNope"));
     }
+
+    [Fact]
+    public void A_removed_agent_is_not_ticked_once_RemoveAndWait_returns()
+    {
+        using var t = new TestBot();
+        var ticks = new Fiesta.Bot.Fleet.TickScheduler(2, TimeSpan.FromMilliseconds(5));
+        ticks.Start();
+        try
+        {
+            ticks.Add(t.Agent);
+            var until = DateTime.UtcNow.AddSeconds(5);
+            while (t.Ctx.Tick < 3 && DateTime.UtcNow < until) Thread.Sleep(5);
+            Assert.True(t.Ctx.Tick >= 3);
+            Assert.True(ticks.RemoveAndWait(t.Agent, TimeSpan.FromSeconds(5)));
+            var after = t.Ctx.Tick;
+            Thread.Sleep(100);
+            Assert.Equal(after, t.Ctx.Tick);
+        }
+        finally { ticks.Dispose(); }
+    }
 }
