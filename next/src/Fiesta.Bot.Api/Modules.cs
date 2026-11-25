@@ -621,11 +621,12 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
         for (var i = 0; i < B.Size; i++) { var (it, lot) = B.At(i); if (it >= 0 && Category(it) == 0) v += (long)(Ctx.Data.Item(it)?.SellPrice ?? 0) * lot; }
         return v;
     }
-    /// <summary>The skill an item teaches when used (its ItemUseSkill names an ActiveSkill row), -1 none.</summary>
+    /// <summary>The skill a skill book teaches when read: the ActiveSkill row with the book's own InxName (a book named
+    /// SeverBone01 teaches SeverBone01); -1 for anything else. (ItemUseSkill is what an item casts, not what it teaches.)</summary>
     [LuaFn]
     public int TeachesSkill(int itemId)
     {
-        if (Ctx.Data.Item(itemId) is not { ItemUseSkill: { Length: > 1 } inx }) return -1;
+        if (Ctx.Data.Item(itemId) is not { InxName: { Length: > 0 } inx }) return -1;
         _skillByInx ??= (Ctx.Data as Fiesta.Bot.Services.ClientData)?.Skills.GroupBy(s => s.InxName).ToDictionary(g => g.Key, g => g.First().Id) ?? new();
         return _skillByInx.TryGetValue(inx, out var id) ? id : -1;
     }
