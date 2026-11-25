@@ -124,4 +124,33 @@ layers:
         Assert.Contains("not offered by the NPC", r.P.FailReason);
         Assert.Contains("0x0B47", r.P.FailReason);
     }
+
+    [Fact]
+    public void The_ledger_learns_what_a_mob_type_costs_and_pays()
+    {
+        using var t = new TestBot();
+        t.Tick(2);
+        for (var k = 0; k < 2; k++)
+        {
+            var h = 2000 + k;
+            t.Ev(InboundKind.EntityAppeared, h: h, a: (long)EntityKind.Mob, b: 1, x: 5050, y: 5000);
+            t.Tick();
+            t.Ev(InboundKind.Damage, h: 1000, h2: h, a: 50, b: 450);     // our first hit
+            t.Ev(InboundKind.Damage, h: h, h2: 1000, a: 10, b: 80);      // it hits back: in combat
+            t.Tick(20);                                                   // 1 s
+            t.Ev(InboundKind.StoneUse, a: 0);                             // a stone in the fight
+            t.Tick(20);                                                   // 1 s
+            t.Ev(InboundKind.EntityDied, h: h, h2: 1000);
+            t.Ev(InboundKind.SelfExp, h: h, a: 40);                        // EXPGAIN names the mob
+            t.Tick();
+        }
+        t.Ev(InboundKind.SelfExp, h: -1, a: 300);                         // a quest reward: no mob
+        t.Tick();
+        var c = t.Ctx.World.Economy.Mob(1);
+        Assert.Equal(2, c.Kills);
+        Assert.Equal(80, c.Exp);
+        Assert.Equal(2, c.Stones);
+        Assert.InRange(c.FightMs / c.Kills, 1500, 3000);
+        Assert.Equal(300, t.Ctx.World.Economy.QuestExp);
+    }
 }

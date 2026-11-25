@@ -110,6 +110,7 @@ public static class Http
             Autostart = r.Autostart, PacketLog = r.PacketLog, Paused = paused,
             TicksPerSec = b.Agent is null || paused ? 0 : 1000.0 / b.Agent.IntervalMs,
             LayerSince = since, Version = f?.Version,
+            Econ = snap is null ? null : new { expH = Math.Round(snap.Econ.ExpH), moneyH = Math.Round(snap.Econ.MoneyH), deathsH = Math.Round(snap.Econ.DeathsH, 2), stonesH = Math.Round(snap.Econ.StonesH), questExp = snap.QuestExp },
             LastTransition = lt is null ? null : new { at = lt.At, layer = lt.Layer, from = lt.From, to = lt.To, reason = lt.Reason },
             Vitals = snap is null ? null : new
             {

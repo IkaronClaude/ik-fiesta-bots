@@ -123,8 +123,8 @@ public class LevelerBrainTests
         // given up, and the transitions sent the quest layer back to the same hand-in every 30 s
         if (Load() is not var (yaml, mods)) return;
         // the first pick works (grind, which fails at once here: no spawn data), every later pick dies half-way
-        mods["brain/leveler/plan"] = mods["brain/leveler/plan"].Replace("  local q, npc = readyHandin()",
-            "  M.calls = (M.calls or 0) + 1 if M.calls > 1 then error(\"pick did not finish\") end local q, npc = readyHandin()");
+        mods["brain/leveler/plan"] = mods["brain/leveler/plan"].Replace("  local best = handins(nil)",
+            "  M.calls = (M.calls or 0) + 1 if M.calls > 1 then error(\"pick did not finish\") end local best = handins(nil) if M.calls == 1 then best = score(\"grind\", -1, -1, -1, 1, 1) end");
         using var t = new TestBot();
         var b = t.Load(yaml, mods);
         t.Tick(200);
@@ -316,6 +316,34 @@ public class LevelerBrainTests
         bot = b.BlackboardJson()["bot"]!;
         Assert.False(bot["econSafe"]!.GetValue<bool>());
         Assert.Empty(b.Debug.Errors().Where(x => !x.Error.Contains("E_BUDGET")));
+    }
+
+    [Fact]
+    public void The_planner_values_a_mob_by_what_the_bot_measured_against_it()
+    {
+        // efficiency: kill time / exp / stones per kill come from the ledger once a mob type has been fought
+        if (Load() is not var (yaml, mods)) return;
+        mods["brain/leveler/plan"] = mods["brain/leveler/plan"].Replace("  closeMaps()", "  bb.bot.k1s, bb.bot.k1x = value.kill(1) closeMaps()");
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(20);
+        var bot = b.BlackboardJson()["bot"]!;
+        Assert.Equal(18.0, double.Parse(bot["k1s"]!.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture));   // never fought: the judge's default 15 s + 3 s rest
+        for (var k = 0; k < 3; k++)
+        {
+            var h = 2000 + k;
+            t.Ev(InboundKind.EntityAppeared, h: h, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 5050, y: 5000);
+            t.Tick();
+            t.Ev(InboundKind.Damage, h: 1000, h2: h, a: 50, b: 450);
+            t.Tick(40);   // 2 s
+            t.Ev(InboundKind.EntityDied, h: h, h2: 1000);
+            t.Ev(InboundKind.SelfExp, h: h, a: 60);
+            t.Tick();
+        }
+        t.Tick(200);      // the next pick
+        bot = b.BlackboardJson()["bot"]!;
+        Assert.InRange(double.Parse(bot["k1s"]!.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture), 4.5, 6.5);   // measured ~2 s + 3 s rest
+        Assert.Equal(60.0, double.Parse(bot["k1x"]!.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture));           // measured exp per kill, no stones used
     }
 
     private static string Diag(TestBot t)

@@ -40,6 +40,37 @@ public sealed class Economy
     }
     internal void Death(long now) => _deaths[Bucket(now)]++;
 
+    // ---- per mob type, learned as we play: what a kill costs (time, stones) and pays (exp); deaths by it
+    /// <summary>What we measured against one mob type.</summary>
+    public struct MobCost
+    {
+        /// <summary>Kills, total fight ms over them, stones used in them, exp they paid, deaths by this type.</summary>
+        public int Kills; public long FightMs; public int Stones; public long Exp; public int Deaths;
+    }
+    private readonly Dictionary<int, MobCost> _mobs = new();
+    private int _fightMob = -1; private long _fightStart = -1;
+    private long _questExp;
+
+    /// <summary>A mob type's measured numbers (all 0 when never fought).</summary>
+    public MobCost Mob(int mobId) => _mobs.GetValueOrDefault(mobId);
+    /// <summary>Exp that came with no kill (quest rewards), in the last-hour buckets' total.</summary>
+    public long QuestExp => _questExp;
+
+    /// <summary>Our first hit on a mob starts a fight against its type (the next stones are charged to it).</summary>
+    internal void FightStart(int mobId, long now) { if (_fightMob != mobId || _fightStart < 0) { _fightMob = mobId; _fightStart = now; } }
+    internal void Killed(int mobId, long firstHitAt, long now)
+    {
+        if (mobId < 0) return;
+        var c = _mobs.GetValueOrDefault(mobId);
+        c.Kills++; if (firstHitAt >= 0) c.FightMs += now - firstHitAt;
+        _mobs[mobId] = c;
+        if (_fightMob == mobId) { _fightMob = -1; _fightStart = -1; }
+    }
+    internal void StoneUsed() { if (_fightMob >= 0) { var c = _mobs.GetValueOrDefault(_fightMob); c.Stones++; _mobs[_fightMob] = c; } }
+    internal void KillExp(int mobId, long exp) { if (mobId >= 0) { var c = _mobs.GetValueOrDefault(mobId); c.Exp += exp; _mobs[mobId] = c; } }
+    internal void OtherExp(long exp) { _questExp += exp; }
+    internal void DiedTo(int mobId) { if (mobId >= 0) { var c = _mobs.GetValueOrDefault(mobId); c.Deaths++; _mobs[mobId] = c; } }
+
     /// <summary>Per-hour rates over the last <paramref name="minutes"/> minutes (or since the first sample when younger):
     /// exp, money earned minus spent, deaths, money spent on stones.</summary>
     public (double ExpH, double MoneyH, double DeathsH, double StonesH) Rates(int minutes, long now)

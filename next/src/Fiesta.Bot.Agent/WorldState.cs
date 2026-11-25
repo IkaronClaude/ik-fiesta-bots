@@ -159,6 +159,7 @@ public sealed class EntityTable
     internal readonly double[] HitPosX = new double[Cap], HitPosY = new double[Cap], SpawnX = new double[Cap], SpawnY = new double[Cap];
     internal readonly bool[] Dead = new bool[Cap];
     internal readonly long[] DamageByUs = new long[Cap];
+    internal readonly long[] FirstHitByUsAt = new long[Cap];
     internal readonly string?[] Name = new string?[Cap];
     internal readonly double[] Body = new double[Cap];
     internal readonly long[] LastSwingAt = new long[Cap];
@@ -242,7 +243,7 @@ public sealed class EntityTable
             _slotOf[handle] = (short)s;
             _livePos[s] = LiveN; Live[LiveN++] = s;
             Handle[s] = handle; HpV[s] = -1; MaxHpV[s] = -1; Lvl[s] = -1; TargetH[s] = -1; HitUsAt[s] = -1; DamagedAt[s] = -1;
-            HasFace[s] = false; Dead[s] = false; DamageByUs[s] = 0; Name[s] = null; SpawnX[s] = x; SpawnY[s] = y; AppearedAt[s] = now;
+            HasFace[s] = false; Dead[s] = false; DamageByUs[s] = 0; FirstHitByUsAt[s] = -1; Name[s] = null; SpawnX[s] = x; SpawnY[s] = y; AppearedAt[s] = now;
             LastSwingAt[s] = -1; HitDist[s] = -1;
         }
         Kinds[s] = kind; Mob[s] = mob; X[s] = x; Y[s] = y; ToX[s] = x; ToY[s] = y; Spd[s] = 0; MoveAt[s] = now;
@@ -829,6 +830,7 @@ public sealed class WorldState
                 var mob = Entities.Mob[s];
                 if (e.Handle2 == me || Entities.DamageByUs[s] > 0)
                 {
+                    Economy.Killed(mob, Entities.FirstHitByUsAt[s], now);
                     Self.Kills++;
                     ev.Raise(EventKind.Kill, e.Handle, mob);
                 }
@@ -880,7 +882,13 @@ public sealed class WorldState
                 break;
             case InboundKind.SelfExp:
                 Self.Exp += e.A;
-                if (e.A > 0) { Self.ExpGained += e.A; Economy.Exp(e.A, now); }
+                if (e.A > 0)
+                {
+                    Self.ExpGained += e.A; Economy.Exp(e.A, now);
+                    // EXPGAIN names the mob that paid it; exp with no mob in view came from a quest
+                    var xs = e.Handle >= 0 ? Entities.SlotOf(e.Handle) : -1;
+                    if (xs >= 0 && Entities.Mob[xs] >= 0) Economy.KillExp(Entities.Mob[xs], e.A); else Economy.OtherExp(e.A);
+                }
                 Bump(WorldComponent.Self);
                 break;
             case InboundKind.SelfMoney:
@@ -940,7 +948,11 @@ public sealed class WorldState
                         Entities.DamagedAt[s] = now;
                         var (px, py) = Entities.Pos(s, now);
                         Entities.HitPosX[s] = px; Entities.HitPosY[s] = py;
-                        if (e.Handle == me && e.A > 0) { Entities.DamageByUs[s] += e.A; Self.LastHitOutAt = now; ev.Raise(EventKind.Hit, e.Handle2, e.A); }
+                        if (e.Handle == me && e.A > 0)
+                        {
+                            if (Entities.DamageByUs[s] == 0) { Entities.FirstHitByUsAt[s] = now; Economy.FightStart(Entities.Mob[s], now); }
+                            Entities.DamageByUs[s] += e.A; Self.LastHitOutAt = now; ev.Raise(EventKind.Hit, e.Handle2, e.A);
+                        }
                     }
                 }
                 break;
@@ -988,6 +1000,7 @@ public sealed class WorldState
                 Bump(WorldComponent.Self);
                 break;
             case InboundKind.StoneUse:
+                if (e.A is 0 or 1 && Self.InCombat(now)) Economy.StoneUsed();
                 if (e.A == 0 && Self.HpStones > 0) Self.HpStones--;
                 else if (e.A == 1 && Self.SpStones > 0) Self.SpStones--;
                 Bag.Stones = (Self.HpStones, Self.SpStones);
@@ -1072,6 +1085,11 @@ public sealed class WorldState
             case InboundKind.DeadMenu:
                 Self.Dead = true; Self.Deaths++; Self.Hp = 0;
                 Economy.Death(now);
+                {   // the killer: the mob that hit us last
+                    int ks = -1; long kat = -1;
+                    for (var i = 0; i < Entities.Count; i++) { var sl = Entities.LiveSlot(i); if (Entities.HitUsAt[sl] > kat) { kat = Entities.HitUsAt[sl]; ks = sl; } }
+                    if (ks >= 0) Economy.DiedTo(Entities.Mob[ks]);
+                }
                 Npc.DeadMenu = (e.A, now);
                 Bump(WorldComponent.Self);
                 ev.Raise(EventKind.Died, e.A);

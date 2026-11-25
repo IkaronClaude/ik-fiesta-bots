@@ -805,6 +805,21 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
     private HashSet<int>? _chain;
     private int _chainFor = -1;
 
+    /// <summary>The quest's fixed rewards (QuestReward): exp, money, number of items (the choosable ones count once).</summary>
+    [LuaFn]
+    public (long Exp, long Money, int Items) Reward(int q)
+    {
+        if (Ctx.Data.Quest(q) is not { } d) return (0, 0, 0);
+        long exp = 0, money = 0; int items = 0; var choice = false;
+        foreach (var (sel, type, value) in d.Rewards)
+        {
+            if (type == 0) exp += value;
+            else if (type == 1) money += value;
+            else if (type == 2) { if (sel == 2) { if (!choice) { choice = true; items++; } } else items++; }
+        }
+        return (exp, money, items);
+    }
+
     /// <summary>The quest's kind number (QuestData Q_TYPE, -1 unknown) and the item that starts it (0 none).</summary>
     [LuaFn] public (int QType, int StartItem) Kind(int q) => Ctx.Data.Quest(q) is { } d ? (d.QType, d.StartItem) : (-1, 0);
     /// <summary>Reward exp.</summary>

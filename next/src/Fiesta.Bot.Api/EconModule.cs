@@ -11,4 +11,16 @@ public sealed partial class EconModule(AgentContext ctx) : ApiModule(ctx)
     /// deaths, money spent on soul stones.</summary>
     [LuaFn]
     public (double ExpH, double MoneyH, double DeathsH, double StonesH) Rates(int minutes) => Ctx.World.Economy.Rates(minutes, Ctx.Now);
+
+    /// <summary>What we measured against a mob type, learned as we play: kills, mean kill time (ms), stones used per
+    /// kill, exp per kill, deaths by it (kills 0 = never fought: the caller falls back to its own estimate).</summary>
+    [LuaFn]
+    public (int Kills, double KillMs, double StonesPerKill, double ExpPerKill, int Deaths) Mob(int mobId)
+    {
+        var c = Ctx.World.Economy.Mob(mobId);
+        return c.Kills == 0 ? (0, -1, -1, -1, c.Deaths) : (c.Kills, (double)c.FightMs / c.Kills, (double)c.Stones / c.Kills, (double)c.Exp / c.Kills, c.Deaths);
+    }
+
+    /// <summary>Exp that came with no kill (quest rewards) since the session began.</summary>
+    [LuaFn] public long QuestExp() => Ctx.World.Economy.QuestExp;
 }

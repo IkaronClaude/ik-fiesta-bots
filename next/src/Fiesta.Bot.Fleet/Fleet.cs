@@ -38,6 +38,8 @@ public sealed record BotSummary(string Id, string State, string? Map, int Level,
 {
     /// <summary>Character.</summary>
     public string Character { get; init; } = "";
+    /// <summary>Economy over the last 30 minutes (per hour) and quest exp this session.</summary>
+    public object? Econ { get; init; }
     /// <summary>Account.</summary>
     public string Username { get; init; } = "";
     /// <summary>Login host.</summary>

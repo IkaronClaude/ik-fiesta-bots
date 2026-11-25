@@ -645,7 +645,7 @@ public sealed class BotAgent
         var w = Context.World; var self = w.Self;
         _snapshot = new AgentSnapshot(Context.BotId, Context.Tick, _clock.UtcNow, w.Map.MapName, self.Pos.X, self.Pos.Y, self.Level,
             self.Hp, self.MaxHp, self.Sp, self.MaxSp, self.Money, w.Bag.Free, self.Dead, self.InCombat(now), w.Map.MapId, self.InWorld)
-        { RunSpeed = self.RunSpeed, Exp = self.Exp, NextExp = self.NextExp, Name = self.Name, ClassId = self.ClassId, Kills = self.Kills, Deaths = self.Deaths, ExpGained = self.ExpGained, Entities = w.Entities.Count, Paused = Paused };
+        { RunSpeed = self.RunSpeed, Exp = self.Exp, NextExp = self.NextExp, Name = self.Name, ClassId = self.ClassId, Kills = self.Kills, Deaths = self.Deaths, ExpGained = self.ExpGained, Entities = w.Entities.Count, Paused = Paused, Econ = w.Economy.Rates(30, now), QuestExp = w.Economy.QuestExp };
     }
 
     /// <summary>Latest published snapshot (immutable, any thread).</summary>
@@ -656,6 +656,10 @@ public sealed class BotAgent
 public sealed record AgentSnapshot(string BotId, long Tick, DateTime At, string Map, double X, double Y, int Level, double Hp,
     double MaxHp, double Sp, double MaxSp, long Money, int BagFree, bool Dead, bool InCombat, int MapId, bool InWorld)
 {
+    /// <summary>Economy over the last 30 minutes, per hour: exp, money, deaths, stone spend.</summary>
+    public (double ExpH, double MoneyH, double DeathsH, double StonesH) Econ { get; init; }
+    /// <summary>Exp from quest rewards (no kill) this session.</summary>
+    public long QuestExp { get; init; }
     /// <summary>Exp.</summary>
     public long Exp { get; init; }
     /// <summary>Exp for the next level.</summary>

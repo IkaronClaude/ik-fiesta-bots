@@ -384,18 +384,11 @@ What the leveller does with it:
 Test: `The_job_change_instance_is_played_room_by_room_as_the_capture_shows` (frames from the job change capture).
 Open: kiting for ranged classes in the copy fight, buying potions before entering, the clone's damage race.
 
-### Death spiral and purse guard (the old bots' level-25 failure)
+### Death spiral and purse guard (the old bots' level-25 failure) - first version, superseded
 
-Runtime: `Economy` (one-minute buckets for an hour: exp, money earned / spent, stone spend, deaths) and
-`econ.rates(minutes)`. Brain (private): layer `guard` + caution.lua and judge knobs:
-- a death raises `caution` one step (max 4): mobs taken on and quest mobs hunted drop one level per step, the grind
-  band drops by the same, pulls may wake fewer mobs (`PULL_EXTRA_MAX - 200 x caution`), and every upkeep visit is
-  due again (gear, skills; stat points are spent as they come) - fix the cause, not just the stones;
-- deaths >= 3/h over 30 min: ECON ALARM (crit, with exp / money / deaths / stone spend per hour) and more caution;
-- money falling and under 500: ECON ALARM, safe earning (stones bought to the minimum only); stones never spend the
-  last MONEY_RESERVE + STONE_KEEP;
-- 15 min without a death: one caution step down; a growing purse ends safe earning.
-Test: `A_scripted_death_spiral_is_caught_and_turned_into_caution_and_safe_earning` (spiral caught, then reversed).
+The first guard lowered the fight level per death. Operator correction: easier mobs waste stones for low rewards and
+CAUSE the spiral. Replaced by the cause-based guard and the efficiency planner below. The runtime ledger stays:
+`Economy` (one-minute buckets for an hour: exp, money earned / spent, stone spend, deaths), `econ.rates(minutes)`.
 
 Bug 28 resolution (21:09, NextA at Nina, with the QUEST department in the capture): the click IS answered. Nina sends a
 quest page (QUEST_SCRIPT_CMD_REQ for quest 20017, a [MENU] page); our dialogue picks 20028 from it
@@ -419,3 +412,34 @@ right level (caution.lua, layer `guard`):
   per hour; the remedy is earning efficiently (sell sooner, stones to the minimum, quests that complete), never
   easier mobs.
 Test: `A_scripted_death_spiral_is_reversed_without_lowering_the_fight_level`.
+
+### Efficiency: the planner's objective (operator guidance 2026-11-25)
+
+Principle: the most progress for the least expense. The planner (plan.lua + value.lua, private) scores every
+candidate - hand in, enter an instance, accept, hunt a quest mob, grind - as VALUE PER SECOND and takes the best:
+- value (in exp): quest reward exp + money (QuestReward type 1, 1 cen = 1 exp, `EXP_PER_MONEY`) + item rewards
+  (`ITEM_EXP` each, a choice counts once) + the kills the quest needs (net exp per kill); the job change chain gets a
+  bonus that puts it first;
+- cost (in seconds): travel (straight line on the map, the safe gate route across maps) + a trip overhead + kills x
+  (kill time + rest per kill); a kill's net exp subtracts its stones (stones per kill x stone price) and its death
+  risk (deaths / kills x `DEATH_COST_EXP`);
+- stacking: an accept whose mobs an active quest is already hunting costs no extra kill time, so quests over the same
+  mobs are taken together; hand-ins are worth their full reward over a short walk, so they win when due;
+- measured, not guessed: the runtime ledger learns per mob type the kills, mean kill time (first hit by us to its
+  death), stones used in its fights, exp per kill (EXPGAIN names the mob) and deaths by it (the mob that hit us last);
+  exp with no mob is counted as quest exp. Lua: `econ.mob(id)`, `econ.questExp()`, `quests.reward(q)`. The judge's
+  defaults (15 s, 10 exp, 0.2 stones per kill) stand in only until a type has been fought.
+- no expense that buys no progress: no stones between fights (survival `rest`), event quests the NPC refuses are left
+  for 6 h, grind fallback only when it scores best.
+Every pick is logged: `plan: <kind> quest <id> <name>: <score> exp/s (value <v> over <s> s)`, and kept in
+`bb.bot.plan`. The bot summary (`/api/v3/bots`) carries `econ` {expH, moneyH, deathsH, stonesH, questExp} over the
+last 30 minutes. Tests: `The_planner_values_a_mob_by_what_the_bot_measured_against_it`,
+`The_ledger_learns_what_a_mob_type_costs_and_pays`.
+QuestReward type 1 is read as money (cen) from the values (52 cen for the first quests, 10000 for Road to
+Promotion); to be confirmed on a live hand-in.
+
+#### Efficiency per bot (live, local stack)
+
+| time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
+|---|---|---|---|---|---|---|---|---|
+
