@@ -95,7 +95,15 @@ public sealed record ProduceRow(int Id, string Name, int Product, int Lot, (int 
     int MasteryType, int MasteryGain, int NeededMasteryType, int NeededMasteryGain);
 
 /// <summary>Client MapInfo row.</summary>
-public sealed record MapInfoRow(int Id, string MapName, string Name, bool IsInstance, int RegenX, int RegenY);
+/// <summary>A MapInfo row. <paramref name="Inside"/> is the InSide column (an indoor map: caves and dungeons, the open
+/// Echo Cave field as much as the job change's dungeon - NOT an instance); <paramref name="Kingdom"/> the KingdomMap
+/// column (non-zero: a kingdom quest / instanced map).</summary>
+public sealed record MapInfoRow(int Id, string MapName, string Name, bool Inside, int RegenX, int RegenY, int Kingdom = 0)
+{
+    /// <summary>An instanced map by the client's table (kingdom quest maps). A scenario instance with KingdomMap 0 (the
+    /// job change's dungeon) is known only from the scenario the server runs there (WorldState).</summary>
+    public bool IsInstance => Kingdom != 0;
+}
 
 /// <summary>A quest definition parsed from QuestData.</summary>
 public sealed record QuestDef(int Id, string Name, int MinLevel, int MaxLevel, bool Repeatable, int StartNpc,
@@ -348,7 +356,7 @@ public sealed class ClientData : IClientData
         for (var r = 0; r < t.RowCount; r++)
         {
             var m = new MapInfoRow((int)t.Num(r, "ID"), t.Str(r, "MapName") ?? "", Name(t, r, "Name"), t.Num(r, "InSide") != 0,
-                (int)t.Num(r, "RegenX"), (int)t.Num(r, "RegenY"));
+                (int)t.Num(r, "RegenX"), (int)t.Num(r, "RegenY"), (int)t.Num(r, "KingdomMap"));
             a[m.Id] = m; b.TryAdd(m.MapName, m);
         }
         return (a, b);

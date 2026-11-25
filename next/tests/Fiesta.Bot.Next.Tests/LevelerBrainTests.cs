@@ -240,13 +240,15 @@ public class LevelerBrainTests
         // linked into the instance (Job1_Dn01 in the capture; an instance map here)
         t.Ev(InboundKind.MapLink, a: 8, x: 1000, y: 1000);
         t.Tick(5);
-        Assert.True(t.Ctx.World.Map.IsInstance);
+        // an indoor map (InSide) like any cave: an instance only once the server runs a scenario there
+        Assert.False(t.Ctx.World.Map.IsInstance);
         // the scripted copy of us appears as a character and is turned into a mob (OBJTYPECHANGE {0x43BC, 5})
         t.Ev(InboundKind.EntityAppeared, h: 0x43BC, a: (long)Fiesta.Bot.Agent.EntityKind.Player, b: -1, x: 1100, y: 1000, text: "Shadow");
         var obj = InboundEvent.Of(InboundKind.Scenario, 0x6C0B, t.Clock.NowMs); obj.A = 11; obj.Handle = 0x43BC; obj.B = 5;
         t.In.TryWrite(obj);
         t.Tick(2);
         Assert.True((t.Ctx.World.KindOf(t.Ctx.World.Entities.SlotOf(0x43BC), t.Clock.NowMs) & Fiesta.Bot.Agent.EntityKind.Huntable) != 0);
+        Assert.True(t.Ctx.World.Map.IsInstance);
         // the server asks for Zone_Mob01: the confirm is repeated until the room's wave appears
         var req = InboundEvent.Of(InboundKind.Scenario, 0x6C05, t.Clock.NowMs); req.A = 5; req.Text = "Zone_Mob01";
         t.In.TryWrite(req);

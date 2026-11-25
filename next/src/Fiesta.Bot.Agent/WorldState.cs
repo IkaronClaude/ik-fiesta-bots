@@ -1130,6 +1130,8 @@ public sealed class WorldState
                 break;
             case InboundKind.Scenario:
                 Scenario.Apply(e, now);
+                // the server runs a scenario for us on this map: an instance, whatever the client's table says
+                if (!Map.IsInstance) { Map.IsInstance = true; Bump(WorldComponent.Map); }
                 // a scripted character (the job change's shadow copy of us) turned into a mob (5) or back (4): the same
                 // entity, made fightable in place - never a copy with a made-up mob id (it has none)
                 if (e.A == 11 && Entities.SlotOf(e.Handle) is var cs and >= 0)
