@@ -606,6 +606,43 @@ public sealed class TradeState
     }
 }
 
+/// <summary>Instance scenario state of the current map (reset on a map change).</summary>
+public sealed class ScenarioState
+{
+    /// <summary>Trigger areas the server asked us to confirm, oldest first, with when (ms); cleared when confirmed.</summary>
+    public List<(string Area, long At)> Asked { get; } = new();
+    /// <summary>Areas confirmed on this map.</summary>
+    public HashSet<string> Confirmed { get; } = new(StringComparer.Ordinal);
+    /// <summary>Doors by handle: state (0 closed as the client draws it; the meaning is logged, not assumed), block name.</summary>
+    public Dictionary<int, (int State, string Block, uint X, uint Y)> Doors { get; } = new();
+    /// <summary>Objects the scenario turned into mobs (5) / NPCs (4), by handle.</summary>
+    public Dictionary<int, int> ObjTypes { get; } = new();
+    /// <summary>The scenario timer: seconds when set and when (ms); (-1, -1) none.</summary>
+    public (long Seconds, long At) Timer { get; internal set; } = (-1, -1);
+    /// <summary>Last scenario message (system message text or notice id).</summary>
+    public string LastMessage { get; internal set; } = "";
+    /// <summary>Any scenario packet seen on this map.</summary>
+    public bool Active { get; internal set; }
+
+    internal void Clear() { Asked.Clear(); Confirmed.Clear(); Doors.Clear(); ObjTypes.Clear(); Timer = (-1, -1); LastMessage = ""; Active = false; }
+
+    internal void Apply(in InboundEvent e, long now)
+    {
+        Active = true;
+        switch (e.A)
+        {
+            case 5 when e.Text is { } a: if (!Asked.Exists(x => x.Area == a)) Asked.Add((a, now)); break;
+            case 9: Doors[e.Handle] = Doors.TryGetValue(e.Handle, out var d) ? d with { State = (int)e.B } : ((int)e.B, "", 0, 0); break;
+            case 1000: Doors[e.Handle] = ((int)e.B, e.Text ?? "", e.X, e.Y); break;
+            case 11: ObjTypes[e.Handle] = (int)e.B; break;
+            case 22: Timer = (e.B, now); break;
+            case 34: Timer = (-1, -1); break;
+            case 27: LastMessage = e.Text ?? ""; break;
+            case 4: LastMessage = $"notice {e.B}"; break;
+        }
+    }
+}
+
 /// <summary>Current map.</summary>
 public sealed class MapState
 {
@@ -664,6 +701,8 @@ public sealed class WorldState
     public PartyState Party { get; } = new();
     /// <summary>Trade.</summary>
     public TradeState Trade { get; } = new();
+    /// <summary>Instance scenario state.</summary>
+    public ScenarioState Scenario { get; } = new();
     /// <summary>Map.</summary>
     public MapState Map { get; } = new();
     /// <summary>Open shop / menus / dialogue.</summary>
@@ -1001,6 +1040,7 @@ public sealed class WorldState
                 var prev = Map.MapId;
                 Entities.Clear(); Grid.Clear();
                 Bag.StorageOpenAt = -1;
+                Scenario.Clear();
                 var name = Data?.Map((int)e.A)?.MapName ?? "";
                 SetMap((int)e.A, name);
                 Self.ServerPos = (e.X, e.Y); Self.Pos = (e.X, e.Y);
@@ -1048,6 +1088,9 @@ public sealed class WorldState
             case InboundKind.StatPointSpent:
                 if (Self.StatPoints > 0) Self.StatPoints--;   // the client counts the point spent (no REMAINPOINT follows)
                 Bump(WorldComponent.Self);
+                break;
+            case InboundKind.Scenario:
+                Scenario.Apply(e, now);
                 break;
             case InboundKind.SkillExp:
                 Skills.Mastery[(int)e.A] = e.B;

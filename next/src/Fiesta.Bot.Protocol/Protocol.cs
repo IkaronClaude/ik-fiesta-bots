@@ -169,6 +169,10 @@ public enum InboundKind : ushort
     PvpZone,
     /// <summary>A stack split answered (ITEM_SPLIT_ACK): A code (0x0441 split; captured after the two cell changes).</summary>
     SplitAck,
+    /// <summary>Instance scenario (dept 27) and doors: A = scenario command (5 area entry asked, 7 area leave asked,
+    /// 9 door state, 11 object type change, 22 timer, 33 timer start, 34 timer end, 4 notice, 27 system message; 1000 =
+    /// BUILDDOOR), Text = area name / message, Handle = door / object, B = door state / object type / seconds / notice.</summary>
+    Scenario,
     /// <summary>Not decoded but passed (raw logging).</summary>
     Raw,
 }
@@ -265,7 +269,7 @@ public sealed class DecoderTable
         var t = new DecoderTable(wire);
         t.Register(new EntityDecoder()); t.Register(new CombatDecoder()); t.Register(new SelfDecoder());
         t.Register(new MovementDecoder()); t.Register(new ItemDecoder()); t.Register(new QuestMenuDecoder());
-        t.Register(new SocialDecoder()); t.Register(new WorldDecoder()); t.Register(new TradeDecoder()); t.Register(new ProduceDecoder());
+        t.Register(new SocialDecoder()); t.Register(new WorldDecoder()); t.Register(new TradeDecoder()); t.Register(new ProduceDecoder()); t.Register(new ScenarioDecoder());
         return t;
     }
 
@@ -924,6 +928,39 @@ public sealed class ProduceDecoder : IPacketDecoder
     }
 }
 
+/// <summary>Instance scenario packets (dept 27, PDB layouts): the server asks the client to confirm a trigger area it
+/// crossed (AREAENTRY_REQ {Name8}; the client answers AREAENTRY_ACK with the same name), doors (DOORSTATE {door u16,
+/// state u8}; BUILDDOOR {handle, mob, coord(9), state u8 @13, block name[32] @14, scale}), objects that turn into mobs
+/// or NPCs (OBJTYPECHANGE {handle, type: 5 mob, 4 npc}), timers and messages.</summary>
+public sealed class ScenarioDecoder : IPacketDecoder
+{
+    /// <inheritdoc/>
+    public IReadOnlyList<ushort> Opcodes { get; } = [0x6C04, 0x6C05, 0x6C07, 0x6C09, 0x6C0B, 0x6C16, 0x6C1B, 0x6C21, 0x6C22, 0x1C0F];
+
+    /// <inheritdoc/>
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        var e = InboundEvent.Of(InboundKind.Scenario, op, at);
+        e.A = op == 0x1C0F ? 1000 : op & 0x3FF;
+        switch (op)
+        {
+            case 0x6C05 or 0x6C07: e.Text = Ascii.Get(p.Length >= 32 ? p[..32] : p); break;
+            case 0x6C09: if (p.Length < 3) return; e.Handle = Rd.U16(p, 0); e.B = p[2]; break;
+            case 0x6C0B: if (p.Length < 3) return; e.Handle = Rd.U16(p, 0); e.B = p[2]; break;
+            case 0x6C16: e.B = p.Length >= 2 ? Rd.U16(p, 0) : -1; break;
+            case 0x6C22: e.B = p.Length >= 4 ? Rd.U32(p, 0) : -1; break;
+            case 0x6C04: e.B = p.Length >= 4 ? Rd.U32(p, 0) : -1; break;
+            case 0x6C1B: e.Text = p.Length >= 1 ? Ascii.Get(p.Slice(1, Math.Min(p[0], p.Length - 1))) : ""; break;
+            case 0x1C0F:
+                if (p.Length < 46) return;
+                e.Handle = Rd.U16(p, 0); e.C = Rd.U16(p, 2); e.X = Rd.U32(p, 4); e.Y = Rd.U32(p, 8); e.B = p[13];
+                e.Text = Ascii.Get(p.Slice(14, 32));
+                break;
+        }
+        sink.TryWrite(e);
+    }
+}
+
 /// <summary>Encodes typed requests into intents without allocation (inline payloads).</summary>
 public static class IntentEncoder
 {
@@ -932,7 +969,7 @@ public static class IntentEncoder
         OpChangeMode = 0x2008, OpCastObj = 0x2440, OpCastFld = 0x2441, OpBashStart = 0x242B, OpBashStop = 0x2432,
         OpItemUse = 0x3015, OpBuy = 0x3003, OpSell = 0x3006, OpNpcClick = 0x200A, OpChat = 0x2001, OpPick = 0x3009,
         OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpQuestScriptAck = 0x4402,
-        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B, OpSplit = 0x300D, OpProduceCast = 0x2035, OpProductField = 0x4822,
+        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B, OpSplit = 0x300D, OpAreaEntryAck = 0x6C06, OpProduceCast = 0x2035, OpProductField = 0x4822,
         OpLoginComplete = 0x1803;
 
     private static Intent Make(ushort op, int action, ReadOnlySpan<byte> payload)

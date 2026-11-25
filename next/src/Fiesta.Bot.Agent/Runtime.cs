@@ -538,6 +538,21 @@ public sealed class BotAgent
                 log.Log(LogCategory.Social, e.A is 15 or 16 or 19 or 20 or 23 or 24 or 27 or 28 or 29 or 30 or 33 or 34 ? LogLevel.Info : LogLevel.Note,
                     $"TRADE {TradeName((int)e.A)} b={e.B} c={e.C}{(e.A == 16 ? $" x{e.X}" : "")} [{e.Text}] -> {Context.World.Trade.Phase} partner {Context.World.Trade.Partner} cen {Context.World.Trade.MyCen}/{Context.World.Trade.TheirCen} lock {Context.World.Trade.MyLocked}/{Context.World.Trade.TheirLocked} decide {Context.World.Trade.MyDecided}/{Context.World.Trade.TheirDecided}");
                 break;
+            case InboundKind.Scenario:
+                log.Text(LogCategory.Quest, e.A is 9 or 22 ? LogLevel.Info : LogLevel.Note, e.A switch
+                {
+                    5 => $"SCENARIO area '{e.Text}' entered: the server asks us to confirm it",
+                    7 => $"SCENARIO area '{e.Text}' left",
+                    9 => $"SCENARIO door {e.Handle} -> state {e.B}",
+                    1000 => $"SCENARIO door {e.Handle} built (mob {e.C}, block '{e.Text}', state {e.B}) at ({e.X},{e.Y})",
+                    11 => $"SCENARIO object {e.Handle} is now {(e.B == 5 ? "a mob" : e.B == 4 ? "an npc" : $"type {e.B}")}",
+                    22 => $"SCENARIO timer {e.B} s",
+                    33 => "SCENARIO timer started",
+                    34 => $"SCENARIO timer ended ({e.B})",
+                    27 => $"SCENARIO message: {e.Text}",
+                    _ => $"SCENARIO notice {e.B}",
+                });
+                break;
             case InboundKind.SplitAck:
                 log.Log(LogCategory.Item, e.A == 0x0441 ? LogLevel.Info : LogLevel.Note, $"SPLIT_ACK 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
                 break;

@@ -413,11 +413,16 @@ public interface INavService
     PathResult? Result(JobTicket ticket);
     /// <summary>Is a map's mesh ready (built)? Building is a job; the first request for a map starts it.</summary>
     bool Ready(string mapName);
+    /// <summary>The trigger areas of a map (its .aid), empty when it has none (read once per map, a small file).</summary>
+    IReadOnlyList<ScenarioArea> Areas(string mapName) => [];
 }
 
 /// <summary>Default nav service over a client root.</summary>
 public sealed class NavService(string clientRoot, IJobScheduler jobs, Func<string, string?>? folderOf = null) : INavService
 {
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, IReadOnlyList<ScenarioArea>> _areas = new(StringComparer.OrdinalIgnoreCase);
+    /// <inheritdoc/>
+    public IReadOnlyList<ScenarioArea> Areas(string mapName) => _areas.GetOrAdd(mapName, m => ScenarioAreaFile.Load(clientRoot, m, folderOf?.Invoke(m)));
     private readonly ConcurrentDictionary<string, Lazy<(BlockLayer? L, NavMesh? M)>> _maps = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, bool> _ready = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Paths computed / total ms.</summary>
