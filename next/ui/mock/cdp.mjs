@@ -3,7 +3,7 @@
 //   node mock/cdp.mjs <steps.mjs> [--url http://127.0.0.1:5199/] [--out <dir>] [--browser <exe>]
 // steps.mjs exports `default async function (b)` where b = { go, eval, click, type, key, shot, wait, logs }.
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -89,6 +89,9 @@ try {
   console.error('FAILED', e.stack || e);
   process.exitCode = 1;
 } finally {
+  try { await Promise.race([send('Browser.close'), sleep(1500)]); } catch { /* already gone */ }
   try { ws?.close(); } catch { /* */ }
   proc.kill();
+  await sleep(800);
+  try { rmSync(profile, { recursive: true, force: true }); } catch { /* still locked */ }
 }
