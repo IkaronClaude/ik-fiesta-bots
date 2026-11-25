@@ -56,28 +56,38 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     private (string Map, double X, double Y, double R, int MobId) GrindSpotScan(int minLv, int maxLv)
     {
         SpawnArea? best = null; var bestScore = double.NegativeInfinity;
-        foreach (var map in Ctx.Atlas.SpawnMaps)
+        foreach (var (a, n) in Candidates(minLv, maxLv))
         {
-            var info = Ctx.Data.Map(map);
-            if (info is null || info.IsInstance || Ctx.Refused(map)) continue;
-            var route = map == W.Map.MapId ? 0 : Ctx.Atlas.MapDistance(W.Map.MapId, map);
+            if (Ctx.Refused(a.MapId)) continue;
+            var route = a.MapId == W.Map.MapId ? 0 : Ctx.Atlas.MapDistance(W.Map.MapId, a.MapId);
             if (route < 0) continue;
-            var areas = Ctx.Atlas.SpawnsOn(map);
-            foreach (var a in areas)
-            {
-                if (Ctx.Data.Mob(a.MobId) is not { } m || m.IsNpc || m.IsPlayerSide || m.MaxHp <= 0 || m.Level < minLv || m.Level > maxLv) continue;
-                // density: matching areas within 1500 of this one
-                var n = 0;
-                foreach (var o in areas)
-                    if (Ctx.Data.Mob(o.MobId) is { } om && !om.IsNpc && om.MaxHp > 0 && om.Level >= minLv && om.Level <= maxLv
-                        && MoveController.Dist(o.X, o.Y, a.X, a.Y) < 1500) n++;
-                var walk = map == W.Map.MapId ? MoveController.Dist(W.Self.Pos.X, W.Self.Pos.Y, a.X, a.Y) : route;
-                var score = n - walk / 4000.0;
-                if (score > bestScore) { bestScore = score; best = a; }
-            }
+            var walk = a.MapId == W.Map.MapId ? MoveController.Dist(W.Self.Pos.X, W.Self.Pos.Y, a.X, a.Y) : route;
+            var score = n - walk / 4000.0;
+            if (score > bestScore) { bestScore = score; best = a; }
         }
         return best is { } b ? (MapName(b.MapId), b.X, b.Y, Math.Max(150, Math.Min(b.HalfW, b.HalfH)), b.MobId) : ("", -1, -1, -1, -1);
     }
+
+    // the spawn areas of a level band with their density (matching areas within 1500 on the same map): client data
+    // only, so computed once per band and shared by every bot
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(object, int, int), (SpawnArea A, int N)[]> _bands = new();
+    private (SpawnArea A, int N)[] Candidates(int minLv, int maxLv) => _bands.GetOrAdd((Ctx.Atlas, minLv, maxLv), _ =>
+    {
+        bool Hostile(int mob) => Ctx.Data.Mob(mob) is { } m && !m.IsNpc && !m.IsPlayerSide && m.MaxHp > 0 && m.Level >= minLv && m.Level <= maxLv;
+        var list = new List<(SpawnArea, int)>();
+        foreach (var map in Ctx.Atlas.SpawnMaps)
+        {
+            if (Ctx.Data.Map(map) is not { IsInstance: false }) continue;
+            var areas = Ctx.Atlas.SpawnsOn(map).Where(x => Hostile(x.MobId)).ToArray();
+            foreach (var a in areas)
+            {
+                var n = 0;
+                foreach (var o in areas) if (MoveController.Dist(o.X, o.Y, a.X, a.Y) < 1500) n++;
+                list.Add((a, n));
+            }
+        }
+        return list.ToArray();
+    });
 
     /// <summary>Avoid a map for this bot for a while (a death trap, a refusing gate): routes and grind spots skip it.</summary>
     [LuaFn] public bool Avoid(string map, int minutes)

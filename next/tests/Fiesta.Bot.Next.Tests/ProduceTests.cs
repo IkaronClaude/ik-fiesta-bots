@@ -167,4 +167,38 @@ layers:
         t.Tick();
         Assert.True(p.HasField(29101));
     }
+
+    [Fact]
+    public void The_rest_tent_is_pitched_and_folded_with_its_acks()
+    {
+        // PITCHTENT_REQ 0x2027 -> PITCHTENT_ACK {0x0A81}; FOLDTENT_REQ 0x202A -> FOLDTENT_ACK {0x0A81}; a refusal carries why
+        var sink = new Sink();
+        var table = DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016));
+        table.Dispatch(0x2028, new byte[] { 0x81, 0x0A }, 0, sink);
+        table.Dispatch(0x2028, new byte[] { 0x83, 0x0A }, 0, sink);
+        table.Dispatch(0x202B, new byte[] { 0x81, 0x0A }, 0, sink);
+        Assert.Equal((InboundKind.Tent, 1L, 0x0A81L), (sink.E[0].Kind, sink.E[0].A, sink.E[0].B));
+        Assert.Equal(0x0A83L, sink.E[1].B);
+        Assert.Equal(0L, sink.E[2].A);
+        using var t = new TestBot();
+        t.Tick(2);
+        var act = new Fiesta.Bot.Api.ActModule(t.Ctx);
+        var refused = act.PitchTent();
+        t.Tick();
+        Assert.Contains(IntentEncoder.OpPitchTent, t.Sent);
+        t.In.TryWrite(sink.E[1]);
+        t.Tick();
+        Assert.Equal(ActionState.Refused, t.Ctx.Actions.Get(new ActionId(refused)).State);
+        var a = act.PitchTent();
+        t.Tick();
+        t.In.TryWrite(sink.E[0]);
+        t.Tick();
+        Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(new ActionId(a)).State);
+        Assert.True(t.Ctx.World.Self.TentPitched);
+        act.FoldTent();
+        t.Tick();
+        t.In.TryWrite(sink.E[2]);
+        t.Tick();
+        Assert.False(t.Ctx.World.Self.TentPitched);
+    }
 }

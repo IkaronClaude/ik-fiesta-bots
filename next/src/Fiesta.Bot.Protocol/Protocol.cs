@@ -177,6 +177,9 @@ public enum InboundKind : ushort
     Promoted,
     /// <summary>A skill could not be learned (SKILL_LEARNFAIL): A code.</summary>
     SkillLearnFail,
+    /// <summary>The rest tent (the client's "home" button): A 1 pitch ack / 0 fold ack / 2 folded by the server, B code
+    /// (0x0A81 ok).</summary>
+    Tent,
     /// <summary>Not decoded but passed (raw logging).</summary>
     Raw,
 }
@@ -927,7 +930,7 @@ public sealed class TradeDecoder : IPacketDecoder
 public sealed class ProduceDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes { get; } = [0x4823, 0x203B, 0x2036, 0x481D];
+    public IReadOnlyList<ushort> Opcodes { get; } = [0x4823, 0x203B, 0x2036, 0x481D, 0x2028, 0x202B, 0x203D];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -939,6 +942,9 @@ public sealed class ProduceDecoder : IPacketDecoder
             case 0x203B: if (p.Length < 4) return; e.Kind = InboundKind.ProduceMade; e.A = Rd.U16(p, 0); e.B = Rd.U16(p, 2); break;
             case 0x2036: e.Kind = InboundKind.ProduceFail; e.A = p.Length >= 2 ? Rd.U16(p, 0) : -1; break;
             case 0x481D: if (p.Length < 6) return; e.Kind = InboundKind.SkillExp; e.A = Rd.U16(p, 0); e.B = Rd.U32(p, 2); break;
+            // the rest tent: PITCHTENT_ACK / FOLDTENT_ACK {code u16} (0x0A81 ok); REINFORCE_FOLDTENT_CMD = the server folded it
+            case 0x2028 or 0x202B: if (p.Length < 2) return; e.Kind = InboundKind.Tent; e.A = op == 0x2028 ? 1 : 0; e.B = Rd.U16(p, 0); break;
+            case 0x203D: e.Kind = InboundKind.Tent; e.A = 2; e.B = 0x0A81; break;
             default: return;
         }
         sink.TryWrite(e);
@@ -986,7 +992,7 @@ public static class IntentEncoder
         OpChangeMode = 0x2008, OpCastObj = 0x2440, OpCastFld = 0x2441, OpBashStart = 0x242B, OpBashStop = 0x2432,
         OpItemUse = 0x3015, OpBuy = 0x3003, OpSell = 0x3006, OpNpcClick = 0x200A, OpChat = 0x2001, OpPick = 0x3009,
         OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpQuestScriptAck = 0x4402,
-        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B, OpSplit = 0x300D, OpAreaEntryAck = 0x6C06, OpProduceCast = 0x2035, OpProductField = 0x4822,
+        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B, OpSplit = 0x300D, OpAreaEntryAck = 0x6C06, OpProduceCast = 0x2035, OpProductField = 0x4822, OpPitchTent = 0x2027, OpFoldTent = 0x202A,
         OpLoginComplete = 0x1803;
 
     private static Intent Make(ushort op, int action, ReadOnlySpan<byte> payload)

@@ -71,6 +71,8 @@ public sealed class SelfState
     public long LastHitAt { get; internal set; } = -1;
     /// <summary>Last time we hit something (ms), -1 never.</summary>
     public long LastHitOutAt { get; internal set; } = -1;
+    /// <summary>Resting in the tent (pitched, acked by the server): HP and SP come back; the character cannot act.</summary>
+    public bool TentPitched { get; internal set; }
     /// <summary>When we (re)spawned last (map login, link, revive).</summary>
     public long SpawnedAt { get; internal set; } = -1;
     /// <summary>In the world (MAP_LOGIN_ACK seen on this link).</summary>
@@ -1138,6 +1140,11 @@ public sealed class WorldState
                 break;
             case InboundKind.SkillExp:
                 Skills.Mastery[(int)e.A] = e.B;
+                break;
+            case InboundKind.Tent:
+                if (e.A == 1 && e.B == 0x0A81) Self.TentPitched = true;
+                else if (e.A is 0 or 2 && e.B == 0x0A81) Self.TentPitched = false;
+                Bump(WorldComponent.Self);
                 break;
             case InboundKind.ProduceField when e.B == 0x0B01:
                 Skills.Fields.Add((int)e.A);

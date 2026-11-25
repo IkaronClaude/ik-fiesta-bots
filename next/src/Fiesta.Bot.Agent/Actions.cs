@@ -20,7 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
-    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack, Produce, ProductField, Split,
+    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack, Produce, ProductField, Split, Tent,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -163,6 +163,9 @@ public static class ActionCatalog
             e.Kind == InboundKind.ProduceField && e.A == a.Arg0 ? (e.B == 0x0B01 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.B)) : null), 3000);
         S(ActionKind.Split, Resource.Inventory, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.SplitAck ? (e.A == 0x0441 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.A)) : null), 3000);
+        // pitch (Arg0 1) / fold (Arg0 0) the rest tent: its ack carries 0x0A81 or why not
+        S(ActionKind.Tent, Resource.Movement, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.Tent && e.A == a.Arg0 ? (e.B == 0x0A81 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.B)) : null), 4000);
         S(ActionKind.Talk, Resource.Npc, Controller, 20000);
         S(ActionKind.Storage, Resource.Npc, Controller, 6000);
         S(ActionKind.Gate, Resource.Movement, Controller, 20000);
@@ -417,6 +420,12 @@ public static class ErrorCodes
         0x0346 => "bag full",
         0x0241 => "moved",
         0x0441 => "split",
+        0x0A81 => "tent ok",
+        0x0A82 => "tent: not in this mode (moving, mounted, busy)",
+        0x0A83 => "tent: too near an NPC or another tent",
+        0x0A84 => "tent: not on this map",
+        0x0A85 => "tent: no mini-house skin",
+        0x0A86 => "tent: not while feared",
         0x070B => "the skill is learned already (seen: a second book of a skill just learned)",
         0x0717 => "the recipe's production field is not chosen (seen: read after choosing the field)",
         0x0B01 => "made / chosen",

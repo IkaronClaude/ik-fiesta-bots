@@ -87,6 +87,8 @@ public sealed partial class SelfModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public int StatPoints() => S.StatPoints;
     /// <summary>Fame (-1 unknown).</summary>
     [LuaFn] public long Fame() => S.Fame;
+    /// <summary>Resting in the tent now (pitched and acked)?</summary>
+    [LuaFn] public bool InTent() => S.TentPitched;
     /// <summary>Instance map?</summary>
     [LuaFn] public bool IsInstance() => Ctx.World.Map.IsInstance;
     /// <summary>Facing unit vector.</summary>
@@ -540,6 +542,17 @@ public sealed partial class ActModule(AgentContext ctx) : ApiModule(ctx)
     }
     /// <summary>Soul stone prices / caps from the last stone window (-1 never seen): hpPrice, hpCap, spPrice, spCap.</summary>
     [LuaFn] public (int HpPrice, int HpCap, int SpPrice, int SpCap) StonePrices() { var p = Ctx.World.Npc.StonePrices; return (p.HpPrice, p.HpCap, p.SpPrice, p.SpCap); }
+    /// <summary>Rest in the tent (the client's "home" button: stop, PITCHTENT_REQ): HP and SP come back while it stands;
+    /// the character cannot act. Acked on 0x0A81, refused with why (0x0A83 too near an NPC, 0x0A84 not on this map, 0x0A85
+    /// no mini-house skin).</summary>
+    [LuaFn]
+    public int PitchTent()
+    {
+        if (Ctx.Move.Moving) Ctx.Move.Stop(Ctx);
+        return One(ActionKind.Tent, 1, 0, IntentEncoder.Raw(IntentEncoder.OpPitchTent, default, -1));
+    }
+    /// <summary>Fold the tent (FOLDTENT_REQ) before acting again.</summary>
+    [LuaFn] public int FoldTent() => One(ActionKind.Tent, 0, 0, IntentEncoder.Raw(IntentEncoder.OpFoldTent, default, -1));
     /// <summary>HP soul stone.</summary>
     [LuaFn] public int StoneHp() => One(ActionKind.StoneHp, 0, 0, IntentEncoder.Raw(IntentEncoder.OpStoneHp, default, -1));
     /// <summary>SP soul stone.</summary>
