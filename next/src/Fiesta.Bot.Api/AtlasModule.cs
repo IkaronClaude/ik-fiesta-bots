@@ -182,7 +182,7 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
         if (_safeFrom != W.Map.MapId || _safeLevel != maxMobLevel || Ctx.Now - _safeAt >= 30_000)
         {
             var (px, py) = W.Self.Pos;
-            Ctx.Atlas.RouteCosts(W.Map.MapId, px, py, _safe, x => Ctx.Refused(x), a => Hostile(a.MobId) > maxMobLevel);
+            Ctx.Atlas.RouteCosts(W.Map.MapId, px, py, _safe, x => Ctx.Refused(x), a => Hostile(a.MobId) > maxMobLevel, maxMobLevel);
             _safeFrom = W.Map.MapId; _safeLevel = maxMobLevel; _safeAt = Ctx.Now;
         }
         return _safe.TryGetValue(m.Id, out var c) ? c : -1;

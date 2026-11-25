@@ -90,7 +90,9 @@ public sealed class HostServices : IAsyncDisposable
     public DecoderTable Decoders(WireProfile wire) => _tables.GetOrAdd(wire.Kind, _ => DecoderTable.CreateDefault(wire));
 
     /// <summary>Persist knowledge.</summary>
-    public void SaveKnowledge() => File.WriteAllText(Path.Combine(DataDir, "knowledge-npcs.json"), Knowledge.ExportNpcs());
+    // every bot's session end saves the shared file: two teardowns at once collided on it (live 21:32, IOException)
+    public void SaveKnowledge() { lock (_knowledgeSave) File.WriteAllText(Path.Combine(DataDir, "knowledge-npcs.json"), Knowledge.ExportNpcs()); }
+    private readonly object _knowledgeSave = new();
 
     /// <inheritdoc/>
     public async ValueTask DisposeAsync()

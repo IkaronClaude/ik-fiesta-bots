@@ -177,7 +177,7 @@ public sealed class WorldAtlas
             var b = AddNode(toMap, ax, ay);
             _adj[a].Add((b, 0, true));
             _learned.Add((mapId, x, y, toMap));
-            _mapCost.Clear(); _mapCostsDone.Clear();
+            _mapCost.Clear(); _mapCostsDone.Clear(); _danger.Clear();
         }
         GateLearned?.Invoke(mapId, x, y, toMap);
         return true;
@@ -193,7 +193,7 @@ public sealed class WorldAtlas
                 foreach (var (to, _, gate) in _adj[n])
                     if (gate && _nodes[to].Map == toMap && _regen.TryGetValue(toMap, out var rg) && _nodes[to].X == rg.X && _nodes[to].Y == rg.Y)
                         _nodes[to] = (toMap, x, y);
-            _mapCost.Clear(); _mapCostsDone.Clear();
+            _mapCost.Clear(); _mapCostsDone.Clear(); _danger.Clear();
         }
     }
 
@@ -283,14 +283,29 @@ public sealed class WorldAtlas
     /// the planner asks for many maps per decision). A map's cost is the cheapest arrival at any of its nodes; avoided
     /// maps and walks past dangerous spawn areas are treated as in <see cref="Route"/> (an avoided map can be a target,
     /// never a way through). Fills <paramref name="costs"/> (cleared first).</summary>
+    /// <param name="dangerKey">When the danger predicate depends only on a key (e.g. the highest mob level we accept), the
+    /// per-walk danger answers are kept per key: a full search tests every walk of every map, which is the slow part.</param>
     public void RouteCosts(int fromMap, double fx, double fy, Dictionary<int, double> costs, Func<int, bool>? avoid = null,
-        Func<SpawnArea, bool>? dangerous = null)
+        Func<SpawnArea, bool>? dangerous = null, int dangerKey = int.MinValue)
     {
-        lock (_gate) RouteCostsLocked(fromMap, fx, fy, costs, avoid, dangerous);
+        lock (_gate) RouteCostsLocked(fromMap, fx, fy, costs, avoid, dangerous, dangerKey);
+    }
+
+    // walk danger per key: per node, per adjacency index (0 untested, 1 safe, 2 dangerous)
+    private readonly Dictionary<int, sbyte[][]> _danger = new();
+
+    private bool Dangerous(int u, int k, int v, Func<SpawnArea, bool> dangerous, int key)
+    {
+        if (key == int.MinValue) return SegmentHitsDanger(_nodes[v].Map, _nodes[u].X, _nodes[u].Y, _nodes[v].X, _nodes[v].Y, dangerous);
+        if (!_danger.TryGetValue(key, out var table) || table.Length != _nodes.Count) _danger[key] = table = new sbyte[_nodes.Count][];
+        var row = table[u];
+        if (row is null || row.Length != _adj[u].Count) table[u] = row = new sbyte[_adj[u].Count];
+        if (row[k] == 0) row[k] = (sbyte)(SegmentHitsDanger(_nodes[v].Map, _nodes[u].X, _nodes[u].Y, _nodes[v].X, _nodes[v].Y, dangerous) ? 2 : 1);
+        return row[k] == 2;
     }
 
     private void RouteCostsLocked(int fromMap, double fx, double fy, Dictionary<int, double> costs, Func<int, bool>? avoid,
-        Func<SpawnArea, bool>? dangerous)
+        Func<SpawnArea, bool>? dangerous, int dangerKey = int.MinValue)
     {
         costs.Clear();
         costs[fromMap] = 0;
@@ -308,11 +323,12 @@ public sealed class WorldAtlas
                 if (um != fromMap && !costs.ContainsKey(um)) costs[um] = du;
                 // arrived on an avoided map: a target, never a way through
                 if (avoid is not null && um != fromMap && avoid(um)) continue;
-                foreach (var (v, c, _) in _adj[u])
+                var adj = _adj[u];
+                for (var k = 0; k < adj.Count; k++)
                 {
+                    var (v, c, _) = adj[k];
                     var vm = _nodes[v].Map;
-                    if (dangerous is not null && vm == um && vm != fromMap
-                        && SegmentHitsDanger(vm, _nodes[u].X, _nodes[u].Y, _nodes[v].X, _nodes[v].Y, dangerous)) continue;
+                    if (dangerous is not null && vm == um && vm != fromMap && Dangerous(u, k, v, dangerous, dangerKey)) continue;
                     var nd = du + c;
                     if (nd < dist[v]) { dist[v] = nd; pq.Enqueue(v, nd); }
                 }
