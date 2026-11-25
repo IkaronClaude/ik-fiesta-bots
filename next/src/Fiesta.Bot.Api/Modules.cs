@@ -633,6 +633,11 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
     }
     private Dictionary<string, int>? _skillByInx;
 
+    /// <summary>Can our class learn the skill a book teaches (the ActiveSkill row's UseClass)? False for no skill.</summary>
+    [LuaFn]
+    public bool SkillForUs(int skillId) => Ctx.Data.Skill(skillId) is { } sk
+        && (Ctx.Data as ClientData)?.ClassAllowed(sk.UseClass, Ctx.World.Self.ClassId) != false;
+
     /// <summary>May our class use this item (ItemInfo UseClass against UseClassTypeInfo)?</summary>
     [LuaFn]
     public bool ClassOk(int itemId) => Ctx.Data.Item(itemId) is not { } it || (Ctx.Data as Fiesta.Bot.Services.ClientData)?.ClassAllowed(it.UseClass, Ctx.World.Self.ClassId) != false;
