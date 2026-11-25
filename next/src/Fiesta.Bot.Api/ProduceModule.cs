@@ -35,6 +35,18 @@ public sealed partial class ProduceModule(AgentContext ctx) : ApiModule(ctx)
     }
     /// <summary>Mastery the recipe needs (type, amount) and our mastery total of a skill (-1 not seen yet).</summary>
     [LuaFn] public (int Type, int Needed) Needs(int id) => Row(id) is { } r ? (r.NeededMasteryType, r.NeededMasteryGain) : (-1, 0);
+    /// <summary>The production field a recipe belongs to (ProduceView id = the main skill to choose), -1 none.</summary>
+    [LuaFn] public int FieldOf(int id) => (Ctx.Data as ClientData)?.ProduceField(id) ?? -1;
+    /// <summary>Was a production field chosen (acked) this session?</summary>
+    [LuaFn] public bool HasField(int mainSkill) => Ctx.World.Skills.Fields.Contains(mainSkill);
+    /// <summary>Does a recipe we know use this item as a material?</summary>
+    [LuaFn]
+    public bool UsesRaw(int itemId)
+    {
+        foreach (var id in Ctx.World.Skills.Learned)
+            if (Row(id) is { } r) foreach (var (it, _) in r.Raws) if (it == itemId) return true;
+        return false;
+    }
     /// <summary>Our mastery total of a skill as the server last sent it (-1 none yet).</summary>
     [LuaFn] public long Mastery(int skill) => Ctx.World.Skills.Mastery.TryGetValue(skill, out var v) ? v : -1;
     /// <summary>Cast one production of a recipe (PRODUCE_CAST_REQ); acked on PRODUCE_MAKE 0x0B01, refused by its code.</summary>

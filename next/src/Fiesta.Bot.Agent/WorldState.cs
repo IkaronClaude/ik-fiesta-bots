@@ -443,6 +443,8 @@ public sealed class SkillBook
     private readonly Dictionary<int, long> _readyAt = new();
     private readonly Dictionary<int, long> _groupReadyAt = new();
     private readonly List<int> _learned = new();
+    /// <summary>Production fields chosen this session (PRODUCTFIELD_ACK 0x0B01).</summary>
+    public HashSet<int> Fields { get; } = new();
     /// <summary>Mastery totals by skill (production skills: SKILLEXP_CLIENT).</summary>
     public Dictionary<int, long> Mastery { get; } = new();
     /// <summary>Version.</summary>
@@ -1049,6 +1051,9 @@ public sealed class WorldState
                 break;
             case InboundKind.SkillExp:
                 Skills.Mastery[(int)e.A] = e.B;
+                break;
+            case InboundKind.ProduceField when e.B == 0x0B01:
+                Skills.Fields.Add((int)e.A);
                 break;
             case InboundKind.StorageList:
                 Bag.StorageCen = e.A; Bag.StoragePages = (int)e.B; Bag.StorageOpenAt = now;

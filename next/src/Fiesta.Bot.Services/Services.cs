@@ -186,6 +186,20 @@ public sealed class ClientData : IClientData
     /// <summary>A production recipe by its ProductID (= the production skill id), null none.</summary>
     public ProduceRow? Produce(int productId) => _produce.Value.GetValueOrDefault(productId);
 
+    private Dictionary<int, int>? _fieldByMastery;
+    /// <summary>The production field (ProduceView id, the main skill a PRODUCTFIELD_REQ names) whose mastery type a recipe
+    /// trains, -1 none.</summary>
+    public int ProduceField(int productId)
+    {
+        if (_fieldByMastery is null)
+        {
+            var d = new Dictionary<int, int>();
+            if (T("ProduceView") is { } t) for (var r = 0; r < t.RowCount; r++) d.TryAdd((int)t.Num(r, "MasteryType"), (int)t.Num(r, "ID"));
+            _fieldByMastery = d;
+        }
+        return Produce(productId) is { } p && _fieldByMastery.TryGetValue(p.MasteryType, out var f) ? f : -1;
+    }
+
     private Dictionary<int, ProduceRow> LoadProduce()
     {
         var d = new Dictionary<int, ProduceRow>();

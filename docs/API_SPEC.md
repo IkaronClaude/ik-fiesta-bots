@@ -356,7 +356,9 @@ Recipes are the client's Produce rows; a recipe's id is its production skill id 
 quantity (material i, 1-based), `produce.makeable(id)` (casts the bag's materials allow), `produce.needs(id)` ->
 mastery type, amount, `produce.mastery(skill)` (total from SKILLEXP_CLIENT, -1 none yet),
 `produce.make(id)` (action: PRODUCE_CAST_REQ, acked on PRODUCE_MAKE `0x0B01`, refused with its code or
-PRODUCE_CAST_FAIL), `produce.field(mainSkill)` (action: PRODUCTFIELD_REQ, acked on `0x0B01`).
+PRODUCE_CAST_FAIL), `produce.field(mainSkill)` (action: PRODUCTFIELD_REQ, acked on `0x0B01`), `produce.fieldOf(id)` (the
+field of a recipe: the ProduceView row of its mastery type), `produce.hasField(mainSkill)` (acked this session),
+`produce.usesRaw(itemId)` (a known recipe uses the item).
 
 ### 2.12 `know` (9) — learned knowledge (shared host-wide)
 
