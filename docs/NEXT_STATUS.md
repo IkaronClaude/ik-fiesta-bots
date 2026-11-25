@@ -489,6 +489,23 @@ Promotion); to be confirmed on a live hand-in.
 - 22:47: the zone04 maps (Teva, Cypian, Valtara ...) were removed from bb.bot.closedMaps on both bots; the stack
   runs all five zones as native Linux builds.
 
+#### Live round 23:00-23:25
+
+- Battle mode now follows the server: our flag was set when we sent CHANGEMODE and never cleared, so once the
+  server dropped NextM out of battle mode every cast was refused 0x0FC0 for 15 minutes (22:58-23:12).
+  SOMEONECHANGEMODE for our handle (2 battle, 1 normal) sets it, a 0x0FC0 refusal clears it (the next cast re-enters).
+- Efficiency fixes in the leveller: money is weighed at 0.1 exp per cen (at 1, a 224-cen stone outweighed a 14-exp
+  kill, every grind scored below 0 and NextA idled 6 minutes); a candidate worth 0 is never chosen; mobs never fought
+  take the bot's measured average kill instead of the constants; HP stones are topped up to 15 while a healer is on
+  the map we stand on (NextA walked 4 min to a grind spot, worked 17 s, walked 3 min back for stones).
+- Cold-start costs: each walk's danger is one number (the highest hostile level it passes) computed once for any
+  level, the grind-spot neighbourhoods once per host, both prepared on a worker at host start; serviceSpot answers
+  are kept 10 s; budget overruns in a brain's first 30 s are logged, not counted (NextA's brain was suspended at
+  23:14 by three upkeep-condition overruns right after a reconnect).
+- NextA reached level 14 at 23:11:58. After the fixes (23:21, 30-minute window): NextA 25148 exp/h, NextM 20280
+  exp/h, no deaths; money -6906 / -10020 per hour with 9786 / 15300 per hour on stones (the top-up rule's first
+  restock after the restarts; watching whether it settles).
+
 #### Efficiency per bot (live, local stack)
 
 | time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
@@ -499,3 +516,5 @@ Promotion); to be confirmed on a live hand-in.
 The ledger lives in memory: a host restart starts the hour over (the rates read 0 until the bot earns again).
 | 22:52 (after two stack restarts) | NextA | 13 | 2940 | 517 | 6780 | 0 | 0 | accept q65479 (event, 0.9 exp/s) - unmeasured mobs undervalued; fixed: they now take the measured average |
 | 22:52 (after two stack restarts) | NextM | 12 | 7585 | 250 | 4004 | 0 | 0 | hunt q416 Despicable Little Ones (4.0 exp/s) |
+| 23:21 | NextA | 14 | 25148 | 1517 | -6906 | 9786 | 0 | hunt q316 Blue Crab Dish (6.4 exp/s) |
+| 23:21 | NextM | 12 | 20280 | 458 | -10020 | 15300 | 0 | hunt q29 Medicinal Herbs (5.2 exp/s) |
