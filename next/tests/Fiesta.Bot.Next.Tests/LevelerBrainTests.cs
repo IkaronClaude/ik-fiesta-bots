@@ -38,8 +38,9 @@ public class LevelerBrainTests
         var b = t.Load(yaml, mods);
         t.Tick(5);
         t.Ev(InboundKind.SelfHp, a: 20);
-        t.Tick(10);
-        Assert.Equal("recover", b.Layers.First(l => l.Name == "survival").ActivePath[0].Name);
+        t.Tick(20);
+        // out of a fight: rest (HP comes back by itself, no stones spent)
+        Assert.Equal("rest", b.Layers.First(l => l.Name == "survival").ActivePath[0].Name);
         // a mob hits us: the combat layer takes it on
         t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 5050, y: 5000);
         t.Ev(InboundKind.Damage, h: 2000, h2: 1000, a: 5, b: 15);
@@ -276,16 +277,21 @@ public class LevelerBrainTests
     }
 
     [Fact]
-    public void A_scripted_death_spiral_is_caught_and_turned_into_caution_and_safe_earning()
+    public void A_scripted_death_spiral_is_reversed_without_lowering_the_fight_level()
     {
         if (Load() is not var (yaml, mods)) return;
         using var t = new TestBot();
         var b = t.Load(yaml, mods);
         t.Ev(InboundKind.SelfBase, a: 10, b: 0, c: 400);   // logged in with 400
         t.Tick(5);
-        // die, revive, buy stones, die again ... the purse drains
+        // die under two mobs, revive, buy stones, die again ... the purse drains
         for (var k = 0; k < 3; k++)
         {
+            t.Ev(InboundKind.EntityAppeared, h: 2000 + 2 * k, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 5050, y: 5000);
+            t.Ev(InboundKind.EntityAppeared, h: 2001 + 2 * k, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 4950, y: 5000);
+            t.Ev(InboundKind.Damage, h: 2000 + 2 * k, h2: 1000, a: 30, b: 40);
+            t.Ev(InboundKind.Damage, h: 2001 + 2 * k, h2: 1000, a: 30, b: 10);
+            t.Tick(2);
             t.Ev(InboundKind.DeadMenu, a: 30);
             t.Tick(5);
             t.Ev(InboundKind.Revive, a: 0, x: 5000, y: 5000);
@@ -296,17 +302,19 @@ public class LevelerBrainTests
         }
         t.Tick(240, 50);   // 12 s: the guard checks
         var bot = b.BlackboardJson()["bot"]!;
-        Assert.True(bot["caution"]!.GetValue<long>() >= 3);                 // a step per death (and one for the draining purse)
-        Assert.True(bot["econSafe"]?.GetValue<bool>() == true, bot.ToJsonString() + " rates " + t.Ctx.World.Economy.Rates(30, t.Clock.NowMs) + " money " + t.Ctx.World.Self.Money + " log " + Diag(t));                    // money 100 and falling: safe earning
+        var now = Fiesta.Bot.Services.SystemClock.UnixMs(t.Clock.NowMs);
+        Assert.True(bot["pullOneUntil"]!.GetValue<long>() > now, Diag(t));   // the cause (several mobs on us) is fixed
+        Assert.True(bot["restFullUntil"]!.GetValue<long>() > now);
+        Assert.True(bot["avoidMob"]?[ "1" ] is not null);                     // the same mob type killed us again: left alone
+        Assert.True(bot["econSafe"]!.GetValue<bool>());                      // money 100 and falling: efficient earning
+        Assert.Null(bot["caution"]);                                         // no lowering of the fight level
+        Assert.Contains("DEATH DIAGNOSIS", Diag(t));
         var (_, moneyH, deathsH, stonesH) = t.Ctx.World.Economy.Rates(30, t.Clock.NowMs);
         Assert.True(moneyH < 0 && deathsH > 0 && stonesH > 0, $"{moneyH} {deathsH} {stonesH}");
-        // reversal: the purse grows again (loot sold, quests paid) and no death for long: safe earning ends, caution falls
-        var before = bot["caution"]!.GetValue<long>();
-        for (var k = 1; k <= 10; k++) { t.Ev(InboundKind.SelfMoney, a: 100 + 200 * k); t.Tick(60, 1000); }   // 10 min
-        t.Tick(2400, 1000);  // 40 more minutes without a death (the deaths leave the 30-minute window, then a step decays)
+        // reversal: the purse grows again (loot sold, quests paid): efficient earning ends
+        for (var k = 1; k <= 10; k++) { t.Ev(InboundKind.SelfMoney, a: 100 + 200 * k); t.Tick(60, 1000); }
         bot = b.BlackboardJson()["bot"]!;
         Assert.False(bot["econSafe"]!.GetValue<bool>());
-        Assert.True(bot["caution"]!.GetValue<long>() < before);
         Assert.Empty(b.Debug.Errors().Where(x => !x.Error.Contains("E_BUDGET")));
     }
 
@@ -314,6 +322,6 @@ public class LevelerBrainTests
     {
         var buf = new Fiesta.Bot.Services.Logging.LogEntry[400];
         var n = t.Ctx.Log.Ring.Read(Fiesta.Bot.Services.Logging.LogLevel.Trace, null, 0, long.MaxValue, buf);
-        return string.Join(" / ", buf.Take(n).Select(e => Fiesta.Bot.Services.Logging.LogRenderer.Render(e)).Where(x => x.Contains("ECON") || x.Contains("CAUTION") || x.Contains("econ")));
+        return string.Join(" / ", buf.Take(n).Select(e => Fiesta.Bot.Services.Logging.LogRenderer.Render(e)).Where(x => x.Contains("ECON") || x.Contains("DEATH") || x.Contains("econ")));
     }
 }

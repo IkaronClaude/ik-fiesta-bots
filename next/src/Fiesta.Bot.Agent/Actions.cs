@@ -583,6 +583,7 @@ public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewar
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.QuestDialogue;
     private bool _started, _selected;
+    private int _selectCode = -1;
     private Dictionary<int, uint>? _answers;
     /// <summary>Pages answered.</summary>
     public int Pages { get; private set; }
@@ -606,13 +607,23 @@ public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewar
         }
         if (Expired(ctx))
         {
-            if (Pages > 0 || Terminal >= 0) Done(); else Fail($"no dialogue page in step {Step}");
+            if (Terminal >= 0 || (Pages > 0 && _selectCode < 0)) Done();
+            // the NPC listed its quests but would not start ours: the server's answer to the selection says why
+            else if (_selectCode >= 0) Fail($"quest {QuestId} not offered by the NPC: QUEST_SELECT_START_ACK 0x{_selectCode:X4}");
+            else Fail($"no dialogue page in step {Step}");
         }
     }
 
     /// <inheritdoc/>
     public override void Apply(in InboundEvent e, AgentContext ctx)
     {
+        // QUEST_SELECT_START_ACK {npc, quest, code}: the answer to our pick from the NPC's quest list
+        if (e.Kind == InboundKind.QuestAck && e.A == 0x4410 && _selected)
+        {
+            _selectCode = (int)e.B;
+            ctx.Log.Log(LogCategory.Quest, LogLevel.Info, $"talk: quest {QuestId} selected at the NPC, answer 0x{e.B:X4}");
+            return;
+        }
         if (e.Kind == InboundKind.NpcMenu && QuestId >= 0 && !_selected)
         {
             _selected = true;

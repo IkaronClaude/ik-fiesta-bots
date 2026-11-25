@@ -2,7 +2,7 @@
 
 Branch `redesign-2026-11-core`. What is implemented against `docs/REDESIGN.md`, what was measured and proven live,
 the bug log, and what is open. Build: `dotnet build next/Fiesta.Bot.Next.slnx`; tests:
-`dotnet test next/tests/Fiesta.Bot.Next.Tests` (92 tests).
+`dotnet test next/tests/Fiesta.Bot.Next.Tests` (94 tests).
 
 ## Running it
 
@@ -332,7 +332,7 @@ book; the next visit buys it now that the aid paid for the stones.
 | 26 | the host died: access violation in lua_rawgeti (debug frame on a tick worker) | a session teardown checkpointed and disposed the brain while a worker still ticked the agent (Remove only queued the removal) | `TickScheduler.RemoveAndWait`; test | 25af8d0 |
 | 27 | NextM walked into Fbattle01 as a service NPC's map | player-fight maps were learned per bot | learned once in the shared atlas (persisted, `atlas-pvp-maps.txt`; Fbattle01 seeded from NextA's live finding) | 76b701c |
 
-#### Open bug 28: quest givers that do not answer the click (a workaround is active)
+#### Bug 28 (resolved): quest givers that "do not answer the click"
 
 What the wire shows (NextA, 20:10:05, Eld): the last walk leg ends on the giver's spot (17382,12362), END_OF_TRADE +
 NPCCLICK {21624} are sent a second later, and nothing comes back in the ACT, MENU, QUEST, ITEM, TRADE or SCENARIO
@@ -396,3 +396,26 @@ Runtime: `Economy` (one-minute buckets for an hour: exp, money earned / spent, s
   last MONEY_RESERVE + STONE_KEEP;
 - 15 min without a death: one caution step down; a growing purse ends safe earning.
 Test: `A_scripted_death_spiral_is_caught_and_turned_into_caution_and_safe_earning` (spiral caught, then reversed).
+
+Bug 28 resolution (21:09, NextA at Nina, with the QUEST department in the capture): the click IS answered. Nina sends a
+quest page (QUEST_SCRIPT_CMD_REQ for quest 20017, a [MENU] page); our dialogue picks 20028 from it
+(QUEST_SELECT_START_REQ {27, 20028}) and the server answers QUEST_SELECT_START_ACK {27, 20028, 0x0B47}: it will not
+start that quest (an event quest whose event is off). "Nothing comes back" was a capture filter without the QUEST
+department, and the bot ignored the answer: QUEST_SELECT_START_ACK was decoded with the NPC id in place of the code.
+Fixed: the ack's code is decoded, the dialogue fails with it ("not offered by the NPC: ... 0x0B47"), and the leveller
+leaves such a quest for 6 h. The quest-kind workaround is removed. Test with the captured bytes.
+
+### Death guard redesigned (operator correction: easier mobs waste stones and ARE the spiral)
+
+The first guard lowered the fight level after deaths; removed. Deaths are now diagnosed and the cause fixed at the
+right level (caution.lua, layer `guard`):
+- several mobs on us -> pull one at a time (no pull that wakes others) and rest fully between fights;
+- one mob type killed us twice in 30 min -> that type is left alone unless it attacks;
+- nothing left to heal -> stones bought before the next fight; out of SP -> SP kept up from 50 %;
+- every death: the gear / skill visits are due again (under-powered for the level is the root cause);
+- out of a fight HP comes back by itself (survival `rest`: no new pull, no stones below 70 % HP); stones and potions
+  only in a fight;
+- economy (ledger): a death rate >= 3/h or a draining purse raises ECON ALARM with exp / money / deaths / stone spend
+  per hour; the remedy is earning efficiently (sell sooner, stones to the minimum, quests that complete), never
+  easier mobs.
+Test: `A_scripted_death_spiral_is_reversed_without_lowering_the_fight_level`.

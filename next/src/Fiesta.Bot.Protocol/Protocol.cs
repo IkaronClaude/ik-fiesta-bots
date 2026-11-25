@@ -771,6 +771,8 @@ public sealed class QuestMenuDecoder : IPacketDecoder
                 return;
             }
             case 0x4408: e.Kind = InboundKind.QuestAck; e.A = op; e.C = Rd.U16(p, 0); e.B = Rd.U16(p, 2); break;
+            // QUEST_SELECT_START_ACK {npc u16, quest u16, code u16} (captured: {27, 20028, 0x0B47} for an event quest)
+            case 0x4410 when p.Length >= 6: e.Kind = InboundKind.QuestAck; e.A = op; e.B = Rd.U16(p, 4); e.C = Rd.U16(p, 2); break;
             case 0x4410 or 0x4413 or 0x4415: e.Kind = InboundKind.QuestAck; e.A = op; e.B = Rd.U16(p, 0); e.C = -1; break;
             case 0x201C: if (p.Length < 2) return; e.Kind = InboundKind.NpcMenu; e.A = Rd.U16(p, 0); break;
             case 0x3C01:   // SERVERMENU_REQ {title[128], priority, npc u16, npc xy, range u16, menunum, n x {reply u8, text[32]}}

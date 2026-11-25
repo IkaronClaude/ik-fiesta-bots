@@ -101,4 +101,27 @@ layers:
         t.Tick();
         Assert.True(t.Ctx.World.Skills.Has(6041));
     }
+
+    [Fact]
+    public void A_quest_the_npc_will_not_start_fails_the_talk_with_the_servers_code()
+    {
+        // captured at Nina (Eld): QUEST_SELECT_START_REQ {27, 20028} -> QUEST_SELECT_START_ACK {27, 20028, 0x0B47}
+        var sink = new Sink();
+        DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016)).Dispatch(0x4410, new byte[] { 0x1B, 0x00, 0x3C, 0x4E, 0x47, 0x0B }, 0, sink);
+        Assert.Equal((InboundKind.QuestAck, 0x4410L, 0x0B47L, 20028L), (sink.E[0].Kind, sink.E[0].A, sink.E[0].B, sink.E[0].C));
+        using var t = new TestBot();
+        t.Tick(2);
+        t.Ev(InboundKind.EntityAppeared, h: 21624, a: (long)EntityKind.Npc, b: 27, x: 5020, y: 5000);
+        t.Tick();
+        var a = t.Ctx.Procedures.Start(new QuestDialogueProcedure(21624, 20028, -1), ActionKind.Talk, 1, t.Ctx);
+        t.Ev(InboundKind.NpcMenu, a: 27);
+        t.Tick();
+        Assert.Contains(IntentEncoder.OpQuestSelectStart, t.Sent);
+        t.In.TryWrite(sink.E[0]);
+        t.Tick(100);   // 5 s: no page follows
+        var r = t.Ctx.Procedures.Recent.Last();
+        Assert.Equal(ActionState.Failed, t.Ctx.Actions.Get(a).State);
+        Assert.Contains("not offered by the NPC", r.P.FailReason);
+        Assert.Contains("0x0B47", r.P.FailReason);
+    }
 }
