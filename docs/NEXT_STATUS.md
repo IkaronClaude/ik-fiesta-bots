@@ -2,7 +2,7 @@
 
 Branch `redesign-2026-11-core`. What is implemented against `docs/REDESIGN.md`, what was measured and proven live,
 the bug log, and what is open. Build: `dotnet build next/Fiesta.Bot.Next.slnx`; tests:
-`dotnet test next/tests/Fiesta.Bot.Next.Tests` (32 tests).
+`dotnet test next/tests/Fiesta.Bot.Next.Tests` (36 tests).
 
 ## Running it
 
@@ -35,9 +35,9 @@ FIESTA_WIRE=2016|2026 ASPNETCORE_URLS=http://127.0.0.1:5098 dotnet next/src/Fies
 | 7 versions | content-addressed brain versions (definition text + modules + pinned library hashes + API version), libraries with versions, channels, assignment log, hot swap at a tick boundary keeping bb.bot and states by name, rollback. Stored as files (no git mirror yet). |
 | 8 persistence | file store under `BOT_DATA_DIR` (fleet, versions, channels, assignments, checkpoints, NPC role knowledge). No Postgres / SQLite yet. |
 | 9 UI support | the host implements API_SPEC 8 and 13 (U1-U25, deviations in 13.8); the UI itself is on `redesign-2026-11-ui`. |
-| 10 lifecycle | supervisor: login -> world -> zone, reconnect with 5-60 s backoff, clean logout (LOGOUTREADY, countdown, NORMALLOGOUT), relog, checkpoint on session end, resume on login, graceful drain on host stop. Health is computed in the bot summary (no tick for 2 s, tick p99 over budget, brain suspended); transition-cycle and no-progress alarms are open. |
+| 10 lifecycle | supervisor: login -> world -> zone, reconnect with 5-60 s backoff, clean logout (LOGOUTREADY, countdown, NORMALLOGOUT), relog, checkpoint on session end, resume on login, graceful drain on host stop. Health is computed in the bot summary (no tick for 2 s, tick p99 over budget, brain suspended, brain load errors, a layer flipping between two states more than 20 times a minute); the no-progress (10 min) alarm is open. |
 | 11 Lua engine | native Lua 5.4 (KeraLua's library), sandbox (no load / loadfile / dofile / io / os), `require` only within the version's module set, coroutine per call with a yield-from-hook budget, no `lua_error` from managed code (pending E_ARG errors). Memory cap per VM and the MoonSharp compatibility engine are not implemented; `lib/compat_v2` is a minimal shim. |
-| 12 testing | unit / simulation tests (32), deterministic replay (`SessionRecorder` / `SessionReplayer`, test proves identical intents), the macro benchmark (`bench`). The analyzers exist but are not wired into the build yet. |
+| 12 testing | unit / simulation tests (36), deterministic replay (`SessionRecorder` / `SessionReplayer`, test proves identical intents), the macro benchmark (`bench`), the tick-path analyzer FBOT001 on Agent / Api / Brain (build error), FBOT002 for `[HotPath]` methods. |
 | 16 logging | gated interpolated handler (0 B filtered), ring of structs read lock-free, repeat collapsing, rate limit, background writer with size rotation + gzip + retention, per-bot per-category levels with expiry (persisted), packet capture with filters / duration / size cap. |
 
 ## Measurements
@@ -63,11 +63,16 @@ blackboard; it is the only sizeable allocation and is measured apart (`publishAl
   QuestDialogueProcedure (page answered, DONE).
 - Brain: hot swap of a new version on a running bot (kept states), operator pause / force-state / actions,
   debug frames, packet capture, log levels.
-- Gate travel: the gate hop walked toward the RouCos01 gate (the first run timed out, see the bug log).
+- Gate travel: gate hops Rou -> RouCos02 (Forest of Tides) -> Rou, each a cross-server handoff (LINKOTHER,
+  reconnect, MAP_LOGIN with the new WM handle), with the gate's menu answered.
+- Shops: Pey's shop opened through the NPC menu (65 items listed), BUY_ACK 0x0201 (2 Floatation Stones, money
+  52 -> 42, bag cell gained), SELL_ACK 0x0381 (money +1, lot 2 -> 1).
+- Levelling: NextBotA level 1 -> 4 in about 15 minutes of the grinder brain (Rou south field and RouCos02).
 
 Not yet proven live: the 2016 wire (no account on a 2016 server yet: the account provisioning call was refused by
-the session's permission policy; the 2016 decoders are verified on a 2016 capture), shops (OpenShop), revive
-after death, a completed map change through a gate.
+the session's permission policy; the 2016 decoders are verified on a 2016 capture), revive after a death (no death
+happened at the levels played), skill casts (the test character has no combat skill learned yet; casts are covered
+by unit tests).
 
 ## Bug log (found in live runs)
 
@@ -77,20 +82,24 @@ after death, a completed map change through a gate.
 | 2 | a new brain version's `blackboard:` defaults missing after a hot swap | the swap restored the old bb.bot over the new defaults | defaults fill keys the restored bb.bot lacks (swap and resume); test `Hot_swap_keeps_bb_bot_and_states_and_seeds_new_defaults` | 774edef |
 | 3 | 6 ms ticks once a second | the sensor frame scanned every mesh rectangle at each publish | sensor frames only while watched / requested; rectangles cached per 500 u cell | 774edef |
 | 4 | re-issuing the same move each tick re-planned (a path job per tick) | `MoveController.Order` always started a new order | the same destination keeps the running order and action; test `Reissuing_the_same_move_keeps_the_running_order` | 774edef |
-| 5 | gate hop cancelled after 20 s on the way to a far gate | the GATE action's 20 s budget did not include the walk | the gate hop's action budget = walk at run speed x2 + 20 s | (this commit) |
-| 6 | operator move did nothing while the brain was paused | the move / combat controllers were frozen with the brain | controllers keep running while paused; only the brain stops | (this commit) |
+| 5 | gate hop cancelled after 20 s on the way to a far gate | the GATE action's 20 s budget did not include the walk | the gate hop's action budget = walk at run speed x2 + 20 s | 1694d3d |
+| 6 | operator move did nothing while the brain was paused | the move / combat controllers were frozen with the brain | controllers keep running while paused; only the brain stops | 1694d3d |
+| 8 | our HP flapped 27 % <-> 100 % and the survival layer thrashed | SOMEONESWING_DAMAGE was read with a u16 flag and a damage field; its layout is {flag u8, resthp u32 @5} with no damage amount | decoder fixed, damage on us derived from the HP drop; DOTDAMAGE decoded; test `Someone_swing_carries_rest_hp_not_damage` | 6070c0d |
+| 9 | BASHSTART / SWING_START / CEASE_FIRE loop, 23 times in 10 s, no damage | swings started at the edge of the keep reach ((body + 120) x 1.25) were refused and the controller re-armed after every cease fire | start reach = body + weapon reach; a stream that landed nothing is re-armed once, then the bash stops and `combat.inBashReach` asks for a closer spot; tests `Refused_swing_starts_are_not_rearmed_forever`, `A_swing_stream_that_landed_is_rearmed` | 6070c0d |
+| 10 | gathering nodes (HERB / WOOD / MUSHROOM1) counted as huntable mobs | huntable = any non player-side mob | huntable requires MobInfo MaxHP > 0 | 6070c0d |
+| 11 | a successful gate hop through a cross-server handoff reported Failed (link down) | the procedure settled one step after the link-down that follows LINKOTHER in the same tick | procedures settle as soon as an event finishes them; test `Gate_hop_succeeds_through_a_cross_server_handoff` | 890d74f |
 | 7 | the log ring returned nothing for small rings | the reader skipped a fixed 64-slot margin | margin capped at a quarter of the capacity; test `Repeats_collapse` | 774edef |
 
 ## Open
 
 - 2016 live run (accounts needed), then the cluster soak the operator asked for.
-- Cease-fire loops: a few bash streams end with CEASE_FIRE at in-reach distances; diagnostics are logged
-  (`combat` Info) - root cause still to be found.
+- Bash start reach: swings landed at 127-128 u from a Slime (start reach 130) and some starts at 125-130 u were
+  refused; the start / keep rule needs the acceptance probe of REVIEW 5.1 (distances logged at `combat` Info).
 - Procedures: trade, tent, storage, multi-map travel planning; shop buy/sell not exercised live.
 - Data still undecoded: displayed stats, skill empower, charged buffs (bag pages assumed 2), abstate durations on
   2026, party / trade packets; 2016 client QuestData format.
 - Learners: chase distance, family assist, damage fit.
-- Health alarms for transition cycles / no progress; analyzers wired into the build; MoonSharp compatibility
+- The no-progress health alarm; MoonSharp compatibility
   engine; Lua VM memory cap; Postgres / git mirror for the stores; `.botrec` replay into UI frames.
 - Mount detection uses the mount item's InxName (no client column marks mounts): replace with the item class that
   RIDE_ON follows once observed.

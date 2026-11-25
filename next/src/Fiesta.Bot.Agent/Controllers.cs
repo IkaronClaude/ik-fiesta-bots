@@ -112,6 +112,12 @@ public sealed class MoveController
     public void Advance(AgentContext ctx)
     {
         var self = ctx.World.Self;
+        // the order's action was resolved from outside (timed out, cancelled by the caller): stop walking for it
+        if (_action.Value > 0 && ctx.Actions.Get(_action) is { Id: > 0, Pending: false })
+        {
+            ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"move {_action.Value} ended from outside ({ctx.Actions.Get(_action).State}): stopping");
+            Stop(ctx, resolveCancelled: false);
+        }
         // believed position along the current leg
         if (Moving)
         {

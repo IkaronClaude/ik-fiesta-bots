@@ -468,6 +468,20 @@ public class ActionTests
         Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(a).State);
     }
 
+    [Fact]
+    public void A_cancelled_move_stops_walking()
+    {
+        using var t = new TestBot();
+        t.Tick(30);
+        var a = t.Ctx.Move.Order(new MoveOrder(7000, 5000, false, 10, ActionId.None), t.Ctx, 1);
+        t.Tick(5);
+        Assert.True(t.Ctx.Move.Moving);
+        t.Ctx.Actions.Cancel(a);
+        t.Tick();
+        Assert.False(t.Ctx.Move.Moving);
+        Assert.Equal(IntentEncoder.OpStop, t.Sent[^1]);
+    }
+
     private static List<ushort> Drain(TestBot t) { t.Tick(); return t.Sent; }
 }
 

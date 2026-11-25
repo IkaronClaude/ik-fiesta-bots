@@ -95,6 +95,8 @@ public static class Http
         var p99 = stats is null ? 0 : stats.RecentQuantile(x => x.TotalUs, 0.99, 1200);
         string? health = b.State == SupervisorState.Offline ? null
             : b.Brain?.Suspended == true ? "brain suspended (budget)"
+            : Cycle(b) is { } cyc ? cyc
+            : b.Brain is { } br && br.LoadErrors.Count > 0 ? "brain load errors"
             : p99 > 1000 ? "tick over budget"
             : b.Agent is { LastTickAt: >= 0 } a && SystemClock.Instance.NowMs - a.LastTickAt > 2000 ? "no tick"
             : "ok";
@@ -113,6 +115,22 @@ public static class Http
                 bagFree = snap.BagFree, bagSize = b.Agent?.Context.World.Bag.Size ?? 0, x = Math.Round(snap.X), y = Math.Round(snap.Y),
             },
         };
+    }
+
+    /// <summary>REDESIGN 10: a layer flipping between two states more than 20 times in a minute.</summary>
+    public static string? Cycle(BotRuntime b)
+    {
+        if (b.Brain is not { } br) return null;
+        var since = DateTime.UtcNow.AddMinutes(-1);
+        var counts = new Dictionary<(string, string, string), int>();
+        foreach (var t in br.Debug.Transitions())
+        {
+            if (t.At < since || t.Kind == "operator") continue;
+            var a = string.CompareOrdinal(t.From, t.To) < 0 ? (t.Layer, t.From, t.To) : (t.Layer, t.To, t.From);
+            counts[a] = counts.GetValueOrDefault(a) + 1;
+        }
+        foreach (var (k, n) in counts) if (n > 40) return $"transition cycle: {k.Item1} {k.Item2} <-> {k.Item3} x{n / 2} in 60 s";
+        return null;
     }
 
     /// <summary>The detail view (summary + record without password + levels + capture).</summary>
