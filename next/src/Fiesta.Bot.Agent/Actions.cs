@@ -20,7 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
-    MenuReply, BuyStones, StatPoint, Equip, StorageMove,
+    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -136,6 +136,21 @@ public static class ActionCatalog
         S(ActionKind.StorageMove, Resource.Npc, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.ItemCell && e.B >= 0 && e.A == a.Arg0 >> 10 && e.B == (a.Arg0 & 0x3FF) ? (ActionState.Acked, (ushort)0)
             : e.Kind == InboundKind.RelocAck && e.A != 0x0241 ? (ActionState.Refused, (ushort)e.A) : null), 3000);
+        // trade steps: each resolves on its own ack / fail (TradeDecoder commands); a trade that ends while a step is
+        // pending refuses the step with the ending command (11 / 12 cancelled, 35 failed, 4 / 7 / 8 the proposal died)
+        static FnMatcher T(int ok, int fail, Func<ActionRecord, InboundEvent, bool>? match = null) => new((a, e, w) =>
+            e.Kind != InboundKind.TradeEvent ? null
+            : e.A == ok && (match is null || match(a, e)) ? (ActionState.Acked, (ushort)0)
+            : e.A == fail ? (ActionState.Refused, (ushort)e.B)
+            : e.A is 4 or 7 or 8 or 11 or 12 or 35 ? (ActionState.Refused, (ushort)(0x4C00 | e.A)) : null);
+        S(ActionKind.TradePropose, Resource.Npc, T(9, 4), 30000);
+        S(ActionKind.TradeAnswer, Resource.Npc, T(9, -1), 10000);
+        S(ActionKind.TradeOfferItem, Resource.Npc, T(15, 14, (a, e) => e.B == a.Arg0), 5000);
+        S(ActionKind.TradeTakeBack, Resource.Npc, T(19, 18, (a, e) => e.B == a.Arg0), 5000);
+        S(ActionKind.TradeOfferMoney, Resource.Npc, T(23, 22), 5000);
+        S(ActionKind.TradeLock, Resource.Npc, T(27, 26), 5000);
+        S(ActionKind.TradeConfirm, Resource.Npc, T(33, 32), 5000);
+        S(ActionKind.TradeCancel, Resource.None, new FnMatcher((a, e, w) => e.Kind == InboundKind.TradeEvent && e.A is 7 or 8 or 11 or 12 ? (ActionState.Acked, (ushort)0) : null), 5000);
         S(ActionKind.Talk, Resource.Npc, Controller, 20000);
         S(ActionKind.Storage, Resource.Npc, Controller, 6000);
         S(ActionKind.Gate, Resource.Movement, Controller, 20000);
@@ -866,19 +881,6 @@ public sealed class ReviveProcedure : ProcedureBase
     {
         if (e.Kind is InboundKind.Revive or InboundKind.MapLink) Done();
     }
-}
-
-/// <summary>Propose/accept -> board items/money -> lock -> confirm (trade packets not wired yet: fails with a reason).</summary>
-public sealed class TradeProcedure(int partnerHandle) : ProcedureBase
-{
-    /// <summary>Partner handle.</summary>
-    public int PartnerHandle { get; } = partnerHandle;
-    /// <inheritdoc/>
-    public override ProcedureKind Kind => ProcedureKind.Trade;
-    /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => Fail("trade is not wired in this runtime yet");
-    /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt, AgentContext ctx) { }
 }
 
 /// <summary>Tent: not wired yet (fails with a reason).</summary>

@@ -32,6 +32,8 @@ public sealed class HostServices : IAsyncDisposable
     public NavService Nav { get; private set; } = null!;
     /// <summary>Knowledge.</summary>
     public KnowledgeStore Knowledge { get; } = new();
+    /// <summary>The team board our bots ask each other for help on.</summary>
+    public TeamBoard Team { get; } = new();
     /// <summary>Clock.</summary>
     public IClock Clock { get; } = SystemClock.Instance;
     /// <summary>Log writer.</summary>
@@ -301,7 +303,7 @@ public sealed class BotRuntime
         var actions = new ActionSystem(outbound);
         var ctx = new AgentContext
         {
-            BotId = Record.Id, Data = _h.Data, Nav = _h.Nav, Atlas = _h.Atlas, Jobs = _h.Jobs, Knowledge = _h.Knowledge, Log = Log, Inbound = inbound, Actions = actions,
+            BotId = Record.Id, Data = _h.Data, Nav = _h.Nav, Atlas = _h.Atlas, Jobs = _h.Jobs, Knowledge = _h.Knowledge, Team = _h.Team, Log = Log, Inbound = inbound, Actions = actions,
             World = new WorldState { Data = _h.Data, Knowledge = _h.Knowledge },
         };
         ctx.World.Self.Seed(login.CharacterName, login.ClassId, _h.Data.ClassFamily(login.ClassId), login.Level);

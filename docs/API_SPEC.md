@@ -317,12 +317,35 @@ TELEPORT, GATE`.
 | `npc.storageInfo()` | pages, cen | O(1) | 0 | from the last window |
 | `npc.deposit(bagSlot, cell)` / `npc.withdraw(cell, bagSlot)` | action | Npc | ITEM_RELOC_REQ; acked when the source cell changes, refused with the RELOC_ACK code (`0x024A` = the item cannot go there) |
 
-### 2.11 `social` (14)
+### 2.11 `social`
 
-`partyInvite(name)`, `partyAccept()`, `partyLeave()`, `partyMembers()` (iter of handle, iter),
-`partySize()`, `tradePropose(h)`, `tradeState()` (string), `tradeOfferItem(slot, lot)`,
-`tradeOfferMoney(cen)`, `tradeLock()`, `tradeConfirm()`, `tradeCancel()`, `chatLast()` (name, text;
-lua-str), `whisperLast()` (name, text). Actions return action ids (resource `Chat` or `Npc` for trade).
+`partyInvite(name)`, `partyAccept()`, `partyLeave()`, `partyMembers()` (iter of handle, iter), `partySize()`,
+`pendingInvite()`, `pendingFriend()`, `friendAnswer(accept)`, `chatLast()` (name, text; lua-str), `whisperLast()`.
+
+Player trade (dept 19; every frame decoded into `TradeState` and logged under `social`):
+
+| function | returns | notes |
+|---|---|---|
+| `social.tradePropose(h)` | action | PROPOSE_REQ; acked on START (the window opened), refused with the PROPOSENO code (`0x06C8`: the partner has an NPC window open) |
+| `social.tradeAnswer(yes)` | action | answer a proposal (phase `asked`); yes is acked on START |
+| `social.tradeState()` | string | `none, asked, proposed, open, done, failed, cancelled` |
+| `social.tradeInfo()` | partner, myCen, theirCen | |
+| `social.tradeFlags()` | myLock, theirLock, myDecide, theirDecide | a board change unlocks both |
+| `social.tradeTheirs(board)` / `social.tradeMine(board)` | itemId, lot / bag slot | board slots 0..15 |
+| `social.tradeOnBoard(bagSlot)` | boolean | |
+| `social.tradeOfferItem(slot)` / `social.tradeTakeBack(board)` | action | UPBOARD (a whole bag slot) / DOWNBOARD; acked on their ACK, refused with the FAIL code |
+| `social.tradeOfferMoney(cen)` | action | CENBOARDING (the total offered) |
+| `social.tradeLock()` / `social.tradeConfirm()` / `social.tradeCancel()` | action | BOARDLOCK / DECIDE / CANCEL; the trade completes (event `tradeEnded`, arg 1) when both decided |
+
+A trade that ends while a step is pending refuses the step with `0x4C00 | command` (11 / 12 cancelled, 35 failed).
+Events: `tradeAsked` (proposer handle), `tradeStarted` (partner), `tradeEnded` (1 done, 0 failed / cancelled).
+
+### 2.11b `team` (host-wide asks between our bots)
+
+`team.ask(kind, amount)` posts / refreshes our ask with our map and position; `team.withdraw()`; `team.mine()` ->
+kind, amount, claimer; `team.next(kind, maxAmount)` -> name, amount, map, x, y of an unclaimed ask (or the one we
+claimed); `team.claim(name)` / `team.release(name)`; `team.player(name)` -> handle of that character in view. Asks
+expire 15 minutes after their last post. Strings are allocated: low-rate use only.
 
 ### 2.12 `know` (9) — learned knowledge (shared host-wide)
 

@@ -13,7 +13,7 @@ public enum EventKind : byte
     Damaged, Hit, TargetDied, Kill, AggroGained, AggroLost, EntityAppeared, EntityLeft, HpChanged, SpChanged,
     LevelUp, MapChanged, MoveFailed, Arrived, CastResult, ActionResolved, ProcedureDone, JobDone,
     QuestProgress, QuestDone, QuestAccepted, ItemGained, ItemLost, BagFull, MoneyChanged, Chat, Whisper,
-    PartyInvite, TradeAsked, Died, Revived, Stuck, Budget, Operator,
+    PartyInvite, TradeAsked, Died, Revived, Stuck, Budget, Operator, TradeStarted, TradeEnded,
 }
 
 /// <summary>One brain event.</summary>
@@ -351,6 +351,8 @@ public sealed class AgentContext
     public IJobScheduler Jobs { get; init; } = null!;
     /// <summary>Knowledge.</summary>
     public IKnowledgeStore Knowledge { get; init; } = null!;
+    /// <summary>The host-wide team board (asks between our bots).</summary>
+    public TeamBoard Team { get; init; } = new();
     /// <summary>Logger.</summary>
     public BotLogger Log { get; init; } = null!;
     /// <summary>The inbound ring (job completions post here).</summary>
@@ -532,6 +534,10 @@ public sealed class BotAgent
             case InboundKind.BuySellAck:
                 log.Log(LogCategory.Item, LogLevel.Info, $"{(e.B == 0 ? "BUY" : "SELL")}_ACK 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
                 break;
+            case InboundKind.TradeEvent:
+                log.Log(LogCategory.Social, e.A is 15 or 16 or 19 or 20 or 23 or 24 or 27 or 28 or 29 or 30 or 33 or 34 ? LogLevel.Info : LogLevel.Note,
+                    $"TRADE {TradeName((int)e.A)} b={e.B} c={e.C}{(e.A == 16 ? $" x{e.X}" : "")} [{e.Text}] -> {Context.World.Trade.Phase} partner {Context.World.Trade.Partner} cen {Context.World.Trade.MyCen}/{Context.World.Trade.TheirCen} lock {Context.World.Trade.MyLocked}/{Context.World.Trade.TheirLocked} decide {Context.World.Trade.MyDecided}/{Context.World.Trade.TheirDecided}");
+                break;
             case InboundKind.StorageFail:
                 log.Log(LogCategory.Item, LogLevel.Note, $"STORAGE window refused 0x{e.A:X4}");
                 break;
@@ -549,6 +555,16 @@ public sealed class BotAgent
                 break;
         }
     }
+
+    private static string TradeName(int cmd) => cmd switch
+    {
+        2 => "PROPOSE_ASK", 3 => "ASKNO", 4 => "PROPOSENO (refused)", 5 => "ASKYES", 6 => "PROPOSEYES", 7 => "PROPOSE_CANCEL", 8 => "PROPOSE_CANCELED",
+        9 => "START", 11 => "CANCEL_ACK", 12 => "CANCEL (by the partner)", 14 => "UPBOARD_FAIL", 15 => "UPBOARD_ACK", 16 => "OPPOSIT_UPBOARD",
+        18 => "DOWNBOARD_FAIL", 19 => "DOWNBOARD_ACK", 20 => "OPPOSIT_DOWNBOARD", 22 => "CENBOARDING_FAIL", 23 => "CENBOARDING_ACK",
+        24 => "OPPOSIT_CENBOARDING", 26 => "BOARDLOCK_FAIL", 27 => "BOARDLOCK_ACK", 28 => "OPPOSIT_BOARDLOCK", 29 => "BOARDUNLOCK",
+        30 => "OPPOSIT_BOARDUNLOCK", 32 => "DECIDE_FAIL", 33 => "DECIDE_ACK", 34 => "OPPOSIT_DECIDE", 35 => "TRADE_FAIL", 36 => "TRADE_COMPLETE",
+        _ => $"cmd {cmd}",
+    };
 
     private void HandleControl(ControlCommand cmd)
     {

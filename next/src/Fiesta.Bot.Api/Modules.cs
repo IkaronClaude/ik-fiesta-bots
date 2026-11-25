@@ -1,5 +1,6 @@
 // The Lua helper library (API_SPEC section 2). The [LuaFn] source generator binds these; every function runs on the
 // bot's tick thread during the brain step. Return conventions: -1 / nil for "none" (0 is a valid id).
+using System.Buffers.Binary;
 using Fiesta.Bot.Agent;
 using Fiesta.Bot.Protocol;
 using Fiesta.Bot.Services;
@@ -1031,6 +1032,15 @@ public sealed partial class NpcModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>Open a storage keeper's storage (procedure: click, menu answer, the storage window; fails when the NPC
     /// opens a shop instead or the window is refused).</summary>
     [LuaFn] public int Storage(int h, int reply = 1) => Ctx.Procedures.Start(new StorageProcedure(h, reply), ActionKind.Storage, CallingLayer, Ctx).Value;
+    /// <summary>Close whatever NPC window is open (END_OF_TRADE, as the client does when a window is closed; an open
+    /// window makes the game refuse trade proposals). Resolved when sent: the game answers nothing.</summary>
+    [LuaFn]
+    public int Close()
+    {
+        W.Bag.StorageOpenAt = -1;
+        _one[0] = IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, -1);
+        return Ctx.Actions.Issue(ActionKind.Raw, CallingLayer, IntentEncoder.OpEndOfTrade, 0, _one).Value;
+    }
     /// <summary>Is the storage window open now (opened, and no other NPC window or map change since)?</summary>
     [LuaFn] public bool StorageOpen() => W.Bag.StorageOpenAt >= 0;
     /// <summary>Occupied storage cells as of the last window and the moves since.</summary>
@@ -1062,7 +1072,7 @@ public sealed partial class NpcModule(AgentContext ctx) : ApiModule(ctx)
     }
 }
 
-/// <summary>Lua module `social` (party / trade are not wired yet; chat reads work).</summary>
+/// <summary>Lua module `social`: party invitations, friend requests, player trade, chat reads.</summary>
 [LuaModule("social")]
 public sealed partial class SocialModule(AgentContext ctx) : ApiModule(ctx)
 {
@@ -1103,20 +1113,42 @@ public sealed partial class SocialModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn(Alloc = Alloc.Iterator)] public LuaIter PartyMembers() { var s = Ctx.Scratch(16); var n = Ctx.World.Party.Members(s); return ApiScope.Iter(s[..n]); }
     /// <summary>Party size.</summary>
     [LuaFn] public int PartySize() => Ctx.World.Party.Size;
-    /// <summary>Propose a trade (not wired).</summary>
-    [LuaFn] public int TradePropose(int h) => No(ActionKind.TradePropose);
-    /// <summary>Trade state name.</summary>
+    /// <summary>Propose a trade to a player in view (TRADE_PROPOSE_REQ); acked when the window opens (START), refused
+    /// with the PROPOSENO code.</summary>
+    [LuaFn] public int TradePropose(int h) { Span<byte> b = stackalloc byte[2]; BinaryPrimitives.WriteUInt16LittleEndian(b, (ushort)h); return T(ActionKind.TradePropose, 1, b, h); }
+    /// <summary>Answer a player's trade proposal: yes (acked when the window opens) or no.</summary>
+    [LuaFn] public int TradeAnswer(bool yes) => Ctx.World.Trade.Phase != TradePhase.Asked ? Ctx.Actions.Refuse(ActionKind.TradeAnswer, CallingLayer, LocalRefusal.InvalidTarget).Value
+        : yes ? T(ActionKind.TradeAnswer, 6, default, 1) : Declined(T(ActionKind.Raw, 3, default, 0));
+    private int Declined(int a) { Ctx.World.Trade.Forget(Ctx.Now); return a; }
+    /// <summary>Trade phase: none, asked, proposed, open, done, failed, cancelled.</summary>
     [LuaFn(Alloc = Alloc.LuaString)] public string TradeState() => Ctx.World.Trade.Phase.ToString().ToLowerInvariant();
-    /// <summary>Offer an item (not wired).</summary>
-    [LuaFn] public int TradeOfferItem(int slot, int lot) => No(ActionKind.TradeOfferItem);
-    /// <summary>Offer money (not wired).</summary>
-    [LuaFn] public int TradeOfferMoney(long cen) => No(ActionKind.TradeOfferMoney);
-    /// <summary>Lock (not wired).</summary>
-    [LuaFn] public int TradeLock() => No(ActionKind.TradeLock);
-    /// <summary>Confirm (not wired).</summary>
-    [LuaFn] public int TradeConfirm() => No(ActionKind.TradeConfirm);
-    /// <summary>Cancel (not wired).</summary>
-    [LuaFn] public int TradeCancel() => No(ActionKind.TradeCancel);
+    /// <summary>The trade partner's handle (-1 none) and our / their money on the board.</summary>
+    [LuaFn] public (int Partner, long MyCen, long TheirCen) TradeInfo() => (Ctx.World.Trade.Partner, Ctx.World.Trade.MyCen, Ctx.World.Trade.TheirCen);
+    /// <summary>Lock / decide flags: mine locked, theirs locked, mine decided, theirs decided.</summary>
+    [LuaFn] public (bool MyLock, bool TheirLock, bool MyDecide, bool TheirDecide) TradeFlags() { var t = Ctx.World.Trade; return (t.MyLocked, t.TheirLocked, t.MyDecided, t.TheirDecided); }
+    /// <summary>Their item on a board slot: item id, lot ((-1, 0) none).</summary>
+    [LuaFn] public (int ItemId, int Lot) TradeTheirs(int board) => Ctx.World.Trade.TheirsAt(board);
+    /// <summary>The bag slot we put on a board slot (-1 none).</summary>
+    [LuaFn] public int TradeMine(int board) => Ctx.World.Trade.MineAt(board);
+    /// <summary>Is a bag slot on our side of the board?</summary>
+    [LuaFn] public bool TradeOnBoard(int bagSlot) => Ctx.World.Trade.OnBoard(bagSlot);
+    /// <summary>Put a bag slot on the board (UPBOARD; the whole stack: the game boards a slot, not a lot).</summary>
+    [LuaFn] public int TradeOfferItem(int slot) { Span<byte> b = [(byte)slot]; return T(ActionKind.TradeOfferItem, 13, b, slot); }
+    /// <summary>Take a board slot back (DOWNBOARD).</summary>
+    [LuaFn] public int TradeTakeBack(int board) { Span<byte> b = [(byte)board]; return T(ActionKind.TradeTakeBack, 17, b, board); }
+    /// <summary>Put money on the board (CENBOARDING, the total offered).</summary>
+    [LuaFn] public int TradeOfferMoney(long cen) { Span<byte> b = stackalloc byte[8]; BinaryPrimitives.WriteInt64LittleEndian(b, cen); return T(ActionKind.TradeOfferMoney, 21, b, cen); }
+    /// <summary>Lock our board (BOARDLOCK).</summary>
+    [LuaFn] public int TradeLock() => T(ActionKind.TradeLock, 25, default, 0);
+    /// <summary>Confirm the trade (DECIDE; both sides locked first). The trade completes when both decided.</summary>
+    [LuaFn] public int TradeConfirm() => T(ActionKind.TradeConfirm, 31, default, 0);
+    /// <summary>Cancel the trade (CANCEL_REQ).</summary>
+    [LuaFn] public int TradeCancel() => T(ActionKind.TradeCancel, 10, default, 0);
+    private int T(ActionKind k, int cmd, ReadOnlySpan<byte> payload, long arg)
+    {
+        _one[0] = IntentEncoder.Trade(cmd, payload, -1);
+        return Ctx.Actions.Issue(k, CallingLayer, arg, cmd, _one).Value;
+    }
     /// <summary>Last chat line: speaker handle (as text), text.</summary>
     [LuaFn(Alloc = Alloc.LuaString)] public (string Name, string Text) ChatLast() => Ctx.World.Npc.LastChat is { } c ? (c.Speaker.ToString(), c.Text) : ("", "");
     /// <summary>Last whisper: name, text.</summary>

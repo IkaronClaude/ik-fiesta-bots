@@ -118,7 +118,7 @@ public enum InboundKind : ushort
     PartyProposal,
     /// <summary>A friend request (world manager FRIEND_SET_CONFIRM_REQ): Text = "charid\tfriendid" as sent.</summary>
     FriendProposal,
-    /// <summary>Trade event (raw opcode in A, code B).</summary>
+    /// <summary>Player trade (dept 19): A = command (opcode &amp; 0x3FF), B / C / X per command (see TradeDecoder).</summary>
     TradeEvent,
     /// <summary>Chat: H speaker, Text.</summary>
     Chat,
@@ -252,7 +252,7 @@ public sealed class DecoderTable
         var t = new DecoderTable(wire);
         t.Register(new EntityDecoder()); t.Register(new CombatDecoder()); t.Register(new SelfDecoder());
         t.Register(new MovementDecoder()); t.Register(new ItemDecoder()); t.Register(new QuestMenuDecoder());
-        t.Register(new SocialDecoder()); t.Register(new WorldDecoder());
+        t.Register(new SocialDecoder()); t.Register(new WorldDecoder()); t.Register(new TradeDecoder());
         return t;
     }
 
@@ -843,6 +843,45 @@ public sealed class WorldDecoder : IPacketDecoder
     }
 }
 
+/// <summary>Player trade, server to client (dept 19, opcode 0x4C00 | command). One <see cref="InboundKind.TradeEvent"/>
+/// per frame, A = command:
+/// 2 PROPOSE_ASK_REQ (B proposer handle), 4 PROPOSENO_ACK (B code: declined / refused), 7 / 8 PROPOSE_CANCEL(ED),
+/// 9 START_CMD (B partner handle), 11 CANCEL_ACK, 12 CANCEL_CMD (the partner cancelled),
+/// 14 / 18 / 22 / 26 / 32 UPBOARD / DOWNBOARD / CENBOARDING / BOARDLOCK / DECIDE fail (B code),
+/// 15 UPBOARD_ACK (B bag slot, C board slot), 16 OPPOSITUPBOARD_CMD (B board slot, C item id, X lot),
+/// 19 DOWNBOARD_ACK / 20 OPPOSITDOWNBOARD_CMD (B board slot), 23 CENBOARDING_ACK / 24 OPPOSITCENBOARDING_CMD (C money),
+/// 27 BOARDLOCK_ACK, 28 OPPOSITBOARDLOCK_CMD, 29 BOARDUNLOCK_CMD, 30 OPPOSITBOARDUNLOCK_CMD, 33 DECIDE_ACK,
+/// 34 OPPOSITDECIDE_CMD, 35 TRADEFAIL_CMD (B code when sent), 36 TRADECOMPLETE_CMD. Text = the frame as hex (for the log:
+/// trade frames are rare and the shapes past the first fields are not all confirmed).</summary>
+public sealed class TradeDecoder : IPacketDecoder
+{
+    /// <summary>Department of the trade packets.</summary>
+    public const int Dept = 19;
+    /// <inheritdoc/>
+    public IReadOnlyList<ushort> Opcodes { get; } = Enumerable.Range(1, 36).Select(c => (ushort)((Dept << 10) | c)).ToArray();
+
+    /// <inheritdoc/>
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        var cmd = op & 0x3FF;
+        var e = InboundEvent.Of(InboundKind.TradeEvent, op, at);
+        e.A = cmd;
+        switch (cmd)
+        {
+            case 2 or 4 or 9 or 14 or 18 or 22 or 26 or 32 or 35: e.B = p.Length >= 2 ? Rd.U16(p, 0) : -1; break;
+            case 15: e.B = p.Length >= 1 ? p[0] : -1; e.C = p.Length >= 2 ? p[1] : -1; break;
+            case 16:   // {board u8, SHINE_ITEM_STRUCT {itemid u16, attr}}
+                e.B = p.Length >= 1 ? p[0] : -1; e.C = p.Length >= 3 ? Rd.U16(p, 1) : -1;
+                e.X = p.Length switch { 4 => p[3], 5 => (uint)(p[3] | (p[4] << 8)), _ => 1 };
+                break;
+            case 19 or 20: e.B = p.Length >= 1 ? p[0] : -1; break;
+            case 23 or 24: e.C = Rd.U64(p, 0); break;
+        }
+        e.Text = Convert.ToHexString(p.Length > 24 ? p[..24] : p);
+        sink.TryWrite(e);
+    }
+}
+
 /// <summary>Encodes typed requests into intents without allocation (inline payloads).</summary>
 public static class IntentEncoder
 {
@@ -951,6 +990,9 @@ public static class IntentEncoder
         BinaryPrimitives.WriteUInt16LittleEndian(b, from); BinaryPrimitives.WriteUInt16LittleEndian(b[2..], to);
         return Make(OpReloc, actionId, b);
     }
+    /// <summary>A trade request (dept 19 command) with an optional payload: 1 PROPOSE {partner u16}, 6 yes / 3 no to an
+    /// ask, 13 UPBOARD {bag slot}, 17 DOWNBOARD {board slot}, 21 CENBOARDING {money u64}, 25 BOARDLOCK, 31 DECIDE, 10 CANCEL.</summary>
+    public static Intent Trade(int cmd, ReadOnlySpan<byte> payload, int actionId) => Make((ushort)((TradeDecoder.Dept << 10) | cmd), actionId, payload);
     /// <summary>Raw opcode + payload.</summary>
     public static Intent Raw(ushort opcode, ReadOnlySpan<byte> payload, int actionId) => Make(opcode, actionId, payload);
 }

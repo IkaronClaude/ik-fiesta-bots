@@ -404,7 +404,7 @@ public sealed class Inventory
     /// <summary>Storage pages the keeper's window reported (0 = never opened).</summary>
     public int StoragePages { get; internal set; }
     /// <summary>When the storage window opened (ms), -1 = not open (closed by another window, a map change).</summary>
-    public long StorageOpenAt { get; internal set; } = -1;
+    public long StorageOpenAt { get; set; } = -1;
     /// <summary>Occupied storage cells.</summary>
     public int StoreUsed { get; private set; }
 
@@ -524,16 +524,82 @@ public sealed class PartyState
     public int Size => _members.Count;
 }
 
-/// <summary>Trade window state.</summary>
-public enum TradePhase : byte { None, Asked, Proposed, Open, Locked, Confirmed, Done, Cancelled }
+/// <summary>Trade window state: None, Asked (a player asks us), Proposed (we asked), Open (the window is up), Done /
+/// Failed / Cancelled (how the last trade ended).</summary>
+public enum TradePhase : byte { None, Asked, Proposed, Open, Done, Failed, Cancelled }
 
-/// <summary>Trade state.</summary>
+/// <summary>Trade state, from the trade packets (TradeDecoder).</summary>
 public sealed class TradeState
 {
+    /// <summary>Board slots tracked per side.</summary>
+    public const int BoardSlots = 16;
+    private readonly int[] _mine = new int[BoardSlots], _theirItem = new int[BoardSlots], _theirLot = new int[BoardSlots];
+    /// <summary>Create.</summary>
+    public TradeState() { Array.Fill(_mine, -1); Array.Fill(_theirItem, -1); }
     /// <summary>Current phase.</summary>
     public TradePhase Phase { get; internal set; }
     /// <summary>Partner handle, -1 none.</summary>
     public int Partner { get; internal set; } = -1;
+    /// <summary>Money on our / their side of the board.</summary>
+    public long MyCen { get; internal set; }
+    /// <summary>Money on their side.</summary>
+    public long TheirCen { get; internal set; }
+    /// <summary>Lock / decide flags per side.</summary>
+    public bool MyLocked { get; internal set; }
+    /// <summary>Their board is locked.</summary>
+    public bool TheirLocked { get; internal set; }
+    /// <summary>We decided (confirmed).</summary>
+    public bool MyDecided { get; internal set; }
+    /// <summary>They decided.</summary>
+    public bool TheirDecided { get; internal set; }
+    /// <summary>Last refusal code of a trade step (0 none) and the command it answered.</summary>
+    public (int Code, int Cmd) LastError { get; internal set; }
+    /// <summary>When the phase last changed (ms).</summary>
+    public long Since { get; internal set; } = -1;
+    /// <summary>The bag slot we put on board slot b, -1 none.</summary>
+    public int MineAt(int board) => (uint)board < BoardSlots ? _mine[board] : -1;
+    /// <summary>Their item on board slot b: (item id, lot), (-1, 0) none.</summary>
+    public (int ItemId, int Lot) TheirsAt(int board) => (uint)board < BoardSlots && _theirItem[board] >= 0 ? (_theirItem[board], _theirLot[board]) : (-1, 0);
+    /// <summary>Is a bag slot on our board?</summary>
+    public bool OnBoard(int bagSlot) { foreach (var m in _mine) if (m == bagSlot) return true; return false; }
+
+    /// <summary>Forget a proposal we declined (no answer to a decline is expected).</summary>
+    public void Forget(long now) => Reset(TradePhase.None, -1, now);
+
+    internal void Reset(TradePhase phase, int partner, long now)
+    {
+        Phase = phase; Partner = partner; Since = now; MyCen = TheirCen = 0;
+        MyLocked = TheirLocked = MyDecided = TheirDecided = false;
+        Array.Fill(_mine, -1); Array.Fill(_theirItem, -1); Array.Clear(_theirLot);
+    }
+
+    internal void Apply(in InboundEvent e, long now)
+    {
+        int b = (int)e.B;
+        switch (e.A)
+        {
+            case 2: Reset(TradePhase.Asked, b, now); break;
+            case 4: LastError = ((int)e.B, 1); Reset(TradePhase.Failed, -1, now); break;
+            case 7 or 8: Reset(TradePhase.Cancelled, -1, now); break;
+            case 9: Reset(TradePhase.Open, b, now); break;
+            case 11 or 12: Reset(TradePhase.Cancelled, -1, now); break;
+            case 14 or 18 or 22 or 26 or 32: LastError = ((int)e.B, (int)e.A - 1); break;
+            case 15: if ((uint)e.C < BoardSlots) _mine[e.C] = b; MyLocked = MyDecided = false; break;
+            case 16: if ((uint)b < BoardSlots) { _theirItem[b] = (int)e.C; _theirLot[b] = (int)e.X; } TheirLocked = TheirDecided = false; break;
+            case 19: if ((uint)b < BoardSlots) _mine[b] = -1; MyLocked = MyDecided = false; break;
+            case 20: if ((uint)b < BoardSlots) _theirItem[b] = -1; TheirLocked = TheirDecided = false; break;
+            case 23: MyCen = e.C; MyLocked = MyDecided = false; break;
+            case 24: TheirCen = e.C; TheirLocked = TheirDecided = false; break;
+            case 27: MyLocked = true; break;
+            case 28: TheirLocked = true; break;
+            case 29: MyLocked = MyDecided = false; break;
+            case 30: TheirLocked = TheirDecided = false; break;
+            case 33: MyDecided = true; break;
+            case 34: TheirDecided = true; break;
+            case 35: LastError = ((int)e.B, 35); Phase = TradePhase.Failed; Since = now; break;
+            case 36: Phase = TradePhase.Done; Since = now; break;
+        }
+    }
 }
 
 /// <summary>Current map.</summary>
@@ -986,6 +1052,16 @@ public sealed class WorldState
             case InboundKind.StorageFail:
                 Bag.StorageOpenAt = -1;
                 break;
+            case InboundKind.TradeEvent:
+            {
+                var was = Trade.Phase;
+                Trade.Apply(e, now);
+                if (e.A == 2) ev.Raise(EventKind.TradeAsked, e.B);
+                if (e.A == 9) ev.Raise(EventKind.TradeStarted, e.B);
+                if (Trade.Phase != was && Trade.Phase is TradePhase.Done or TradePhase.Failed or TradePhase.Cancelled && was is TradePhase.Open or TradePhase.Proposed or TradePhase.Asked)
+                    ev.Raise(EventKind.TradeEnded, Trade.Phase == TradePhase.Done ? 1 : 0);
+                break;
+            }
             case InboundKind.StoneShop:
                 Npc.StonePrices = ((int)e.A, (int)e.B, (int)e.C, (int)e.X, now);
                 break;
