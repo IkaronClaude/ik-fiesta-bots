@@ -18,6 +18,9 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
     private GateHopProcedure? _hop;
     private RouteHop _next;
     private int _hopFails, _replans;
+    // destinations whose gate refused us (no menu: the server refuses silently, e.g. a level requirement); routed around
+    private readonly HashSet<int> _refusedInto = new();
+    private int _menuRefusals;
     private readonly HashSet<(int, int)> _explored = new();
     private const double GateSight = 700;
 
@@ -53,8 +56,10 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         }
         if (++_replans > 40) { Fail("too many re-plans"); return; }
         // maps whose easiest hostile mob is above maxMobLevel are routed around (crossing them is how bots died)
-        Func<int, bool>? avoid = maxMobLevel == int.MaxValue ? null
-            : m => ctx.Atlas.EasiestMobLevel(m, id => ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1) > maxMobLevel;
+        Func<int, bool>? avoid = maxMobLevel == int.MaxValue && _refusedInto.Count == 0 ? null
+            : m => _refusedInto.Contains(m) || (maxMobLevel != int.MaxValue
+                && ctx.Atlas.EasiestMobLevel(m, id => ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1) > maxMobLevel);
+        if (_refusedInto.Contains(target.Id)) { Fail($"the gate into {TargetMap} refuses us"); return; }
         var route = ctx.Atlas.Route(w.Map.MapId, px, py, target.Id, x, y, avoid);
         if (route is null || route.Hops.Count == 0)
         {
@@ -132,6 +137,11 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         if (_hop is null || _hop.Status == ProcedureStatus.Running) return;
         if (_hop.Status == ProcedureStatus.Succeeded) { _hop = null; _hopFails = 0; Go("start", ctx, 0); return; }
         ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"travel: gate hop failed ({_hop.FailReason})");
+        if (_hop.FailReason?.Contains("awaitMenu") == true && ++_menuRefusals >= 2)
+        {
+            _refusedInto.Add(_next.To); _menuRefusals = 0;
+            ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"travel: the gate to {ctx.Data.Map(_next.To)?.MapName} answers no menu twice: routing around it");
+        }
         _hop = null;
         if (++_hopFails > 3) { Fail("gate hops keep failing"); return; }
         Go("start", ctx, 0);
