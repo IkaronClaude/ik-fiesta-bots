@@ -36,12 +36,27 @@ public sealed class WorldAtlas
 
     /// <summary>Raised (outside the lock) when a gate was learned, to persist it.</summary>
     public event Action<int, double, double, int>? GateLearned;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _pvp = new();
+    /// <summary>Raised when a map is learned to be a player-fight area (map id).</summary>
+    public event Action<int>? PvpLearned;
+    /// <summary>Is the map a player-fight area (told by its zone on entry; shared by every bot)?</summary>
+    public bool IsPvp(int mapId) => _pvp.ContainsKey(mapId);
+    /// <summary>Learn a player-fight map; true when new.</summary>
+    public bool LearnPvp(int mapId)
+    {
+        if (ReferenceEquals(this, Empty)) return false;   // the shared placeholder never learns
+        if (!_pvp.TryAdd(mapId, 0)) return false;
+        PvpLearned?.Invoke(mapId);
+        return true;
+    }
     /// <summary>Waypoints read.</summary>
     public int Waypoints { get; }
     /// <summary>Map-to-map gate links from the client graph.</summary>
     public int Links { get; }
 
     private WorldAtlas() { }
+    /// <summary>An atlas with no client tables (tests, a bot without data): learns gates and player-fight maps only.</summary>
+    public static WorldAtlas CreateEmpty() => new();
 
     /// <summary>Load from a ressystem directory (missing tables leave that part empty). Regen points are the first
     /// guess of where a learned gate lands.</summary>

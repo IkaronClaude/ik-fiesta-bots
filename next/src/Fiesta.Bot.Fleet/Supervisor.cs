@@ -71,6 +71,9 @@ public sealed class HostServices : IAsyncDisposable
                 if (line.Split('\t') is [var a, var b, var c, var d] && int.TryParse(a, out var m) && double.TryParse(b, out var gx) && double.TryParse(c, out var gy) && int.TryParse(d, out var to))
                     Atlas.LearnGate(m, gx, gy, to);
         Atlas.GateLearned += (m, gx, gy, to) => { lock (Atlas) File.AppendAllText(gates, $"{m}\t{gx:0}\t{gy:0}\t{to}\n"); };
+        var pvp = Path.Combine(DataDir, "atlas-pvp-maps.txt");
+        if (File.Exists(pvp)) foreach (var line in File.ReadAllLines(pvp)) if (int.TryParse(line, out var pm)) Atlas.LearnPvp(pm);
+        Atlas.PvpLearned += m => { lock (Atlas) File.AppendAllText(pvp, m + Environment.NewLine); };
         var kn = Path.Combine(DataDir, "knowledge-npcs.json");
         if (File.Exists(kn)) Knowledge.ImportNpcs(File.ReadAllText(kn));
         LogRenderer.MobName = id => Data.Mob(id)?.Name;

@@ -30,7 +30,7 @@ public sealed class TestBot : IDisposable
         var log = new BotLogger("t", new LogRing(1024), null, Clock);
         Ctx = new AgentContext
         {
-            BotId = "t", Data = data, Nav = new NavService(Path.GetTempPath(), Jobs), Jobs = Jobs, Knowledge = new KnowledgeStore(), Log = log,
+            BotId = "t", Data = data, Nav = new NavService(Path.GetTempPath(), Jobs), Jobs = Jobs, Atlas = WorldAtlas.CreateEmpty(), Knowledge = new KnowledgeStore(), Log = log,
             Inbound = In, Actions = new ActionSystem(Out), World = new WorldState { Data = data },
         };
         Agent = new BotAgent(Ctx, In, Out, new ControlQueue(), null, Clock);
