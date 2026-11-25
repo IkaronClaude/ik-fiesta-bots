@@ -44,6 +44,8 @@ public sealed class HostServices : IAsyncDisposable
     public CheckpointStore Checkpoints { get; private set; } = null!;
     /// <summary>Tick workers.</summary>
     public TickScheduler Ticks { get; private set; } = null!;
+    /// <summary>The world atlas (client tables + gates learned by any bot, persisted).</summary>
+    public WorldAtlas Atlas { get; private set; } = WorldAtlas.Empty;
     private readonly ConcurrentDictionary<WireKind, string[]> _checksums = new();
     private readonly ConcurrentDictionary<WireKind, DecoderTable> _tables = new();
 
@@ -60,6 +62,13 @@ public sealed class HostServices : IAsyncDisposable
         Brains = new BrainRepository(Path.Combine(DataDir, "store"));
         Fleet = new FleetStore(Path.Combine(DataDir, "fleet.json"));
         Checkpoints = new CheckpointStore(Path.Combine(DataDir, "checkpoints"));
+        Atlas = new WorldAtlas(RessystemDir, n => Data.Map(n)?.Id ?? -1, Data.Maps.Select(m => (m.Id, (double)m.RegenX, (double)m.RegenY)));
+        var gates = Path.Combine(DataDir, "knowledge-gates.tsv");
+        if (File.Exists(gates))
+            foreach (var line in File.ReadAllLines(gates))
+                if (line.Split('\t') is [var a, var b, var c, var d] && int.TryParse(a, out var m) && double.TryParse(b, out var gx) && double.TryParse(c, out var gy) && int.TryParse(d, out var to))
+                    Atlas.LearnGate(m, gx, gy, to);
+        Atlas.GateLearned += (m, gx, gy, to) => { lock (Atlas) File.AppendAllText(gates, $"{m}\t{gx:0}\t{gy:0}\t{to}\n"); };
         var kn = Path.Combine(DataDir, "knowledge-npcs.json");
         if (File.Exists(kn)) Knowledge.ImportNpcs(File.ReadAllText(kn));
         LogRenderer.MobName = id => Data.Mob(id)?.Name;
@@ -277,11 +286,12 @@ public sealed class BotRuntime
         var actions = new ActionSystem(outbound);
         var ctx = new AgentContext
         {
-            BotId = Record.Id, Data = _h.Data, Nav = _h.Nav, Jobs = _h.Jobs, Knowledge = _h.Knowledge, Log = Log, Inbound = inbound, Actions = actions,
+            BotId = Record.Id, Data = _h.Data, Nav = _h.Nav, Atlas = _h.Atlas, Jobs = _h.Jobs, Knowledge = _h.Knowledge, Log = Log, Inbound = inbound, Actions = actions,
             World = new WorldState { Data = _h.Data, Knowledge = _h.Knowledge },
         };
         ctx.World.Self.Seed(login.CharacterName, login.ClassId, _h.Data.ClassFamily(login.ClassId), login.Level);
         ctx.Learners.Add(new AggroLearner());
+        ctx.Learners.Add(new AtlasLearner());
         var agent = new BotAgent(ctx, inbound, outbound, new ControlQueue(), null, _h.Clock);
         agent.OnPublish = OnPublish;
         agent.Lifecycle = cmd => { if (cmd.Kind == ControlKind.Relog) _ = RelogAsync(); else _ = StopAsync(true); };

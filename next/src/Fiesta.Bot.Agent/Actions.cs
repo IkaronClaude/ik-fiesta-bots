@@ -795,23 +795,6 @@ public sealed class StorageProcedure(int keeperHandle) : ProcedureBase
     public override void Apply(in InboundEvent evt, AgentContext ctx) { }
 }
 
-/// <summary>Multi-map travel: a chain of gate hops along a planned map route (needs the map link graph; not wired yet).</summary>
-public sealed class TravelProcedure(string destMap) : ProcedureBase
-{
-    /// <summary>Destination map.</summary>
-    public string DestMap { get; } = destMap;
-    /// <inheritdoc/>
-    public override ProcedureKind Kind => ProcedureKind.Travel;
-    /// <inheritdoc/>
-    public override void Advance(AgentContext ctx)
-    {
-        if (string.Equals(ctx.World.Map.MapName, DestMap, StringComparison.OrdinalIgnoreCase)) { Done(); return; }
-        Fail("multi-map travel planning is not wired in this runtime yet (use gates in view)");
-    }
-    /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt, AgentContext ctx) { }
-}
-
 /// <summary>Runs the bot's active procedures (at most one per resource).</summary>
 public sealed class ProcedureRunner
 {

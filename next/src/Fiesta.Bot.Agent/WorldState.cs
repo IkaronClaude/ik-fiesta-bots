@@ -867,7 +867,8 @@ public sealed class WorldState
                 break;
             case InboundKind.QuestDialog:
                 Npc.Script = ((int)e.A, (int)e.B, e.C, e.Handle2, now);
-                if (e.B is 6) { ev.Raise(EventKind.QuestAccepted, e.A); }
+                // the quest script's ACCEPT is the only notice of a new quest (no quest list follows it on the wire)
+                if (e.B is 6) { if (!Quests.IsActive((int)e.A)) Quests.Set((int)e.A, 0, 0); Bump(WorldComponent.Quests); ev.Raise(EventKind.QuestAccepted, e.A); }
                 if (e.B is 10) { Quests.Done((int)e.A); Bump(WorldComponent.Quests); ev.Raise(EventKind.QuestDone, e.A); }
                 break;
             case InboundKind.NpcMenu:

@@ -482,6 +482,21 @@ public class ActionTests
         Assert.Equal(IntentEncoder.OpStop, t.Sent[^1]);
     }
 
+    [Fact]
+    public void A_quest_accepted_in_dialogue_becomes_active()
+    {
+        using var t = new TestBot();
+        t.Tick();
+        Assert.False(t.Ctx.World.Quests.IsActive(956));
+        t.Ev(InboundKind.QuestDialog, a: 956, b: 6);   // QUEST_SCRIPT_CMD ACCEPT, the only notice the server sends
+        t.Tick();
+        Assert.True(t.Ctx.World.Quests.IsActive(956));
+        t.Ev(InboundKind.QuestDialog, a: 956, b: 10);  // DONE
+        t.Tick();
+        Assert.False(t.Ctx.World.Quests.IsActive(956));
+        Assert.True(t.Ctx.World.Quests.IsDone(956));
+    }
+
     private static List<ushort> Drain(TestBot t) { t.Tick(); return t.Sent; }
 }
 

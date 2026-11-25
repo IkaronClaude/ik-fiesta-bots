@@ -657,6 +657,40 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public long Exp(int q) => Ctx.Data.Quest(q)?.Exp ?? -1;
     /// <summary>Free quest log slots.</summary>
     [LuaFn] public int SlotsFree() => Q.SlotsFree;
+
+    /// <summary>Could we take this quest now, by the client's quest table: level in range, the previous quest done,
+    /// the start class ours (0 = any), not active, not done unless repeatable, and its giver's spot known.</summary>
+    [LuaFn]
+    public bool CanAccept(int q)
+    {
+        if (Ctx.Data.Quest(q) is not { } d || Q.IsActive(q) || (Q.IsDone(q) && !d.Repeatable)) return false;
+        var lv = Ctx.World.Self.Level;
+        if (d.MinLevel < 1 || lv < d.MinLevel || (d.MaxLevel > 0 && lv > d.MaxLevel)) return false;
+        if (d.PrevQuest > 0 && !Q.IsDone(d.PrevQuest)) return false;
+        if (d.StartClass != 0 && d.StartClass != Ctx.World.Self.ClassId) return false;
+        return d.StartNpc > 0 && Ctx.Atlas.NpcSpots(d.StartNpc).Count > 0;
+    }
+
+    /// <summary>Quests we could take now (CanAccept), best reward first.</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.On, Alloc = Alloc.Iterator)]
+    public LuaIter Acceptable()
+    {
+        var s = Ctx.Scratch(256); var n = 0;
+        foreach (var d in Ctx.Data.Quests)
+            if (n < s.Length && CanAccept(d.Id)) s[n++] = d.Id;
+        var span = s[..n];
+        span.Sort((a, b) => (Ctx.Data.Quest(b)?.Exp ?? 0).CompareTo(Ctx.Data.Quest(a)?.Exp ?? 0));
+        return ApiScope.Iter(span);
+    }
+
+    /// <summary>The NPC (MobInfo id) a quest is handed in to: its last talk objective, else its giver; -1 unknown.</summary>
+    [LuaFn]
+    public int HandinNpc(int q)
+    {
+        if (Ctx.Data.Quest(q) is not { } d) return -1;
+        for (var i = d.Objectives.Count - 1; i >= 0; i--) if (d.Objectives[i].Kind == QuestObjectiveKind.Talk && d.Objectives[i].MobId > 0) return d.Objectives[i].MobId;
+        return d.StartNpc;
+    }
     private JobTicket _plan = JobTicket.None;
     private (int Quest, int Kind) _planResult = (-1, 13);
     /// <summary>Score candidates (policy 0: ready hand-ins first, then hunts in level, then accepts); a job.</summary>

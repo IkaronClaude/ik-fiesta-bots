@@ -339,6 +339,8 @@ public sealed class AgentContext
     public IClientData Data { get; init; } = null!;
     /// <summary>Navigation.</summary>
     public INavService Nav { get; init; } = null!;
+    /// <summary>The world atlas (client map graph, NPC spots, spawn areas, learned gates).</summary>
+    public WorldAtlas Atlas { get; init; } = WorldAtlas.Empty;
     /// <summary>Per-bot nav overlay.</summary>
     public NavOverlay Overlay { get; init; } = new();
     /// <summary>Jobs.</summary>

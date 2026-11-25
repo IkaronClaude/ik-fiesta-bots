@@ -256,9 +256,19 @@ public sealed class ClientData : IClientData
                 var n = (int)en.Num(r, "Count");
                 Add((int)en.Num(r, "ID"), new QuestObjectiveDef(n > 0 ? QuestObjectiveKind.Kill : QuestObjectiveKind.Talk, (int)en.Num(r, "MobID"), -1, Math.Max(1, n)));
             }
+        // QuestAction: (quest, condition 1 = a kill of mob ConditionTarget) -> (result 1 = the item ResultTarget): the mob
+        // that drops a quest's collect item
+        var dropper = new Dictionary<(int Quest, int Item), int>();
+        if (T("QuestAction") is { } qa)
+            for (var r = 0; r < qa.RowCount; r++)
+                if (qa.Num(r, "Condition") == 1 && qa.Num(r, "Result") == 1)
+                    dropper.TryAdd(((int)qa.Num(r, "ID"), (int)qa.Num(r, "ResultTarget")), (int)qa.Num(r, "ConditionTarget"));
         if (T("QuestEndItem") is { } ei)
             for (var r = 0; r < ei.RowCount; r++)
-                Add((int)ei.Num(r, "ID"), new QuestObjectiveDef(QuestObjectiveKind.Collect, -1, (int)ei.Num(r, "ItemID"), (int)ei.Num(r, "Count")));
+            {
+                int q = (int)ei.Num(r, "ID"), item = (int)ei.Num(r, "ItemID");
+                Add(q, new QuestObjectiveDef(QuestObjectiveKind.Collect, dropper.TryGetValue((q, item), out var mob) ? mob : -1, item, (int)ei.Num(r, "Count")));
+            }
         var exp = new Dictionary<int, long>();
         if (T("QuestReward") is { } rw)
             for (var r = 0; r < rw.RowCount; r++)
@@ -319,6 +329,8 @@ public sealed class ClientData : IClientData
     public string ClassName(int classId) => classId is >= 0 and < 64 ? _classes.Value.Names[classId] : "";
     /// <inheritdoc/>
     public IReadOnlyCollection<QuestDef> Quests => _quests.Value.Values;
+    /// <summary>All maps.</summary>
+    public IReadOnlyCollection<MapInfoRow> Maps => _maps.Value.Item1.Values;
     /// <summary>All skills.</summary>
     public IReadOnlyCollection<ActiveSkillRow> Skills => _skills.Value.Values;
     /// <summary>Item class lookup for the 2026 item-record translation.</summary>
