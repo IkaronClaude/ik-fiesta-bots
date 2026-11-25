@@ -278,6 +278,42 @@ public sealed class WorldAtlas
         return new WorldRoute(hops, bestCost);
     }
 
+    /// <summary>The route cost from a spot to EVERY reachable map in one search (one Dijkstra instead of one per target;
+    /// the planner asks for many maps per decision). A map's cost is the cheapest arrival at any of its nodes; avoided
+    /// maps and walks past dangerous spawn areas are treated as in <see cref="Route"/> (an avoided map can be a target,
+    /// never a way through). Fills <paramref name="costs"/> (cleared first).</summary>
+    public void RouteCosts(int fromMap, double fx, double fy, Dictionary<int, double> costs, Func<int, bool>? avoid = null,
+        Func<SpawnArea, bool>? dangerous = null)
+    {
+        costs.Clear();
+        costs[fromMap] = 0;
+        lock (_gate)
+        {
+            if (!_nodesByMap.TryGetValue(fromMap, out var starts)) return;
+            var n = _nodes.Count;
+            var dist = new double[n];
+            Array.Fill(dist, double.PositiveInfinity);
+            var pq = new PriorityQueue<int, double>();
+            foreach (var s in starts) { dist[s] = Dist(fx, fy, _nodes[s].X, _nodes[s].Y); pq.Enqueue(s, dist[s]); }
+            while (pq.TryDequeue(out var u, out var du))
+            {
+                if (du > dist[u]) continue;
+                var um = _nodes[u].Map;
+                if (um != fromMap && !costs.ContainsKey(um)) costs[um] = du;
+                // arrived on an avoided map: a target, never a way through
+                if (avoid is not null && um != fromMap && avoid(um)) continue;
+                foreach (var (v, c, _) in _adj[u])
+                {
+                    var vm = _nodes[v].Map;
+                    if (dangerous is not null && vm == um && vm != fromMap
+                        && SegmentHitsDanger(vm, _nodes[u].X, _nodes[u].Y, _nodes[v].X, _nodes[v].Y, dangerous)) continue;
+                    var nd = du + c;
+                    if (nd < dist[v]) { dist[v] = nd; pq.Enqueue(v, nd); }
+                }
+            }
+        }
+    }
+
     /// <summary>Route cost between maps (cached per map pair, from the map's first node; -1 not connected, 0 same).</summary>
     public double MapDistance(int fromMap, int toMap)
     {

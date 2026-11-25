@@ -59,4 +59,27 @@ public class AtlasTests
         Assert.False(d.IsMountItem(2522));    // Floatation Stone
         Assert.False(d.IsMountItem(4720));    // a skill book
     }
+
+    [Fact]
+    public void One_search_gives_the_same_route_cost_to_every_map_as_one_search_per_map()
+    {
+        if (Load() is not var (a, d)) return;
+        var from = d.Map("RouN")!.Id;
+        var costs = new Dictionary<int, double>();
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        a.RouteCosts(from, d.Map("RouN")!.RegenX, d.Map("RouN")!.RegenY, costs);
+        var oneMs = sw.Elapsed.TotalMilliseconds;
+        var checkedN = 0;
+        foreach (var m in d.Maps)
+        {
+            if (m.Id == from) continue;
+            var r = a.Route(from, d.Map("RouN")!.RegenX, d.Map("RouN")!.RegenY, m.Id);
+            if (r is null) { Assert.False(costs.ContainsKey(m.Id), m.Name); continue; }
+            Assert.True(costs.TryGetValue(m.Id, out var c), m.Name);
+            Assert.Equal(r.Cost, c, 3);
+            checkedN++;
+        }
+        Assert.True(checkedN > 20, $"{checkedN} maps reachable");
+        Assert.True(oneMs < 50, $"{oneMs} ms");
+    }
 }
