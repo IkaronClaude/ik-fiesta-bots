@@ -149,6 +149,10 @@ public sealed class ZoneSession : IFrameSink, IAsyncDisposable
                 try { _linkCts?.Cancel(); } catch (ObjectDisposedException) { }
                 break;
             case 0x1809:   // LINKSAME: the map changed on this zone; spawn into it
+            // REVIVESAME: revived on this zone. The real client answers MAP_LOGINCOMPLETE exactly as after LINKSAME
+            // (Z:/Death.pcapng: REVIVESAME -> C-> 0x1803); without it the server sends nothing more and the character
+            // stays a ghost (NextM, 23:35:46: heartbeats only for minutes)
+            case 0x104F:
                 _ = SendZone(IntentEncoder.OpLoginComplete, Array.Empty<byte>());
                 break;
             case 0x180A:   // LINKOTHER: another zone server; reconnect there with MAP_LOGIN
