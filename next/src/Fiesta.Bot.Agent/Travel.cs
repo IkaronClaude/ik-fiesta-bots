@@ -140,7 +140,7 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         if (_hop.FailReason?.Contains("awaitMenu") == true && ++_menuRefusals >= 2)
         {
             _refusedInto.Add(_next.To); _menuRefusals = 0;
-            ctx.RefusedMaps[_next.To] = ctx.Now + 15 * 60 * 1000;   // remembered for later trips (retried after 15 min)
+            ctx.RefusedMaps[_next.To] = ctx.Now + 60 * 60 * 1000;   // remembered for later trips (retried after an hour: a level gate stays shut for a while)
             ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"travel: the gate to {ctx.Data.Map(_next.To)?.MapName} answers no menu twice: routing around it");
         }
         _hop = null;
