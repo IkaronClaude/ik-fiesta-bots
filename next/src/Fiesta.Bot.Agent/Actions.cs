@@ -287,6 +287,19 @@ public sealed class ActionSystem
         return true;
     }
 
+    /// <summary>Cancel every pending action a brain layer issued (layer 0, the operator, is kept); returns the count.</summary>
+    public int CancelBrainActions()
+    {
+        var n = 0;
+        for (var i = _pendingN - 1; i >= 0; i--)
+        {
+            if (i >= _pendingN) continue;
+            var id = _pending[i];
+            if (Slot(id).Layer != 0) { Resolve(new ActionId(id), ActionState.Cancelled, 0); n++; }
+        }
+        return n;
+    }
+
     /// <summary>Newest unresolved action of a kind.</summary>
     public ActionId Pending(ActionKind kind)
     {

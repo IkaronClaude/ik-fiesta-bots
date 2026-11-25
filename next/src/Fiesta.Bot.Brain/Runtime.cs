@@ -774,6 +774,9 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
     public void Swap(CompiledBrain next, bool keepState)
     {
         var cp = Checkpoint();
+        // a fresh start must not inherit the old version's trips, talks and casts (they would keep resources busy)
+        if (!keepState && _ctx.Actions.CancelBrainActions() is var n and > 0)
+            _ctx.Log.Text(LogCategory.Brain, LogLevel.Note, $"swap: cancelled {n} pending action(s) of the previous version");
         _engine.Dispose();
         _engine = new NativeLuaEngine();
         _brain = next;
