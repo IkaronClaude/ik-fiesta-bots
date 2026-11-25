@@ -170,6 +170,15 @@ travel, quest availability / hand-in helpers, collect items linked to their drop
 Why NextA spun in Roumen: the old test brain only travelled through a gate already in view to a configured field;
 in the north of Roumen none is in view, so it alternated seek <-> roam. The leveller routes over the atlas.
 
+Runtime pieces added while porting it (all committed, generic): danger-aware routing (maps whose easiest hostile
+mob is above a level are routed around; `atlas.safeCost` / `easiestLevel`), gates that answer no menu (silent
+refusals, e.g. a level requirement) are routed around and remembered per bot for 15 min, a fresh brain swap cancels
+the previous version's pending actions, `quests.acceptable` is cached per level / map / quest-log version.
+
+Not ported yet (open, see the private mapping table): stone / potion restock and service discovery (healer,
+merchant, skill master, smith by shop kind), selling, skill learning, gear, storage, stat points, mount, kite / shed /
+flee, death-loop escape, scenario / instance driver, the support / producer / trade / social brains.
+
 Live (local 2026 stack): NextBotA accepted and handed in quests across Roumen (Baby Steps chain, the Grandpa Robin
 chain, The Chief of Roumen ...), level 4 -> 6 in about 10 minutes, exp/h about 3400.
 
