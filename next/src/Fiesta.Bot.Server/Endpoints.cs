@@ -112,7 +112,7 @@ public static class Http
             Vitals = snap is null ? null : new
             {
                 hp = snap.Hp, maxHp = snap.MaxHp, sp = snap.Sp, maxSp = snap.MaxSp, exp = snap.Exp, expNext = snap.NextExp, money = snap.Money,
-                bagFree = snap.BagFree, bagSize = b.Agent?.Context.World.Bag.Size ?? 0, x = Math.Round(snap.X), y = Math.Round(snap.Y),
+                bagFree = snap.BagFree, bagSize = b.Agent?.Context.World.Bag.Size ?? 0, x = Math.Round(snap.X), y = Math.Round(snap.Y), runSpeed = Math.Round(snap.RunSpeed, 1),
             },
         };
     }

@@ -103,3 +103,9 @@ by unit tests).
   engine; Lua VM memory cap; Postgres / git mirror for the stores; `.botrec` replay into UI frames.
 - Mount detection uses the mount item's InxName (no client column marks mounts): replace with the item class that
   RIDE_ON follows once observed.
+
+## Watching the bots in the UI
+
+The host serves the built UI (`UI_DIR`, SPA fallback) and the API + `/api/v3/ws` on one port; the long-lived
+instance runs on http://127.0.0.1:5300 (loopback, no token). The Brain debugger page (`#/bots/<id>`, live
+following), Fleet, Log and Inventory pages render against this host without a mismatch found so far.

@@ -2,7 +2,10 @@
 
 The compiling skeleton of the redesigned runtime (`docs/REDESIGN.md`), with the API of `docs/API_SPEC.md`.
 Location: `next/` (own solution `next/Fiesta.Bot.Next.slnx`; the current `ik-fiesta-bots.slnx` and
-`src/` are untouched). Bodies throw `NotImplementedException`; signatures and XML summaries are the spec.
+`src/` are untouched). This document describes the skeleton as first committed (bodies threw
+`NotImplementedException`). The implementation has since filled it in and moved a few types (wire profiles and
+the login chains in Protocol, the zone session, the file-backed stores in Fleet); the current state is
+`docs/NEXT_STATUS.md`.
 
 Build: `dotnet build next/Fiesta.Bot.Next.slnx` (0 warnings, 0 errors on .NET SDK 10.0.203).
 

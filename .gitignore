@@ -64,3 +64,4 @@ pathcorpus*.json
 tools/PathBudgetCalibrator/path-budgets.csv
 tools/NavMeshBuilder/navmeshes/
 tools/.cache/
+next/ui-ready.txt

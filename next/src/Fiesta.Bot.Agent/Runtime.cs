@@ -569,7 +569,7 @@ public sealed class BotAgent
         var w = Context.World; var self = w.Self;
         _snapshot = new AgentSnapshot(Context.BotId, Context.Tick, _clock.UtcNow, w.Map.MapName, self.Pos.X, self.Pos.Y, self.Level,
             self.Hp, self.MaxHp, self.Sp, self.MaxSp, self.Money, w.Bag.Free, self.Dead, self.InCombat(now), w.Map.MapId, self.InWorld)
-        { Exp = self.Exp, NextExp = self.NextExp, Name = self.Name, ClassId = self.ClassId, Kills = self.Kills, Deaths = self.Deaths, ExpGained = self.ExpGained, Entities = w.Entities.Count, Paused = Paused };
+        { RunSpeed = self.RunSpeed, Exp = self.Exp, NextExp = self.NextExp, Name = self.Name, ClassId = self.ClassId, Kills = self.Kills, Deaths = self.Deaths, ExpGained = self.ExpGained, Entities = w.Entities.Count, Paused = Paused };
     }
 
     /// <summary>Latest published snapshot (immutable, any thread).</summary>
@@ -598,6 +598,8 @@ public sealed record AgentSnapshot(string BotId, long Tick, DateTime At, string 
     public int Entities { get; init; }
     /// <summary>Paused.</summary>
     public bool Paused { get; init; }
+    /// <summary>Run speed (u/s).</summary>
+    public double RunSpeed { get; init; }
 }
 
 /// <summary>Operator actions (the Operator layer, index 0): run on the tick from a control command.</summary>
