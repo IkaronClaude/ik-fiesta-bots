@@ -164,6 +164,8 @@ export class BotSim {
       w.x += dx / d * 160 * dt; w.y += dy / d * 160 * dt; w.facing = [dx / d, dy / d];
     }
     for (const e of w.ents) if (!e.aggro && e.k === 'mob' && this.r() < 0.02) { e.x += (this.r() - 0.5) * 40; e.y += (this.r() - 0.5) * 40; }
+    // keep the toy world around us: idle mobs far behind respawn nearby
+    w.ents.forEach((e, i) => { if (!e.aggro && Math.hypot(e.x - w.x, e.y - w.y) > 1800) this.spawnEnt(i); });
     if (this.r() < 0.0015) this.fire('MOVE_FAILED', 1);
   }
 
@@ -171,7 +173,8 @@ export class BotSim {
 
   // ---- brain tick ----
   step(dtMs) {
-    this.now += dtMs; this.tick++;
+    // real time while running (the host loop can lag); exact 50 ms steps while paused and stepping
+    this.now = this.paused ? this.now + dtMs : Math.max(this.now + 1, Date.now()); this.tick++;
     const t0 = process.hrtime.bigint();
     this.stepWorld(dtMs / 1000);
     for (const L of this.layers) {

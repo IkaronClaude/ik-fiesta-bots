@@ -5,6 +5,7 @@ import { DiffView } from '../components/CodeEditor';
 import { Empty, fmtDate, fmtNum, useAsync } from '../components/ui';
 import { useApp } from '../lib/app';
 import { go, href, useQuery } from '../lib/router';
+import { parseDefinition, serializeDefinition } from '../lib/brain';
 import { ApplyModal } from './BrainEditor';
 
 export function VersionsPage({ brain }: { brain: string }) {
@@ -67,21 +68,25 @@ function VersionDiff({ brain, from, to }: { brain: string; from: string; to: str
   const a = useAsync<BrainVersionFull>(() => api.version(brain, from), [brain, from]);
   const b = useAsync<BrainVersionFull>(() => api.version(brain, to), [brain, to]);
   const [file, setFile] = useState('brain.yaml');
+  const [normalize, setNormalize] = useState(true);
   const sources = (v?: BrainVersionFull) => {
-    const out: Record<string, string> = { 'brain.yaml': v?.definition ?? '' };
+    let defText = v?.definition ?? '';
+    // hand-written and UI-saved YAML differ in layout: diff the parsed model re-serialised, without node positions
+    if (normalize && v) { try { const d = parseDefinition(defText); delete d.ui; defText = serializeDefinition(d); } catch { /* keep raw */ } }
+    const out: Record<string, string> = { 'brain.yaml': defText };
     if (v && !Array.isArray(v.modules)) Object.assign(out, v.modules);
     if (v?.libraries) for (const [p, x] of Object.entries<any>(v.libraries)) out[p] = typeof x === 'string' ? '' : x.source ?? '';
     return out;
   };
-  const sa = useMemo(() => sources(a.data), [a.data]);
-  const sb = useMemo(() => sources(b.data), [b.data]);
+  const sa = useMemo(() => sources(a.data), [a.data, normalize]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sb = useMemo(() => sources(b.data), [b.data, normalize]); // eslint-disable-line react-hooks/exhaustive-deps
   const files = [...new Set([...Object.keys(sa), ...Object.keys(sb)])];
   const status = (f: string) => f === 'brain.yaml' ? (diff.data?.definitionDiff ? 'changed' : 'same') : diff.data?.modules.find(m => m.path === f)?.status ?? (sa[f] === sb[f] ? 'same' : 'changed');
   useEffect(() => { if (!files.includes(file)) setFile('brain.yaml'); }, [files.join('|')]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="diff">
       <h3>Diff <span className="mono">{from}</span> &rarr; <span className="mono">{to}</span></h3>
-      <div className="row wrap">{files.map(f => <button key={f} className={'btn sm ' + (f === file ? 'primary' : 'ghost')} onClick={() => setFile(f)}>{f} <span className={'tag ' + (status(f) === 'same' ? '' : 'warn')}>{status(f)}</span></button>)}</div>
+      <div className="row wrap"><label className="check small"><input type="checkbox" checked={normalize} onChange={e => setNormalize(e.target.checked)} /> normalized brain.yaml</label>{files.map(f => <button key={f} className={'btn sm ' + (f === file ? 'primary' : 'ghost')} onClick={() => setFile(f)}>{f} <span className={'tag ' + (status(f) === 'same' ? '' : 'warn')}>{status(f)}</span></button>)}</div>
       {(a.data && b.data) ? <DiffView original={sa[file] ?? ''} modified={sb[file] ?? ''} language={file.endsWith('.yaml') ? 'yaml' : 'lua'} height={480} /> : <Empty>loading</Empty>}
     </div>
   );

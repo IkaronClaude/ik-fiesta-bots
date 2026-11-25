@@ -53,13 +53,14 @@ export function DebuggerTab({ bot, replay }: { bot: string; replay?: { frames: D
   // resolve the machine at the scope; the layer path may pass through `use` machines
   const resolved = d && layer ? resolveScope(d, layer.name, path) : null;
   const depth = path.length;
-  const frameNow = cursor == null && !replay ? now : Date.parse(frame.t);
+  const frameNow = cursor == null && !replay && !frame.paused ? now : Date.parse(frame.t);
   const live: LiveInfo | undefined = layer ? {
     active: layer.path[depth] ?? null,
     activeSince: Date.parse(layer.enteredAtPath?.[depth] ?? layer.enteredAt ?? frame.t) + (cursor == null && !replay ? 0 : 0),
     conditions: layer.conditions.filter(c => (c.depth ?? 0) === depth || (c.depth == null && c.state === layer.path[depth])),
     flashes: transitions.filter(t => t.layer === layer.name && (t.depth ?? 0) === depth && frameNow - Date.parse(t.at) < 1600 && frameNow >= Date.parse(t.at)).map(t => ({ from: t.from, index: t.index ?? -1, at: Date.parse(t.at) })),
     claims: layer.claims,
+    now: frameNow,
     visited: Object.fromEntries(transitions.filter(t => t.layer === layer.name && frameNow - Date.parse(t.at) < 8000).map(t => [t.leafFrom ?? t.from, Date.parse(t.at)])),
   } : undefined;
 

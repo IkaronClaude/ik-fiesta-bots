@@ -23,6 +23,7 @@ export interface LiveInfo {
   flashes: { from: string; index: number; at: number }[];
   claims: string[];
   visited?: Record<string, number>; // state -> last left (epoch ms) for the fading trail
+  now?: number;                     // frame time (epoch ms): live = wall clock, replay / paused = the frame's time
 }
 
 interface Props {
@@ -41,14 +42,12 @@ interface Props {
 
 type SNodeData = {
   name: string; initial: boolean; terminal: boolean; claims: string[]; fns: string[]; sub: string | null; budget?: number;
-  active: boolean; activeSince: number | null; live: boolean; issues: number; errors: number; trail: number; onOpenSub?: (s: string) => void;
+  active: boolean; activeSince: number | null; activeMs: number; live: boolean; issues: number; errors: number; trail: number; onOpenSub?: (s: string) => void;
   external?: boolean;
 };
 
 const StateNode = memo(function StateNode({ data, selected }: NodeProps<Node<SNodeData>>) {
   const d = data;
-  const [, force] = useState(0);
-  useEffect(() => { if (!d.active) return; const t = window.setInterval(() => force(x => x + 1), 250); return () => window.clearInterval(t); }, [d.active]);
   if (d.external) {
     return (
       <div className="snode external" title={d.name === '^' ? 'pop to the parent machine' : 'state in another machine'}>
@@ -73,7 +72,7 @@ const StateNode = memo(function StateNode({ data, selected }: NodeProps<Node<SNo
         {d.budget != null && <span title="budget (ms without progress before stuck)">budget {fmtDuration(d.budget)}</span>}
       </div>
       {d.sub && <button className="snode-sub nodrag" onClick={e => { e.stopPropagation(); d.onOpenSub?.(d.name); }} title="open the sub-machine">sub-machine: {d.sub} &rarr;</button>}
-      {d.active && <div className="snode-live">active {fmtDuration(Date.now() - (d.activeSince ?? Date.now()))}</div>}
+      {d.active && <div className="snode-live">active {fmtDuration(d.activeMs)}</div>}
       <Handle type="source" position={Position.Right} className="h" />
     </div>
   );
@@ -120,7 +119,9 @@ const TransitionEdge = memo(function TransitionEdge({ id, source, target, data, 
     const mx = (ac.x + bc.x) / 2 + nx * off, my = (ac.y + bc.y) / 2 + ny * off;
     const p1 = borderPoint(a, mx, my), p2 = borderPoint(b, mx, my);
     path = `M ${p1.x} ${p1.y} Q ${mx} ${my} ${p2.x} ${p2.y}`;
-    lx = 0.25 * p1.x + 0.5 * mx + 0.25 * p2.x; ly = 0.25 * p1.y + 0.5 * my + 0.25 * p2.y;
+    // label nearer the source end so opposite-direction edges do not stack their labels
+    const t = d.parallel > 1 ? 0.38 : 0.5, u = 1 - t;
+    lx = u * u * p1.x + 2 * u * t * mx + t * t * p2.x; ly = u * u * p1.y + 2 * u * t * my + t * t * p2.y;
   }
   const cls = ['tedge', selected ? 'sel' : '', flash ? 'flash' : '', d.live ? (d.evalResult === true ? 'true' : d.evalResult === false ? 'false' : 'idle') : ''].join(' ');
   return (
@@ -130,8 +131,8 @@ const TransitionEdge = memo(function TransitionEdge({ id, source, target, data, 
         <div className={'elabel nodrag nopan ' + cls} style={{ transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)` }} title={d.evalText || d.label}>
           <span className="eprio" title="priority, then declaration order">{d.prio !== 0 ? `p${d.prio}` : ''}#{d.index + 1}</span>
           <span className={'ekind k-' + d.kind}>{d.kind}</span>
-          <span className="etext">{d.label.length > 46 ? d.label.slice(0, 44) + '...' : d.label}</span>
-          {d.t.hold ? <span className="ehold">hold {fmtDuration(d.t.hold)}</span> : null}
+          <span className="etext">{d.label.length > (d.evalText ? 30 : 46) ? d.label.slice(0, d.evalText ? 28 : 44) + '...' : d.label}</span>
+          {d.t.hold && !d.evalText ? <span className="ehold">hold {fmtDuration(d.t.hold)}</span> : null}
           {d.evalText && <span className="eval">{d.evalText}</span>}
         </div>
       </EdgeLabelRenderer>
@@ -169,13 +170,13 @@ function GraphInner(p: Props) {
       return {
         id: n, type: 'state', position: { x: positions[n][0], y: positions[n][1] }, selected: selection?.kind === 'state' && selection.state === n,
         data: { name: n, initial: machine.initial === n, terminal: !!st.terminal, claims: st.claims || [], fns, sub: st.use ?? (st.machine ? '(inline)' : null),
-          budget: st.budget, active: live?.active === n, activeSince: live?.active === n ? live.activeSince : null, live: mode === 'live',
-          issues: lintBy[n]?.w ?? 0, errors: lintBy[n]?.e ?? 0, trail: left ? Math.max(0, 1 - (now - left) / 8000) : 0, onOpenSub: p.onOpenSub },
+          budget: st.budget, active: live?.active === n, activeSince: live?.active === n ? live.activeSince : null, activeMs: live?.active === n && live.activeSince ? (live.now ?? now) - live.activeSince : 0, live: mode === 'live',
+          issues: lintBy[n]?.w ?? 0, errors: lintBy[n]?.e ?? 0, trail: left ? Math.max(0, 1 - ((live?.now ?? now) - left) / 8000) : 0, onOpenSub: p.onOpenSub },
       };
     });
     const maxX = Math.max(0, ...Object.values(positions).map(v => v[0]));
     externalTargets.forEach((t, i) => ns.push({ id: `ext:${t}`, type: 'state', position: { x: maxX + 320, y: 40 + i * 110 }, draggable: false, selectable: false,
-      data: { name: t, initial: false, terminal: false, claims: [], fns: [], sub: null, active: false, activeSince: null, live: false, issues: 0, errors: 0, trail: 0, external: true } }));
+      data: { name: t, initial: false, terminal: false, claims: [], fns: [], sub: null, active: false, activeSince: null, activeMs: 0, live: false, issues: 0, errors: 0, trail: 0, external: true } }));
     return ns;
   }, [stateNames.join('|'), machine, positions, selection, live, mode, lintBy, externalTargets, p.onOpenSub]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -231,6 +232,15 @@ function GraphInner(p: Props) {
     onSelect({ kind: 'edge', from, index: (machine.states[from].transitions || []).length });
   }, [mode, onChange, def, scope, machine, onSelect]);
 
+  // dropping a connection anywhere on a state node (not only on its handle) also creates the transition
+  const onConnectEnd = useCallback((ev: MouseEvent | TouchEvent, st: any) => {
+    if (mode !== 'edit' || !st?.fromNode || st.isValid) return;
+    const pt = 'changedTouches' in ev ? ev.changedTouches[0] : ev;
+    const el = document.elementFromPoint(pt.clientX, pt.clientY)?.closest('.react-flow__node') as HTMLElement | null;
+    const to = el?.dataset.id;
+    if (to && !to.startsWith('ext:')) onConnect({ source: st.fromNode.id, target: to, sourceHandle: null, targetHandle: null });
+  }, [mode, onConnect]);
+
   const onDelete = useCallback(({ nodes: dn, edges: de }: { nodes: Node[]; edges: Edge[] }) => {
     if (mode !== 'edit' || !onChange) return;
     let next = def;
@@ -255,7 +265,7 @@ function GraphInner(p: Props) {
     <div className="graph" style={{ height: p.height ?? '100%' }}>
       <ReactFlow
         nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange} onNodeDragStop={onNodeDragStop} onConnect={onConnect} onDelete={onDelete}
+        onNodesChange={onNodesChange} onNodeDragStop={onNodeDragStop} onConnect={onConnect} onConnectEnd={onConnectEnd} onDelete={onDelete}
         onSelectionChange={onSelectionChange} onPaneClick={() => onSelect(null)}
         nodesDraggable nodesConnectable={mode === 'edit'} elementsSelectable deleteKeyCode={mode === 'edit' ? ['Delete', 'Backspace'] : null}
         minZoom={0.2} maxZoom={2} proOptions={{ hideAttribution: true }} colorMode="dark"
