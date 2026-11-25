@@ -173,6 +173,8 @@ public enum InboundKind : ushort
     /// 9 door state, 11 object type change, 22 timer, 33 timer start, 34 timer end, 4 notice, 27 system message; 1000 =
     /// BUILDDOOR), Text = area name / message, Handle = door / object, B = door state / object type / seconds / notice.</summary>
     Scenario,
+    /// <summary>The job change is done (CHAR_PROMOTE_ACK): A the new class id.</summary>
+    Promoted,
     /// <summary>A skill could not be learned (SKILL_LEARNFAIL): A code.</summary>
     SkillLearnFail,
     /// <summary>Not decoded but passed (raw logging).</summary>
@@ -451,7 +453,7 @@ public sealed class SelfDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x1061, 0x2411, 0xCC02, 0xCC06, 0x4804, 0x4805];
+        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x1061, 0x2411, 0xCC02, 0xCC06, 0x4804, 0x4805, 0x1059];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -545,6 +547,10 @@ public sealed class SelfDecoder : IPacketDecoder
                 return;
             }
             case 0x105B: if (p.Length < 1) return; e.Kind = InboundKind.StatPoints; e.A = p[0]; break;
+            case 0x1059:   // CHAR_PROMOTE_ACK {new class u8} (captured at the end of the job change instance: {02})
+                if (p.Length < 1) return;
+                e.Kind = InboundKind.Promoted; e.A = p[0];
+                break;
             case 0x4804:   // SKILL_LEARNSUC {skill u16, u8} (captured right after a skill book's ITEM_USE_ACK 0x0700)
                 if (p.Length < 2) return;
                 e.Kind = InboundKind.SkillLearned; e.A = Rd.U16(p, 0); e.B = 0; e.C = 1;

@@ -273,6 +273,8 @@ GROUND, SELF, PARTY, MOVING, DOT, SLOW, DISPEL, REVIVE, TOGGLE`.
 | `quests.giver(q)` | npcId | O(1) | 0 | |
 | `quests.repeatable(q)` / `quests.exp(q)` | boolean / integer | O(1) | 0 | |
 | `quests.kind(q)` | qtype, startItem | O(1) | 0 | QuestData Q_TYPE and ItemID |
+| `quests.scenario(q)` | integer | O(1) | 0 | the scenario its start script runs (`SCENARIO n`), -1 none |
+| `quests.scenarioChain(q)` | boolean | cached | 0 | q is a scenario quest for exactly our class or a quest before it (the job change chain) |
 | `quests.slotsFree()` | integer | O(1) | 0 | free quest-log slots (the log holds 40) |
 | `quests.plan(policyId)` | ticket | job | 0 | scores candidates; result: `quests.planResult(t)` |
 | `quests.planResult(t)` | questId, kind | O(1) | 0 | kind: `HUNT, HANDIN, ACCEPT, NONE` |
@@ -370,7 +372,7 @@ type; GUESS that a type's totals are shared).
 
 `scenario.active()` (any scenario packet on this map), `scenario.asked()` (the oldest trigger area the server asked us to
 confirm with AREAENTRY_REQ, "" none), `scenario.confirm(area)` (AREAENTRY_ACK with the area's name),
-`scenario.confirmed(area)`, `scenario.area(name)` -> x, y, halfX, halfY and `scenario.inside(name)` (the map's areas from
+`scenario.confirmed(area)`, `scenario.areaAt(i)` -> name, x, y (the .aid order), `scenario.area(name)` -> x, y, halfX, halfY and `scenario.inside(name)` (the map's areas from
 the client's .aid file), `scenario.areaCount()`, `scenario.doors()` (iter of door handles from BUILDDOOR / DOORSTATE),
 `scenario.door(h)` -> state, x, y, `scenario.objType(h)` (OBJTYPECHANGE: 5 mob, 4 npc), `scenario.timerLeft()` (s, -1), `scenario.wave()` -> spawned, alive, ms
 (the mobs that appeared since the last confirm). Closed doors (the map's .sbi bitmap of the door's state) are kept out

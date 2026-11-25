@@ -1097,8 +1097,21 @@ public sealed class WorldState
                 if (Self.StatPoints > 0) Self.StatPoints--;   // the client counts the point spent (no REMAINPOINT follows)
                 Bump(WorldComponent.Self);
                 break;
+            case InboundKind.Promoted:
+                Self.ClassId = (int)e.A;
+                if (Data is not null) Self.ClassFamily = Data.ClassFamily((int)e.A);
+                Bump(WorldComponent.Self);
+                ev.Raise(EventKind.Promoted, e.A);
+                break;
             case InboundKind.Scenario:
                 Scenario.Apply(e, now);
+                // a scripted character (the job change's shadow copy of us) turned into a mob (5) or back (4): the same
+                // entity, made fightable in place - never a copy with a made-up mob id (it has none)
+                if (e.A == 11 && Entities.SlotOf(e.Handle) is var cs and >= 0)
+                {
+                    if (e.B == 5) Entities.Kinds[cs] |= EntityKind.Mob; else Entities.Kinds[cs] &= ~EntityKind.Mob;
+                    Bump(WorldComponent.Entities);
+                }
                 break;
             case InboundKind.SkillExp:
                 Skills.Mastery[(int)e.A] = e.B;

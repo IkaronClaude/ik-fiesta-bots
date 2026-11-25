@@ -81,8 +81,9 @@ public sealed class TestData : IClientData
     public readonly Dictionary<int, ItemInfoRow> Items = new();
     public ItemInfoRow? Item(int id) => Items.GetValueOrDefault(id);
     public static readonly MapInfoRow MapRow = new(7, "TestMap", "Test Map", false, 5000, 5000);
-    public MapInfoRow? Map(int id) => id == 7 ? MapRow : null;
-    public MapInfoRow? Map(string mapName) => mapName == "TestMap" ? MapRow : null;
+    public static readonly MapInfoRow DnRow = new(8, "TestDn", "Test Dungeon", true, 1000, 1000);
+    public MapInfoRow? Map(int id) => id == 7 ? MapRow : id == 8 ? DnRow : null;
+    public MapInfoRow? Map(string mapName) => mapName == "TestMap" ? MapRow : mapName == "TestDn" ? DnRow : null;
     public static readonly QuestDef Q8 = new(8, "Master Zach", 2, 10, false, 88,
         [new QuestObjectiveDef(QuestObjectiveKind.Talk, 88, -1, 1), new QuestObjectiveDef(QuestObjectiveKind.Kill, 1, -1, 5)], 30, 0, 0, 0, "")
     { Rewards = [(1, 2, 2505), (2, 2, 12943), (2, 2, 12947), (1, 0, 30)] };

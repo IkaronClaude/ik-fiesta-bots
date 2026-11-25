@@ -108,6 +108,24 @@ public sealed record QuestDef(int Id, string Name, int MinLevel, int MaxLevel, b
     public int QType { get; init; }
     /// <summary>The item that starts the quest (QuestData ItemID; 0 none).</summary>
     public int StartItem { get; init; }
+    /// <summary>The scenario (instance) the quest's start script runs (`SCENARIO n` in [SCRIPT_START]), -1 none. Such
+    /// a quest is played inside that instance and entered again from its giver while it is active.</summary>
+    public int Scenario => _scenario ??= ParseScenario();
+    private int? _scenario;
+    private int ParseScenario()
+    {
+        {
+            var s = Script; var a = s.IndexOf("[SCRIPT_START]", StringComparison.Ordinal);
+            if (a < 0) return -1;
+            var b = s.IndexOf("[SCRIPT_", a + 14, StringComparison.Ordinal); if (b < 0) b = s.Length;
+            foreach (var line in s[a..b].Split('\n'))
+            {
+                var t = line.Trim();
+                if (t.StartsWith("SCENARIO ", StringComparison.Ordinal) && int.TryParse(t.AsSpan(9).Trim(), out var n)) return n;
+            }
+            return -1;
+        }
+    }
 
     /// <summary>The server's counter (1-based) for objective i (0-based): the server counts only the kill objectives, in
     /// order, so a talk objective listed first does not take counter 1 (observed: "Master Zach" {talk, kill 5 slimes}

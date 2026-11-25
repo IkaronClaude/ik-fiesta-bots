@@ -13,7 +13,7 @@ public enum EventKind : byte
     Damaged, Hit, TargetDied, Kill, AggroGained, AggroLost, EntityAppeared, EntityLeft, HpChanged, SpChanged,
     LevelUp, MapChanged, MoveFailed, Arrived, CastResult, ActionResolved, ProcedureDone, JobDone,
     QuestProgress, QuestDone, QuestAccepted, ItemGained, ItemLost, BagFull, MoneyChanged, Chat, Whisper,
-    PartyInvite, TradeAsked, Died, Revived, Stuck, Budget, Operator, TradeStarted, TradeEnded,
+    PartyInvite, TradeAsked, Died, Revived, Stuck, Budget, Operator, TradeStarted, TradeEnded, Promoted,
 }
 
 /// <summary>One brain event.</summary>
@@ -558,6 +558,9 @@ public sealed class BotAgent
                 break;
             case InboundKind.SkillLearnFail:
                 log.Log(LogCategory.Core, LogLevel.Note, $"SKILL_LEARNFAIL 0x{e.A:X4}");
+                break;
+            case InboundKind.Promoted:
+                log.Log(LogCategory.Core, LogLevel.Note, $"PROMOTED: class {e.A} ({Context.Data.ClassName((int)e.A)})");
                 break;
             case InboundKind.SplitAck:
                 log.Log(LogCategory.Item, e.A == 0x0441 ? LogLevel.Info : LogLevel.Note, $"SPLIT_ACK 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");

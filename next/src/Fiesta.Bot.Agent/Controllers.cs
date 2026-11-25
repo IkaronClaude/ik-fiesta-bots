@@ -311,6 +311,9 @@ public sealed class CombatController
         if (!self) EnsureTarget(targetHandle, ctx, -1, buf, ref n);
         EnsureMode(ctx, buf, ref n, -1);
         if (ctx.Move.Moving && !sk.IsMovingSkill) { ctx.Move.Stop(ctx); }
+        // inside an instance, while our swings on this target land, we already face it (the swing stream turns us): the
+        // face step's MOVERUN is refused in tight rooms and turns us away again (all casts refused 0x0FCA there)
+        else if (ctx.World.Map.IsInstance && Bashing && BashTarget == targetHandle && LastSwingAt >= 0 && ctx.Now - LastSwingAt < 2500) { }
         else if (!self && sk.UsableDegree > 0 && ctx.World.Entities.SlotOf(targetHandle) is var s and >= 0)
         {
             // a skill with a usable arc must be cast facing the target: a short face step + STOP when we are not

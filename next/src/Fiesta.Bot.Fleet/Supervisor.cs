@@ -447,7 +447,8 @@ public sealed class BotRuntime
         NoteExp(a);
         if (w.Self.InWorld)
         {
-            var qv = w.Version(WorldComponent.Quests);
+            // an instance gives no exp (the job change's rooms): its confirmed areas and waves count as progress
+            var qv = w.Version(WorldComponent.Quests) + 1000 * (w.Scenario.Confirmed.Count + w.Scenario.Wave.Count);
             if (w.Self.Exp != _progExp || w.Self.Level != _progLevel || qv != _progQuests)
             {
                 if (_progExp >= 0) LastProgressAt = DateTime.UtcNow;

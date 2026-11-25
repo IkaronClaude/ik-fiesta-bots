@@ -33,6 +33,13 @@ public sealed partial class ScenarioModule(AgentContext ctx) : ApiModule(ctx)
         foreach (var a in Ctx.Nav.Areas(Ctx.World.Map.MapName)) if (a.Name == area) return a.Contains(x, y);
         return false;
     }
+    /// <summary>Trigger area i (1-based, the .aid file's order) of the current map: name, centre x, y ("" past the end).</summary>
+    [LuaFn(Alloc = Alloc.LuaString)]
+    public (string Name, double X, double Y) AreaAt(int i)
+    {
+        var a = Ctx.Nav.Areas(Ctx.World.Map.MapName);
+        return i >= 1 && i <= a.Count ? (a[i - 1].Name, a[i - 1].X, a[i - 1].Y) : ("", -1, -1);
+    }
     /// <summary>Number of trigger areas the map has (client .aid).</summary>
     [LuaFn] public int AreaCount() => Ctx.Nav.Areas(Ctx.World.Map.MapName).Count;
     /// <summary>Confirm an area the server asked about (AREAENTRY_ACK with its name). Sent once; the server answers with

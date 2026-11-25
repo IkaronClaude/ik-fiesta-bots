@@ -228,4 +228,50 @@ public class LevelerBrainTests
         Assert.Contains(IntentEncoder.OpChat, t.Sent);
         Assert.Empty(b.Debug.Errors().Where(e => !e.Error.Contains("E_BUDGET")));
     }
+
+    [Fact]
+    public void The_job_change_instance_is_played_room_by_room_as_the_capture_shows()
+    {
+        if (Load() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(5);
+        // linked into the instance (Job1_Dn01 in the capture; an instance map here)
+        t.Ev(InboundKind.MapLink, a: 8, x: 1000, y: 1000);
+        t.Tick(5);
+        Assert.True(t.Ctx.World.Map.IsInstance);
+        // the scripted copy of us appears as a character and is turned into a mob (OBJTYPECHANGE {0x43BC, 5})
+        t.Ev(InboundKind.EntityAppeared, h: 0x43BC, a: (long)Fiesta.Bot.Agent.EntityKind.Player, b: -1, x: 1100, y: 1000, text: "Shadow");
+        var obj = InboundEvent.Of(InboundKind.Scenario, 0x6C0B, t.Clock.NowMs); obj.A = 11; obj.Handle = 0x43BC; obj.B = 5;
+        t.In.TryWrite(obj);
+        t.Tick(2);
+        Assert.True((t.Ctx.World.KindOf(t.Ctx.World.Entities.SlotOf(0x43BC), t.Clock.NowMs) & Fiesta.Bot.Agent.EntityKind.Huntable) != 0);
+        // the server asks for Zone_Mob01: the confirm is repeated until the room's wave appears
+        var req = InboundEvent.Of(InboundKind.Scenario, 0x6C05, t.Clock.NowMs); req.A = 5; req.Text = "Zone_Mob01";
+        t.In.TryWrite(req);
+        t.Sent.Clear();
+        t.Tick(40);   // 2 s
+        Assert.True(t.Sent.Count(o => o == IntentEncoder.OpAreaEntryAck) >= 3, string.Join(",", t.Sent.Select(o => o.ToString("X4"))));
+        t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 1200, y: 1000);
+        t.Ev(InboundKind.EntityAppeared, h: 3001, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 1250, y: 1000);
+        t.Tick(10);
+        t.Sent.Clear();
+        t.Tick(20);
+        Assert.DoesNotContain(IntentEncoder.OpAreaEntryAck, t.Sent);    // the wave came: no more confirms
+        Assert.Equal("wave", b.Layers.First(l => l.Name == "instance").ActivePath[0].Name);
+        // the wave and the copy go (it turns back into an NPC, then vanishes)
+        t.Ev(InboundKind.EntityLeft, h: 3000);
+        t.Ev(InboundKind.EntityLeft, h: 3001);
+        var back = InboundEvent.Of(InboundKind.Scenario, 0x6C0B, t.Clock.NowMs); back.A = 11; back.Handle = 0x43BC; back.B = 4;
+        t.In.TryWrite(back);
+        t.Tick(10);
+        Assert.Equal("idle", b.Layers.First(l => l.Name == "instance").ActivePath[0].Name);
+        Assert.Equal(0, (int)(t.Ctx.World.KindOf(t.Ctx.World.Entities.SlotOf(0x43BC), t.Clock.NowMs) & Fiesta.Bot.Agent.EntityKind.Mob));
+        // the quest layer waits inside the instance; the promotion is applied ({02} in the capture)
+        Assert.Contains(b.Layers.First(l => l.Name == "quest").ActivePath[0].Name, new[] { "plan" });
+        t.Ev(InboundKind.Promoted, a: 2);
+        t.Tick(2);
+        Assert.Equal(2, t.Ctx.World.Self.ClassId);
+        Assert.Empty(b.Debug.Errors().Where(x => !x.Error.Contains("E_BUDGET")));
+    }
 }

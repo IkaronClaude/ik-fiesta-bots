@@ -781,6 +781,30 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public int Giver(int q) => Ctx.Data.Quest(q)?.StartNpc ?? -1;
     /// <summary>Repeatable.</summary>
     [LuaFn] public bool Repeatable(int q) => Ctx.Data.Quest(q)?.Repeatable ?? false;
+    /// <summary>The scenario (instance) the quest's start script runs, -1 none (such a quest is played in an instance and
+    /// entered again from its giver while it is active).</summary>
+    [LuaFn] public int Scenario(int q) => Ctx.Data.Quest(q)?.Scenario ?? -1;
+
+    /// <summary>Is the quest on the way to a scenario quest of our class (that quest, or a quest before it in its chain
+    /// of previous quests)? The job change is such a chain: its last quest runs the promotion instance.</summary>
+    [LuaFn]
+    public bool ScenarioChain(int q)
+    {
+        var cls = Ctx.World.Self.ClassId;
+        if (_chainFor != cls || _chain is null)
+        {
+            _chainFor = cls; _chain = new HashSet<int>();
+            foreach (var d in Ctx.Data.Quests)
+            {
+                if (d.Scenario < 0 || d.StartClass != cls) continue;   // a scenario quest of exactly our class: the job change
+                for (var c = d; c is not null && _chain.Add(c.Id); c = c.PrevQuest > 0 ? Ctx.Data.Quest(c.PrevQuest) : null) { }
+            }
+        }
+        return _chain.Contains(q);
+    }
+    private HashSet<int>? _chain;
+    private int _chainFor = -1;
+
     /// <summary>The quest's kind number (QuestData Q_TYPE, -1 unknown) and the item that starts it (0 none).</summary>
     [LuaFn] public (int QType, int StartItem) Kind(int q) => Ctx.Data.Quest(q) is { } d ? (d.QType, d.StartItem) : (-1, 0);
     /// <summary>Reward exp.</summary>
