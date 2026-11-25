@@ -2,7 +2,7 @@
 
 Branch `redesign-2026-11-core`. What is implemented against `docs/REDESIGN.md`, what was measured and proven live,
 the bug log, and what is open. Build: `dotnet build next/Fiesta.Bot.Next.slnx`; tests:
-`dotnet test next/tests/Fiesta.Bot.Next.Tests` (78 tests).
+`dotnet test next/tests/Fiesta.Bot.Next.Tests` (83 tests).
 
 ## Running it
 
@@ -267,3 +267,36 @@ Open:
   instance driver (areas, waves, the clone fight).
 - The aid asker waits 15 min for its helper; a helper that loses its claim (the ask was re-posted) only notices when
   it arrives.
+
+### Step 4 (2026-11-25 evening): split, production fields, scenarios, battle zones, exp/h
+
+- exp/h read 0 right after every host restart: the rate was this session's exp over this session's time, and the bots
+  were questing in town (no kill yet) when it was read. It is now kept per bot over the last hour across sessions (it
+  still starts over with the host). Both bots were earning: NextA level 8 -> 12 over the afternoon, NextM 1032 -> 1232
+  exp in three minutes of grinding at 18:05.
+- Stack split (ITEM_SPLIT_REQ 0x300D {from, to, lot} -> two CELLCHANGEs -> SPLIT_ACK 0x0441, from two captures) as an
+  action; the aid giver splits the asked amount into a free cell and boards that cell. Not proven live yet (no ask has
+  come up since).
+- Production fields: reading a recipe book is refused with ITEM_USE 0x0717 until the recipe's production field is
+  chosen. Live, 18:15: NextA chose field 29105 (Material Decomposition) and read its recipe (0x0700), chose 29104,
+  and the third field (29101, Stone Production for Elrue [1]) was refused 0x0B14: a character works a limited number
+  of fields (two here). The leveller now reads only recipes worth a field (potions it drinks) and keeps the materials
+  of the recipes it knows out of the merchant's hands; other recipes go to storage. The two fields NextA chose before
+  this rule are spent (the game has no way back that the bot knows of).
+- Free / party battle zones: routes from Rou crossed Fbattle01 (Free Battle Zone 1, linked like a field in the client's
+  gate tables; its gate in fact leads back to Rou), which is why bots were found logged in there after a restart.
+  The zone announces itself with MAP_PARTYBATTLEZONE_ON 0x1818 right after the LINKOTHER (capture); such maps are
+  avoided for a week once seen. Live 18:21:55: `Fbattle01 is a player-fight area (party battle): routed around from now on`.
+- 0x3C07 {01 08}: the 2026 client shows "An error has occurred while using the Storage." for every 0x3C07 (its text
+  table, id 0xDF446EB4). It came 46 ms after a successful storage window opened from a probe click (the keeper had
+  answered with a quest page first) and again 17 s later. What the bot did to cause it is not identified yet; the
+  capture of the next storage visit (MENU, ACT and ITEM departments are being captured) will show the sequence.
+- Scenarios: AREAENTRY_REQ (the server asks the client to confirm a trigger area), DOORSTATE, BUILDDOOR,
+  OBJTYPECHANGE, timers and messages decoded (layouts checked on the job-change capture) and logged; the map's areas
+  come from its .aid file. The leveller's `instance` layer walks into an asked area's box and confirms it
+  (AREAENTRY_ACK), repeating while the room stays quiet. Not proven live: no bot has entered an instance yet (the job
+  change starts at level 20; NextA is 12, NextM 9).
+- Team aid also covers HP potions (a teammate keeps its own stock and gives the surplus) and the asker pays a list
+  price for items (half the client buy price, judge.TEAM_PRICE); money asks are gifts.
+- A money aid came up naturally (18:20, NextM 62 cen for stones); NextA's walk to it failed in Fbattle01 (above), the
+  ask is re-posted after its cooldown.
