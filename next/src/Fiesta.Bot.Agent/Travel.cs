@@ -56,10 +56,10 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         }
         if (++_replans > 40) { Fail("too many re-plans"); return; }
         // maps whose easiest hostile mob is above maxMobLevel are routed around (crossing them is how bots died)
-        Func<int, bool>? avoid = maxMobLevel == int.MaxValue && _refusedInto.Count == 0 ? null
-            : m => _refusedInto.Contains(m) || (maxMobLevel != int.MaxValue
+        Func<int, bool>? avoid = maxMobLevel == int.MaxValue && _refusedInto.Count == 0 && ctx.RefusedMaps.Count == 0 ? null
+            : m => _refusedInto.Contains(m) || ctx.Refused(m) || (maxMobLevel != int.MaxValue
                 && ctx.Atlas.EasiestMobLevel(m, id => ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1) > maxMobLevel);
-        if (_refusedInto.Contains(target.Id)) { Fail($"the gate into {TargetMap} refuses us"); return; }
+        if (_refusedInto.Contains(target.Id) || ctx.Refused(target.Id)) { Fail($"the gate into {TargetMap} refuses us"); return; }
         var route = ctx.Atlas.Route(w.Map.MapId, px, py, target.Id, x, y, avoid);
         if (route is null || route.Hops.Count == 0)
         {
@@ -140,6 +140,7 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         if (_hop.FailReason?.Contains("awaitMenu") == true && ++_menuRefusals >= 2)
         {
             _refusedInto.Add(_next.To); _menuRefusals = 0;
+            ctx.RefusedMaps[_next.To] = ctx.Now + 15 * 60 * 1000;   // remembered for later trips (retried after 15 min)
             ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"travel: the gate to {ctx.Data.Map(_next.To)?.MapName} answers no menu twice: routing around it");
         }
         _hop = null;

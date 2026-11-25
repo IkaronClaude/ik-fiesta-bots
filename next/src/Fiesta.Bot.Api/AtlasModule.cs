@@ -100,7 +100,8 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     {
         if (Ctx.Data.Map(map) is not { } m) return -1;
         var (px, py) = W.Self.Pos;
-        return Ctx.Atlas.Route(W.Map.MapId, px, py, m.Id, double.NaN, double.NaN, x => Ctx.Atlas.EasiestMobLevel(x, Hostile) > maxMobLevel)?.Cost ?? -1;
+        if (Ctx.Refused(m.Id)) return -1;
+        return Ctx.Atlas.Route(W.Map.MapId, px, py, m.Id, double.NaN, double.NaN, x => Ctx.Refused(x) || Ctx.Atlas.EasiestMobLevel(x, Hostile) > maxMobLevel)?.Cost ?? -1;
     }
 
     private int Hostile(int id) => Ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1;
