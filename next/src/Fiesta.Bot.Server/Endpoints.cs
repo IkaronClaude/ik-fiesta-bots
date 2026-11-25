@@ -656,7 +656,7 @@ public static class ObservationEndpoints
                 foreach (var q in w.Quests.Active)
                 {
                     var def = c.Data.Quest(q);
-                    var objs = (def?.Objectives ?? []).Select((x, i) => new { kind = x.Kind.ToString().ToUpperInvariant(), mobId = x.MobId, itemId = x.ItemId, have = x.Kind == QuestObjectiveKind.Collect ? w.Bag.Count(x.ItemId) : w.Quests.Have(q, i + 1), need = x.Need }).ToList();
+                    var objs = (def?.Objectives ?? []).Select((x, i) => new { kind = x.Kind.ToString().ToUpperInvariant(), mobId = x.MobId, itemId = x.ItemId, have = x.Kind == QuestObjectiveKind.Collect ? w.Bag.Count(x.ItemId) : x.Kind == QuestObjectiveKind.Kill ? w.Quests.Have(q, def!.CounterOf(i)) : 0, need = x.Need }).ToList();
                     var ready = objs.Count > 0 && objs.All(x => x.kind == "TALK" || x.have >= x.need);
                     o.Add(new { id = q, name = def?.Name ?? $"quest {q}", state = ready ? "ready" : "active", status = w.Quests.Status(q), objectives = objs });
                 }

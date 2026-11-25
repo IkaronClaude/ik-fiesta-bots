@@ -89,7 +89,19 @@ public sealed record MapInfoRow(int Id, string MapName, string Name, bool IsInst
 
 /// <summary>A quest definition parsed from QuestData.</summary>
 public sealed record QuestDef(int Id, string Name, int MinLevel, int MaxLevel, bool Repeatable, int StartNpc,
-    IReadOnlyList<QuestObjectiveDef> Objectives, long Exp, int PrevQuest, int StartClass, int EndClass, string Script);
+    IReadOnlyList<QuestObjectiveDef> Objectives, long Exp, int PrevQuest, int StartClass, int EndClass, string Script)
+{
+    /// <summary>The server's counter (1-based) for objective i (0-based): the server counts only the kill objectives, in
+    /// order, so a talk objective listed first does not take counter 1 (observed: "Master Zach" {talk, kill 5 slimes}
+    /// arrives with counter 1 = 5 after five kills). -1 for an objective without a counter.</summary>
+    public int CounterOf(int i)
+    {
+        if (i < 0 || i >= Objectives.Count || Objectives[i].Kind != QuestObjectiveKind.Kill) return -1;
+        var k = 0;
+        for (var j = 0; j <= i; j++) if (Objectives[j].Kind == QuestObjectiveKind.Kill) k++;
+        return k;
+    }
+}
 
 /// <summary>One quest objective.</summary>
 public sealed record QuestObjectiveDef(QuestObjectiveKind Kind, int MobId, int ItemId, int Need);

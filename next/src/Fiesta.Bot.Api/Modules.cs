@@ -694,7 +694,7 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
         for (var i = 0; i < def.Objectives.Count && i < 5; i++)
         {
             var o = def.Objectives[i];
-            var have = o.Kind == QuestObjectiveKind.Collect ? Ctx.World.Bag.Count(o.ItemId) : Q.Have(q, i + 1);
+            var have = o.Kind == QuestObjectiveKind.Collect ? Ctx.World.Bag.Count(o.ItemId) : Q.Have(q, def.CounterOf(i));
             if (o.Kind != QuestObjectiveKind.Talk && have < o.Need) return false;
         }
         return true;
@@ -706,7 +706,7 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
         var def = Ctx.Data.Quest(q);
         if (def is null || i < 1 || i > def.Objectives.Count) return (-1, -1);
         var o = def.Objectives[i - 1];
-        return (o.Kind == QuestObjectiveKind.Collect ? Ctx.World.Bag.Count(o.ItemId) : Q.Have(q, i), o.Need);
+        return (o.Kind == QuestObjectiveKind.Collect ? Ctx.World.Bag.Count(o.ItemId) : o.Kind == QuestObjectiveKind.Kill ? Q.Have(q, def.CounterOf(i - 1)) : 0, o.Need);
     }
     /// <summary>Objective count.</summary>
     [LuaFn] public int Objectives(int q) => Ctx.Data.Quest(q)?.Objectives.Count ?? -1;

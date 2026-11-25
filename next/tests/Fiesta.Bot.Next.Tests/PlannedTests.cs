@@ -547,6 +547,22 @@ public class ActionTests
         Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(a).State);
     }
 
+    [Fact]
+    public void Quest_counters_belong_to_the_kill_objectives_only()
+    {
+        // "Master Zach": {talk to Zach, kill 5 slimes}; after five kills the server's counter 1 is 5
+        var zach = new QuestDef(8, "Master Zach", 2, 10, false, 88,
+            [new QuestObjectiveDef(QuestObjectiveKind.Talk, 88, -1, 1), new QuestObjectiveDef(QuestObjectiveKind.Kill, 0, -1, 5)], 100, 0, 0, 0, "");
+        Assert.Equal(-1, zach.CounterOf(0));
+        Assert.Equal(1, zach.CounterOf(1));
+        var three = new QuestDef(421, "Kingdom", 1, 10, false, 92,
+            [new QuestObjectiveDef(QuestObjectiveKind.Talk, 92, -1, 1), new QuestObjectiveDef(QuestObjectiveKind.Kill, 1030, -1, 5),
+             new QuestObjectiveDef(QuestObjectiveKind.Collect, 3, 3079, 8), new QuestObjectiveDef(QuestObjectiveKind.Kill, 1034, -1, 2)], 100, 0, 0, 0, "");
+        Assert.Equal(1, three.CounterOf(1));
+        Assert.Equal(-1, three.CounterOf(2));
+        Assert.Equal(2, three.CounterOf(3));
+    }
+
     private static List<ushort> Drain(TestBot t) { t.Tick(); return t.Sent; }
 }
 
