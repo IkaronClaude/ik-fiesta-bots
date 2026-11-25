@@ -920,3 +920,111 @@ The host in `next/src/Fiesta.Bot.Server` implements U1-U25 with these notes:
 - Additions: `GET /bots/{id}/tick` samples add `publishUs` / `publishAllocBytes` (the debug publishing step is
   measured apart from the tick's own allocation); `PUT /log-levels` without `expiryMinutes` persists the level
   with the bot.
+
+## 14. Game view (the bot page's "Game" tab; operator request 2026-11-25)
+
+A light mirror of what the game client shows for one bot: vitals, stats, skill bar with cooldown sweeps, buffs,
+bag and equipment with the client's own icons, and a minimap with the bot, nearby entities and its path.
+
+Design rule (operator): no big blobs. The server sends ONE snapshot when the view subscribes, then only small
+deltas; the browser keeps the model and reassembles it. Everything static (names, icons, map art, skill
+cooldown lengths) goes by id and is fetched once through cacheable GET endpoints, never repeated in the stream.
+
+### 14.1 Stream: WebSocket topic `game`
+
+Subscribe: `{"op":"sub","topic":"game","bot":"<id>"}`; unsubscribe: `{"op":"unsub","topic":"game","bot":"<id>"}`.
+Re-subscribing is the resync (the server answers with a fresh snapshot).
+
+Server -> client (this topic does not use the RFC 6902 envelope of U3; it has its own op list):
+
+| message | meaning |
+|---|---|
+| `{"topic":"game","bot","t":"snap","seq":n,"now":ms,"data":GameSnapshot}` | full state; the first message after a subscribe, and again after a map change into a new session |
+| `{"topic":"game","bot","t":"d","seq":n,"now":ms,"ops":[op...]}` | changes since `seq - 1`; empty `ops` = keep-alive (every 5 s, carries `now` for clock sync) |
+| `{"topic":"game","bot","t":"off","seq":n,"now":ms}` | the bot left the world (offline, reconnecting); the view keeps its last state greyed; a `snap` follows when it is back |
+
+`seq` increases by one per message of this bot's stream. A gap (a dropped message) means: re-subscribe.
+`now` and every time in the stream are the host's clock in unix milliseconds; the browser keeps
+`offset = Date.now() - now` and animates against it.
+
+Rates: changes of self / stats / buffs / skills / bag / equipment / target / path are coalesced to at most 10
+messages per second; entity positions go at most 4 times per second and only for entities that moved 4 units or
+more since their last sent position; nothing is sent when nothing changed. The state is captured on the bot's
+tick from the world model's change counters into preallocated buffers (no allocation on the tick); diffing and
+JSON happen on the host's WebSocket pump thread, once per bot, shared by every subscriber.
+
+Cooldowns: a skill's `readyAt` (unix ms) and the cooldown length `durMs` are sent once when the cooldown starts;
+the browser draws the sweep `1 - (readyAt - nowServer) / durMs` until `readyAt`. Buff end times likewise
+(`endsAt`, 0 = no end).
+
+#### GameSnapshot
+
+```jsonc
+{
+  "self": { "handle": 12009, "name": "NextBotA", "classId": 1, "level": 4, "exp": 139, "prevExp": 0, "nextExp": 200,
+            "hp": 104, "maxHp": 114, "sp": 41, "maxSp": 41, "money": 43, "fame": 0, "statPoints": 0,
+            "hpStones": 0, "spStones": 0, "dead": false, "battle": false, "mounted": false,
+            "x": 7328, "y": 6321, "dir": 90, "mapId": 0 },
+  "stats": { "str": 14, "end": 12, "dex": 9, "int": 3, "spr": 5, "wcMin": 20, "wcMax": 25, "def": 30, "aim": 12,
+             "eva": 9, "maMin": 0, "maMax": 0, "mdef": 8, "maim": 0, "meva": 0 },     // -1 = not received yet
+  "abstates": [[17, 1764073200000]],            // [wire abstate id, endsAt (0 = no end)]
+  "skills":   [[6000, 0, 0], [1001, 1764073201234, 3000]],   // [skill id, readyAt (0 = ready), durMs]
+  "bag":   { "size": 48, "pages": 2, "cells": [[0, 3097, 1], [14, 2522, 1]] },      // [slot, item id, lot]
+  "equip": [[12, 250]],                         // [equip slot, item id]
+  "target": 6993,                               // handle, -1 none
+  "path": [[7400, 6300], [7600, 6250]],         // the remaining waypoints of the current walk, [] = standing
+  "ents": [[6993, "m", 1101, 7450, 6290, 100, 2, null], [21214, "g", 0, 17607, 13887, 100, 0, "Rou"]]
+}
+```
+
+`ents` rows: `[handle, kind, id, x, y, hpPct, flags, name]`. `kind`: `m` mob, `n` NPC, `p` player, `g` gate,
+`d` drop. `id`: the MobInfo id for mobs / NPCs / gates, the item id for drops, the class id for players.
+`flags` bits: 1 dead, 2 aggro (hit us or targets us), 4 our target, 8 huntable. `name`: players' names and the
+gates' destination text; `null` otherwise (the browser takes the mob name from the static data).
+
+#### Delta ops
+
+Each op is an array whose first element is its code.
+
+| op | meaning |
+|---|---|
+| `["self", {field: value, ...}]` | changed fields of `self` (same names as the snapshot) |
+| `["stats", {stat: value, ...}]` | changed stats |
+| `["ab", id, endsAt]` / `["ab-", id]` | buff / debuff on or refreshed / gone |
+| `["sk", id, readyAt, durMs]` / `["sk-", id]` | skill learned or its cooldown changed / skill gone |
+| `["bag", slot, itemId, lot]` | a bag cell changed (`itemId` -1 = empty) |
+| `["bagSize", size, pages]` | bag size changed |
+| `["eq", slot, itemId]` | an equipment slot changed (-1 = empty) |
+| `["tgt", handle]` | target changed (-1 none) |
+| `["path", [[x, y], ...]]` | new remaining path (`[]` = stopped) |
+| `["map", mapId]` | map changed: drop all entities and the path (new `e+` ops follow) |
+| `["e+", h, kind, id, x, y, hpPct, flags, name]` | an entity appeared (or its row changed kind / id) |
+| `["e-", h]` | an entity left view |
+| `["ep", h, x, y]` | an entity moved |
+| `["eh", h, hpPct]` | an entity's HP percentage changed |
+| `["ef", h, flags]` | an entity's flags changed |
+
+Positions are world units rounded to integers.
+
+### 14.2 Static data (cacheable)
+
+All responses carry `ETag` (from the client-data fingerprint and the id) and `Cache-Control: public,
+max-age=86400`; `If-None-Match` answers 304. Unknown ids answer 404. Names come from the bot host's client data
+(the client the bots play), so they match what the game shows.
+
+| route | response |
+|---|---|
+| `GET /api/v3/static` | `{fingerprint, items, skills, mobs, abstates, maps}` (counts; the fingerprint changes when the client data changes) |
+| `GET /api/v3/static/items/{id}` | `{id, inx, name, type, class, equip, demandLv, maxLot, buyPrice, sellPrice, icon}` (`icon`: true when the client ships art) |
+| `GET /api/v3/static/skills/{id}` | `{id, inx, name, step, maxStep, sp, hp, cooldownMs, groupCooldownMs, range, castMs, description, icon}` |
+| `GET /api/v3/static/abstates/{id}` | `{id, inx, name, description, sort, icon}` (`id` = the wire abstate index; `sort` BUFF / DEBUFF / ...) |
+| `GET /api/v3/static/mobs/{id}` | `{id, inx, name, level, maxHp, npc, playerSide}` |
+| `GET /api/v3/static/classes/{id}` | `{id, name}` |
+| `GET /api/v3/static/maps/{id}` | `{id, mapName, name, minimap, world: {w, h} or null, cover: {x0, y0, x1, y1} or null}` |
+| `GET /api/v3/static/{items|skills|abstates|mobs}?ids=1,2,3` | `{"1": {...}, "2": {...}}` (batch; missing ids omitted) |
+| `GET /api/v3/icons/{item|skill|abstate}/{id}.png` | the icon cut from the client's atlas (32x32 or the atlas' cell size), 404 when none |
+| `GET /api/v3/static/maps/{id}/minimap.png` | the client's minimap art for the map, 404 when none |
+
+Minimap placement: the image covers world `[cover.x0, cover.x1] x [cover.y0, cover.y1]`; the image's top edge is
+`cover.y1` (world Y grows upward, image Y downward). `world` is the walkable grid's extent (0..w, 0..h); `cover` is
+null when the client has no placement row for the map (then the image covers the whole `world`).
