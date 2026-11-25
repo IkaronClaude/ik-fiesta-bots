@@ -2,7 +2,7 @@
 
 Branch `redesign-2026-11-core`. What is implemented against `docs/REDESIGN.md`, what was measured and proven live,
 the bug log, and what is open. Build: `dotnet build next/Fiesta.Bot.Next.slnx`; tests:
-`dotnet test next/tests/Fiesta.Bot.Next.Tests` (86 tests).
+`dotnet test next/tests/Fiesta.Bot.Next.Tests` (88 tests).
 
 ## Running it
 
@@ -317,3 +317,17 @@ Open:
   simulation test; not run live. `produce.typeMastery` assumes the mastery totals of one type are shared (GUESS, to be
   checked on the first live craft).
 - The host was not restarted for these (live work is paused); the next restart deploys them.
+
+### Back on the Linux stack (2026-11-25 evening)
+
+Live: a money aid of 1428 cen NextA -> NextM at 20:04:45-46 (CENBOARDING_ACK 1428 on the giver, OPPOSIT_CENBOARDING
+1428 on the asker, both locks, DECIDE, TRADECOMPLETE). NextM bought Fire Bolt [02] at its level-up visit; the Rou skill
+master's list (123 items) has `Recipe: HP Potion (Tier 1)` (item 20100, 250 cen) - NextM could not afford it after the
+book; the next visit buys it now that the aid paid for the stones.
+
+| # | symptom | cause | fix | commit |
+|---|---|---|---|---|
+| 24 | NextA earned no exp for 1.5 h (exp 3527 / 4671 from 18:30 to 20:10) | it walked between Rou and Eld to the givers of Q_TYPE 3 quests; the server leaves the NPC click unanswered (captured: NPCCLICK at the NPC's spot, nothing back), each accept was given up for 10 min and the next such quest picked | the leveller learns per level which quest kinds (`quests.kind`) the givers never offer (3 silent givers, none offered) and no longer walks to them | 850c4a7 + brain |
+| 25 | after a host restart or a published brain, skip lists, refused books, unstorable items, probed NPCs were forgotten | bb.bot is saved as JSON; integer keys came back as string keys, so `t[20000]` missed | integer keys restored as integers; test fails without the fix | 14c0622 |
+| 26 | the host died: access violation in lua_rawgeti (debug frame on a tick worker) | a session teardown checkpointed and disposed the brain while a worker still ticked the agent (Remove only queued the removal) | `TickScheduler.RemoveAndWait`; test | 25af8d0 |
+| 27 | NextM walked into Fbattle01 as a service NPC's map | player-fight maps were learned per bot | learned once in the shared atlas (persisted, `atlas-pvp-maps.txt`; Fbattle01 seeded from NextA's live finding) | 76b701c |
