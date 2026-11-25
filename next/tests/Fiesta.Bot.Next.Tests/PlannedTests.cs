@@ -497,6 +497,19 @@ public class ActionTests
         Assert.True(t.Ctx.World.Quests.IsDone(956));
     }
 
+    [Fact]
+    public void A_trip_survives_the_link_change_of_a_zone_handoff()
+    {
+        using var t = new TestBot();
+        t.Tick(5);
+        var trip = t.Ctx.Procedures.Start(new TravelProcedure("Nowhere"), ActionKind.Travel, 1, t.Ctx, 60000);
+        var move = t.Ctx.Move.Order(new MoveOrder(6000, 5000, false, 10, ActionId.None), t.Ctx, 1);
+        t.Ev(InboundKind.LinkChanged, a: (long)LinkState.Connecting);
+        t.Tick();
+        Assert.Equal(ActionState.Failed, t.Ctx.Actions.Get(move).State);          // an ordinary action fails on link loss
+        Assert.NotEqual(LocalRefusal.LinkDown, (LocalRefusal)t.Ctx.Actions.Get(trip).Code);   // the trip decides itself
+    }
+
     private static List<ushort> Drain(TestBot t) { t.Tick(); return t.Sent; }
 }
 

@@ -273,7 +273,9 @@ public sealed class ActionSystem
             if (i >= _pendingN) continue;
             var id = _pending[i];
             ref var r = ref Slot(id);
-            if (!_out.LinkUp) Resolve(new ActionId(id), ActionState.Failed, (ushort)LocalRefusal.LinkDown);
+            // trips span map changes, and a change to another zone server takes the link down for the reconnect: their
+            // procedures judge the outcome themselves
+            if (!_out.LinkUp && Slot(id).Kind is not (ActionKind.Travel or ActionKind.Gate)) Resolve(new ActionId(id), ActionState.Failed, (ushort)LocalRefusal.LinkDown);
             else if (nowMs > r.Deadline) Resolve(new ActionId(id), ActionState.TimedOut, 0);
         }
     }
