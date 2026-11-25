@@ -534,6 +534,21 @@ public class ActionTests
     }
 
     [Fact]
+    public void A_trip_whose_walk_another_layer_takes_over_waits_instead_of_failing()
+    {
+        using var t = new TestBot();
+        t.Ev(InboundKind.SelfBase, a: 10, b: 0, c: 100, text: "TestMap");
+        t.Tick(5);
+        var trip = t.Ctx.Procedures.Start(new TravelProcedure("TestMap", 9000, 5000, 50), ActionKind.Travel, 3, t.Ctx, 60000);
+        t.Tick(2);
+        Assert.Equal("walkFinal", t.Ctx.Procedures.Active[0].Step);
+        // the combat layer walks us to a mob: the trip's own walk is cancelled
+        t.Ctx.Move.Order(new MoveOrder(5100, 5000, true, 10, ActionId.None), t.Ctx, 1);
+        t.Tick(5);
+        Assert.True(t.Ctx.Actions.Get(trip).Pending, t.Ctx.Procedures.Recent.LastOrDefault().P?.FailReason);   // was: Failed "could not reach: Cancelled"
+    }
+
+    [Fact]
     public void A_shop_behind_a_quest_page_is_opened_with_the_menu_answer()
     {
         using var t = new TestBot();

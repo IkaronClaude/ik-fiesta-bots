@@ -21,6 +21,7 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
     // destinations whose gate refused us (no menu: the server refuses silently, e.g. a level requirement); routed around
     private readonly HashSet<int> _refusedInto = new();
     private int _menuRefusals;
+    private bool _waited;
     private readonly HashSet<(int, int)> _explored = new();
     private const double GateSight = 700;
 
@@ -115,6 +116,17 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         if (Step == "walkGate" && TryHop(ctx)) return;
         var r = ctx.Actions.Get(_move);
         if (r.Id != 0 && r.Pending && !Expired(ctx)) return;
+        // our walk was taken over by another move (a higher layer fighting, looting, fleeing): not a failure of the trip.
+        // Wait while that layer holds the legs or its walk runs, then plan again from wherever we are.
+        if (r.State == ActionState.Cancelled && Status == ProcedureStatus.Running)
+        {
+            if (ctx.Actions.Preempted(ctx.Actions.Get(Action).Layer, Resource.Movement) || ctx.Move.Moving || ctx.Move.Planning) { _waited = true; return; }
+            if (_waited) ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"travel: the legs are free again, walking on to {TargetMap}");
+            _waited = false; _move = ActionId.None; _replans = Math.Max(0, _replans - 1);
+            Go("start", ctx, 0);
+            Plan(ctx);
+            return;
+        }
         if (Step == "walkFinal")
         {
             var (px, py) = ctx.World.Self.Pos;
