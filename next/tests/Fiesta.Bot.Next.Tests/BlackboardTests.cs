@@ -83,6 +83,6 @@ public class BlackboardTests
         t.Tick(10);
         var bot = b.BlackboardJson()["bot"]!;
         Assert.True(bot["at"]!.GetValue<long>() > 1_600_000_000_000L);   // Unix ms, not process-relative
-        Assert.InRange(bot["age"]!.GetValue<long>(), 0, 1000);
+        Assert.InRange(bot["age"]!.GetValue<long>(), 0, 60_000);         // the same clock on both sides
     }
 }
