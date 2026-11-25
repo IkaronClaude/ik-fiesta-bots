@@ -366,7 +366,9 @@ field of a recipe: the ProduceView row of its mastery type), `produce.hasField(m
 confirm with AREAENTRY_REQ, "" none), `scenario.confirm(area)` (AREAENTRY_ACK with the area's name),
 `scenario.confirmed(area)`, `scenario.area(name)` -> x, y, halfX, halfY and `scenario.inside(name)` (the map's areas from
 the client's .aid file), `scenario.areaCount()`, `scenario.doors()` (iter of door handles from BUILDDOOR / DOORSTATE),
-`scenario.door(h)` -> state, x, y, `scenario.objType(h)` (OBJTYPECHANGE: 5 mob, 4 npc), `scenario.timerLeft()` (s, -1).
+`scenario.door(h)` -> state, x, y, `scenario.objType(h)` (OBJTYPECHANGE: 5 mob, 4 npc), `scenario.timerLeft()` (s, -1), `scenario.wave()` -> spawned, alive, ms
+(the mobs that appeared since the last confirm). Closed doors (the map's .sbi bitmap of the door's state) are kept out
+of paths through the nav overlay.
 All scenario frames are logged under `quest`.
 
 ### 2.12 `know` (9) — learned knowledge (shared host-wide)

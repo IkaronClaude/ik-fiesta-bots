@@ -196,6 +196,16 @@ public class LevelerBrainTests
         t.Tick(10);
         Assert.Contains(IntentEncoder.OpAreaEntryAck, t.Sent);
         Assert.True(t.Ctx.World.Scenario.Confirmed.Contains("Zone_Mob01"));
+        // the room's wave: two mobs appear; the instance layer holds the room until both are gone
+        t.Ev(InboundKind.EntityAppeared, h: 2100, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 5100, y: 5000);
+        t.Ev(InboundKind.EntityAppeared, h: 2101, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 5150, y: 5000);
+        t.Tick(10);
+        Assert.Equal(2, t.Ctx.World.Scenario.Wave.Count);
+        Assert.Equal("wave", b.Layers.First(l => l.Name == "instance").ActivePath[0].Name);
+        t.Ev(InboundKind.EntityLeft, h: 2100);
+        t.Ev(InboundKind.EntityLeft, h: 2101);
+        t.Tick(10);
+        Assert.Equal("idle", b.Layers.First(l => l.Name == "instance").ActivePath[0].Name);
         Assert.Empty(b.Debug.Errors().Where(x => !x.Error.Contains("E_BUDGET")));
     }
 }

@@ -623,8 +623,15 @@ public sealed class ScenarioState
     public string LastMessage { get; internal set; } = "";
     /// <summary>Any scenario packet seen on this map.</summary>
     public bool Active { get; internal set; }
+    /// <summary>The current wave: the mobs that appeared since the last area confirm (handles) and when it began (ms, -1
+    /// none). A room's wave is cleared when every one of them is dead or gone.</summary>
+    public HashSet<int> Wave { get; } = new();
+    /// <summary>When the current wave began (the last area confirm), -1 none.</summary>
+    public long WaveAt { get; private set; } = -1;
+    /// <summary>Begin a wave (an area was confirmed).</summary>
+    public void BeginWave(long now) { Wave.Clear(); WaveAt = now; }
 
-    internal void Clear() { Asked.Clear(); Confirmed.Clear(); Doors.Clear(); ObjTypes.Clear(); Timer = (-1, -1); LastMessage = ""; Active = false; }
+    internal void Clear() { Asked.Clear(); Confirmed.Clear(); Doors.Clear(); ObjTypes.Clear(); Timer = (-1, -1); LastMessage = ""; Active = false; Wave.Clear(); WaveAt = -1; }
 
     internal void Apply(in InboundEvent e, long now)
     {
@@ -757,6 +764,7 @@ public sealed class WorldState
                 if (s < 0) break;
                 if (e.C >= 0) Entities.Lvl[s] = (int)e.C;
                 Entities.Name[s] = e.Text;
+                if (Scenario.WaveAt >= 0 && (kind & EntityKind.Mob) != 0) Scenario.Wave.Add(e.Handle);
                 if ((kind & (EntityKind.Mob | EntityKind.Npc)) != 0 && Data?.Mob((int)e.B) is { } mi)
                 {
                     if (Entities.Lvl[s] < 0) Entities.Lvl[s] = mi.Level;

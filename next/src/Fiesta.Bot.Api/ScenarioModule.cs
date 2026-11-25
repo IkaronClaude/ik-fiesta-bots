@@ -44,7 +44,7 @@ public sealed partial class ScenarioModule(AgentContext ctx) : ApiModule(ctx)
         Span<byte> b = stackalloc byte[32]; Ascii.Put(b, area);
         _one[0] = IntentEncoder.Raw(IntentEncoder.OpAreaEntryAck, b, -1);
         var id = Ctx.Actions.Issue(ActionKind.Raw, CallingLayer, IntentEncoder.OpAreaEntryAck, 0, _one).Value;
-        if (id >= 0) { S.Asked.RemoveAll(x => x.Area == area); S.Confirmed.Add(area); }
+        if (id >= 0) { S.Asked.RemoveAll(x => x.Area == area); S.Confirmed.Add(area); S.BeginWave(Ctx.Now); }
         return id;
     }
     /// <summary>Doors seen on this map (handles).</summary>
@@ -54,6 +54,15 @@ public sealed partial class ScenarioModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public (int State, double X, double Y) Door(int h) => S.Doors.TryGetValue(h, out var d) ? (d.State, d.X, d.Y) : (-1, -1, -1);
     /// <summary>The scenario object type of a handle (5 mob, 4 npc; -1 never changed).</summary>
     [LuaFn] public int ObjType(int h) => S.ObjTypes.TryGetValue(h, out var t) ? t : -1;
+    /// <summary>The current wave (mobs that appeared since the last area confirm): how many appeared, how many are still
+    /// alive in view, ms since it began (-1 none).</summary>
+    [LuaFn]
+    public (int Spawned, int Alive, long Ms) Wave()
+    {
+        var w = Ctx.World; var alive = 0;
+        foreach (var h in S.Wave) { var s = w.Entities.SlotOf(h); if (s >= 0 && !w.Entities.IsDead(s)) alive++; }
+        return (S.Wave.Count, alive, S.WaveAt < 0 ? -1 : Ctx.Now - S.WaveAt);
+    }
     /// <summary>Seconds left on the scenario timer (-1 none).</summary>
     [LuaFn] public long TimerLeft() => S.Timer.Seconds < 0 ? -1 : Math.Max(0, S.Timer.Seconds - (Ctx.Now - S.Timer.At) / 1000);
 }
