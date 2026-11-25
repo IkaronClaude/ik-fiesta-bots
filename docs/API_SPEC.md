@@ -1007,6 +1007,10 @@ Each op is an array whose first element is its code.
 Positions are world units rounded to integers. World Y grows upward (north on the minimap).
 `self.dir` is the facing in whole degrees 0..359: 0 = east (+x), counter-clockwise, 90 = north (+y).
 
+Skills in the stream are the ACTIVE skill list (CLIENT_SKILL). Passive skills arrive in a separate list that is not
+decoded yet, and their ids overlap the active ids (PassiveSkill id 0 is not ActiveSkill id 0), so a skill id alone
+can never mean "passive"; passives will get their own `passives` field in the snapshot when decoded (open).
+
 Names: the US client data carries some untranslated names as question marks (`"?? ??"`, e.g. internal skills
 like WorldLink_N); the static routes then return the InxName as `name`. Some skills (event / item-use skills)
 have no icon in the client data (`IconFile` "-"), so `icon` is false and the tile shows text.
@@ -1026,7 +1030,7 @@ routes (the fingerprint includes the host's output version) is picked up at once
 |---|---|
 | `GET /api/v3/static` | `{fingerprint, items, skills, mobs, abstates, maps}` (counts; the fingerprint changes when the client data changes) |
 | `GET /api/v3/static/items/{id}` | `{id, inx, name, type, class, equip, demandLv, maxLot, buyPrice, sellPrice, icon}` (`icon`: true when the client ships art) |
-| `GET /api/v3/static/skills/{id}` | `{id, inx, name, step, maxStep, sp, hp, cooldownMs, groupCooldownMs, range, castMs, description, icon}` |
+| `GET /api/v3/static/skills/{id}` | `{id, inx, name, category, rowKey, step, maxStep, sp, hp, cooldownMs, groupCooldownMs, range, castMs, description, icon}`; `category` `"production"` when the client's production tables (Produce recipes, Gather) name the id, else `"active"`; an id without an ActiveSkill row answers 404 (the UI files it under Other); `rowKey` = the InxName without its rank digits (one row per skill family, highest learned step) |
 | `GET /api/v3/static/abstates/{id}` | `{id, inx, name, description, sort, icon}` (`id` = the wire abstate index; `sort` BUFF / DEBUFF / ...) |
 | `GET /api/v3/static/mobs/{id}` | `{id, inx, name, level, maxHp, npc, playerSide}` |
 | `GET /api/v3/static/classes/{id}` | `{id, name}` |

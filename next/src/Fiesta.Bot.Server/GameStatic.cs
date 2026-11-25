@@ -15,11 +15,12 @@ public sealed class GameStatic
     private readonly Lazy<ShnTable?> _itemView, _skillView, _abView, _abState, _mapView;
     private readonly Lazy<Dictionary<string, string>> _iconFiles, _minimapFiles;
     private readonly Lazy<Dictionary<int, int>> _abRowByWire;
+    private readonly Lazy<HashSet<int>> _productionIds;
     private readonly ConcurrentDictionary<(char, int), byte[]?> _icons = new();
     private readonly ConcurrentDictionary<int, byte[]?> _minimaps = new();
 
     /// <summary>Bumped whenever these routes change what they return for the same client data (busts browser caches).</summary>
-    public const int OutputVersion = 2;
+    public const int OutputVersion = 3;
 
     /// <summary>Client-data fingerprint (part of every ETag).</summary>
     public string Fingerprint { get; }
@@ -41,6 +42,14 @@ public sealed class GameStatic
             var d = new Dictionary<int, int>();
             if (_abState.Value is { } t) for (var r = 0; r < t.RowCount; r++) d.TryAdd((int)t.Num(r, "AbStataIndex"), r);
             return d;
+        });
+        // production skills: the ids the client's own production tables name (recipes in Produce, gathering in Gather)
+        _productionIds = new(() =>
+        {
+            var set = new HashSet<int>();
+            if (T("Produce") is { } p) for (var r = 0; r < p.RowCount; r++) set.Add((int)p.Num(r, "ProductID"));
+            if (T("Gather") is { } g) for (var r = 0; r < g.RowCount; r++) set.Add((int)g.Num(r, "GatherID"));
+            return set;
         });
         var sb = new StringBuilder(Path.GetFullPath(h.RessystemDir)).Append('|').Append(OutputVersion);
         foreach (var f in new[] { "ItemInfo.shn", "ActiveSkill.shn", "MobInfo.shn", "MapInfo.shn", "ItemViewInfo.shn" })
@@ -134,7 +143,7 @@ public sealed class GameStatic
         if (vr >= 0 && _skillView.Value!.Col("Descript") >= 0) desc = _skillView.Value.Str(vr, "Descript");
         return new
         {
-            id, inx = r.InxName, name = r.Name, step = r.Step, maxStep = r.MaxStep, sp = r.Sp, hp = r.Hp, cooldownMs = r.DelayMs,
+            id, inx = r.InxName, name = r.Name, category = _productionIds.Value.Contains(id) ? "production" : "active", rowKey = r.Family, step = r.Step, maxStep = r.MaxStep, sp = r.Sp, hp = r.Hp, cooldownMs = r.DelayMs,
             groupCooldownMs = r.DelayGroup > 0 ? r.DelayGroupMs : 0, range = r.Range, castMs = r.CastTimeMs, description = desc,
             icon = SkillIcon(id) is { } c && _iconFiles.Value.ContainsKey(c.File),
         };

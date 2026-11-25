@@ -129,6 +129,11 @@ Measured (local 2026 stack, NextBotA in Roumen, 54 entities in view, 19 skills, 
   `Capture_does_not_allocate_on_the_tick`); at 10 Hz that is ~9 us per tick on average. Live, 60 s each:
   without a game viewer tick p50 50 us / p99 288 us / alloc p95 0 B; with one game viewer p50 52 us / p99 229 us /
   alloc p95 0 B (the difference is within noise).
+- UI requests U26-U29 (UI branch section 13.9): U26 `category` is data-driven (`production` when Produce /
+  Gather name the id, else `active`; no id range, no InxName exception) and `rowKey` = the InxName family; a
+  `passive` category is not derivable from a skill id (the passive and active id spaces overlap) - passives need
+  their own list (open, not decoded yet). U27 `off` reasons are `left-world` / `disconnected` / `host-stopping`.
+  U28 / U29 done (below).
 - UI requests after the first build of the Game tab: names that the US client data ships as "?? ??" fall back to
   the InxName (the bytes in the file are literally question marks, not an encoding problem); skills with
   `icon:false` have no art in the client data (`IconFile` "-": event / item-use skills); `self.dir` is degrees
