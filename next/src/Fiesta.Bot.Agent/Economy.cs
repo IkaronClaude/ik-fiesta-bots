@@ -15,7 +15,7 @@ public sealed class Economy
     private int Bucket(long now)
     {
         if (_startedAt < 0) _startedAt = now;
-        var m = now / 60_000; var i = (int)(m % Minutes);
+        var m = now / 60_000; var i = (int)(((m % Minutes) + Minutes) % Minutes);
         if (_bucketMinute[i] != m) { _bucketMinute[i] = m; _exp[i] = _earn[i] = _spend[i] = _stones[i] = 0; _deaths[i] = 0; }
         return i;
     }
@@ -80,11 +80,47 @@ public sealed class Economy
         long exp = 0, net = 0, stones = 0; int deaths = 0;
         for (var k = 0; k < minutes; k++)
         {
-            var i = (int)((m - k) % Minutes);
-            if (i < 0 || _bucketMinute[i] != m - k) continue;
+            // minutes before this process started are negative (a restored ledger): index them modulo, never skip them
+            var i = (int)((((m - k) % Minutes) + Minutes) % Minutes);
+            if (_bucketMinute[i] != m - k) continue;
             exp += _exp[i]; net += _earn[i] - _spend[i]; stones += _stones[i]; deaths += _deaths[i];
         }
         var hours = Math.Max(1.0 / 60, Math.Min(minutes, _startedAt < 0 ? 1 : (now - _startedAt) / 60_000.0 + 1) / 60.0);
         return (exp / hours, net / hours, deaths / hours, stones / hours);
+    }
+
+    // ---- persistence across sessions and host restarts (times as Unix minutes / ms)
+    /// <summary>The ledger as plain data: the last hour's buckets keyed by Unix minute, the per-mob numbers, quest exp.</summary>
+    public sealed record Saved(long StartedUnixMs, long QuestExp, List<long[]> Buckets, Dictionary<int, long[]> Mobs);
+
+    /// <summary>Export for saving (<paramref name="unixNow"/> is the wall clock matching <paramref name="now"/>).</summary>
+    public Saved Export(long now, long unixNow)
+    {
+        var shift = unixNow / 60_000 - now / 60_000;
+        var buckets = new List<long[]>();
+        for (var i = 0; i < Minutes; i++)
+            if (_exp[i] != 0 || _earn[i] != 0 || _spend[i] != 0 || _stones[i] != 0 || _deaths[i] != 0)
+                buckets.Add([_bucketMinute[i] + shift, _exp[i], _earn[i], _spend[i], _stones[i], _deaths[i]]);
+        var mobs = _mobs.ToDictionary(kv => kv.Key, kv => new long[] { kv.Value.Kills, kv.Value.FightMs, kv.Value.Stones, kv.Value.Exp, kv.Value.Deaths });
+        return new Saved(_startedAt < 0 ? -1 : _startedAt + (unixNow - now), _questExp, buckets, mobs);
+    }
+
+    /// <summary>Restore a saved ledger (buckets older than an hour are dropped).</summary>
+    public void Import(Saved s, long now, long unixNow)
+    {
+        var shift = unixNow / 60_000 - now / 60_000;
+        var m = now / 60_000;
+        foreach (var b in s.Buckets)
+        {
+            if (b.Length < 6) continue;
+            var local = b[0] - shift;
+            if (local <= m - Minutes || local > m) continue;
+            var i = (int)(((local % Minutes) + Minutes) % Minutes);
+            _bucketMinute[i] = local; _exp[i] = b[1]; _earn[i] = b[2]; _spend[i] = b[3]; _stones[i] = b[4]; _deaths[i] = (int)b[5];
+        }
+        foreach (var (id, v) in s.Mobs)
+            if (v.Length >= 5) _mobs[id] = new MobCost { Kills = (int)v[0], FightMs = v[1], Stones = (int)v[2], Exp = v[3], Deaths = (int)v[4] };
+        _questExp = s.QuestExp;
+        if (s.StartedUnixMs >= 0) _startedAt = Math.Max(now - 3_600_000, s.StartedUnixMs - (unixNow - now));
     }
 }

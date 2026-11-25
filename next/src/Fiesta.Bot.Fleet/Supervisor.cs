@@ -315,6 +315,7 @@ public sealed class BotRuntime
         ctx.Learners.Add(new AggroLearner());
         ctx.Learners.Add(new AtlasLearner());
         ctx.Learners.Add(new DoorLearner());
+        LoadEconomy(ctx);
         var agent = new BotAgent(ctx, inbound, outbound, new ControlQueue(), null, _h.Clock);
         agent.OnPublish = OnPublish;
         agent.Lifecycle = cmd => { if (cmd.Kind == ControlKind.Relog) _ = RelogAsync(); else _ = StopAsync(true); };
@@ -393,6 +394,7 @@ public sealed class BotRuntime
             if (!_h.Ticks.RemoveAndWait(a, TimeSpan.FromSeconds(5)))
                 Log.Text(LogCategory.Core, LogLevel.Note, "session teardown: the tick worker did not release the agent in 5 s");
             SaveAvoids(a.Context);   // after the tick stopped touching it
+            SaveEconomy(a.Context);
             if (Brain is { } br)
             {
                 try { _h.Checkpoints.Save(br.Checkpoint()); } catch (Exception e) { Log.Text(LogCategory.Brain, LogLevel.Note, $"checkpoint failed: {e.Message}"); }
@@ -403,6 +405,31 @@ public sealed class BotRuntime
         Agent = null;
         Session = null;
         _h.SaveKnowledge();
+    }
+
+    // the economy ledger (rates, per-mob costs) outlives sessions and host restarts: efficiency is compared over time
+    private string EconFile => Path.Combine(_h.DataDir, $"econ-{Record.Id}.json");
+    private void SaveEconomy(AgentContext ctx)
+    {
+        try
+        {
+            var now = ctx.Now;
+            File.WriteAllText(EconFile, System.Text.Json.JsonSerializer.Serialize(ctx.World.Economy.Export(now, SystemClock.UnixMs(now))));
+        }
+        catch (Exception e) { Log.Text(LogCategory.Core, LogLevel.Note, $"economy save failed: {e.Message}"); }
+    }
+    private void LoadEconomy(AgentContext ctx)
+    {
+        try
+        {
+            if (!File.Exists(EconFile)) return;
+            var s = System.Text.Json.JsonSerializer.Deserialize<Economy.Saved>(File.ReadAllText(EconFile));
+            if (s is null) return;
+            var now = _h.Clock.NowMs;
+            ctx.World.Economy.Import(s, now, SystemClock.UnixMs(now));
+            Log.Text(LogCategory.Core, LogLevel.Info, $"economy ledger restored: {s.Buckets.Count} minutes, {s.Mobs.Count} mob types, quest exp {s.QuestExp}");
+        }
+        catch (Exception e) { Log.Text(LogCategory.Core, LogLevel.Note, $"economy load failed: {e.Message}"); }
     }
 
     /// <summary>Wall time of the last progress (exp, level, a quest accepted / done); the no-progress alarm reads it.</summary>

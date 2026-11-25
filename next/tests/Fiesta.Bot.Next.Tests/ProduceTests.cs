@@ -201,4 +201,28 @@ layers:
         t.Tick();
         Assert.False(t.Ctx.World.Self.TentPitched);
     }
+
+    [Fact]
+    public void The_economy_ledger_survives_a_restart()
+    {
+        using var t = new TestBot();
+        t.Tick(2);
+        t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)EntityKind.Mob, b: 1, x: 5050, y: 5000);
+        t.Tick();
+        t.Ev(InboundKind.Damage, h: 1000, h2: 2000, a: 50, b: 450);
+        t.Tick(40);
+        t.Ev(InboundKind.EntityDied, h: 2000, h2: 1000);
+        t.Ev(InboundKind.SelfExp, h: 2000, a: 70);
+        t.Tick();
+        var now = t.Clock.NowMs;
+        var saved = t.Ctx.World.Economy.Export(now, 1_800_000_000_000 + now);
+        var json = System.Text.Json.JsonSerializer.Serialize(saved);
+        // a new process: another clock origin, ten minutes later on the wall clock
+        var back = System.Text.Json.JsonSerializer.Deserialize<Fiesta.Bot.Agent.Economy.Saved>(json)!;
+        var e = new Fiesta.Bot.Agent.Economy();
+        e.Import(back, 5_000, 1_800_000_000_000 + now + 600_000);
+        Assert.Equal(1, e.Mob(1).Kills);
+        Assert.Equal(70, e.Mob(1).Exp);
+        Assert.True(e.Rates(30, 5_000).ExpH > 0);
+    }
 }
