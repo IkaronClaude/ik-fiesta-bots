@@ -473,6 +473,7 @@ public sealed class QuestLog
     public int SlotsFree => Capacity - _active.Count;
     internal void Set(int q, int status, long counts) { if (!_active.ContainsKey(q)) _activeList.Add(q); _active[q] = (status, counts); _available.Remove(q); }
     internal void Done(int q) { _done.Add(q); if (_active.Remove(q)) _activeList.Remove(q); }
+    internal void Drop(int q) { if (_active.Remove(q)) _activeList.Remove(q); }
     internal void AddAvailable(int q) => _available.Add(q);
     internal void Kill(int q, int objective)
     {
@@ -942,6 +943,11 @@ public sealed class WorldState
                 break;
             case InboundKind.FriendProposal when e.Text is { } ft && ft.IndexOf('\t') is var tab and >= 0:
                 Party.FriendRequest = (ft[..tab], ft[(tab + 1)..], now);
+                break;
+            // QUEST_GIVE_UP_ACK {quest, error}: 0x0B41 = given up (0x0B49 = refused for a few seconds after a dialog)
+            case InboundKind.QuestAck when e.A == 0x4408 && e.B == 0x0B41:
+                Quests.Drop((int)e.C);
+                Bump(WorldComponent.Quests);
                 break;
             case InboundKind.StoneShop:
                 Npc.StonePrices = ((int)e.A, (int)e.B, (int)e.C, (int)e.X, now);

@@ -689,6 +689,7 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
     public bool Ready(int q)
     {
         if (!Q.IsActive(q)) return false;
+        if (Q.Status(q) == 8) return true;   // the server's own "reward" state: every objective met
         var def = Ctx.Data.Quest(q);
         if (def is null || def.Objectives.Count == 0) return Q.Status(q) >= 2;
         for (var i = 0; i < def.Objectives.Count && i < 5; i++)
@@ -729,6 +730,17 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public bool Repeatable(int q) => Ctx.Data.Quest(q)?.Repeatable ?? false;
     /// <summary>Reward exp.</summary>
     [LuaFn] public long Exp(int q) => Ctx.Data.Quest(q)?.Exp ?? -1;
+    /// <summary>Give a quest up (QUEST_GIVE_UP_REQ; the ack 0x0B41 drops it from the log).</summary>
+    [LuaFn]
+    public int GiveUp(int q)
+    {
+        Span<byte> b = stackalloc byte[2]; b[0] = (byte)q; b[1] = (byte)(q >> 8);
+        _one[0] = IntentEncoder.Raw(IntentEncoder.OpQuestGiveUp, b, -1);
+        return Ctx.Actions.Issue(ActionKind.Raw, CallingLayer, IntentEncoder.OpQuestGiveUp, q, _one).Value;
+    }
+    private readonly Intent[] _one = new Intent[1];
+    /// <summary>Quest status as the server keeps it (6 in progress, 7 failed, 8 every objective met, -1 not active).</summary>
+    [LuaFn] public int Status(int q) => Q.Status(q);
     /// <summary>Free quest log slots.</summary>
     [LuaFn] public int SlotsFree() => Q.SlotsFree;
 

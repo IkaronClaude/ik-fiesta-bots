@@ -590,6 +590,16 @@ public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewar
                 Go("awaitPage", ctx, 4000);
                 return;
             }
+            // a hand-in with a choice of reward items: the client names its pick before acknowledging the page
+            // (captured: QUEST_REWARD_SELECT_ITEM_INDEX {quest, index u32} then the ack; without it the server answers
+            // REWARD_NEED_SELECT_ITEM and the quest stays open)
+            if (ctx.World.Quests.IsActive(quest) && RewardChoice(ctx, quest) is var pick and >= 0)
+            {
+                Span<byte> rb = stackalloc byte[6];
+                rb[0] = (byte)quest; rb[1] = (byte)(quest >> 8); rb[2] = (byte)pick; rb[3] = (byte)(pick >> 8); rb[4] = rb[5] = 0;
+                ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpQuestRewardSelect, rb, Action.Value));
+                ctx.Log.Log(LogCategory.Quest, LogLevel.Info, $"talk: quest {Q(ctx, quest)} reward choice: row {pick}");
+            }
             ctx.Actions.Send(IntentEncoder.QuestScriptAck((ushort)quest, (byte)cmd, answer, Action.Value));
             Pages++;
             if (ctx.Log.IsEnabled(LogCategory.Quest, LogLevel.Info))
@@ -604,6 +614,25 @@ public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewar
     }
 
     private static string Q(AgentContext ctx, int q) => $"'{ctx.Data.Quest(q)?.Name ?? "?"}' ({q})";
+
+    /// <summary>The reward to pick, as the quest's reward-row index (0-based within its QuestReward rows): the caller's
+    /// RewardIndex when given, else the first choosable item our class can use (else the first choosable row); -1 when
+    /// the quest has no choice. The index meaning is read from one capture (quest 8: rows 1-5 choosable, the client sent
+    /// 5); which item a player would take is judgement (UseClass first).</summary>
+    public int RewardChoice(AgentContext ctx, int quest)
+    {
+        if (ctx.Data.Quest(quest) is not { } q) return -1;
+        int first = -1, usable = -1;
+        for (var i = 0; i < q.Rewards.Count; i++)
+        {
+            if (q.Rewards[i].Selectable != 2) continue;
+            if (first < 0) first = i;
+            if (usable < 0 && q.Rewards[i].Type == 2 && ctx.Data.Item(q.Rewards[i].Value) is { } it
+                && (ctx.Data as Fiesta.Bot.Services.ClientData)?.ClassAllowed(it.UseClass, ctx.World.Self.ClassId) != false) usable = i;
+        }
+        if (first < 0) return -1;
+        return RewardIndex >= 0 ? RewardIndex : usable >= 0 ? usable : first;
+    }
 }
 
 /// <summary>Quest script reading (client QuestData script text).</summary>

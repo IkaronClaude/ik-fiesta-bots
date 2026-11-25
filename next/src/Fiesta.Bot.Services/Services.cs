@@ -91,6 +91,10 @@ public sealed record MapInfoRow(int Id, string MapName, string Name, bool IsInst
 public sealed record QuestDef(int Id, string Name, int MinLevel, int MaxLevel, bool Repeatable, int StartNpc,
     IReadOnlyList<QuestObjectiveDef> Objectives, long Exp, int PrevQuest, int StartClass, int EndClass, string Script)
 {
+    /// <summary>The quest's QuestReward rows in table order: selectable (2 = one of several to choose), type (0 exp, 1 money,
+    /// 2 item), value (exp / money / item id).</summary>
+    public IReadOnlyList<(int Selectable, int Type, int Value)> Rewards { get; init; } = [];
+
     /// <summary>The server's counter (1-based) for objective i (0-based): the server counts only the kill objectives, in
     /// order, so a talk objective listed first does not take counter 1 (observed: "Master Zach" {talk, kill 5 slimes}
     /// arrives with counter 1 = 5 after five kills). -1 for an objective without a counter.</summary>
@@ -298,9 +302,15 @@ public sealed class ClientData : IClientData
                 Add(q, new QuestObjectiveDef(QuestObjectiveKind.Collect, dropper.TryGetValue((q, item), out var mob) ? mob : -1, item, (int)ei.Num(r, "Count")));
             }
         var exp = new Dictionary<int, long>();
+        var rewards = new Dictionary<int, List<(int, int, int)>>();
         if (T("QuestReward") is { } rw)
             for (var r = 0; r < rw.RowCount; r++)
-                if (rw.Num(r, "RewardType") == 0) exp[(int)rw.Num(r, "ID")] = rw.Num(r, "Flag");
+            {
+                var qid = (int)rw.Num(r, "ID");
+                if (rw.Num(r, "RewardType") == 0) exp[qid] = rw.Num(r, "Flag");
+                if (!rewards.TryGetValue(qid, out var rl)) rewards[qid] = rl = new();
+                rl.Add(((int)rw.Num(r, "Selectable"), (int)rw.Num(r, "RewardType"), (int)rw.Num(r, "Flag")));
+            }
         for (var r = 0; r < t.RowCount; r++)
         {
             int I(string c) => (int)t.Num(r, c);
@@ -308,7 +318,8 @@ public sealed class ClientData : IClientData
             var name = Dialog(I("NameId"))?.Trim() ?? $"quest {id}";
             d[id] = new QuestDef(id, name, I("LvlStart"), I("LvlEnd"), I("RepeatType") != 0, I("NPCID"),
                 obj.TryGetValue(id, out var o) ? o : Array.Empty<QuestObjectiveDef>(), exp.GetValueOrDefault(id), I("PrevQuestID"),
-                I("StartClassID"), I("EndClassID"), t.Str(r, "Script") ?? "");
+                I("StartClassID"), I("EndClassID"), t.Str(r, "Script") ?? "")
+            { Rewards = rewards.TryGetValue(id, out var rr) ? rr : [] };
         }
         return d;
     }

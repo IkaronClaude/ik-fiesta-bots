@@ -82,7 +82,10 @@ public sealed class TestData : IClientData
     public static readonly MapInfoRow MapRow = new(7, "TestMap", "Test Map", false, 5000, 5000);
     public MapInfoRow? Map(int id) => id == 7 ? MapRow : null;
     public MapInfoRow? Map(string mapName) => mapName == "TestMap" ? MapRow : null;
-    public QuestDef? Quest(int id) => null;
+    public static readonly QuestDef Q8 = new(8, "Master Zach", 2, 10, false, 88,
+        [new QuestObjectiveDef(QuestObjectiveKind.Talk, 88, -1, 1), new QuestObjectiveDef(QuestObjectiveKind.Kill, 1, -1, 5)], 30, 0, 0, 0, "")
+    { Rewards = [(1, 2, 2505), (2, 2, 12943), (2, 2, 12947), (1, 0, 30)] };
+    public QuestDef? Quest(int id) => id == 8 ? Q8 : null;
     public string? Dialog(int id) => null;
     public int ClassFamily(int classId) => 1;
     public string ClassName(int classId) => "";
@@ -561,6 +564,24 @@ public class ActionTests
         Assert.Equal(1, three.CounterOf(1));
         Assert.Equal(-1, three.CounterOf(2));
         Assert.Equal(2, three.CounterOf(3));
+    }
+
+    [Fact]
+    public void A_hand_in_with_a_reward_choice_names_the_pick_before_the_ack()
+    {
+        using var t = new TestBot();
+        t.Tick(5);
+        t.Ev(InboundKind.QuestDialog, a: 8, b: 6);   // accepted earlier
+        t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)EntityKind.Npc, b: 1, x: 5020, y: 5000);
+        t.Tick();
+        t.Ctx.Procedures.Start(new QuestDialogueProcedure(3000, 8, -1), ActionKind.Talk, 1, t.Ctx);
+        t.Tick();
+        t.Sent.Clear();
+        var page = InboundEvent.Of(InboundKind.QuestDialog, 0x4401, t.Clock.NowMs); page.A = 8; page.B = 2; page.C = 714; page.Handle2 = 88;
+        t.In.TryWrite(page);
+        t.Tick();
+        var i = t.Sent.IndexOf(IntentEncoder.OpQuestRewardSelect);
+        Assert.True(i >= 0 && i < t.Sent.IndexOf(IntentEncoder.OpQuestScriptAck), string.Join(",", t.Sent.Select(x => x.ToString("X4"))));
     }
 
     private static List<ushort> Drain(TestBot t) { t.Tick(); return t.Sent; }
