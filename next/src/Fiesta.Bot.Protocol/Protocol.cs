@@ -455,7 +455,9 @@ public sealed class SelfDecoder : IPacketDecoder
                 var hp = InboundEvent.Of(InboundKind.SelfHp, op, at); hp.A = Rd.U32(p, 42); sink.TryWrite(hp);
                 var sp = InboundEvent.Of(InboundKind.SelfSp, op, at); sp.A = Rd.U32(p, 46); sink.TryWrite(sp);
                 var fame = InboundEvent.Of(InboundKind.SelfStat, op, at); fame.A = 0x20; fame.B = Rd.U32(p, 54); sink.TryWrite(fame);
-                if (p.Length >= 93) { var pts = InboundEvent.Of(InboundKind.StatPoints, op, at); pts.A = p[92]; sink.TryWrite(pts); }
+                // @87 statdistribute {Str, End, Dex, Int, Spr, RedistributePoint}: points already placed and the
+                // redistribution allowance, not free points (those come in STAT_REMAINPOINT 0x105B; the server ignored an
+                // INCPOINT spent on this number)
                 return;
             }
             case 0x240C:   // LEVELUP {level u8, mob u16, CHAR_PARAMETER_DATA {prevExp u64, nextExp u64, ...}}
