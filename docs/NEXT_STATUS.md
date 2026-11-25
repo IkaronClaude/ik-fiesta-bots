@@ -2,7 +2,7 @@
 
 Branch `redesign-2026-11-core`. What is implemented against `docs/REDESIGN.md`, what was measured and proven live,
 the bug log, and what is open. Build: `dotnet build next/Fiesta.Bot.Next.slnx`; tests:
-`dotnet test next/tests/Fiesta.Bot.Next.Tests` (83 tests).
+`dotnet test next/tests/Fiesta.Bot.Next.Tests` (86 tests).
 
 ## Running it
 
@@ -300,3 +300,20 @@ Open:
   price for items (half the client buy price, judge.TEAM_PRICE); money asks are gifts.
 - A money aid came up naturally (18:20, NextM 62 cen for stones); NextA's walk to it failed in Fbattle01 (above), the
   ask is re-posted after its cooldown.
+
+### Offline batch while the stack moves to the Linux builds
+
+- Door-aware paths: the map's .sbi doors (count, 56-byte headers {name, tile box, bitmap size, offset}, two bitmaps per
+  door; on client instance maps the state 1 bitmap equals the .shbd, and the job-change capture shows a cleared room's
+  door switched 0 -> 1). BUILDDOOR names the door's block, its state picks the bitmap, and the tiles it blocks beyond
+  the map's own go into the bot's nav overlay. The path search used the overlay only to snap start and goal; a
+  crossing whose leg runs over an overlay tile is now not taken (this also keeps paths off tiles the server refused).
+  Test: a path goes through a near gap when the door is open and around by a far gap when it is closed.
+- Waves: the mobs that appear after an area confirm are the room's wave (`scenario.wave()`); the leveller's
+  `instance` layer holds the room (combat fights in it) until every mob of the wave is gone, and follows the next room.
+- Producer brain (private, `scripts/brains/producer`): production field, recipes bought and read as the type mastery
+  allows, raws bought where a merchant sells them, the goal recipe or the cheapest allowed one, chat commissions
+  ("need N x <product>") quoted at raw cost, made, split to the count and traded against the payment. Lint + a
+  simulation test; not run live. `produce.typeMastery` assumes the mastery totals of one type are shared (GUESS, to be
+  checked on the first live craft).
+- The host was not restarted for these (live work is paused); the next restart deploys them.
