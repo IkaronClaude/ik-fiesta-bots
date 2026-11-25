@@ -143,5 +143,15 @@ New decodes for it: the character stats (CHAR_PARAMETER_DATA in MAP_LOGIN_ACK; l
 CHANGEPARAMCHANGE ids 0..15, the id = the stat's position, checked on a capture), fame and free stat points from
 CHAR_BASE, soul stone capacity.
 
+Skill ids check (coordinator's sanity question): NextBotA's 19 skill ids (29001 Mining, 29206 Ride Mover, 29349
+Use Potion, the event ball skills, ...) are right: the CLIENT_SKILL frame (13:28:05, 238 B) reads restempow 1,
+partmark 3, maxnum 19, chrregnum 0x0BCE, number 19, 19 x 12-byte records, and every id resolves to an ActiveSkill
+row; a level-4 Fighter has not bought a class skill yet (the Mage got Magic Missile [01] at creation). With the
+UI's id-range rule they would all be "production"; the host's data-driven rule makes only Mining production.
+
+Open bug: once, right after a host restart, NextBotA came into the world with an EMPTY skill list (a relog then
+received the 19-skill CLIENT_SKILL as usual; the frame arrives before MAP_LOGIN_ACK and nothing clears the skill
+book). Packet capture is left on for the next restart to see whether the server sent the frame.
+
 Open: CHANGEPARAMCHANGE ids 0x12..0x1B and 0x24 (values 0 in the capture) are not named yet; player entities
 carry no class id yet (`id` -1 for players); drop entities carry the item id only where the drop decode has it.
