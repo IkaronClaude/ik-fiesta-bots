@@ -35,6 +35,8 @@ public class AtlasTests
         Assert.Null(a.Route(rou, 9456, 2408, val1, avoid: m => m == cos1));
         Assert.True(a.EasiestMobLevel(cos1, id => d.Mob(id) is { IsNpc: false, MaxHp: > 0 } mi ? mi.Level : -1) > 0);
         a.LearnGate(cos2, 17607, 13887, rou);
+        // standing in a dangerous map, the way out is still found (the danger test skips the map we are on)
+        Assert.NotNull(a.Route(cos2, 16000, 13000, rou, dangerous: _ => true));
         var back = a.Route(cos2, 16000, 13000, rou)!;
         Assert.Single(back.Hops);
         Assert.True(Math.Abs(back.Hops[0].X - 17607) < 400 && Math.Abs(back.Hops[0].Y - 13887) < 400, $"{back.Hops[0]}");

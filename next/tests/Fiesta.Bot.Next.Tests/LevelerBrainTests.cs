@@ -129,4 +129,16 @@ public class LevelerBrainTests
         t.Tick(200);
         Assert.Single(b.Debug.Transitions(), r => r.Layer == "quest" && r.To == "grind");
     }
+
+    [Fact]
+    public void A_grind_that_cannot_start_is_not_retried_every_tick()
+    {
+        // live 2026-11-25: with no reachable grind spot the quest layer went grind -> give_up -> plan -> grind 36 times a
+        // minute (caught by the transition-cycle alarm)
+        if (Load() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(400);   // 20 s
+        Assert.True(b.Debug.Transitions().Count(r => r.Layer == "quest" && r.To == "grind") <= 1);
+    }
 }

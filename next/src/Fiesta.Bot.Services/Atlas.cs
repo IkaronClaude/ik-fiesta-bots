@@ -245,7 +245,8 @@ public sealed class WorldAtlas
                 var vm = _nodes[v].Map;
                 if (avoid is not null && vm != toMap && vm != fromMap && avoid(vm)) continue;
                 // a walk inside a map that passes a dangerous spawn area is not taken (danger on the path, not on the map)
-                if (dangerous is not null && vm == _nodes[u].Map
+                // (not on the map we stand on: the way out has to be walked whatever spawns there)
+                if (dangerous is not null && vm == _nodes[u].Map && vm != fromMap
                     && SegmentHitsDanger(vm, _nodes[u].X, _nodes[u].Y, _nodes[v].X, _nodes[v].Y, dangerous)) continue;
                 var nd = du + c;
                 if (nd < dist[v]) { dist[v] = nd; prev[v] = u; pq.Enqueue(v, nd); }
