@@ -207,4 +207,8 @@ server-side cause stays open.
   which the bot did not decode, so it looked unanswered. INCPOINT {Int} is acked (0x105F) on the 2026 stack, the same
   layout the 2016 capture and the Godot client's 2026 stat window use. The refusal is decoded now and the brain moves
   on to the next stat of its class order. CHAR_BASE's statdistribute block was wrongly read as free points (fixed).
+  Error 0x0AC2 (2754): the 2026 client has no text for it (its error table falls back to "An unidentified error code
+  has occurred."). Live evidence: with REMAINPOINT 6 the server refused every End request with 0x0AC2, and accepted
+  Int at level 8; a 2016 capture shows Str accepted ten times in a row. The rule behind the End refusal is not
+  identified; the brain learns refused stats per level instead of assuming one.
 - Open: gear upgrades (ItemInfo stats not loaded yet), storage (procedure not wired), potions.
