@@ -3,8 +3,8 @@
 // full snapshot then RFC 6902 deltas (maps keyed by id / slot / handle so a change touches one small path).
 import { MAP } from './static.mjs';
 
-const SKILL_IDS = [3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008];
-const CD = id => [1500, 3000, 6000, 12000, 30000][(id - 3000) % 5];
+const SKILL_IDS = [3001, 3003, 3002, 3004, 3005, 3006, 3007, 3008, 21001, 21002, 21003, 3012]; // learn order
+const CD = id => [1500, 3000, 6000, 12000, 30000][(id % 1000) % 5];
 
 export function initGame(sim) {
   const r = sim.r;

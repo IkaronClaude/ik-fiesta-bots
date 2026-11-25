@@ -894,3 +894,24 @@ completion / hover / signature help come only from this manifest; nothing is bak
   `C, N, I, D, T` (full lower-case names also accepted); the `log` subscription's `level` accepts both;
   `PUT /log-levels` takes lower-case names.
 - **U25.** `POST /bots/{id}/actions` returns `{id, state}`.
+
+### 13.9 Game view (section 14 of the runtime branch) additions
+
+- **U26. Skill category and row key** on `GET /static/skills/{id}` (and the `?ids=` batch), for the Game tab's skill
+  panel, which pages skills the way the client's skill window does:
+  - `category`: `"passive"` when the id is a PassiveSkill row; else `"production"` when it is an ActiveSkill row with
+    20000 <= id <= 29998 (the client's produce-skill range: recipes, scrolls, gathering); else `"active"` when it is
+    an ActiveSkill row (except the InxName `SummonMate01` row the skill window leaves out, which is `"other"`);
+    `"other"` when the id is in neither table.
+  - `rowKey`: the skill window's row key, the client data `Name` without its last 4 characters (the level suffix such
+    as `" [08]"`); the window shows one row per key with the highest learned step.
+  - The UI shows the tabs Active / Passive / Production / Other (Active first), the skills in learn order (the
+    snapshot's `skills` order, new ones appended). Until the host sends `category`, every skill lands under Other
+    with a note.
+- **U27. `off` reason.** `{"t":"off"}` may carry `reason` (`"offline"`, `"reconnecting"`, `"handoff"`,
+  `"host-restart"`, ...); the UI shows it in its "bot not connected" overlay. The overlay appears only when the
+  stream stays off (or the socket stays closed) for more than 1.5 s and drops as soon as a snapshot arrives, so a
+  brief `off` -> `snap` during a map change does not flash.
+- **U28. `self.dir`** convention: degrees, 0 = +x (east), counter-clockwise, world y up (how the minimap draws it).
+- **U29. UI caching:** serve `index.html` with `Cache-Control: no-cache` and `/assets/*` (hashed names) as
+  `public, max-age=31536000, immutable`; without it a browser can keep an old bundle after a rebuild.

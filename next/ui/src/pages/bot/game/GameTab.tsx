@@ -4,11 +4,12 @@
 // static data by id from cacheable endpoints. Cooldowns / buff timers are end times animated locally (one rAF loop
 // that only touches the elements that are counting down).
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { hub } from '../../../api/ws';
+import { hub, useWsStatus } from '../../../api/ws';
+import { ConnOverlay } from '../../../components/ConnOverlay';
 import { applyOps, fromSnapshot } from './gameModel';
 import { Empty, fmtNum } from '../../../components/ui';
 import { Minimap, entName } from './Minimap';
-import { iconUrl, useStatic, useStaticVersion, type AbstateInfo, type ItemInfo, type MapInfo, type MobInfo, type SkillInfo } from './staticData';
+import { iconUrl, lookup, lookupVersion, useStatic, useStaticVersion, type SkillCategory, type AbstateInfo, type ItemInfo, type MapInfo, type MobInfo, type SkillInfo } from './staticData';
 import type { GameBuff, GameEnt, GameSkill, GameState, GameStone } from './types';
 
 type Tip = { kind: 'item'; id: number; lot?: number; upgrade?: number } | { kind: 'skill'; id: number } | { kind: 'buff'; id: number; endAt: number | null }
@@ -21,20 +22,29 @@ function useGame(bot: string): GameState | undefined {
     setState(undefined);
     const msg = { topic: 'game', bot };
     let seq = -1;
+    let offAt: number | null = null;
     return hub.subscribe(msg, (m: any) => {
-      if (m.t === 'snap') { seq = m.seq; setState(fromSnapshot(m.data, m.now)); return; }
+      if (m.t === 'snap') {
+        if (offAt != null) console.debug(`[game ${bot}] on: snapshot seq ${m.seq} after ${Date.now() - offAt} ms off`);
+        offAt = null; seq = m.seq; setState(fromSnapshot(m.data, m.now)); return;
+      }
       if (seq < 0) return; // wait for the snapshot
-      if (m.seq !== seq + 1) { seq = -1; hub.resubscribe(msg); return; }
+      if (m.seq !== seq + 1) { console.debug(`[game ${bot}] seq gap ${seq} -> ${m.seq}: re-subscribing`); seq = -1; hub.resubscribe(msg); return; }
       seq = m.seq;
       if (m.t === 'd') setState(s => (s ? applyOps(s, m.ops ?? [], m.now) : s));
-      else if (m.t === 'off') setState(s => (s ? { ...s, offline: true, serverTime: m.now } : s));
+      else if (m.t === 'off') {
+        offAt = Date.now();
+        console.debug(`[game ${bot}] off: seq ${m.seq}${m.reason ? ` reason ${m.reason}` : ''}`, m);
+        setState(s => (s ? { ...s, offline: true, offReason: m.reason, serverTime: m.now } : s));
+      }
     }, true);
   }, [bot]);
   return state;
 }
 
-export function GameTab({ bot }: { bot: string }) {
+export function GameTab({ bot, botState }: { bot: string; botState?: string }) {
   const state = useGame(bot);
+  const ws = useWsStatus();
   const offset = useRef(0); // serverTime - Date.now(), so local animation follows the host clock
   const samples = useRef<number[]>([]);
   useEffect(() => {
@@ -71,11 +81,14 @@ export function GameTab({ bot }: { bot: string }) {
   // stable, so memoised tiles do not re-render on every game update
   const onTip = useCallback((t: Tip | null, ev?: { clientX: number; clientY: number }) => setTip(t && ev ? { t, x: ev.clientX, y: ev.clientY } : null), []);
   const onEnt = useCallback((h: { ent: GameEnt; h: string; x: number; y: number } | null) => setTip(h ? { t: { kind: 'ent', h: h.h, e: h.ent }, x: h.x, y: h.y } : null), []);
-  if (!state) return <Empty>Waiting for the game view (topic <code>game</code>)...</Empty>;
+  const down = ws !== 'open' || !!state?.offline || (botState != null && !/InZone|Paused/i.test(botState));
+  const reason = ws !== 'open' ? `connection to the host ${ws === 'connecting' ? 'is being re-established' : 'lost, reconnecting'}`
+    : botState && !/InZone|Paused/i.test(botState) ? `bot is ${botState}`
+    : state?.offline ? `the host reports the bot out of the world${state.offReason ? ` (${state.offReason})` : ''}` : '';
+  if (!state) return <div className="game"><Empty>Waiting for the game view...</Empty><ConnOverlay down={down} reason={reason} /></div>;
 
   return (
     <div className={'game' + (state.offline ? ' offline' : '')} ref={root} onMouseLeave={() => setTip(null)}>
-      {state.offline && <div className="banner">The bot left the world; showing its last state until it is back.</div>}
       <Hud s={state} />
       <div className="game-grid">
         <div className="game-left">
@@ -84,11 +97,12 @@ export function GameTab({ bot }: { bot: string }) {
           <Buffs buffs={state.buffs} onTip={onTip} />
         </div>
         <div className="game-right">
-          <SkillBar skills={state.skills} stones={stonesOf(state)} onTip={onTip} />
+          <SkillBar skills={state.skills} order={state.skillOrder} stones={stonesOf(state)} onTip={onTip} />
           <Bag state={state} onTip={onTip} />
           <Stats s={state.self} />
         </div>
       </div>
+      <ConnOverlay down={down} reason={reason} />
       {tip && <Tooltip tip={tip.t} x={tip.x} y={tip.y} offset={offset.current} />}
     </div>
   );
@@ -180,17 +194,50 @@ const StoneTile = memo(function StoneTile({ which, s, onTip }: { which: string; 
   );
 });
 
-function SkillBar({ skills, stones, onTip }: { skills: GameState['skills']; stones: GameState['stones']; onTip: (t: Tip | null, ev?: any) => void }) {
-  const list = useMemo(() => Object.values(skills).sort((a, b) => a.id - b.id), [skills]);
+// The client's skill window pages: active / passive / production, plus "other" for learned ids the host classifies
+// as none of those. The category comes from client data per skill id (static `category`, API_SPEC 13.9 U26);
+// rows are one per skill family (static `rowKey`), highest learned rank kept, in learn order.
+const SKILL_TABS: { id: SkillCategory; label: string }[] = [
+  { id: 'active', label: 'Active' }, { id: 'passive', label: 'Passive' }, { id: 'production', label: 'Production' }, { id: 'other', label: 'Other' },
+];
+
+function SkillBar({ skills, order, stones, onTip }: { skills: GameState['skills']; order: number[]; stones: GameState['stones']; onTip: (t: Tip | null, ev?: any) => void }) {
+  useStaticVersion();
+  const [tab, setTab] = useState<SkillCategory>('active');
+  const { rows, counts, unclassified } = useMemo(() => {
+    const byKey = new Map<string, { s: GameSkill; rank: number; cat: SkillCategory }>();
+    let unclassified = 0;
+    for (const id of order) {
+      const s = skills[id]; if (!s) continue;
+      const info = lookup<SkillInfo>('skills', id);
+      if (info && !info.category) unclassified++;
+      const cat: SkillCategory = info?.category ?? 'other';
+      const key = `${cat}|${info?.rowKey ?? id}`;
+      const rank = info?.rank ?? 0;
+      const cur = byKey.get(key);
+      if (!cur) byKey.set(key, { s, rank, cat });
+      else if (rank > cur.rank) byKey.set(key, { s, rank, cat }); // keeps the first slot (learn order), the highest rank
+    }
+    const rows = [...byKey.values()];
+    const counts = Object.fromEntries(SKILL_TABS.map(t => [t.id, rows.filter(r => r.cat === t.id).length])) as Record<SkillCategory, number>;
+    return { rows, counts, unclassified };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skills, order, lookupVersion()]);
+  const shown = rows.filter(r => r.cat === tab);
   return (
     <div className="card game-card">
-      <div className="side-h">Skills <span className="muted">{list.length}</span></div>
+      <div className="side-h">Skills
+        <span className="bag-tabs">{SKILL_TABS.map(t => (
+          <button key={t.id} className={'bag-tab' + (t.id === tab ? ' on' : '')} onClick={() => setTab(t.id)}>{t.label}<span className="muted"> {counts[t.id]}</span></button>
+        ))}</span>
+      </div>
       <div className="tiles">
         {stones?.hp && <StoneTile which="hp" s={stones.hp} onTip={onTip} />}
         {stones?.sp && <StoneTile which="sp" s={stones.sp} onTip={onTip} />}
-        {list.map(s => <SkillTile key={s.id} s={s} onTip={onTip} />)}
-        {!list.length && <span className="muted small">no skills</span>}
+        {shown.map(r => <SkillTile key={r.s.id} s={r.s} onTip={onTip} />)}
+        {!shown.length && <span className="muted small skill-empty">no {tab} skills</span>}
       </div>
+      {unclassified > 0 && <div className="hint">{unclassified} skill(s) without a category from the host (shown under Other).</div>}
     </div>
   );
 }

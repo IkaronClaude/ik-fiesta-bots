@@ -38,6 +38,7 @@ export function fromSnapshot(d: any, now: number): GameState {
     self: { ...selfOf(d.self), target: d.target ?? -1, stats: d.stats ?? undefined },
     path: d.path ?? [],
     skills: Object.fromEntries((d.skills ?? []).map(([id, readyAt, durMs]: number[]) => [id, { id, cdEnd: readyAt, cdMs: durMs }])),
+    skillOrder: (d.skills ?? []).map((r: number[]) => r[0]),
     buffs: Object.fromEntries((d.abstates ?? []).map(([id, endsAt]: number[]) => [id, { id, endAt: endsAt || null }])),
     bag: { size, pageSize: Math.ceil(size / pages) || 24, slots },
     equip: Object.fromEntries((d.equip ?? []).map(([slot, itemId]: number[]) => [slot, { itemId }])),
@@ -48,6 +49,7 @@ export function fromSnapshot(d: any, now: number): GameState {
 /** Apply one delta message's ops. Returns the same object when nothing changed. */
 export function applyOps(s: GameState, ops: any[], now: number): GameState {
   if (!ops.length) return s.serverTime === now ? s : { ...s, serverTime: now };
+  let skillOrder = s.skillOrder;
   let self = s.self, skills = s.skills, buffs = s.buffs, bag = s.bag, equip = s.equip, ents = s.ents, path = s.path;
   const own = { skills: false, buffs: false, slots: false, equip: false, ents: false };
   const mut = <K extends keyof typeof own>(k: K) => {
@@ -65,8 +67,8 @@ export function applyOps(s: GameState, ops: any[], now: number): GameState {
       case 'stats': self = { ...self, stats: { ...(self.stats ?? {}), ...op[1] } }; break;
       case 'ab': mut('buffs'); buffs[op[1]] = { id: op[1], endAt: op[2] || null }; break;
       case 'ab-': mut('buffs'); delete buffs[op[1]]; break;
-      case 'sk': mut('skills'); skills[op[1]] = { id: op[1], cdEnd: op[2], cdMs: op[3] }; break;
-      case 'sk-': mut('skills'); delete skills[op[1]]; break;
+      case 'sk': mut('skills'); if (!skills[op[1]]) skillOrder = [...skillOrder, op[1]]; skills[op[1]] = { id: op[1], cdEnd: op[2], cdMs: op[3] }; break;
+      case 'sk-': mut('skills'); delete skills[op[1]]; skillOrder = skillOrder.filter(x => x !== op[1]); break;
       case 'bag': mut('slots'); if (op[2] >= 0) bag.slots[op[1]] = { itemId: op[2], lot: op[3] }; else delete bag.slots[op[1]]; break;
       case 'bagSize': bag = { ...bag, size: op[1], pageSize: Math.ceil(op[1] / (op[2] || 1)) || 24 }; break;
       case 'eq': mut('equip'); if (op[2] >= 0) equip[op[1]] = { itemId: op[2] }; else delete equip[op[1]]; break;
@@ -81,5 +83,5 @@ export function applyOps(s: GameState, ops: any[], now: number): GameState {
       default: break; // unknown op: ignore (forward compatible)
     }
   }
-  return { ...s, serverTime: now, self, skills, buffs, bag, equip, ents, path };
+  return { ...s, serverTime: now, self, skills, skillOrder, buffs, bag, equip, ents, path };
 }

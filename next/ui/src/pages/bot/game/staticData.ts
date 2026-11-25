@@ -8,7 +8,8 @@ import { getToken } from '../../../api/client';
 export type StaticKind = 'items' | 'skills' | 'abstates' | 'mobs' | 'npcs' | 'maps' | 'classes';
 
 export interface ItemInfo { id: number; name: string; kind?: string; grade?: string; levelReq?: number; maxLot?: number; sellPrice?: number; desc?: string; stats?: Record<string, string | number>; icon?: string | null }
-export interface SkillInfo { id: number; name: string; rank?: number; spCost?: number; cooldownMs?: number; castMs?: number; range?: number; tags?: string; desc?: string; icon?: string | null }
+export type SkillCategory = 'active' | 'passive' | 'production' | 'other';
+export interface SkillInfo { id: number; name: string; category?: SkillCategory; rowKey?: string; maxRank?: number; rank?: number; spCost?: number; cooldownMs?: number; castMs?: number; range?: number; tags?: string; desc?: string; icon?: string | null }
 export interface AbstateInfo { id: number; name: string; debuff?: boolean; desc?: string; icon?: string | null }
 export interface MobInfo { id: number; name: string; level?: number; grade?: string; body?: number; maxHp?: number; npc?: boolean }
 export interface NpcInfo { id: number; name: string; role?: string }
@@ -31,7 +32,7 @@ function norm(kind: StaticKind, d: any): any {
   switch (kind) {
     case 'items': return { id: d.id, name: d.name ?? `item ${d.id}`, kind: d.kind ?? d.type, grade: d.grade, levelReq: d.levelReq ?? d.demandLv, maxLot: d.maxLot,
       sellPrice: d.sellPrice, desc: d.desc ?? d.description, stats: d.stats, icon: iconRoute('item', d) };
-    case 'skills': return { id: d.id, name: d.name ?? `skill ${d.id}`, rank: d.rank ?? d.step, spCost: d.spCost ?? d.sp, cooldownMs: d.cooldownMs, castMs: d.castMs,
+    case 'skills': return { id: d.id, name: d.name ?? `skill ${d.id}`, category: d.category, rowKey: d.rowKey, maxRank: d.maxStep, rank: d.rank ?? d.step, spCost: d.spCost ?? d.sp, cooldownMs: d.cooldownMs, castMs: d.castMs,
       range: d.range, tags: d.tags, desc: d.desc ?? d.description, icon: iconRoute('skill', d) };
     case 'abstates': return { id: d.id, name: d.name ?? `state ${d.id}`, debuff: d.debuff ?? /DEBUFF/i.test(String(d.sort ?? '')), desc: d.desc ?? d.description, icon: iconRoute('abstate', d) };
     case 'mobs': return { id: d.id, name: d.name ?? `mob ${d.id}`, level: d.level, grade: d.grade, maxHp: d.maxHp, npc: d.npc };
@@ -90,6 +91,9 @@ export function lookup<T>(kind: StaticKind, id: number | null | undefined): T | 
 }
 
 /** Re-render when any static entry arrives (cheap: entries arrive a handful of times per page load). */
+/** Current static-cache version (for memo dependencies). */
+export function lookupVersion() { return version; }
+
 export function useStaticVersion() {
   return useSyncExternalStore(l => { listeners.add(l); return () => { listeners.delete(l); }; }, () => version);
 }

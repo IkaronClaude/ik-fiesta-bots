@@ -20,9 +20,12 @@ export interface GameState {
   v: number;
   serverTime: number;
   offline?: boolean;
+  offReason?: string;
   self: GameSelf;
   path: [number, number][];
   skills: Record<string, GameSkill>;
+  /** skill ids in learn order (snapshot order, new ones appended) */
+  skillOrder: number[];
   stones?: { hp?: GameStone; sp?: GameStone };
   buffs: Record<string, GameBuff>;
   bag: { size: number; pageSize?: number; slots: Record<string, { itemId: number; lot: number }> };

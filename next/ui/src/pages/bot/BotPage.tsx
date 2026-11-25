@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, normDebugFrame } from '../../api/client';
 import type { BotSummary, DebugFrame, LogLine, SensorFrame, TickSample } from '../../api/types';
-import { useTopic, useTopicEvents } from '../../api/ws';
+import { useTopic, useTopicEvents, useWsStatus } from '../../api/ws';
 import { ActionButton, ConfirmButton, Empty, Field, StateBadge, Tabs, fmtDate, fmtNum, fmtTime, useAsync } from '../../components/ui';
 import { useApp } from '../../lib/app';
 import { go, href } from '../../lib/router';
@@ -10,6 +10,7 @@ import { DebuggerTab, StepBar } from './Debugger';
 import { SensorView } from './SensorView';
 import { GameTab } from './game/GameTab';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
+import { ConnOverlay } from '../../components/ConnOverlay';
 
 type Tab = 'game' | 'debugger' | 'sensors' | 'actions' | 'log' | 'packets' | 'inventory' | 'quests' | 'skills' | 'metrics' | 'versions' | 'replay';
 const TABS: { id: Tab; label: string }[] = [
@@ -24,6 +25,7 @@ export function BotPage({ id, tab }: { id: string; tab?: string }) {
   const fleet = useTopic<BotSummary[]>({ topic: 'fleet' });
   const polled = useAsync(() => api.bot(id), [id]);
   const b = fleet?.find(x => x.id === id) ?? polled.data;
+  const ws = useWsStatus();
   const [edit, setEdit] = useState(false);
   const [replay, setReplay] = useState<{ frames: DebugFrame[]; sensors: SensorFrame[]; label: string } | null>(null);
   if (!b) return <div className="page"><Empty>{polled.error ? polled.error : 'Loading...'}</Empty></div>;
@@ -31,30 +33,34 @@ export function BotPage({ id, tab }: { id: string; tab?: string }) {
   const offline = b.state === 'Offline';
   return (
     <div className="page bot-page">
+      {/* Two fixed rows that never wrap and never appear / disappear: live numbers changing width (position,
+          money) used to re-wrap this header and shift the whole page up and down. */}
       <div className="bot-head">
-        <h2>{b.id}</h2>
-        <StateBadge state={b.paused ? 'Paused' : b.state} />
-        <span className="badge wire" title="packet set">wire {b.wire ?? '?'}</span>
-        <span>lvl <strong>{b.level || '-'}</strong></span>
-        <span>{b.map ?? '-'}{v && <span className="mono muted"> ({v.x}, {v.y})</span>}</span>
-        {v && <>
-          <Meter label="HP" v={v.hp} max={v.maxHp} cls="hp" />
-          <Meter label="SP" v={v.sp} max={v.maxSp} cls="sp" />
-          <Meter label="EXP" v={v.exp} max={v.expNext} cls="xp" />
-          <span title="money">{fmtNum(v.money)} cen</span>
-          <span title="free bag slots">bag {v.bagFree}/{v.bagSize}</span>
-        </>}
-        <span className="small">{b.brain ? <a href={href(`/brains/${b.brain}${b.versionHash ? '@' + b.versionHash : ''}`)}>{b.brain}@{b.versionHash?.slice(0, 8)}</a> : 'no brain'}{b.channel && <span className="muted"> ({b.channel})</span>}</span>
-        <div className="grow" />
-        {offline ? <ActionButton small onClick={() => api.start(id)}>start</ActionButton> : <ActionButton small onClick={() => api.stop(id)}>stop</ActionButton>}
-        {!offline && <ActionButton small onClick={() => api.relog(id)}>relog</ActionButton>}
-        <button className="btn sm ghost" onClick={() => setEdit(true)}>edit config</button>
+        <div className="bot-head-row">
+          <h2>{b.id}</h2>
+          <StateBadge state={b.paused ? 'Paused' : b.state} />
+          <span className="badge wire" title="packet set">wire {b.wire ?? '?'}</span>
+          <span className="nowrap">lvl <strong className="num-tab">{b.level || '-'}</strong></span>
+          <span className="clip" title={v ? `${b.map ?? '-'} (${v.x}, ${v.y})` : b.map ?? ''}>{b.map ?? '-'} <span className="mono muted num-tab">{v ? `(${v.x}, ${v.y})` : ''}</span></span>
+          <span className="small clip">{b.brain ? <a href={href(`/brains/${b.brain}${b.versionHash ? '@' + b.versionHash : ''}`)}>{b.brain}@{b.versionHash?.slice(0, 8)}</a> : 'no brain'}{b.channel && <span className="muted"> ({b.channel})</span>}</span>
+          <div className="grow" />
+          {offline ? <ActionButton small onClick={() => api.start(id)}>start</ActionButton> : <ActionButton small onClick={() => api.stop(id)}>stop</ActionButton>}
+          <ActionButton small disabled={offline} onClick={() => api.relog(id)}>relog</ActionButton>
+          <button className="btn sm ghost" onClick={() => setEdit(true)}>edit config</button>
+        </div>
+        <div className="bot-head-row vitals-row">
+          <Meter label="HP" v={v?.hp ?? 0} max={v?.maxHp ?? 0} cls="hp" />
+          <Meter label="SP" v={v?.sp ?? 0} max={v?.maxSp ?? 0} cls="sp" />
+          <Meter label="EXP" v={v?.exp ?? 0} max={v?.expNext ?? 0} cls="xp" />
+          <span title="money" className="num-tab nowrap">{v ? fmtNum(v.money) : '-'} cen</span>
+          <span title="free bag slots" className="num-tab nowrap">bag {v ? `${v.bagFree}/${v.bagSize}` : '-'}</span>
+        </div>
       </div>
       <Tabs<Tab> tabs={TABS} value={t} onChange={x => go(`/bots/${encodeURIComponent(id)}/${x}`)} />
       <div className="bot-body">
         <ErrorBoundary resetKey={t}>
-        {offline && !['versions', 'log', 'packets', 'replay'].includes(t) ? <Empty>The bot is offline. Start it to see live data.</Empty> : <>
-          {t === 'game' && <GameTab bot={id} />}
+        {offline && !['game', 'versions', 'log', 'packets', 'replay'].includes(t) ? <Empty>The bot is offline. Start it to see live data.</Empty> : <>
+          {t === 'game' && <GameTab bot={id} botState={b.state} />}
           {t === 'debugger' && (replay ? <DebuggerTab bot={id} replay={{ ...replay, onClose: () => setReplay(null) }} /> : <DebuggerTab bot={id} />)}
           {t === 'sensors' && <SensorView bot={id} />}
           {t === 'actions' && <ActionsTab bot={id} />}
@@ -68,6 +74,7 @@ export function BotPage({ id, tab }: { id: string; tab?: string }) {
           {t === 'replay' && <ReplayTab bot={id} onLoad={r => { setReplay(r); go(`/bots/${encodeURIComponent(id)}/debugger`); }} />}
         </>}
         </ErrorBoundary>
+        {['debugger', 'sensors', 'actions'].includes(t) && !offline && <ConnOverlay down={ws !== 'open' || !/InZone|Paused/i.test(b.state)} reason={ws !== 'open' ? 'connection to the host lost, reconnecting' : `bot is ${b.state}`} />}
       </div>
       {edit && <BotConfigModal bot={b} onClose={() => { setEdit(false); polled.reload(); }} />}
     </div>
