@@ -68,7 +68,8 @@ public sealed class GameCapture
         Now = SystemClock.UnixMs(now); Session = session; InWorld = self.InWorld && w.LinkUp;
         Handle = self.Handle; ClassId = self.ClassId; Level = self.Level; MapId = w.Map.MapId; Name = self.Name;
         X = (int)Math.Round(self.Pos.X); Y = (int)Math.Round(self.Pos.Y);
-        Dir = (int)Math.Round(Math.Atan2(self.Facing.Dy, self.Facing.Dx) * 180 / Math.PI);
+        // degrees 0..359, 0 = east (+x), counter-clockwise (90 = +y, north on the minimap)
+        Dir = ((int)Math.Round(Math.Atan2(self.Facing.Dy, self.Facing.Dx) * 180 / Math.PI) + 360) % 360;
         Exp = self.Exp; PrevExp = self.PrevExp; NextExp = self.NextExp; Money = self.MoneyKnown ? self.Money : -1;
         Fame = self.Fame; StatPoints = self.StatPoints; HpStones = self.HpStones; SpStones = self.SpStones;
         (MaxHpStones, MaxSpStones) = self.MaxStones;

@@ -122,11 +122,16 @@ while someone watches, and hands it over through a lock-free triple buffer; `Gam
 the viewers have and writes the differences on the WebSocket pump thread, once per bot for all viewers.
 
 Measured (local 2026 stack, NextBotA in Roumen, 54 entities in view, 19 skills, 15 bag cells):
-- snapshot 3.1 KB; deltas 77 - 113 B/s (0.8 - 1.1 messages/s) while roaming; nothing is sent while nothing changes,
+- snapshot 3.1 KB; deltas 77 - 236 B/s (0.8 - 2.2 messages/s) while roaming / walking in town (54 entities); nothing is sent while nothing changes,
   plus a keep-alive every 5 s;
 - capture cost 18 us per fill with 100 entities (Release), 0 bytes allocated (test
-  `Capture_does_not_allocate_on_the_tick`); at 10 Hz that is ~9 us per tick on average; tick p50 61 -> 65 us
-  with one viewer (within noise; another tab was watching the debug view at the same time).
+  `Capture_does_not_allocate_on_the_tick`); at 10 Hz that is ~9 us per tick on average. Live, 60 s each:
+  without a game viewer tick p50 50 us / p99 288 us / alloc p95 0 B; with one game viewer p50 52 us / p99 229 us /
+  alloc p95 0 B (the difference is within noise).
+- UI requests after the first build of the Game tab: names that the US client data ships as "?? ??" fall back to
+  the InxName (the bytes in the file are literally question marks, not an encoding problem); skills with
+  `icon:false` have no art in the client data (`IconFile` "-": event / item-use skills); `self.dir` is degrees
+  0..359, 0 = east, counter-clockwise; `index.html` is served `no-cache`, `/assets/*` `immutable`.
 
 New decodes for it: the character stats (CHAR_PARAMETER_DATA in MAP_LOGIN_ACK; live changes through
 CHANGEPARAMCHANGE ids 0..15, the id = the stat's position, checked on a capture), fame and free stat points from

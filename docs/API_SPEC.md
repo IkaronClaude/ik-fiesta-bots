@@ -1004,7 +1004,12 @@ Each op is an array whose first element is its code.
 | `["eh", h, hpPct]` | an entity's HP percentage changed |
 | `["ef", h, flags]` | an entity's flags changed |
 
-Positions are world units rounded to integers.
+Positions are world units rounded to integers. World Y grows upward (north on the minimap).
+`self.dir` is the facing in whole degrees 0..359: 0 = east (+x), counter-clockwise, 90 = north (+y).
+
+Names: the US client data carries some untranslated names as question marks (`"?? ??"`, e.g. internal skills
+like WorldLink_N); the static routes then return the InxName as `name`. Some skills (event / item-use skills)
+have no icon in the client data (`IconFile` "-"), so `icon` is false and the tile shows text.
 
 ### 14.2 Static data (cacheable)
 

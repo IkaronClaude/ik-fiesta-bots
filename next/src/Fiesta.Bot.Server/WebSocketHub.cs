@@ -307,11 +307,18 @@ public static class HostMapping
         }
         var files = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(Path.GetFullPath(dir));
         app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
-        app.UseStaticFiles(new StaticFileOptions { FileProvider = files });
+        app.UseStaticFiles(new StaticFileOptions
+        {
+            FileProvider = files,
+            // hashed bundles are immutable; index.html must be revalidated so a rebuilt UI is picked up
+            OnPrepareResponse = r => r.Context.Response.Headers.CacheControl =
+                r.Context.Request.Path.StartsWithSegments("/assets") ? "public, max-age=31536000, immutable" : "no-cache",
+        });
         app.MapFallback(async ctx =>
         {
             if (ctx.Request.Path.StartsWithSegments("/api")) { ctx.Response.StatusCode = 404; await ctx.Response.WriteAsJsonAsync(new { type = "about:blank", title = $"no route {ctx.Request.Method} {ctx.Request.Path}", status = 404 }); return; }
             ctx.Response.ContentType = "text/html";
+            ctx.Response.Headers.CacheControl = "no-cache";
             await ctx.Response.SendFileAsync(Path.Combine(dir, "index.html"));
         });
         return app;

@@ -149,7 +149,8 @@ public sealed class ClientData : IClientData
     {
         var c = t.Col(col);
         if (c < 0) return "";
-        if (t.Str(row, c) is { } s) return s;
+        // the US client ships untranslated names as question marks ("?? ??"): no name, the caller falls back to the InxName
+        if (t.Str(row, c) is { } s) return s.Contains('?') && s.All(ch => ch == '?' || char.IsWhiteSpace(ch)) ? "" : s;
         var id = t.Num(row, c);   // 2026 tables carry a text id here
         return _texts.Value.TryGetValue(id, out var text) ? text : "";
     }
