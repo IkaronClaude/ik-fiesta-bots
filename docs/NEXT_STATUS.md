@@ -2,7 +2,7 @@
 
 Branch `redesign-2026-11-core`. What is implemented against `docs/REDESIGN.md`, what was measured and proven live,
 the bug log, and what is open. Build: `dotnet build next/Fiesta.Bot.Next.slnx`; tests:
-`dotnet test next/tests/Fiesta.Bot.Next.Tests` (88 tests).
+`dotnet test next/tests/Fiesta.Bot.Next.Tests` (92 tests).
 
 ## Running it
 
@@ -353,3 +353,46 @@ wrong (fix it, drop the workaround) or the server answers nothing for that NPC (
 Fire Bolt [02] refused 0x070B: not a refusal of the book; it was a second copy. The first read was acked 0x0700 and
 followed by SKILL_LEARNSUC {6041}, which the bot did not decode, so the skill master's book was bought and read again
 (0x070B: the skill is learned already). Fixed: 3fccd9c.
+
+### The job change, planned end to end (prepared before a bot reaches 20)
+
+Chain (client quest table; test `The_promotion_quests_start_a_scenario_and_their_chain_is_found`): 60015 (giver 98,
+from level 20) -> 60016 (98) -> 60017 (143) -> Road to Promotion 60006 / 60011 / 60012 for the fighter / archer / mage
+lines (giver 143, start script `ACCEPT`, `SCENARIO 8`; while active the giver's DOING script runs `SCENARIO 8` again,
+which is how a failed run is re-entered; end script `DONE`, `SCENARIO 9`).
+
+What the leveller does with it:
+1. Accepts the chain first once its level allows (`quests.scenarioChain`: a scenario quest for exactly our class and
+   the quests before it), whatever the other quests pay (operator: the job change is never deferred - gear and
+   skills past 20 wait behind it).
+2. An active scenario quest that is not done, outside its instance: back to its giver to be sent in (task `enter`).
+   Its collect objective (an item issued inside) is not hunted in the field.
+3. Inside the instance the quest layer waits; the `instance` layer plays the rooms: an asked area is confirmed every
+   500 ms until the room's wave appears (the server judges the confirm by our server-side position; a single confirm
+   sent while it still has us short of the trigger is lost - the old bots' "second room never spawns"), the wave is
+   held and fought (no flee inside an instance), then after 5.5 s (the next trigger is armed late) the bot walks to
+   the nearest trigger area it has not been asked about or walked to, until the server asks again.
+4. The scripted copy of us (a character, no mob id) is turned into a mob in place on OBJTYPECHANGE 5 and back on 4
+   (it flees at ~75-80% HP: that is "beaten").
+5. Doors: closed doors are kept out of paths (.sbi bitmaps by state).
+6. Casts at the target our swings land on skip the face step inside an instance (all casts were refused 0x0FCA in
+   these rooms when the face step's move was refused).
+7. CHAR_PROMOTE_ACK changes the class; the no-progress alarm counts rooms (an instance gives no exp).
+8. Potions are drunk when the stones are out (the mage's win needed potions; the old notes list potions, moving while
+   kiting, no cast with a walk in flight, a refused cast holding the skill, facing, waiting for potions before
+   entering, and a ready hand-in outranking errands - the last two are covered by the plan's order).
+Test: `The_job_change_instance_is_played_room_by_room_as_the_capture_shows` (frames from the job change capture).
+Open: kiting for ranged classes in the copy fight, buying potions before entering, the clone's damage race.
+
+### Death spiral and purse guard (the old bots' level-25 failure)
+
+Runtime: `Economy` (one-minute buckets for an hour: exp, money earned / spent, stone spend, deaths) and
+`econ.rates(minutes)`. Brain (private): layer `guard` + caution.lua and judge knobs:
+- a death raises `caution` one step (max 4): mobs taken on and quest mobs hunted drop one level per step, the grind
+  band drops by the same, pulls may wake fewer mobs (`PULL_EXTRA_MAX - 200 x caution`), and every upkeep visit is
+  due again (gear, skills; stat points are spent as they come) - fix the cause, not just the stones;
+- deaths >= 3/h over 30 min: ECON ALARM (crit, with exp / money / deaths / stone spend per hour) and more caution;
+- money falling and under 500: ECON ALARM, safe earning (stones bought to the minimum only); stones never spend the
+  last MONEY_RESERVE + STONE_KEEP;
+- 15 min without a death: one caution step down; a growing purse ends safe earning.
+Test: `A_scripted_death_spiral_is_caught_and_turned_into_caution_and_safe_earning` (spiral caught, then reversed).
