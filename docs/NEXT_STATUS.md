@@ -331,3 +331,25 @@ book; the next visit buys it now that the aid paid for the stones.
 | 25 | after a host restart or a published brain, skip lists, refused books, unstorable items, probed NPCs were forgotten | bb.bot is saved as JSON; integer keys came back as string keys, so `t[20000]` missed | integer keys restored as integers; test fails without the fix | 14c0622 |
 | 26 | the host died: access violation in lua_rawgeti (debug frame on a tick worker) | a session teardown checkpointed and disposed the brain while a worker still ticked the agent (Remove only queued the removal) | `TickScheduler.RemoveAndWait`; test | 25af8d0 |
 | 27 | NextM walked into Fbattle01 as a service NPC's map | player-fight maps were learned per bot | learned once in the shared atlas (persisted, `atlas-pvp-maps.txt`; Fbattle01 seeded from NextA's live finding) | 76b701c |
+
+#### Open bug 28: quest givers that do not answer the click (a workaround is active)
+
+What the wire shows (NextA, 20:10:05, Eld): the last walk leg ends on the giver's spot (17382,12362), END_OF_TRADE +
+NPCCLICK {21624} are sent a second later, and nothing comes back in the ACT, MENU, QUEST, ITEM, TRADE or SCENARIO
+departments. Same for givers 27 (item merchant Nina) and 112 (item merchant Kenton) on every try since 18:16, while
+other givers on Eld answer the same click (quests 27 and 30 handed in / accepted at 17:56 and 18:09).
+
+Evidence about the quests: all three are QuestData Q_TYPE 3, and 142 of the 239 Q_TYPE 3 quests are named as event
+quests ("I Really Love To Share My Love... (Event Quest)" 20028, "[Special Event] The four or five horsemen 2" 65478,
+"[Valentine Event Quest] Valentine Council Director, Kobal" 65487). The giver of 65487 (E_Kobal) is never in view at
+its spot: the event NPC is not spawned. So the quests are event quests and their events are off - real behaviour for
+the quests. Not explained: a merchant with a menu answering a click with nothing at all (the bots' merchant clicks in
+Rou are answered with NPCMENUOPEN). Not checked yet: the same click from the real client on Nina (needs the operator).
+
+Workaround (marked in the brain's plan module): a quest kind whose givers stayed silent 3 times at a level, with none
+offered, is not walked to at that level. To do: the official-client click on Nina; then either the bot's click is
+wrong (fix it, drop the workaround) or the server answers nothing for that NPC (state it, keep only the event check).
+
+Fire Bolt [02] refused 0x070B: not a refusal of the book; it was a second copy. The first read was acked 0x0700 and
+followed by SKILL_LEARNSUC {6041}, which the bot did not decode, so the skill master's book was bought and read again
+(0x070B: the skill is learned already). Fixed: 3fccd9c.
