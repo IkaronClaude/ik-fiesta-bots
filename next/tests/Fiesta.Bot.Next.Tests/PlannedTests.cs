@@ -448,6 +448,26 @@ public class ActionTests
         Assert.True(t.Sent.Count(o => o == IntentEncoder.OpBashStart) >= 4);
     }
 
+    [Fact]
+    public void Gate_hop_succeeds_through_a_cross_server_handoff()
+    {
+        using var t = new TestBot();
+        t.Tick(30);
+        t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)(EntityKind.Gate | EntityKind.Npc), b: 1, x: 5050, y: 5000, text: "Other");
+        t.Tick();
+        var a = t.Ctx.Procedures.Start(new GateHopProcedure(3000, "Other"), ActionKind.Gate, 1, t.Ctx, 30000);
+        t.Tick();
+        Assert.Contains(IntentEncoder.OpNpcClick, t.Sent);
+        var menu = InboundEvent.Of(InboundKind.ServerMenu, 0x3C01, t.Clock.NowMs); menu.Handle = 3000; menu.Options = [(0, "Yes"), (1, "No")]; menu.Text = "move?";
+        t.In.TryWrite(menu);
+        t.Tick();
+        // LINKOTHER, then the link goes down for the reconnect, in one tick
+        t.Ev(InboundKind.MapLink, a: 2, b: 1, x: 100, y: 100);
+        t.Ev(InboundKind.LinkChanged, a: (long)LinkState.Connecting);
+        t.Tick();
+        Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(a).State);
+    }
+
     private static List<ushort> Drain(TestBot t) { t.Tick(); return t.Sent; }
 }
 

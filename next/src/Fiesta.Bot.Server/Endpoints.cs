@@ -618,7 +618,12 @@ public static class ObservationEndpoints
                 }
                 for (var e = 0; e < 64; e++) { var it = w.Bag.Equipped(e); if (it >= 0) eq.Add(new { equipSlot = e, itemId = it, name = c.Data.Item(it)?.Name ?? $"item {it}" }); }
                 _ = items;
-                return new { bagSize = w.Bag.Size, money = w.Self.Money, hpStones = w.Self.HpStones, spStones = w.Self.SpStones, slots, equipped = eq };
+                var shop = w.Npc.ShopAt < 0 ? null : new
+                {
+                    npc = w.Npc.ShopNpc, kind = $"0x{w.Npc.ShopKind:X4}", openedAt = SystemClock.ToUtc(w.Npc.ShopAt),
+                    items = w.Npc.ShopItems.Select(x => new { slot = x.Slot, itemId = x.ItemId, name = c.Data.Item(x.ItemId)?.Name ?? $"item {x.ItemId}", price = c.Data.Item(x.ItemId)?.BuyPrice ?? -1 }).ToList(),
+                };
+                return new { bagSize = w.Bag.Size, money = w.Self.Money, hpStones = w.Self.HpStones, spStones = w.Self.SpStones, slots, equipped = eq, shop };
             });
             return Results.Json(r, Http.Json);
         });

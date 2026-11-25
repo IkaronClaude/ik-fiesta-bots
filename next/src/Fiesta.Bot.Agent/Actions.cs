@@ -848,8 +848,16 @@ public sealed class ProcedureRunner
     /// <summary>Feed an inbound event to active procedures.</summary>
     public void Apply(in InboundEvent evt, AgentContext ctx)
     {
+        var changed = false;
         for (var i = 0; i < _active.Count; i++)
-            if (_active[i].Status == ProcedureStatus.Running) _active[i].Apply(evt, ctx);
+            if (_active[i].Status == ProcedureStatus.Running)
+            {
+                _active[i].Apply(evt, ctx);
+                changed |= _active[i].Status != ProcedureStatus.Running;
+            }
+        // settle at once: the event that finishes a procedure (a map link) may be followed in the same tick by the
+        // link going down for the handoff, which must not fail an action that already succeeded
+        if (changed) Settle(ctx);
     }
 
     private void Settle(AgentContext ctx)
