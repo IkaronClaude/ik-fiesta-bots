@@ -523,6 +523,13 @@ public sealed partial class ActModule(AgentContext ctx) : ApiModule(ctx)
         Span<byte> b = stackalloc byte[2]; b[0] = (byte)n; b[1] = (byte)(n >> 8);
         return One(ActionKind.BuyStones, sp ? 1 : 0, n, IntentEncoder.Raw(sp ? IntentEncoder.OpStoneBuySp : IntentEncoder.OpStoneBuyHp, b, -1));
     }
+    /// <summary>Equip the item in a bag slot; resolves when it lands in its equipment slot.</summary>
+    [LuaFn]
+    public int Equip(int slot)
+    {
+        Span<byte> b = stackalloc byte[1]; b[0] = (byte)slot;
+        return One(ActionKind.Equip, slot, Ctx.World.Bag.At(slot).ItemId, IntentEncoder.Raw(IntentEncoder.OpEquip, b, -1));
+    }
     /// <summary>Spend one stat point (0 Str, 1 End, 2 Dex, 3 Int, 4 Spr); resolves on the server's ack.</summary>
     [LuaFn]
     public int StatPoint(int stat)
@@ -631,8 +638,30 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>Buy price.</summary>
     [LuaFn] public int BuyPrice(int itemId) => Ctx.Data.Item(itemId)?.BuyPrice ?? -1;
 
-    /// <summary>Best bag item that improves an equipment slot (not modelled yet: -1).</summary>
-    [LuaFn] public int EquipUpgrade() => -1;
+    /// <summary>Equipment slot an item goes into (ItemInfo Equip; 0 = not equipment).</summary>
+    [LuaFn] public int EquipSlot(int itemId) => Ctx.Data.Item(itemId)?.Equip ?? 0;
+
+    /// <summary>A plain worth of a piece of gear: mean weapon damage + defence + mean magic damage + magic defence.</summary>
+    [LuaFn]
+    public double GearScore(int itemId) => Ctx.Data.Item(itemId) is not { } i ? -1
+        : (i.MinWc + i.MaxWc) / 2.0 + i.Ac + (i.MinMa + i.MaxMa) / 2.0 + i.Mr;
+
+    /// <summary>Is the item an upgrade over what we wear in its slot (usable by our class at our level)?</summary>
+    [LuaFn]
+    public bool IsUpgrade(int itemId)
+    {
+        if (Ctx.Data.Item(itemId) is not { Equip: > 0 } i || i.DemandLevel > Ctx.World.Self.Level || !ClassOk(itemId)) return false;
+        var worn = B.Equipped(i.Equip);
+        return worn < 0 || GearScore(itemId) > GearScore(worn);
+    }
+
+    /// <summary>The first bag item that is an upgrade (bag slot, -1 none).</summary>
+    [LuaFn]
+    public int EquipUpgrade()
+    {
+        for (var s = 0; s < B.Size; s++) { var (it, _) = B.At(s); if (it >= 0 && IsUpgrade(it)) return s; }
+        return -1;
+    }
     /// <summary>Equipped item id by equipment slot, -1 none.</summary>
     [LuaFn] public int Equipped(int equipSlot) => B.Equipped(equipSlot);
     /// <summary>Occupied slots into a caller-owned table.</summary>

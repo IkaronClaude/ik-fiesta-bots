@@ -20,7 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
-    MenuReply, BuyStones, StatPoint,
+    MenuReply, BuyStones, StatPoint, Equip,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -125,6 +125,9 @@ public static class ActionCatalog
         S(ActionKind.BuyStones, Resource.Npc, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.StoneReserve && e.A == a.Arg0 ? (ActionState.Acked, (ushort)0)
             : e.Kind == InboundKind.StoneUse && e.A == 3 ? (ActionState.Refused, (ushort)e.B) : null), 3000);
+        // equipping: EQUIPCHANGE puts the item into its equipment slot
+        S(ActionKind.Equip, Resource.Inventory, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.ItemCell && e.Opcode == 0x3002 && e.A == 8 && e.C == a.Arg1 ? (ActionState.Acked, (ushort)0) : null), 3000);
         S(ActionKind.StatPoint, Resource.None, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.StatPointSpent && e.A == a.Arg0 ? (ActionState.Acked, (ushort)0) : null), 3000);
         S(ActionKind.Talk, Resource.Npc, Controller, 20000);

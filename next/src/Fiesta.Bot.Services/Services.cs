@@ -68,7 +68,21 @@ public sealed record ActiveSkillRow(int Id, string InxName, string Name, int Ste
 
 /// <summary>Client ItemInfo row.</summary>
 public sealed record ItemInfoRow(int Id, string InxName, string Name, int Type, int ItemClass, int Equip, int DemandLevel,
-    int WeaponType, int SellPrice, int BuyPrice, int MaxLot, int UseClass, string ItemUseSkill);
+    int WeaponType, int SellPrice, int BuyPrice, int MaxLot, int UseClass, string ItemUseSkill)
+{
+    /// <summary>Weapon damage range, defence, magic damage range, magic defence (ItemInfo).</summary>
+    public int MinWc { get; init; }
+    /// <summary>Max weapon damage.</summary>
+    public int MaxWc { get; init; }
+    /// <summary>Defence.</summary>
+    public int Ac { get; init; }
+    /// <summary>Min magic damage.</summary>
+    public int MinMa { get; init; }
+    /// <summary>Max magic damage.</summary>
+    public int MaxMa { get; init; }
+    /// <summary>Magic defence.</summary>
+    public int Mr { get; init; }
+}
 
 /// <summary>Client MapInfo row.</summary>
 public sealed record MapInfoRow(int Id, string MapName, string Name, bool IsInstance, int RegenX, int RegenY);
@@ -218,7 +232,8 @@ public sealed class ClientData : IClientData
             var inx = t.Str(r, "InxName") ?? "";
             var nm = Name(t, r, "Name");
             d[I("ID")] = new ItemInfoRow(I("ID"), inx, nm.Length > 0 ? nm : inx, I("Type"), I("Class"), I("Equip"), I("DemandLv"),
-                I("WeaponType"), I("SellPrice"), I("BuyPrice"), I("MaxLot"), I("UseClass"), t.Str(r, "ItemUseSkill") ?? "-");
+                I("WeaponType"), I("SellPrice"), I("BuyPrice"), I("MaxLot"), I("UseClass"), t.Str(r, "ItemUseSkill") ?? "-")
+            { MinWc = I("MinWC"), MaxWc = I("MaxWC"), Ac = I("AC"), MinMa = I("MinMA"), MaxMa = I("MaxMA"), Mr = I("MR") };
         }
         return d;
     }
