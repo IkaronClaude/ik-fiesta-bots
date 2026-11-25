@@ -189,3 +189,17 @@ still holding the character while its logout completes; not confirmed. The sessi
 not answered within 20 s or is answered with MAP_LOGINFAIL (a missing answer is an error like any other, test
 `A_zone_that_never_answers_the_map_login_ends_the_session`), so the supervisor logs in again with its backoff. The
 server-side cause stays open.
+
+### Leveller port, steps 1-2 (survival, upkeep)
+
+- Survival: flee when outmatched or low with nothing to heal (run to a clear spot / away from the nearest
+  aggressor); two deaths on a map within 5 min avoid it for 30 min; trips avoid hostile spawn areas above the
+  level limit that lie on the walk (not the map's easiest mob); avoided / refusing maps are saved per bot.
+- Upkeep layer: soul stones (HP, and SP for SP classes) at a healer, plain loot sold at a merchant, skill books
+  from the skill master, free stat points; service NPCs are found by role, learned from the window kind an NPC
+  opens (probing unprobed NPCs in towns). Live: NextMageB found a healer and bought 7 HP + 1 SP stones.
+- A shop whose NPC answers the click with a quest page opens with the menu answer, as the client does (captured).
+- Open bug: the local 2026 server never answers CHAR_STAT_INCPOINT_REQ (a 2016 capture shows it acked); the free
+  points (STAT_REMAINPOINT, one per level) stay unspent. The brain stops asking after the first unanswered request.
+  CHAR_BASE's statdistribute block was wrongly read as free points before (fixed).
+- Open: gear upgrades (ItemInfo stats not loaded yet), storage (procedure not wired), potions.
