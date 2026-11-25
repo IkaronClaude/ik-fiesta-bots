@@ -48,7 +48,7 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
         foreach (var map in Ctx.Atlas.SpawnMaps)
         {
             var info = Ctx.Data.Map(map);
-            if (info is null || info.IsInstance) continue;
+            if (info is null || info.IsInstance || Ctx.Refused(map)) continue;
             var route = map == W.Map.MapId ? 0 : Ctx.Atlas.MapDistance(W.Map.MapId, map);
             if (route < 0) continue;
             var areas = Ctx.Atlas.SpawnsOn(map);
@@ -67,6 +67,17 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
         }
         return best is { } b ? (MapName(b.MapId), b.X, b.Y, Math.Max(150, Math.Min(b.HalfW, b.HalfH)), b.MobId) : ("", -1, -1, -1, -1);
     }
+
+    /// <summary>Avoid a map for this bot for a while (a death trap, a refusing gate): routes and grind spots skip it.</summary>
+    [LuaFn] public bool Avoid(string map, int minutes)
+    {
+        if (Ctx.Data.Map(map) is not { } m) return false;
+        Ctx.RefusedMaps[m.Id] = Ctx.Now + minutes * 60_000L;
+        return true;
+    }
+
+    /// <summary>Is a map avoided for this bot now?</summary>
+    [LuaFn] public bool Avoided(string map) => Ctx.Data.Map(map) is { } m && Ctx.Refused(m.Id);
 
     /// <summary>A mob's level from MobInfo (-1 unknown).</summary>
     [LuaFn] public int MobLevel(int mobId) => Ctx.Data.Mob(mobId)?.Level ?? -1;
@@ -101,7 +112,7 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
         if (Ctx.Data.Map(map) is not { } m) return -1;
         var (px, py) = W.Self.Pos;
         if (Ctx.Refused(m.Id)) return -1;
-        return Ctx.Atlas.Route(W.Map.MapId, px, py, m.Id, double.NaN, double.NaN, x => Ctx.Refused(x) || Ctx.Atlas.EasiestMobLevel(x, Hostile) > maxMobLevel)?.Cost ?? -1;
+        return Ctx.Atlas.Route(W.Map.MapId, px, py, m.Id, double.NaN, double.NaN, x => Ctx.Refused(x), a => Hostile(a.MobId) > maxMobLevel)?.Cost ?? -1;
     }
 
     private int Hostile(int id) => Ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1;

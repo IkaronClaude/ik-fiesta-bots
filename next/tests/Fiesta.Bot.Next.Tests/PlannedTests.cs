@@ -79,8 +79,9 @@ public sealed class TestData : IClientData
     public MobInfoRow? Mob(int id) => id == 1 ? M : null;
     public ActiveSkillRow? Skill(int id) => id == 0 ? S : null;
     public ItemInfoRow? Item(int id) => null;
-    public MapInfoRow? Map(int id) => null;
-    public MapInfoRow? Map(string mapName) => null;
+    public static readonly MapInfoRow MapRow = new(7, "TestMap", "Test Map", false, 5000, 5000);
+    public MapInfoRow? Map(int id) => id == 7 ? MapRow : null;
+    public MapInfoRow? Map(string mapName) => mapName == "TestMap" ? MapRow : null;
     public QuestDef? Quest(int id) => null;
     public string? Dialog(int id) => null;
     public int ClassFamily(int classId) => 1;

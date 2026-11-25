@@ -56,11 +56,11 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         }
         if (++_replans > 40) { Fail("too many re-plans"); return; }
         // maps whose easiest hostile mob is above maxMobLevel are routed around (crossing them is how bots died)
-        Func<int, bool>? avoid = maxMobLevel == int.MaxValue && _refusedInto.Count == 0 && ctx.RefusedMaps.Count == 0 ? null
-            : m => _refusedInto.Contains(m) || ctx.Refused(m) || (maxMobLevel != int.MaxValue
-                && ctx.Atlas.EasiestMobLevel(m, id => ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1) > maxMobLevel);
+        Func<int, bool>? avoid = _refusedInto.Count == 0 && ctx.RefusedMaps.Count == 0 ? null : m => _refusedInto.Contains(m) || ctx.Refused(m);
+        // the walk avoids the spawn areas of hostile mobs above maxMobLevel that lie on it
+        Func<SpawnArea, bool>? danger = maxMobLevel == int.MaxValue ? null : a => ctx.Data.Mob(a.MobId) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi && mi.Level > maxMobLevel;
         if (_refusedInto.Contains(target.Id) || ctx.Refused(target.Id)) { Fail($"the gate into {TargetMap} refuses us"); return; }
-        var route = ctx.Atlas.Route(w.Map.MapId, px, py, target.Id, x, y, avoid);
+        var route = ctx.Atlas.Route(w.Map.MapId, px, py, target.Id, x, y, avoid, danger);
         if (route is null || route.Hops.Count == 0)
         {
             // no known link from this map: walk to the nearest gate exit we have not explored, to learn where it leads

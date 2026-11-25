@@ -47,4 +47,42 @@ public class LevelerBrainTests
         Assert.Equal("fight", b.Layers[1].ActivePath[0].Name);
         Assert.Empty(b.Debug.Errors());
     }
+
+    [Fact]
+    public void Flees_when_hurt_with_nothing_to_heal_and_recovers_once_clear()
+    {
+        if (Load() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(5);
+        t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 5050, y: 5000);
+        t.Ev(InboundKind.Damage, h: 2000, h2: 1000, a: 5, b: 15);   // 15 of 100 hp, no stones, no heal skill
+        t.Tick(40);
+        Assert.Equal("flee", b.Layers[0].ActivePath[0].Name);
+        Assert.True(t.Sent.Contains(IntentEncoder.OpMoveRun), string.Join(",", t.Sent.Select(x => x.ToString("X4"))) + " | " + string.Join(" / ", t.Ctx.Actions.Recent(10).Select(r => $"{r.Kind} {r.State} {r.Code}")));
+        t.Ev(InboundKind.EntityLeft, h: 2000);
+        t.Tick(120);   // 6 s with nothing on us
+        Assert.NotEqual("flee", b.Layers[0].ActivePath[0].Name);
+        Assert.Empty(b.Debug.Errors());
+    }
+
+    [Fact]
+    public void Two_deaths_on_a_map_within_five_minutes_avoid_it()
+    {
+        if (Load() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Ev(InboundKind.SelfBase, a: 10, b: 0, c: 100, text: "TestMap");
+        t.Tick(5);
+        Assert.Equal("TestMap", t.Ctx.World.Map.MapName);
+        for (var i = 0; i < 2; i++)
+        {
+            t.Ev(InboundKind.DeadMenu, a: 180);
+            t.Tick(3);
+            t.Ev(InboundKind.Revive, a: t.Ctx.World.Map.MapId, b: 1, x: 5000, y: 5000);
+            t.Tick(3);
+        }
+        Assert.True(t.Ctx.Refused(t.Ctx.World.Map.MapId));
+        Assert.Empty(b.Debug.Errors());
+    }
 }

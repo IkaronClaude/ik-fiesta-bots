@@ -317,6 +317,7 @@ public sealed class BotRuntime
         }
         Interlocked.Increment(ref GameTap.Session);
         agent.Game = GameTap;
+        LoadAvoids(ctx);
         Agent = agent;
         Session = new ZoneSession(wire, _h.Decoders(wire), _h.XorTable, inbound, outbound, _h.Checksums(wire), () => _h.Clock.NowMs,
             s => Log.Text(LogCategory.Net, LogLevel.Info, s)) { Tap = (o, op, p) => Capture.OnFrame(o, op, p) };
@@ -332,11 +333,39 @@ public sealed class BotRuntime
         return v is null ? null : _h.Brains.Load(v);
     }
 
+    // maps this bot avoids (refusing gates, death traps) survive relogs and host restarts; stored as unix ms
+    private string AvoidFile => Path.Combine(_h.DataDir, "bots", Record.Id + ".avoid.tsv");
+
+    private void LoadAvoids(AgentContext ctx)
+    {
+        try
+        {
+            if (!File.Exists(AvoidFile)) return;
+            var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); var nowMs = _h.Clock.NowMs;
+            foreach (var line in File.ReadAllLines(AvoidFile))
+                if (line.Split('	') is [var m, var u] && int.TryParse(m, out var map) && long.TryParse(u, out var until) && until > nowUnix)
+                    ctx.RefusedMaps[map] = nowMs + (until - nowUnix);
+        }
+        catch (IOException e) { Log.Text(LogCategory.Core, LogLevel.Note, $"avoid list not read: {e.Message}"); }
+    }
+
+    private void SaveAvoids(AgentContext ctx)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(AvoidFile)!);
+            var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); var nowMs = _h.Clock.NowMs;
+            File.WriteAllLines(AvoidFile, ctx.RefusedMaps.Where(kv => kv.Value > nowMs).Select(kv => $"{kv.Key}	{nowUnix + (kv.Value - nowMs)}"));
+        }
+        catch (IOException e) { Log.Text(LogCategory.Core, LogLevel.Note, $"avoid list not saved: {e.Message}"); }
+    }
+
     private void EndSession()
     {
         if (Agent is { } a)
         {
             _h.Ticks.Remove(a);
+            SaveAvoids(a.Context);   // after the tick stopped touching it
             if (Brain is { } br)
             {
                 try { _h.Checkpoints.Save(br.Checkpoint()); } catch (Exception e) { Log.Text(LogCategory.Brain, LogLevel.Note, $"checkpoint failed: {e.Message}"); }

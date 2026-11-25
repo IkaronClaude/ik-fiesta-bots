@@ -76,6 +76,16 @@ public sealed partial class SelfModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn(Alloc = Alloc.LuaString)] public string Map() => Ctx.World.Map.MapName;
     /// <summary>Map id.</summary>
     [LuaFn] public int MapId() => Ctx.World.Map.MapId;
+    /// <summary>HP soul stones held.</summary>
+    [LuaFn] public int HpStones() => S.HpStones;
+    /// <summary>SP soul stones held.</summary>
+    [LuaFn] public int SpStones() => S.SpStones;
+    /// <summary>Soul stone capacity (HP, SP; -1 unknown).</summary>
+    [LuaFn] public (long Hp, long Sp) MaxStones() => S.MaxStones;
+    /// <summary>Unspent stat points.</summary>
+    [LuaFn] public int StatPoints() => S.StatPoints;
+    /// <summary>Fame (-1 unknown).</summary>
+    [LuaFn] public long Fame() => S.Fame;
     /// <summary>Instance map?</summary>
     [LuaFn] public bool IsInstance() => Ctx.World.Map.IsInstance;
     /// <summary>Facing unit vector.</summary>

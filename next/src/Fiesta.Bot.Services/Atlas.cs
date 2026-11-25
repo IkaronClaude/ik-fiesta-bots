@@ -186,9 +186,24 @@ public sealed class WorldAtlas
 
     /// <summary>Route from a spot to a map (and a spot on it when x/y are given): Dijkstra over the gate graph. Null
     /// when the maps are not connected; an empty hop list when already on the map.</summary>
-    public WorldRoute? Route(int fromMap, double fx, double fy, int toMap, double tx = double.NaN, double ty = double.NaN, Func<int, bool>? avoid = null)
+    public WorldRoute? Route(int fromMap, double fx, double fy, int toMap, double tx = double.NaN, double ty = double.NaN, Func<int, bool>? avoid = null,
+        Func<SpawnArea, bool>? dangerous = null)
     {
-        lock (_gate) return RouteLocked(fromMap, fx, fy, toMap, tx, ty, avoid);
+        lock (_gate) return RouteLocked(fromMap, fx, fy, toMap, tx, ty, avoid, dangerous);
+    }
+
+    /// <summary>Does the straight walk between two points of a map pass through (within margin of) a spawn area the
+    /// predicate calls dangerous?</summary>
+    public bool SegmentHitsDanger(int mapId, double ax, double ay, double bx, double by, Func<SpawnArea, bool> dangerous, double margin = 300)
+    {
+        foreach (var a in SpawnsOn(mapId))
+        {
+            if (!dangerous(a)) continue;
+            double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+            var t = l2 <= 0 ? 0 : Math.Clamp(((a.X - ax) * dx + (a.Y - ay) * dy) / l2, 0, 1);
+            if (Dist(ax + t * dx, ay + t * dy, a.X, a.Y) < Math.Max(a.HalfW, a.HalfH) + margin) return true;
+        }
+        return false;
     }
 
     /// <summary>The level of the easiest hostile mob that spawns on a map (-1 none), given MobInfo levels (cached).</summary>
@@ -204,7 +219,8 @@ public sealed class WorldAtlas
     }
     private readonly Dictionary<int, int> _easiest = new();
 
-    private WorldRoute? RouteLocked(int fromMap, double fx, double fy, int toMap, double tx, double ty, Func<int, bool>? avoid = null)
+    private WorldRoute? RouteLocked(int fromMap, double fx, double fy, int toMap, double tx, double ty, Func<int, bool>? avoid = null,
+        Func<SpawnArea, bool>? dangerous = null)
     {
         if (fromMap == toMap) return new WorldRoute([], double.IsNaN(tx) ? 0 : Dist(fx, fy, tx, ty));
         if (!_nodesByMap.TryGetValue(fromMap, out var starts) || !_nodesByMap.ContainsKey(toMap)) return null;
@@ -228,6 +244,9 @@ public sealed class WorldAtlas
             {
                 var vm = _nodes[v].Map;
                 if (avoid is not null && vm != toMap && vm != fromMap && avoid(vm)) continue;
+                // a walk inside a map that passes a dangerous spawn area is not taken (danger on the path, not on the map)
+                if (dangerous is not null && vm == _nodes[u].Map
+                    && SegmentHitsDanger(vm, _nodes[u].X, _nodes[u].Y, _nodes[v].X, _nodes[v].Y, dangerous)) continue;
                 var nd = du + c;
                 if (nd < dist[v]) { dist[v] = nd; prev[v] = u; pq.Enqueue(v, nd); }
             }
