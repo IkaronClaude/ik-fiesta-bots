@@ -438,8 +438,33 @@ last 30 minutes. Tests: `The_planner_values_a_mob_by_what_the_bot_measured_again
 QuestReward type 1 is read as money (cen) from the values (52 cen for the first quests, 10000 for Road to
 Promotion); to be confirmed on a live hand-in.
 
+#### Live round 21:25-22:00 (planner deployed)
+
+- Production cast PROVEN live: NextM made Elrue [1] from its dusts, 21:36:24-21:37:04, every cast acked
+  PRODUCE_MAKE item 8000 0x0B01. It had been blocked by a bug: produce.hasField only knew fields chosen this session,
+  so NextM (who knows Stone Production, skill 29101, from the login skill list) asked to choose it again every
+  minute and was refused 0x0B13. A known field skill now counts as held; a refused field parks the recipe for the level.
+- REST IS THE TENT. Standing still regenerates nothing on this server (NextA 208/455 HP for 45 s, no HP packet; the
+  first `rest` state stood for 2 minutes at a time and froze the bot). Wired the client's home button:
+  act.pitchTent() (stop + PITCHTENT_REQ 0x2027 -> PITCHTENT_ACK 0x0A81 or refused 0x0A82 mode / 0x0A83 too near an
+  NPC / 0x0A84 map / 0x0A85 no skin), act.foldTent() 0x202A, self.inTent(), the server folding it (0x203D). The
+  survival `rest` state pitches it, learns the NPC clearance from 0x0A83 (walks clear first), marks maps / no skin
+  from 0x0A84 / 0x0A85 and folds on leaving (attacked, rested, gave up). Live: Rou refused 0x0A83 at 174 from an NPC.
+- Planner cost against the 8 ms quest budget: the first picks ran 10-90 ms. Causes found with dbg.us() lap logs
+  ("plan cost: <phase> took <ms>") and fixed: one route search per map pair on a cold cache (now one search per source
+  map), the grind spot scan (11-12 ms per miss; band candidates now computed once), one full route search per target
+  with the danger test (now one search for every map, walk danger cached per mob level). A pick now measures
+  accepts 3-5 ms, the rest < 1 ms; the first pick after a restart still runs over once (cold caches).
+- Stale upkeep flag: a brain swap in the middle of a sell left bb.bot.upkeepBusy set, so the quest layer re-planned
+  every 10 s and never left `plan` (NextA, 21:40-21:51). The upkeep idle state now clears it on entry, and a pick
+  while the upkeep has the legs waits without scoring.
+- Two bots ending sessions at once collided writing knowledge-npcs.json (IOException): saved under a lock.
+
 #### Efficiency per bot (live, local stack)
 
 | time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
 |---|---|---|---|---|---|---|---|---|
+| 21:58 (5 min after a restart) | NextA | 13 | 7881 | 500 | 7256 | 0 | 0 | hunt q25 Clam Chowder (7.4 exp/s, 665 over 89 s) |
+| 21:58 (5 min after a restart) | NextM | 12 | 0 | 0 | 0 | 0 | 0 | hunt q30 Karl's Mysterious Sword (8.6 exp/s, 673 over 78 s) |
 
+The ledger lives in memory: a host restart starts the hour over (the rates read 0 until the bot earns again).
