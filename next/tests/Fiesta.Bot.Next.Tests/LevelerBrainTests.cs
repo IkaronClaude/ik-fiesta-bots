@@ -241,15 +241,19 @@ public class LevelerBrainTests
         // linked into the instance (Job1_Dn01 in the capture; an instance map here)
         t.Ev(InboundKind.MapLink, a: 8, x: 1000, y: 1000);
         t.Tick(5);
-        // an indoor map (InSide) like any cave: an instance only once the server runs a scenario there
-        Assert.False(t.Ctx.World.Map.IsInstance);
+        Assert.False(t.Ctx.World.Map.IsInstance);   // nothing said yet
+        // the server's word on entry (Z:/JCQ.pcapng, right after LINKSAME into Job1_Dn01): FIELD_ATTRIBUTE {01 00 00 00}
+        var fa = new Sink();
+        DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016)).Dispatch(0x1827, new byte[] { 1, 0, 0, 0 }, t.Clock.NowMs, fa);
+        t.In.TryWrite(fa.E[0]);
+        t.Tick(2);
+        Assert.True(t.Ctx.World.Map.IsInstance);
         // the scripted copy of us appears as a character and is turned into a mob (OBJTYPECHANGE {0x43BC, 5})
         t.Ev(InboundKind.EntityAppeared, h: 0x43BC, a: (long)Fiesta.Bot.Agent.EntityKind.Player, b: -1, x: 1100, y: 1000, text: "Shadow");
         var obj = InboundEvent.Of(InboundKind.Scenario, 0x6C0B, t.Clock.NowMs); obj.A = 11; obj.Handle = 0x43BC; obj.B = 5;
         t.In.TryWrite(obj);
         t.Tick(2);
         Assert.True((t.Ctx.World.KindOf(t.Ctx.World.Entities.SlotOf(0x43BC), t.Clock.NowMs) & Fiesta.Bot.Agent.EntityKind.Huntable) != 0);
-        Assert.True(t.Ctx.World.Map.IsInstance);
         // the server asks for Zone_Mob01: the confirm is repeated until the room's wave appears
         var req = InboundEvent.Of(InboundKind.Scenario, 0x6C05, t.Clock.NowMs); req.A = 5; req.Text = "Zone_Mob01";
         t.In.TryWrite(req);
@@ -348,6 +352,26 @@ public class LevelerBrainTests
         Assert.InRange(double.Parse(bot["k1s"]!.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture), 4.5, 6.5);   // measured ~2 s + 3 s rest
         Assert.Equal(60.0, double.Parse(bot["k1x"]!.ToJsonString(), System.Globalization.CultureInfo.InvariantCulture));           // measured exp per kill, no stones used
     }
+
+    [Fact]
+    public void The_open_world_and_an_indoor_field_are_not_instances()
+    {
+        // the overworld entries of Z:/JCQ.pcapng and every live map entry since 23:32: FIELD_ATTRIBUTE {00 00 00 00};
+        // scenario packets on such a map change nothing (scenarios run on open maps too)
+        using var t = new TestBot();
+        t.Tick(2);
+        t.Ev(InboundKind.MapLink, a: 8, x: 1000, y: 1000);   // an indoor map in the test data (InSide 1)
+        var fa = new Sink();
+        DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016)).Dispatch(0x1827, new byte[] { 0, 0, 0, 0 }, t.Clock.NowMs, fa);
+        t.In.TryWrite(fa.E[0]);
+        var obj = InboundEvent.Of(InboundKind.Scenario, 0x6C09, t.Clock.NowMs); obj.A = 9; obj.B = 1;
+        t.In.TryWrite(obj);
+        t.Tick(2);
+        Assert.False(t.Ctx.World.Map.IsInstance);
+        Assert.Equal(0, t.Ctx.World.Map.FieldType);
+    }
+
+    private sealed class Sink : IEventSink { public readonly List<InboundEvent> E = new(); public bool TryWrite(in InboundEvent evt) { E.Add(evt); return true; } }
 
     private static string Diag(TestBot t)
     {

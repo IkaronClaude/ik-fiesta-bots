@@ -177,6 +177,12 @@ public enum InboundKind : ushort
     Promoted,
     /// <summary>A skill could not be learned (SKILL_LEARNFAIL): A code.</summary>
     SkillLearnFail,
+    /// <summary>What kind of map we just entered (MAP_FIELD_ATTRIBUTE, sent on every map entry): A eFieldMapType
+    /// (0 the open world; 1 on entering the job change's instance, Z:/JCQ.pcapng).</summary>
+    FieldAttribute,
+    /// <summary>MAP_CAN_USE_REVIVEITEM (sent on every map entry): A 1 revive items allowed, 0 not (0 in the job change's
+    /// instance).</summary>
+    ReviveItemAllowed,
     /// <summary>The rest tent (the client's "home" button): A 1 pitch ack / 0 fold ack / 2 folded by the server, B code
     /// (0x0A81 ok).</summary>
     Tent,
@@ -862,7 +868,7 @@ public sealed class SocialDecoder : IPacketDecoder
 public sealed class WorldDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes { get; } = [0x1809, 0x180A, 0x104D, 0x104F, 0x1050, 0x1812, 0x1813, 0x1818, 0x1819];
+    public IReadOnlyList<ushort> Opcodes { get; } = [0x1809, 0x180A, 0x104D, 0x104F, 0x1050, 0x1812, 0x1813, 0x1818, 0x1819, 0x1827, 0x182B];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -875,6 +881,8 @@ public sealed class WorldDecoder : IPacketDecoder
                 e.Kind = InboundKind.MapLink; e.A = Rd.U16(p, 0); e.X = Rd.U32(p, 2); e.Y = Rd.U32(p, 6); e.B = op == 0x180A ? 1 : 0;
                 break;
             case 0x104D: e.Kind = InboundKind.DeadMenu; e.A = Rd.U32(p, 0); break;
+            case 0x1827: if (p.Length < 4) return; e.Kind = InboundKind.FieldAttribute; e.A = Rd.U32(p, 0); break;   // FIELD_ATTRIBUTE {eFieldMapType u32}
+            case 0x182B: if (p.Length < 1) return; e.Kind = InboundKind.ReviveItemAllowed; e.A = p[0]; break;           // CAN_USE_REVIVEITEM {u8}
             case 0x1812 or 0x1813 or 0x1818 or 0x1819:   // MAP_FREEPKZONE_ON / OFF, MAP_PARTYBATTLEZONE_ON / OFF
                 e.Kind = InboundKind.PvpZone; e.A = op is 0x1812 or 0x1818 ? 1 : 0; e.B = op is 0x1812 or 0x1813 ? 2 : 1;
                 break;

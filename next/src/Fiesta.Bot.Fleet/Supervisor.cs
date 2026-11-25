@@ -256,6 +256,10 @@ public sealed class BotRuntime
     /// <summary>Stop recording.</summary>
     public void StopRecording() { if (Agent is { } a) a.Recorder = null; Recorder?.Dispose(); Recorder = null; }
 
+    /// <summary>Shortest wait before logging in again after a dropped session (the zone saves and removes the old
+    /// character first).</summary>
+    public static int ReconnectMinS { get; set; } = 25;
+
     private async Task LoopAsync(CancellationToken ct)
     {
         var backoff = 5;
@@ -300,9 +304,13 @@ public sealed class BotRuntime
             if (_stopRequested || ct.IsCancellationRequested) break;
             if (_relogRequested) { _relogRequested = false; continue; }
             State = SupervisorState.Reconnecting;
-            Log.Text(LogCategory.Net, LogLevel.Note, $"reconnecting in {backoff} s");
-            try { await Task.Delay(TimeSpan.FromSeconds(backoff), ct); } catch (OperationCanceledException) { break; }
-            backoff = Math.Min(60, backoff * 2);
+            // a dropped session's character stays in the world until the zone's logout save lands: a login before that
+            // meets it and is dropped too (server side, 23:48: "client session gone" at each 5 s retry). Never retry
+            // sooner than ReconnectMinS after a drop.
+            var wait = Math.Max(backoff, ReconnectMinS);
+            Log.Text(LogCategory.Net, LogLevel.Note, $"reconnecting in {wait} s (the old session's logout must land first)");
+            try { await Task.Delay(TimeSpan.FromSeconds(wait), ct); } catch (OperationCanceledException) { break; }
+            backoff = Math.Min(120, backoff * 2);
         }
         State = SupervisorState.Offline;
     }

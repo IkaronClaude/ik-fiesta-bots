@@ -662,6 +662,10 @@ public sealed class MapState
     public string MapName { get; internal set; } = "";
     /// <summary>Instance map?</summary>
     public bool IsInstance { get; internal set; }
+    /// <summary>The server's field map type for this map (MAP_FIELD_ATTRIBUTE; -1 not received yet).</summary>
+    public int FieldType { get; internal set; } = -1;
+    /// <summary>Revive items allowed here (MAP_CAN_USE_REVIVEITEM).</summary>
+    public bool ReviveItems { get; internal set; } = true;
 }
 
 /// <summary>The open shop / menu / dialogue state the NPC procedures read.</summary>
@@ -1138,8 +1142,6 @@ public sealed class WorldState
                 break;
             case InboundKind.Scenario:
                 Scenario.Apply(e, now);
-                // the server runs a scenario for us on this map: an instance, whatever the client's table says
-                if (!Map.IsInstance) { Map.IsInstance = true; Bump(WorldComponent.Map); }
                 // a scripted character (the job change's shadow copy of us) turned into a mob (5) or back (4): the same
                 // entity, made fightable in place - never a copy with a made-up mob id (it has none)
                 if (e.A == 11 && Entities.SlotOf(e.Handle) is var cs and >= 0)
@@ -1150,6 +1152,17 @@ public sealed class WorldState
                 break;
             case InboundKind.SkillExp:
                 Skills.Mastery[(int)e.A] = e.B;
+                break;
+            case InboundKind.FieldAttribute:
+                // the server's word on the map we entered: field map type 0 is the open world, any other an instance
+                // (1 on entering the job change's dungeon, Z:/JCQ.pcapng). The only signal used: scenarios also run on
+                // open maps, indoor maps (MapInfo InSide) are not instances, and the KingdomMap column is unconfirmed.
+                Map.FieldType = (int)e.A;
+                Map.IsInstance = e.A != 0;
+                Bump(WorldComponent.Map);
+                break;
+            case InboundKind.ReviveItemAllowed:
+                Map.ReviveItems = e.A != 0;
                 break;
             case InboundKind.Tent:
                 if (e.A == 1 && e.B == 0x0A81) Self.TentPitched = true;
@@ -1191,7 +1204,8 @@ public sealed class WorldState
     private void SetMap(int id, string name)
     {
         Map.MapId = id; Map.MapName = name;
-        Map.IsInstance = Data?.Map(id)?.IsInstance ?? false;
+        // until the server's FIELD_ATTRIBUTE for this map arrives (right after the entry), it is the open world
+        Map.IsInstance = false; Map.FieldType = -1; Map.ReviveItems = true;
         Bump(WorldComponent.Map);
     }
 }

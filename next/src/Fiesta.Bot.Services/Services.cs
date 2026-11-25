@@ -100,8 +100,8 @@ public sealed record ProduceRow(int Id, string Name, int Product, int Lot, (int 
 /// column (non-zero: a kingdom quest / instanced map).</summary>
 public sealed record MapInfoRow(int Id, string MapName, string Name, bool Inside, int RegenX, int RegenY, int Kingdom = 0)
 {
-    /// <summary>An instanced map by the client's table (kingdom quest maps). A scenario instance with KingdomMap 0 (the
-    /// job change's dungeon) is known only from the scenario the server runs there (WorldState).</summary>
+    /// <summary>A kingdom quest map by the client's table (KingdomMap column). NOT used to decide "instance": that is the
+    /// server's MAP_FIELD_ATTRIBUTE on entry (WorldState); this only keeps such maps out of grind-spot search.</summary>
     public bool IsInstance => Kingdom != 0;
 }
 
