@@ -173,6 +173,10 @@ in the north of Roumen none is in view, so it alternated seek <-> roam. The leve
 Live (local 2026 stack): NextBotA accepted and handed in quests across Roumen (Baby Steps chain, the Grandpa Robin
 chain, The Chief of Roumen ...), level 4 -> 6 in about 10 minutes, exp/h about 3400.
 
-Open bug: after a host restart NextBotA once logged in but never reached the world (no MAP_LOGIN_ACK logged; the
-supervisor showed InZone with empty vitals); a relog fixed it. Root cause not found yet (net logging was at Note
-level for that session). No watchdog added; tracked here.
+Open bug: after a host restart NextBotA twice logged in but never reached the world: MAP_LOGIN_REQ sent, no
+MAP_LOGIN_ACK and no MAP_LOGINFAIL, the supervisor showing InZone with empty vitals; a relog a minute later worked.
+Both times the previous session had just logged out (the restart's graceful drain), so the likely cause is the zone
+still holding the character while its logout completes; not confirmed. The session now ends when MAP_LOGIN_REQ is
+not answered within 20 s or is answered with MAP_LOGINFAIL (a missing answer is an error like any other, test
+`A_zone_that_never_answers_the_map_login_ends_the_session`), so the supervisor logs in again with its backoff. The
+server-side cause stays open.

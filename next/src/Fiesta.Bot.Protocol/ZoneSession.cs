@@ -72,7 +72,20 @@ public sealed class ZoneSession : IFrameSink, IAsyncDisposable
                 _log($"[zone] >> MAP_LOGIN_REQ char='{_charName}' wm={_wmHandle} ({_checksums.Count} checksums)");
                 Link(LinkState.Ready);
                 _linkCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                await zone.RunLoopsAsync(this, _outbound, _linkCts.Token);
+                // the map login must be answered: a session the zone never lets into the world ends (the supervisor logs
+                // in again) instead of sitting there forever
+                _mapAcked = false; _mapLoginFailed = null;
+                var linkCts = _linkCts;
+                _ = Task.Delay(MapLoginTimeout, linkCts.Token).ContinueWith(t =>
+                {
+                    if (t.IsCanceled || _mapAcked) return;
+                    _mapLoginFailed = $"no MAP_LOGIN_ACK within {MapLoginTimeout.TotalSeconds:0} s";
+                    _log($"[zone] {_mapLoginFailed}: closing the session");
+                    try { linkCts.Cancel(); } catch (ObjectDisposedException) { }
+                }, TaskScheduler.Default);
+                try { await zone.RunLoopsAsync(this, _outbound, _linkCts.Token); }
+                catch (OperationCanceledException) when (_mapLoginFailed is not null && !ct.IsCancellationRequested) { }
+                if (_mapLoginFailed is { } why) { await zone.DisposeAsync(); throw new TimeoutException(why); }
                 await zone.DisposeAsync();
                 if (_handoffTo is { } next && !_stopping)
                 {
@@ -102,6 +115,11 @@ public sealed class ZoneSession : IFrameSink, IAsyncDisposable
         _sink.TryWrite(e);
     }
 
+    /// <summary>How long the zone may take to answer MAP_LOGIN_REQ.</summary>
+    public static TimeSpan MapLoginTimeout { get; set; } = TimeSpan.FromSeconds(20);
+    private volatile bool _mapAcked;
+    private volatile string? _mapLoginFailed;
+
     /// <inheritdoc/>
     public void OnFrame(in RawFrame f)
     {
@@ -113,6 +131,7 @@ public sealed class ZoneSession : IFrameSink, IAsyncDisposable
                 return;
             case 0x1802:   // MAP_LOGIN_ACK -> the client's start-up frames, then MAP_LOGINCOMPLETE
             {
+                _mapAcked = true;
                 var zone = new List<(ushort, byte[])>(); var wm = new List<(ushort, byte[])>();
                 _wire.AfterMapLoginAck(zone, wm);
                 foreach (var (op, b) in wm) _wmOut.Post(op, b);
@@ -125,7 +144,9 @@ public sealed class ZoneSession : IFrameSink, IAsyncDisposable
                 break;
             }
             case 0x1804:
-                _log($"[zone] << MAP_LOGINFAIL err={(p.Length >= 2 ? BinaryPrimitives.ReadUInt16LittleEndian(p) : -1)} file index={(p.Length >= 3 ? p[2] : -1)}");
+                _mapLoginFailed = $"MAP_LOGINFAIL err={(p.Length >= 2 ? BinaryPrimitives.ReadUInt16LittleEndian(p) : -1)} file index={(p.Length >= 3 ? p[2] : -1)}";
+                _log($"[zone] << {_mapLoginFailed}");
+                try { _linkCts?.Cancel(); } catch (ObjectDisposedException) { }
                 break;
             case 0x1809:   // LINKSAME: the map changed on this zone; spawn into it
                 _ = SendZone(IntentEncoder.OpLoginComplete, Array.Empty<byte>());
