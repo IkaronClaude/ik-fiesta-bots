@@ -18,6 +18,9 @@ public sealed class GameStatic
     private readonly ConcurrentDictionary<(char, int), byte[]?> _icons = new();
     private readonly ConcurrentDictionary<int, byte[]?> _minimaps = new();
 
+    /// <summary>Bumped whenever these routes change what they return for the same client data (busts browser caches).</summary>
+    public const int OutputVersion = 2;
+
     /// <summary>Client-data fingerprint (part of every ETag).</summary>
     public string Fingerprint { get; }
 
@@ -39,7 +42,7 @@ public sealed class GameStatic
             if (_abState.Value is { } t) for (var r = 0; r < t.RowCount; r++) d.TryAdd((int)t.Num(r, "AbStataIndex"), r);
             return d;
         });
-        var sb = new StringBuilder(Path.GetFullPath(h.RessystemDir));
+        var sb = new StringBuilder(Path.GetFullPath(h.RessystemDir)).Append('|').Append(OutputVersion);
         foreach (var f in new[] { "ItemInfo.shn", "ActiveSkill.shn", "MobInfo.shn", "MapInfo.shn", "ItemViewInfo.shn" })
         {
             var p = Path.Combine(h.RessystemDir, f);
