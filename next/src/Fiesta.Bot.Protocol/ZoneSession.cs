@@ -83,7 +83,7 @@ public sealed class ZoneSession : IFrameSink, IAsyncDisposable
                     _log($"[zone] {_mapLoginFailed}: closing the session");
                     try { linkCts.Cancel(); } catch (ObjectDisposedException) { }
                 }, TaskScheduler.Default);
-                try { await zone.RunLoopsAsync(this, _outbound, _linkCts.Token); }
+                try { await zone.RunLoopsAsync(this, new WmRouter(_outbound, _wmOut), _linkCts.Token); }
                 catch (OperationCanceledException) when (_mapLoginFailed is not null && !ct.IsCancellationRequested) { }
                 if (_mapLoginFailed is { } why) { await zone.DisposeAsync(); throw new TimeoutException(why); }
                 await zone.DisposeAsync();
@@ -220,11 +220,42 @@ public sealed class ZoneSession : IFrameSink, IAsyncDisposable
         if (_wmLoop is not null) try { await _wmLoop.WaitAsync(TimeSpan.FromSeconds(2)); } catch { }
     }
 
+    // answers that belong to the world manager (party / friend confirmations) leave through its link
+    private sealed class WmRouter(IOutboundSource inner, ChannelOutbound wm) : IOutboundSource
+    {
+        public ValueTask<bool> WaitToReadAsync(CancellationToken ct) => inner.WaitToReadAsync(ct);
+        public bool TryDequeue(out ushort opcode, out ReadOnlyMemory<byte> payload)
+        {
+            while (inner.TryDequeue(out opcode, out payload))
+            {
+                if (opcode is not (IntentEncoder.OpPartyAllow or IntentEncoder.OpFriendConfirm)) return true;
+                wm.Post(opcode, payload.ToArray());
+            }
+            return false;
+        }
+    }
+
     private sealed class WmSink(ZoneSession s) : IFrameSink
     {
         public void OnFrame(in RawFrame frame)
         {
-            if (frame.Opcode == 0x0804) s._wmOut.Post(IntentEncoder.OpHeartbeatAck, Array.Empty<byte>());
+            var p = frame.Payload.Span;
+            switch (frame.Opcode)
+            {
+                case 0x0804: s._wmOut.Post(IntentEncoder.OpHeartbeatAck, Array.Empty<byte>()); break;
+                case 0x3803 when p.Length >= 20:   // PARTY_JOINPROPOSE_REQ {mastername[20]}
+                {
+                    var e = InboundEvent.Of(InboundKind.PartyProposal, frame.Opcode, s._clock()); e.Text = Ascii.Get(p[..20]);
+                    s._sink.TryWrite(e);
+                    break;
+                }
+                case 0x5403 when p.Length >= 40:   // FRIEND_SET_CONFIRM_REQ {charid[20], friendid[20]}
+                {
+                    var e = InboundEvent.Of(InboundKind.FriendProposal, frame.Opcode, s._clock()); e.Text = Ascii.Get(p[..20]) + "\t" + Ascii.Get(p.Slice(20, 20));
+                    s._sink.TryWrite(e);
+                    break;
+                }
+            }
         }
         public void OnClosed(LinkState finalState, Exception? error)
         {

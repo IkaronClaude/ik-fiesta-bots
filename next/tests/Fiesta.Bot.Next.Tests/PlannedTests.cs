@@ -638,6 +638,8 @@ layers:
         Assert.Contains(lint, l => l.Code == "NO_EXIT" && l.State == "t");
         var unknownApi = BrainLinter.Lint(BrainLoader.Parse(Two), new Dictionary<string, string> { ["brain/t/m"] = "local M = {} function M.f() return self.noSuchFn() end return M" });
         Assert.Contains(unknownApi, l => l.Code == "API_NAME");
+        var shadow = BrainLinter.Lint(BrainLoader.Parse(Two), new Dictionary<string, string> { ["brain/t/social"] = "local M = {} return M" });
+        Assert.Contains(shadow, l => l.Code == "MODULE_SHADOWS_API");
     }
 
     [Fact]

@@ -98,4 +98,19 @@ public class LevelerBrainTests
         Assert.Contains(IntentEncoder.OpStatPoint, t.Sent);
         Assert.Empty(b.Debug.Errors());
     }
+
+    [Fact]
+    public void Accepts_a_party_invitation()
+    {
+        if (Load() is not var (yaml, mods)) return;
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(5);
+        var e = InboundEvent.Of(InboundKind.PartyProposal, 0x3803, t.Clock.NowMs); e.Text = "Leader";
+        t.In.TryWrite(e);
+        t.Tick(30);
+        Assert.Contains(IntentEncoder.OpPartyAllow, t.Sent);
+        Assert.Equal("", t.Ctx.World.Party.Invite.Master);
+        Assert.Empty(b.Debug.Errors());
+    }
 }

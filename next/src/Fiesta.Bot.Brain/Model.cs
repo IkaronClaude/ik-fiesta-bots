@@ -256,6 +256,9 @@ public static class BrainLinter
         var moduleNames = new HashSet<string>(modules.Keys.Concat(BuiltinLibraries.Sources.Keys).Select(ShortName));
         foreach (var (path, src) in modules)
         {
+            // a module is reachable by its last path segment: one named like an API module would hide that module
+            if (ApiModules.Contains(ShortName(path)))
+                o.Add(new(LintSeverity.Error, "MODULE_SHADOWS_API", $"module '{path}' is named like the API module '{ShortName(path)}' and would hide it", path, 0, null, null));
             var err = LuaSyntax.Check(path, src);
             if (err is not null) o.Add(new(LintSeverity.Error, "SYNTAX", err.Value.Message, path, err.Value.Line, null, null));
             // unknown api names: module.fn references to API modules that the manifest does not have

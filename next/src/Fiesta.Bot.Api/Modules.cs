@@ -989,7 +989,33 @@ public sealed partial class SocialModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>Invite a player (not wired).</summary>
     [LuaFn] public int PartyInvite(string name) => No(ActionKind.PartyInvite);
     /// <summary>Accept an invite (not wired).</summary>
-    [LuaFn] public int PartyAccept() => No(ActionKind.PartyAccept);
+    private readonly Intent[] _one = new Intent[1];
+    /// <summary>Accept the pending party invitation (JOINPROPOSE_ALLOW_ACK with the master's name, to the world manager).</summary>
+    [LuaFn]
+    public int PartyAccept()
+    {
+        var (master, _) = Ctx.World.Party.Invite;
+        if (master.Length == 0) return Ctx.Actions.Refuse(ActionKind.PartyAccept, CallingLayer, LocalRefusal.InvalidTarget).Value;
+        Span<byte> b = stackalloc byte[20]; Ascii.Put(b, master);
+        Ctx.World.Party.Invite = ("", -1);
+        _one[0] = IntentEncoder.Raw(IntentEncoder.OpPartyAllow, b, -1);
+        return Ctx.Actions.Issue(ActionKind.PartyAccept, CallingLayer, 0, 0, _one).Value;
+    }
+    /// <summary>The pending party invitation's master ("" none).</summary>
+    [LuaFn(Alloc = Alloc.LuaString)] public string PendingInvite() => Ctx.World.Party.Invite.Master;
+    /// <summary>The pending friend request's sender ("" none).</summary>
+    [LuaFn(Alloc = Alloc.LuaString)] public string PendingFriend() => Ctx.World.Party.FriendRequest.CharId;
+    /// <summary>Answer the pending friend request (FRIEND_SET_CONFIRM_ACK, to the world manager).</summary>
+    [LuaFn]
+    public int FriendAnswer(bool accept)
+    {
+        var (a, f, _) = Ctx.World.Party.FriendRequest;
+        if (a.Length == 0) return Ctx.Actions.Refuse(ActionKind.Raw, CallingLayer, LocalRefusal.InvalidTarget).Value;
+        Span<byte> b = stackalloc byte[41]; Ascii.Put(b[..20], a); Ascii.Put(b.Slice(20, 20), f); b[40] = (byte)(accept ? 1 : 0);
+        Ctx.World.Party.FriendRequest = ("", "", -1);
+        _one[0] = IntentEncoder.Raw(IntentEncoder.OpFriendConfirm, b, -1);
+        return Ctx.Actions.Issue(ActionKind.Raw, CallingLayer, IntentEncoder.OpFriendConfirm, 0, _one).Value;
+    }
     /// <summary>Leave (not wired).</summary>
     [LuaFn] public int PartyLeave() => No(ActionKind.PartyLeave);
     /// <summary>Party members in view.</summary>

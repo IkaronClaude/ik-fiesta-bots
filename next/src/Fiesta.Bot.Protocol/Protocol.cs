@@ -114,6 +114,10 @@ public enum InboundKind : ushort
     ShopItem,
     /// <summary>Party event (raw opcode in A).</summary>
     PartyEvent,
+    /// <summary>A party invitation (world manager JOINPROPOSE_REQ): Text = the inviting party master.</summary>
+    PartyProposal,
+    /// <summary>A friend request (world manager FRIEND_SET_CONFIRM_REQ): Text = "charid\tfriendid" as sent.</summary>
+    FriendProposal,
     /// <summary>Trade event (raw opcode in A, code B).</summary>
     TradeEvent,
     /// <summary>Chat: H speaker, Text.</summary>
@@ -812,7 +816,7 @@ public static class IntentEncoder
         OpChangeMode = 0x2008, OpCastObj = 0x2440, OpCastFld = 0x2441, OpBashStart = 0x242B, OpBashStop = 0x2432,
         OpItemUse = 0x3015, OpBuy = 0x3003, OpSell = 0x3006, OpNpcClick = 0x200A, OpChat = 0x2001, OpPick = 0x3009,
         OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpQuestScriptAck = 0x4402,
-        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F,
+        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404,
         OpLoginComplete = 0x1803;
 
     private static Intent Make(ushort op, int action, ReadOnlySpan<byte> payload)

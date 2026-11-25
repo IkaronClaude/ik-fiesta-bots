@@ -139,6 +139,7 @@ public static class ActionCatalog
         S(ActionKind.Whisper, Resource.Chat, OnSend, 0);
         S(ActionKind.MenuReply, Resource.Npc, OnSend, 0);
         S(ActionKind.Raw, Resource.None, OnSend, 0);
+        S(ActionKind.PartyAccept, Resource.None, OnSend, 0);   // the member list that follows is the visible result
     }
 
     /// <summary>Spec of a kind, null when the kind has no result wiring yet.</summary>

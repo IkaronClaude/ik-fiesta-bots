@@ -487,6 +487,10 @@ public sealed class QuestLog
 /// <summary>Party membership.</summary>
 public sealed class PartyState
 {
+    /// <summary>A pending party invitation: the master's name ("" none) and when.</summary>
+    public (string Master, long At) Invite { get; set; } = ("", -1);
+    /// <summary>A pending friend request: (charid, friendid) as sent ("" none) and when.</summary>
+    public (string CharId, string FriendId, long At) FriendRequest { get; set; } = ("", "", -1);
     private readonly List<int> _members = new();
     /// <summary>Member handles in view; returns count.</summary>
     public int Members(Span<int> dest) { var n = Math.Min(dest.Length, _members.Count); for (var i = 0; i < n; i++) dest[i] = _members[i]; return n; }
@@ -931,6 +935,13 @@ public sealed class WorldState
                 break;
             case InboundKind.StatPoints:
                 Self.StatPoints = (int)e.A;
+                break;
+            case InboundKind.PartyProposal:
+                Party.Invite = (e.Text ?? "", now);
+                ev.Raise(EventKind.PartyInvite, 0);
+                break;
+            case InboundKind.FriendProposal when e.Text is { } ft && ft.IndexOf('\t') is var tab and >= 0:
+                Party.FriendRequest = (ft[..tab], ft[(tab + 1)..], now);
                 break;
             case InboundKind.StoneShop:
                 Npc.StonePrices = ((int)e.A, (int)e.B, (int)e.C, (int)e.X, now);
