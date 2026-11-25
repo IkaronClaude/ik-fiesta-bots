@@ -293,6 +293,19 @@ public sealed unsafe class NativeLuaEngine : ILuaEngine
         return ok != 0 ? v : double.NaN;
     }
 
+    /// <summary>Does a scope hold a non-nil value for the key?</summary>
+    public bool Has(string scope, string? owner, string key)
+    {
+        var r = ScopeRef(scope, owner);
+        if (r == -1) return false;
+        var real = Math.Abs(r);
+        Lua54.lua_rawgeti(L, Lua54.RegistryIndex, real);
+        var t = LuaRegistrar.GetField(L, -1, key);
+        Lua54.Pop(L, 2);
+        if (r < 0) Lua54.luaL_unref(L, Lua54.RegistryIndex, real);
+        return t > 0;
+    }
+
     /// <summary>Set a value in a scope from JSON text.</summary>
     public void Set(string scope, string? owner, string key, string json)
     {

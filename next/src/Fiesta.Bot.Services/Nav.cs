@@ -432,21 +432,27 @@ public sealed class NavService(string clientRoot, IJobScheduler jobs, Func<strin
             return r;
         })).Value;
 
+    /// <summary>Non-blocking: the layer when the map is loaded, else null (and loading starts on the job pool). The
+    /// tick thread must never build a mesh (hundreds of milliseconds on a large map).</summary>
+    public BlockLayer? Layer(string mapName) { if (_ready.ContainsKey(mapName)) return Get(mapName).L; Prepare(mapName); return null; }
     /// <inheritdoc/>
-    public BlockLayer? Layer(string mapName) => Get(mapName).L;
-    /// <inheritdoc/>
-    public NavMesh? Mesh(string mapName) => Get(mapName).M;
+    public NavMesh? Mesh(string mapName) { if (_ready.ContainsKey(mapName)) return Get(mapName).M; Prepare(mapName); return null; }
+    private readonly ConcurrentDictionary<string, bool> _preparing = new(StringComparer.OrdinalIgnoreCase);
     /// <inheritdoc/>
     public bool Ready(string mapName) => _ready.ContainsKey(mapName);
     /// <summary>Warm a map off the tick.</summary>
-    public void Prepare(string mapName) { if (!_ready.ContainsKey(mapName)) jobs.Submit(-1, JobKind.Custom, _ => Get(mapName)); }
+    public void Prepare(string mapName)
+    {
+        if (string.IsNullOrEmpty(mapName) || _ready.ContainsKey(mapName) || !_preparing.TryAdd(mapName, true)) return;
+        jobs.Submit(-1, JobKind.Custom, _ => Get(mapName));
+    }
 
     /// <inheritdoc/>
     public JobTicket RequestPath(int botIndex, string mapName, HashSet<long>? overlay, uint fx, uint fy, uint tx, uint ty, Action<JobTicket, bool>? done)
         => jobs.Submit(botIndex, JobKind.Path, _ =>
         {
             var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-            var mesh = Mesh(mapName);
+            var mesh = Get(mapName).M;
             PathResult r = mesh is null
                 ? new PathResult(PathStatus.Failed, [], 0, $"no block data for {mapName}")
                 : PathSearch.Find(mesh, fx, fy, tx, ty, overlay is { Count: > 0 } o ? (x, y) => o.Contains(((long)x << 32) | (uint)y) : null);

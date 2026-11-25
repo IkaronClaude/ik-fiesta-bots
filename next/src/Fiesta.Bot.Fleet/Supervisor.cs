@@ -337,18 +337,19 @@ public sealed class BotRuntime
         _lastFrameAt = now;
         if (Brain is { } b)
         {
+            b.Debug.Watched = Watchers > 0;
             var f = b.Frame(a.Context, a.Stats, a.Paused);
             Frame = f;
-            var sf = SensorFrames.Build(a);
-            Sensors = sf;
+            var sf = Watchers > 0 || Sensors is null ? SensorFrames.Build(a) : null;
+            if (sf is not null) Sensors = sf;
             lock (_history)
             {
                 _history.Enqueue(f); if (_history.Count > 600) _history.Dequeue();
-                _sensorHistory.Enqueue(sf); if (_sensorHistory.Count > 600) _sensorHistory.Dequeue();
+                if (sf is not null) { _sensorHistory.Enqueue(sf); if (_sensorHistory.Count > 600) _sensorHistory.Dequeue(); }
             }
             FrameReady?.Invoke(this, f);
         }
-        else Sensors = SensorFrames.Build(a);
+        else if (Watchers > 0 || Sensors is null) Sensors = SensorFrames.Build(a);
     }
 
     /// <summary>Apply a brain version (live when running: a hot swap at the next tick boundary).</summary>
@@ -442,9 +443,30 @@ public sealed class BotSupervisor
     public async Task DrainAsync() => await Task.WhenAll(_bots.Values.Select(b => b.StopAsync(true)));
 }
 
-/// <summary>Builds the sensor frame (API_SPEC 7.2 + UI U23) on the tick thread.</summary>
+/// <summary>Builds the sensor frame (API_SPEC 7.2 + UI U23) on the tick thread (only while someone watches).</summary>
 public static class SensorFrames
 {
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<NavMesh, Dictionary<long, List<double[]>>> RectCache = new();
+
+    // nav mesh rectangles within ~1,000 u, cached per 500 u cell (scanning every rectangle of a map is milliseconds)
+    private static List<double[]> NavRects(NavMesh mesh, string map, double x, double y)
+    {
+        var cache = RectCache.GetOrCreateValue(mesh);
+        var key = ((long)(x / 500) << 32) | (uint)(y / 500);
+        lock (cache)
+        {
+            if (cache.TryGetValue(key, out var hit)) return hit;
+            var (tx, ty) = BlockLayer.ToTile(x, y);
+            var rects = new List<double[]>();
+            foreach (var r in mesh.Rects)
+                if (r.X + r.W >= tx - 160 && r.X <= tx + 160 && r.Y + r.H >= ty - 160 && r.Y <= ty + 160 && rects.Count < 400)
+                    rects.Add([r.X * BlockLayer.WorldPerTile, r.Y * BlockLayer.WorldPerTile, r.W * BlockLayer.WorldPerTile, r.H * BlockLayer.WorldPerTile]);
+            if (cache.Count > 256) cache.Clear();
+            cache[key] = rects;
+            return rects;
+        }
+    }
+
     /// <summary>Build.</summary>
     public static object Build(BotAgent a)
     {
@@ -476,15 +498,7 @@ public static class SensorFrames
         var skills = new List<object>();
         foreach (var id in w.Skills.Learned) if (c.Data.Skill(id) is { Range: > 0 } sk) skills.Add(new { id, reach = Math.Round(GameRules.SkillReach(sk, 0)) });
         object? nav = null;
-        if (c.Nav.Mesh(w.Map.MapName) is { } mesh)
-        {
-            var (tx, ty) = BlockLayer.ToTile(w.Self.Pos.X, w.Self.Pos.Y);
-            var rects = new List<double[]>();
-            foreach (var r in mesh.Rects)
-                if (r.X + r.W >= tx - 160 && r.X <= tx + 160 && r.Y + r.H >= ty - 160 && r.Y <= ty + 160 && rects.Count < 400)
-                    rects.Add([r.X * BlockLayer.WorldPerTile, r.Y * BlockLayer.WorldPerTile, r.W * BlockLayer.WorldPerTile, r.H * BlockLayer.WorldPerTile]);
-            nav = new { rects };
-        }
+        if (c.Nav.Mesh(w.Map.MapName) is { } mesh) nav = new { rects = NavRects(mesh, w.Map.MapName, w.Self.Pos.X, w.Self.Pos.Y) };
         return new
         {
             bot = c.BotId, map = w.Map.MapName, mapId = w.Map.MapId,

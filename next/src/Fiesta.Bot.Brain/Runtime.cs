@@ -205,7 +205,10 @@ public sealed class LayerRuntime
     /// <summary>Is the layer due this tick (rate)?</summary>
     public bool Due(long nowMs) => Def.Enabled && (Def.Rate.EveryTick || LastRun < 0 || nowMs - LastRun >= Def.Rate.Ms);
     /// <summary>The active path, outermost first.</summary>
-    public IReadOnlyList<StateRuntime> ActivePath => Path;
+    public IReadOnlyList<StateRuntime> ActivePath
+    {
+        get { var l = new List<StateRuntime>(); for (var s = Root.Active; s is not null; s = s.Sub?.Active) l.Add(s); return l; }
+    }
 }
 
 /// <summary>One bot's brain: engine, layers, blackboard, debug tap. Implements the agent's tick step 6.</summary>
@@ -758,8 +761,17 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
         _brain = next;
         Build(next, keepState ? cp : null);
         if (JsonNode.Parse(cp.BotBlackboardJson) is JsonObject bot) _engine.RestoreBot(bot);
+        SeedBlackboardDefaults();
         _suspended = false;
         _ctx.Log.Text(LogCategory.Brain, LogLevel.Note, $"brain swapped to {next.Definition.Brain}@{next.Hash} (keepState={keepState})");
+    }
+
+    // the definition's `blackboard:` values fill keys the restored bb.bot does not have (a kept bb.bot must not hide a
+    // new version's defaults)
+    private void SeedBlackboardDefaults()
+    {
+        foreach (var kv in _brain.Definition.Blackboard)
+            if (kv.Value is string json && !_engine.Has("bot", null, kv.Key)) _engine.Set("bot", null, kv.Key, json);
     }
 
     /// <summary>Checkpoint: active state paths + bb.bot.</summary>
@@ -774,6 +786,7 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
     public void Resume(BrainCheckpoint checkpoint)
     {
         if (JsonNode.Parse(checkpoint.BotBlackboardJson) is JsonObject bot) _engine.RestoreBot(bot);
+        SeedBlackboardDefaults();
         foreach (var lr in _layers)
             if (checkpoint.LayerPaths.TryGetValue(lr.Name, out var p) && p.Count > 0 && lr.Root.States.ContainsKey(p[0]))
             {

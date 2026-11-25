@@ -532,7 +532,12 @@ public static class ObservationEndpoints
                 brainUs = x.BrainUs, publishUs = x.PublishUs, allocBytes = x.AllocBytes, publishAllocBytes = x.PublishAllocBytes, events = x.Events, luaInstructions = x.LuaInstructions,
             }), Http.Json);
         });
-        api.MapGet("/bots/{id}/sensors", (string id, BotSupervisor s) => Need(s, id, out var b) ?? (b.Sensors is { } f ? Results.Json(f, Http.Json) : Http.Problem(409, "no sensor frame yet")));
+        api.MapGet("/bots/{id}/sensors", async (string id, BotSupervisor s) =>
+        {
+            if (Need(s, id, out var b) is { } err) return err;
+            var a = b.Agent!;
+            return Results.Json(await b.QueryAsync(_ => SensorFrames.Build(a)), Http.Json);   // built on the tick thread
+        });
         api.MapGet("/bots/{id}/log", (string id, string? level, string? category, DateTime? from, DateTime? to, int? max, string? text, BotSupervisor s) =>
         {
             if (s.Get(id) is not { } b) return Http.Problem(404, $"no bot {id}");

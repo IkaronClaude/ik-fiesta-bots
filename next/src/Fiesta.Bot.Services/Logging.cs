@@ -217,7 +217,7 @@ public sealed class LogRing
     public int Read(LogLevel maxLevel, LogCategory? category, long fromMs, long toMs, Span<LogEntry> dest)
     {
         var end = Volatile.Read(ref _seq);
-        var start = Math.Max(0, end - _e.Length + 64);   // keep clear of the slots the writer is about to reuse
+        var start = Math.Max(0, end - _e.Length + Math.Min(64, _e.Length / 4));   // keep clear of the slots the writer is about to reuse
         var tmp = new List<LogEntry>();
         for (var s = start; s < end; s++)
         {

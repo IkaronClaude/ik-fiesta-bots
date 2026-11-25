@@ -30,7 +30,7 @@ public sealed class MoveController
     private volatile bool _jobDone;
     private bool _jobOk;
     private int _fails;
-    private long _waitSpawnUntil;
+    private bool _waitMesh;
     private (uint X, uint Y) _lastSentFrom;
     /// <summary>Maximum leg length sent in one MOVERUN (longer funnel legs are split).</summary>
     public const double MaxLeg = 800;
@@ -75,6 +75,13 @@ public sealed class MoveController
     {
         var o = _order!.Value;
         _jobDone = false;
+        _waitMesh = false;
+        if (o.UsePath && ctx.Nav.Layer(ctx.World.Map.MapName) is null && !ctx.Nav.Ready(ctx.World.Map.MapName))
+        {
+            // the map's walkability is still loading on the job pool: plan when it is ready
+            _waitMesh = true; _ticket = JobTicket.None;
+            return;
+        }
         if (!o.UsePath || ctx.Nav.Layer(ctx.World.Map.MapName) is null)
         {
             _path.Clear(); _path.Add(((uint)o.X, (uint)o.Y));
@@ -119,6 +126,7 @@ public sealed class MoveController
             return;
         }
         if (_order is null) return;
+        if (_waitMesh) { if (ctx.Nav.Ready(ctx.World.Map.MapName)) Plan(ctx); return; }
         if (!_jobDone) return;
         if (_leg >= 0) return;
         // the path arrived (or a direct move): start streaming once the spawn settle has passed

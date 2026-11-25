@@ -444,6 +444,7 @@ public sealed class BotAgent
             if (e.Kind == InboundKind.LinkChanged) { _out.LinkUp = e.A == (long)Fiesta.Bot.Net.LinkState.Ready; if (!_out.LinkUp) _out.Clear(); }
             if (e.Kind == InboundKind.JobCompleted) c.Events.Raise(EventKind.JobDone, e.A, e.B);
             c.World.Apply(e, c.Events, now);
+            if (e.Kind is InboundKind.MapLoginAck or InboundKind.MapLink or InboundKind.Revive) c.Nav.Layer(c.World.Map.MapName);   // start loading walkability
             c.Actions.Apply(e);
             c.Move.Apply(e, c);
             c.Combat.Apply(e, c);
