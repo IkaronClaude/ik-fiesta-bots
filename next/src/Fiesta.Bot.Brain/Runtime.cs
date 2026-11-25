@@ -223,7 +223,10 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
     private readonly List<LayerRuntime> _layers = new();
     private readonly AgentContext _ctx;
     private long _lastInstr;
-    private long _now;
+    private long _now, _bornAt, _startAt;
+    // when a state was entered, for its timers: one entered while the brain was built counts from the first tick
+    private long EnteredAt(StateRuntime s) => s.EnteredAt == _bornAt && _ticked ? Math.Max(_startAt, s.EnteredAt) : s.EnteredAt;
+    private bool _ticked;
     private bool _suspended;
     /// <summary>Resolves a version hash for hot swaps (set by the supervisor).</summary>
     public Func<string, CompiledBrain?>? Resolver { get; set; }
@@ -287,7 +290,7 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
             _layers.Add(lr);
         }
         foreach (var e in LoadErrors) _ctx.Log.Text(LogCategory.Brain, LogLevel.Crit, $"brain {brain.Definition.Brain}@{brain.Hash}: {e}");
-        _now = _ctx.Now;
+        _now = _bornAt = _ctx.Now;
         foreach (var lr in _layers)
         {
             _engine.BindLayer(lr.Name);
@@ -431,6 +434,9 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
     public void Tick(AgentContext ctx)
     {
         _now = ctx.Now;
+        // a brain built before the agent's first tick (a new session) entered its initial states at the context's
+        // unset time: every 'after' timer would fire at once on the first tick. They start now instead.
+        if (!_ticked) { _ticked = true; _startAt = _now; }
         _lastInstr = 0;
         Debug.BeginTick();
         if (_suspended || LoadErrors.Count > 0) return;
@@ -465,7 +471,7 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
         for (var d = 0; d < lr.Path.Count && !fired; d++)
         {
             var s = lr.Path[d];
-            var inDwell = s.Def.MinDwellMs > 0 && _now - s.EnteredAt < s.Def.MinDwellMs;
+            var inDwell = s.Def.MinDwellMs > 0 && _now - EnteredAt(s) < s.Def.MinDwellMs;
             var stuck = IsStuck(s);
             for (var ti = 0; ti < s.Trans.Length; ti++)
             {
@@ -526,7 +532,7 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
 
     private bool IsStuck(StateRuntime s)
     {
-        if (s.Def.TimeoutMs is { } to && _now - s.EnteredAt >= to) return true;
+        if (s.Def.TimeoutMs is { } to && _now - EnteredAt(s) >= to) return true;
         if (s.Def.BudgetMs <= 0) return false;
         var since = s.ProgressSensor is not null || s.ProgressLua.Ok ? s.BestAt : s.EnteredAt;
         return _now - since >= s.Def.BudgetMs;
@@ -539,8 +545,8 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
         {
             case ConditionKind.Always: return true;
             case ConditionKind.Stuck: return stuck;
-            case ConditionKind.After: value = _now - s.EnteredAt; return _now - s.EnteredAt >= d.Ms;
-            case ConditionKind.Every: return _now - s.EnteredAt >= d.Ms;
+            case ConditionKind.After: value = _now - EnteredAt(s); return _now - EnteredAt(s) >= d.Ms;
+            case ConditionKind.Every: return _now - EnteredAt(s) >= d.Ms;
             case ConditionKind.Event:
             {
                 var k = (int)d.Event!.Value;

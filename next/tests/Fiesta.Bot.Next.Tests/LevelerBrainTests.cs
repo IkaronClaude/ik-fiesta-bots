@@ -123,12 +123,13 @@ public class LevelerBrainTests
         // given up, and the transitions sent the quest layer back to the same hand-in every 30 s
         if (Load() is not var (yaml, mods)) return;
         // the first pick works (grind, which fails at once here: no spawn data), every later pick dies half-way
-        mods["brain/leveler/plan"] = mods["brain/leveler/plan"].Replace("  local best = handins(nil)",
-            "  M.calls = (M.calls or 0) + 1 if M.calls > 1 then error(\"pick did not finish\") end local best = handins(nil) if M.calls == 1 then best = score(\"grind\", -1, -1, -1, 1, 1) end");
+        mods["brain/leveler/plan"] = mods["brain/leveler/plan"]
+            .Replace("  bb.layer.pkBest = nil", "  bb.layer.pkBest = nil M.calls = (M.calls or 0) + 1 if M.calls > 1 then error(\"pick did not finish\") end")
+            .Replace("  local pk = bb.layer.pk", "  if M.calls == 1 and bb.layer.pk ~= nil then finish(score(\"grind\", -1, -1, -1, 1, 1)) return end local pk = bb.layer.pk");
         using var t = new TestBot();
         var b = t.Load(yaml, mods);
         t.Tick(200);
-        Assert.Single(b.Debug.Transitions(), r => r.Layer == "quest" && r.To == "grind");
+        Assert.True(b.Debug.Transitions().Count(r => r.Layer == "quest" && r.To == "grind") == 1, string.Join(" | ", b.Debug.Errors().Select(e => e.Error)) + string.Join(" ; ", b.Debug.Transitions().Where(r => r.Layer == "quest").Select(r => $"{r.Tick}:{r.From}->{r.To}({r.Reason})")));
     }
 
     [Fact]
