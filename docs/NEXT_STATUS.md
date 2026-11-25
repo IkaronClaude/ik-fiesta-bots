@@ -470,6 +470,25 @@ Promotion); to be confirmed on a live hand-in.
   2.5 ms, with the host CPU at ~76 % (the stack's containers): part of the remaining budget overruns are the machine,
   not the planner. Steady picks measure 4-6 ms (accepts is the largest part).
 
+#### Live round 22:10-22:50 (stack moved to native Linux builds)
+
+- An indoor map is NOT an instance: the instance flag was MapInfo's InSide column (indoor maps). Echo Cave, an open
+  field the quests send us to, read as an instance; after a reconnect both bots sat in the quest layer's "inside an
+  instance: wait" for 10 minutes (22:23-22:33), and caves were never grind spots. The job change's dungeon has the
+  same columns as Echo Cave (InSide 1, KingdomMap 0), so instance = KingdomMap set, or a scenario running for us
+  on the map (any scenario packet). Test: the dungeon is an instance only once its scenario starts.
+- A pick is now spread over several ticks (one phase or 5 acceptable quests per tick): right after a reconnect the
+  cold caches made one pick exceed the 8 ms budget three times in a row and the runtime suspended NextM's brain
+  (22:37). The planner logs `plan cost: <phase> took <ms>` above 3 ms.
+- Runtime: a session's brain is built before the agent's first tick (context time 0), so every initial state's
+  'after' / 'every' / timeout fired on the first tick. Timers of states entered while building now count from the
+  first tick.
+- Sell loop: NextM went to a merchant every minute and sold nothing (22:10-22:12): "need to sell" counted the
+  materials of our recipes, which the sale keeps. Need and sale now share one test; storage uses it too.
+- The economy ledger survived the stack restarts (restored at each reconnect, 22:22 / 22:36).
+- 22:47: the zone04 maps (Teva, Cypian, Valtara ...) were removed from bb.bot.closedMaps on both bots; the stack
+  runs all five zones as native Linux builds.
+
 #### Efficiency per bot (live, local stack)
 
 | time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
