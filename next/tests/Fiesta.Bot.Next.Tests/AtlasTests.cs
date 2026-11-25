@@ -31,6 +31,9 @@ public class AtlasTests
         Assert.Equal(cos1, r.Hops[0].To);
         Assert.Equal(val1, r.Hops[^1].To);
         for (var i = 1; i < r.Hops.Count; i++) Assert.Equal(r.Hops[i - 1].To, r.Hops[i].From);
+        // routing around a map: RouCos01 avoided leaves no way from Roumen to RouVal01 (its only learned gate leads there)
+        Assert.Null(a.Route(rou, 9456, 2408, val1, avoid: m => m == cos1));
+        Assert.True(a.EasiestMobLevel(cos1, id => d.Mob(id) is { IsNpc: false, MaxHp: > 0 } mi ? mi.Level : -1) > 0);
         a.LearnGate(cos2, 17607, 13887, rou);
         var back = a.Route(cos2, 16000, 13000, rou)!;
         Assert.Single(back.Hops);

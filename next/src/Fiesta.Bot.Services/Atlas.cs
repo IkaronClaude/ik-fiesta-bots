@@ -186,12 +186,25 @@ public sealed class WorldAtlas
 
     /// <summary>Route from a spot to a map (and a spot on it when x/y are given): Dijkstra over the gate graph. Null
     /// when the maps are not connected; an empty hop list when already on the map.</summary>
-    public WorldRoute? Route(int fromMap, double fx, double fy, int toMap, double tx = double.NaN, double ty = double.NaN)
+    public WorldRoute? Route(int fromMap, double fx, double fy, int toMap, double tx = double.NaN, double ty = double.NaN, Func<int, bool>? avoid = null)
     {
-        lock (_gate) return RouteLocked(fromMap, fx, fy, toMap, tx, ty);
+        lock (_gate) return RouteLocked(fromMap, fx, fy, toMap, tx, ty, avoid);
     }
 
-    private WorldRoute? RouteLocked(int fromMap, double fx, double fy, int toMap, double tx, double ty)
+    /// <summary>The level of the easiest hostile mob that spawns on a map (-1 none), given MobInfo levels (cached).</summary>
+    public int EasiestMobLevel(int mapId, Func<int, int> hostileLevel)
+    {
+        lock (_gate)
+        {
+            if (_easiest.TryGetValue(mapId, out var v)) return v;
+            var min = int.MaxValue;
+            foreach (var a in SpawnsOn(mapId)) { var l = hostileLevel(a.MobId); if (l >= 0 && l < min) min = l; }
+            return _easiest[mapId] = min == int.MaxValue ? -1 : min;
+        }
+    }
+    private readonly Dictionary<int, int> _easiest = new();
+
+    private WorldRoute? RouteLocked(int fromMap, double fx, double fy, int toMap, double tx, double ty, Func<int, bool>? avoid = null)
     {
         if (fromMap == toMap) return new WorldRoute([], double.IsNaN(tx) ? 0 : Dist(fx, fy, tx, ty));
         if (!_nodesByMap.TryGetValue(fromMap, out var starts) || !_nodesByMap.ContainsKey(toMap)) return null;
@@ -213,6 +226,8 @@ public sealed class WorldAtlas
             if (du >= bestCost) break;
             foreach (var (v, c, _) in _adj[u])
             {
+                var vm = _nodes[v].Map;
+                if (avoid is not null && vm != toMap && vm != fromMap && avoid(vm)) continue;
                 var nd = du + c;
                 if (nd < dist[v]) { dist[v] = nd; prev[v] = u; pq.Enqueue(v, nd); }
             }

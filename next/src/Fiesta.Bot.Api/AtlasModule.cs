@@ -86,6 +86,22 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
 
     /// <summary>Travel to a map and optionally a spot on it (x &lt; 0 = anywhere on the map), across gates; an action.</summary>
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.Job)]
-    public int TravelTo(string map, double x = -1, double y = -1, double within = 150)
-        => Ctx.Procedures.Start(new TravelProcedure(map, x < 0 ? double.NaN : x, x < 0 ? double.NaN : y, within), ActionKind.Travel, CallingLayer, Ctx, 900000).Value;
+    public int TravelTo(string map, double x = -1, double y = -1, double within = 150, int maxMobLevel = -1)
+        => Ctx.Procedures.Start(new TravelProcedure(map, x < 0 ? double.NaN : x, x < 0 ? double.NaN : y, within, maxMobLevel < 0 ? int.MaxValue : maxMobLevel),
+            ActionKind.Travel, CallingLayer, Ctx, 900000).Value;
+
+    /// <summary>The level of the easiest hostile mob spawning on a map (-1 none / unknown map).</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached)]
+    public int EasiestLevel(string map) => Ctx.Data.Map(map) is { } m ? Ctx.Atlas.EasiestMobLevel(m.Id, Hostile) : -1;
+
+    /// <summary>Route cost to a map avoiding maps whose easiest hostile mob is above maxMobLevel (-1 no such route).</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached)]
+    public double SafeCost(string map, int maxMobLevel)
+    {
+        if (Ctx.Data.Map(map) is not { } m) return -1;
+        var (px, py) = W.Self.Pos;
+        return Ctx.Atlas.Route(W.Map.MapId, px, py, m.Id, double.NaN, double.NaN, x => Ctx.Atlas.EasiestMobLevel(x, Hostile) > maxMobLevel)?.Cost ?? -1;
+    }
+
+    private int Hostile(int id) => Ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1;
 }

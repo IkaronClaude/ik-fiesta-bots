@@ -8,7 +8,7 @@ namespace Fiesta.Bot.Agent;
 /// gate exit, hop through the gate whose destination is the next map, re-plan after every map change. When the atlas
 /// has no route from here (a map the client graph does not link), the map's unexplored gate exits are visited so the
 /// gates seen there are learned, then it plans again.</summary>
-public sealed class TravelProcedure(string targetMap, double x = double.NaN, double y = double.NaN, double within = 150) : ProcedureBase
+public sealed class TravelProcedure(string targetMap, double x = double.NaN, double y = double.NaN, double within = 150, int maxMobLevel = int.MaxValue) : ProcedureBase
 {
     /// <summary>Target map name.</summary>
     public string TargetMap { get; } = targetMap;
@@ -52,7 +52,10 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
             return;
         }
         if (++_replans > 40) { Fail("too many re-plans"); return; }
-        var route = ctx.Atlas.Route(w.Map.MapId, px, py, target.Id, x, y);
+        // maps whose easiest hostile mob is above maxMobLevel are routed around (crossing them is how bots died)
+        Func<int, bool>? avoid = maxMobLevel == int.MaxValue ? null
+            : m => ctx.Atlas.EasiestMobLevel(m, id => ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1) > maxMobLevel;
+        var route = ctx.Atlas.Route(w.Map.MapId, px, py, target.Id, x, y, avoid);
         if (route is null || route.Hops.Count == 0)
         {
             // no known link from this map: walk to the nearest gate exit we have not explored, to learn where it leads
