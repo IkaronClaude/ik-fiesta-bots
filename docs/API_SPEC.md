@@ -320,6 +320,9 @@ TELEPORT, GATE`.
 | `npc.storageInfo()` | pages, cen | O(1) | 0 | from the last window |
 | `npc.deposit(bagSlot, cell)` / `npc.withdraw(cell, bagSlot)` | action | Npc | ITEM_RELOC_REQ; acked when the source cell changes, refused with the RELOC_ACK code (`0x024A` = the item cannot go there) |
 
+Atlas additions: `atlas.serviceNpcs(roleMask)` (iter of known NPC ids with the role, nearest by route first; refused maps
+left out) and `atlas.serviceSpotOf(npcId)` -> map, x, y.
+
 ### 2.11 `social`
 
 `partyInvite(name)`, `partyAccept()`, `partyLeave()`, `partyMembers()` (iter of handle, iter), `partySize()`,

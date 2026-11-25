@@ -95,6 +95,32 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
         return best is { } b ? (MapName(b.Map), b.X, b.Y, b.Id) : ("", -1, -1, -1);
     }
 
+    /// <summary>Every known NPC with a role in the mask, nearest by route first (npc ids; maps refused to us left out).
+    /// The spot of one: <c>atlas.serviceSpotOf(id)</c>.</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached, Alloc = Alloc.Iterator)]
+    public LuaIter ServiceNpcs(int roleMask)
+    {
+        var s = Ctx.Scratch(256); var n = 0;
+        if (Ctx.Knowledge is Fiesta.Bot.Services.KnowledgeStore ks)
+        {
+            var list = new List<(double C, int Id)>();
+            foreach (var (id, mask, map, x, y) in ks.KnownNpcs())
+                if ((mask & roleMask) != 0 && !Ctx.Refused(map)) list.Add((CostTo(map, x, y), id));
+            list.Sort((a, b) => a.C.CompareTo(b.C));
+            foreach (var (_, id) in list) if (n < s.Length) s[n++] = id;
+        }
+        return ApiScope.Iter(s[..n]);
+    }
+
+    /// <summary>Where a known service NPC stands (its learned spot): map, x, y ("" unknown).</summary>
+    [LuaFn(Alloc = Alloc.LuaString)]
+    public (string Map, double X, double Y) ServiceSpotOf(int npcId)
+    {
+        if (Ctx.Knowledge is Fiesta.Bot.Services.KnowledgeStore ks)
+            foreach (var (id, _, map, x, y) in ks.KnownNpcs()) if (id == npcId && !Ctx.Refused(map)) return (MapName(map), x, y);
+        return ("", -1, -1);
+    }
+
     /// <summary>Learned role mask of an NPC id (0 = not probed or no shop).</summary>
     [LuaFn] public int NpcRole(int npcId) => Ctx.Knowledge.NpcRole(npcId);
 
