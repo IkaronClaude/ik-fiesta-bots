@@ -103,7 +103,7 @@ public static class Http
             : b.Agent is { LastTickAt: >= 0 } a && SystemClock.Instance.NowMs - a.LastTickAt > 2000 ? "no tick"
             : "ok";
         return new BotSummary(r.Id, state, snap?.Map, snap?.Level ?? 0, layerStates, r.VersionHash, Math.Round(p99, 1),
-            snap is null ? 0 : Math.Round(snap.ExpGained / hours), snap is null ? 0 : Math.Round(snap.Deaths / hours, 2), b.LastError, health)
+            Math.Round(b.ExpPerHour), snap is null ? 0 : Math.Round(snap.Deaths / hours, 2), b.LastError, health)
         {
             Character = r.Character, Username = r.Username, Host = r.Host, LoginPort = r.LoginPort, Wire = r.Wire,
             ClassFamily = b.Agent?.Context.World.Self.ClassFamily ?? (r.ClassId is { } c ? c : 0), Brain = r.Brain, Channel = r.Channel,

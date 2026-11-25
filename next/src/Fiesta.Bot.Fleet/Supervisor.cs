@@ -400,10 +400,44 @@ public sealed class BotRuntime
     public DateTime LastProgressAt { get; private set; } = DateTime.UtcNow;
     private long _progExp = -1, _progLevel = -1; private int _progQuests = -1;
 
+    // exp earned, kept across sessions: every zone handoff / relog starts a new agent whose ExpGained counts from 0, so
+    // a per-session rate read 0 most of the time (a bot that changes maps every few minutes). Gains are kept for an hour.
+    private readonly Queue<(DateTime At, long Exp)> _gains = new();
+    private long _gainSeen;
+    private BotAgent? _gainAgent;
+    private readonly DateTime _created = DateTime.UtcNow;
+    private readonly object _gainLock = new();
+
+    /// <summary>Exp per hour over the last hour (or since the bot started, when younger), across sessions.</summary>
+    public double ExpPerHour
+    {
+        get
+        {
+            lock (_gainLock)
+            {
+                var now = DateTime.UtcNow;
+                while (_gains.Count > 0 && now - _gains.Peek().At > TimeSpan.FromHours(1)) _gains.Dequeue();
+                long sum = 0; foreach (var g in _gains) sum += g.Exp;
+                var hours = Math.Clamp((now - _created).TotalHours, 1.0 / 60, 1.0);
+                return sum / hours;
+            }
+        }
+    }
+
+    private void NoteExp(BotAgent a)
+    {
+        var g = a.Context.World.Self.ExpGained;
+        if (!ReferenceEquals(a, _gainAgent)) { _gainAgent = a; _gainSeen = 0; }
+        if (g <= _gainSeen) return;
+        lock (_gainLock) _gains.Enqueue((DateTime.UtcNow, g - _gainSeen));
+        _gainSeen = g;
+    }
+
     private void OnPublish(BotAgent a)
     {
         var now = a.Context.Now;
         var w = a.Context.World;
+        NoteExp(a);
         if (w.Self.InWorld)
         {
             var qv = w.Version(WorldComponent.Quests);
