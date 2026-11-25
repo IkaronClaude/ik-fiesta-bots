@@ -487,6 +487,14 @@ public sealed class OpenShopProcedure(int npcHandle, int menuReply = 1) : Proced
                 ctx.Log.Log(LogCategory.Item, LogLevel.Info, $"shop: npc menu (mob {e.A}) answered {menuReply}");
                 Go("awaitShop", ctx, 5000);
                 break;
+            // an NPC with a quest for us answers the click with a quest page instead of its menu; the game client then
+            // opens the shop with the menu answer all the same (captured: click -> QUEST_SCRIPT SAY -> NPCMENUOPEN_ACK 1
+            // -> SHOPOPENSOULSTONE)
+            case InboundKind.QuestDialog when Step == "awaitMenuOrShop" && e.B == 2:
+                ctx.Actions.Send(IntentEncoder.Reply(IntentEncoder.OpNpcMenuAck, (byte)menuReply, Action.Value));
+                ctx.Log.Log(LogCategory.Item, LogLevel.Info, $"shop: quest page {e.A} instead of a menu: answered the menu {menuReply}");
+                Go("awaitShop", ctx, 5000);
+                break;
             case InboundKind.ServerMenu when e.Handle == NpcHandle && e.Options is { Length: > 0 } opts:
                 var pick = opts[Math.Clamp(menuReply - 1, 0, opts.Length - 1)];
                 ctx.Actions.Send(IntentEncoder.Reply(IntentEncoder.OpServerMenuAck, pick.Reply, Action.Value));

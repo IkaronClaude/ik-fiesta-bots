@@ -529,6 +529,24 @@ public class ActionTests
         Assert.NotEqual(LocalRefusal.LinkDown, (LocalRefusal)t.Ctx.Actions.Get(trip).Code);   // the trip decides itself
     }
 
+    [Fact]
+    public void A_shop_behind_a_quest_page_is_opened_with_the_menu_answer()
+    {
+        using var t = new TestBot();
+        t.Tick(5);
+        t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)EntityKind.Npc, b: 1, x: 5020, y: 5000);
+        t.Tick();
+        var a = t.Ctx.Procedures.Start(new OpenShopProcedure(3000), ActionKind.OpenShop, 1, t.Ctx);
+        t.Tick();
+        t.Sent.Clear();
+        t.Ev(InboundKind.QuestDialog, a: 466, b: 2);   // the healer's quest page instead of its menu
+        t.Tick();
+        Assert.Contains(IntentEncoder.OpNpcMenuAck, t.Sent);
+        t.Ev(InboundKind.ShopList, h: -1, a: 0x3C05);
+        t.Tick();
+        Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(a).State);
+    }
+
     private static List<ushort> Drain(TestBot t) { t.Tick(); return t.Sent; }
 }
 
