@@ -358,7 +358,9 @@ mastery type, amount, `produce.mastery(skill)` (total from SKILLEXP_CLIENT, -1 n
 `produce.make(id)` (action: PRODUCE_CAST_REQ, acked on PRODUCE_MAKE `0x0B01`, refused with its code or
 PRODUCE_CAST_FAIL), `produce.field(mainSkill)` (action: PRODUCTFIELD_REQ, acked on `0x0B01`), `produce.fieldOf(id)` (the
 field of a recipe: the ProduceView row of its mastery type), `produce.hasField(mainSkill)` (acked this session),
-`produce.usesRaw(itemId)` (a known recipe uses the item).
+`produce.usesRaw(itemId)` (a known recipe uses the item), `produce.ofField(mainSkill)` (every recipe of a field, from
+client data), `produce.typeMastery(id)` (the highest mastery total the server sent for a recipe of the same mastery
+type; GUESS that a type's totals are shared).
 
 ### 2.11d `scenario` (instance maps)
 

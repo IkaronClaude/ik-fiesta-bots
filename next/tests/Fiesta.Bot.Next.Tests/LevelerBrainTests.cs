@@ -208,4 +208,24 @@ public class LevelerBrainTests
         Assert.Equal("idle", b.Layers.First(l => l.Name == "instance").ActivePath[0].Name);
         Assert.Empty(b.Debug.Errors().Where(x => !x.Error.Contains("E_BUDGET")));
     }
+
+    [Fact]
+    public void The_producer_brain_lints_clean_and_runs()
+    {
+        var d = new DirectoryInfo(AppContext.BaseDirectory);
+        while (d is not null && !Directory.Exists(Path.Combine(d.FullName, "scripts", "brains", "producer"))) d = d.Parent;
+        if (d is null) return;
+        var dir = Path.Combine(d.FullName, "scripts", "brains", "producer");
+        var mods = Directory.GetFiles(dir, "*.lua").ToDictionary(f => "brain/producer/" + Path.GetFileNameWithoutExtension(f), File.ReadAllText);
+        var yaml = File.ReadAllText(Path.Combine(dir, "brain.yaml"));
+        Assert.DoesNotContain(BrainLinter.Lint(BrainLoader.Parse(yaml), mods), l => l.Severity == LintSeverity.Error);
+        using var t = new TestBot();
+        var b = t.Load(yaml, mods);
+        t.Tick(20);
+        // a commission in chat for something we do not make is answered, nothing is ordered
+        t.Ev(InboundKind.Chat, h: 2001, text: "need 5 x hp potion");
+        t.Tick(5);
+        Assert.Contains(IntentEncoder.OpChat, t.Sent);
+        Assert.Empty(b.Debug.Errors().Where(e => !e.Error.Contains("E_BUDGET")));
+    }
 }

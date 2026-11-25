@@ -186,6 +186,12 @@ public sealed class ClientData : IClientData
     /// <summary>A production recipe by its ProductID (= the production skill id), null none.</summary>
     public ProduceRow? Produce(int productId) => _produce.Value.GetValueOrDefault(productId);
 
+    /// <summary>The recipes of a production field (ProduceView id), by ProductID.</summary>
+    public IEnumerable<int> RecipesOfField(int mainSkill)
+    {
+        foreach (var r in _produce.Value.Values) if (ProduceField(r.Id) == mainSkill) yield return r.Id;
+    }
+
     private Dictionary<int, int>? _fieldByMastery;
     /// <summary>The production field (ProduceView id, the main skill a PRODUCTFIELD_REQ names) whose mastery type a recipe
     /// trains, -1 none.</summary>

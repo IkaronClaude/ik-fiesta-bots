@@ -47,6 +47,24 @@ public sealed partial class ProduceModule(AgentContext ctx) : ApiModule(ctx)
             if (Row(id) is { } r) foreach (var (it, _) in r.Raws) if (it == itemId) return true;
         return false;
     }
+    /// <summary>Every recipe of a production field (the ProduceView main skill), learned or not, from client data.</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.On, Alloc = Alloc.Iterator)]
+    public LuaIter OfField(int mainSkill)
+    {
+        var s = Ctx.Scratch(1024); var n = 0;
+        if (Ctx.Data is ClientData cd) foreach (var id in cd.RecipesOfField(mainSkill)) if (n < s.Length) s[n++] = id;
+        return ApiScope.Iter(s[..n]);
+    }
+    /// <summary>Our mastery in a recipe's mastery type: the highest total the server sent for any recipe of that type
+    /// (SKILLEXP_CLIENT names a recipe; GUESS: the totals of one type are shared), 0 when none was sent yet.</summary>
+    [LuaFn]
+    public long TypeMastery(int id)
+    {
+        if (Row(id) is not { } r) return 0;
+        long best = 0;
+        foreach (var (skill, v) in Ctx.World.Skills.Mastery) if (Row(skill) is { } o && o.MasteryType == r.MasteryType && v > best) best = v;
+        return best;
+    }
     /// <summary>Our mastery total of a skill as the server last sent it (-1 none yet).</summary>
     [LuaFn] public long Mastery(int skill) => Ctx.World.Skills.Mastery.TryGetValue(skill, out var v) ? v : -1;
     /// <summary>Cast one production of a recipe (PRODUCE_CAST_REQ); acked on PRODUCE_MAKE 0x0B01, refused by its code.</summary>
