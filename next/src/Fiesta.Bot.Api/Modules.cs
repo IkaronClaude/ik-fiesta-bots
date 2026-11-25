@@ -675,13 +675,21 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.On, Alloc = Alloc.Iterator)]
     public LuaIter Acceptable()
     {
-        var s = Ctx.Scratch(256); var n = 0;
-        foreach (var d in Ctx.Data.Quests)
-            if (n < s.Length && CanAccept(d.Id)) s[n++] = d.Id;
-        var span = s[..n];
-        span.Sort((a, b) => (Ctx.Data.Quest(b)?.Exp ?? 0).CompareTo(Ctx.Data.Quest(a)?.Exp ?? 0));
-        return ApiScope.Iter(span);
+        // the scan over every quest runs again only when the level, the map or the quest log changed
+        var key = (Ctx.World.Self.Level, Ctx.World.Version(WorldComponent.Quests), Ctx.World.Map.MapId, Q.Active.Count);
+        if (_acceptKey != key)
+        {
+            _acceptKey = key;
+            var list = new List<int>();
+            foreach (var d in Ctx.Data.Quests) if (CanAccept(d.Id)) list.Add(d.Id);
+            list.Sort((a, b) => (Ctx.Data.Quest(b)?.Exp ?? 0).CompareTo(Ctx.Data.Quest(a)?.Exp ?? 0));
+            _accept = list.ToArray();
+        }
+        var n = Math.Min(_accept.Length, 256);
+        return ApiScope.Iter(_accept.AsSpan(0, n));
     }
+    private (int, int, int, int) _acceptKey = (-1, -1, -1, -1);
+    private int[] _accept = [];
 
     /// <summary>The NPC (MobInfo id) a quest is handed in to: its last talk objective, else its giver; -1 unknown.</summary>
     [LuaFn]
