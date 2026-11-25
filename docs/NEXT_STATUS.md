@@ -157,3 +157,22 @@ book). Packet capture is left on for the next restart to see whether the server 
 
 Open: CHANGEPARAMCHANGE ids 0x12..0x1B and 0x24 (values 0 in the capture) are not named yet; player entities
 carry no class id yet (`id` -1 for players); drop entities carry the item id only where the drop decode has it.
+
+## Leveller brain (port of the private Lua drivers)
+
+The levelling / questing logic of the private Lua repo is rebuilt as the brain `leveler` (layers survival,
+combat, quest; reusable sub-machines npcTalk and zoneWork using the `^/plan` exits of section 13.11). Like the
+Lua repo it stays private: it lives in the gitignored `scripts/brains/` with its old-area -> new-module mapping
+table (`scripts/brains/MAPPING.md`, every area marked ported / partial / open). What it needs from the runtime is
+generic and committed: the world atlas (client NPC spots, spawn areas, gate graph + learned gates), multi-map
+travel, quest availability / hand-in helpers, collect items linked to their dropping mob.
+
+Why NextA spun in Roumen: the old test brain only travelled through a gate already in view to a configured field;
+in the north of Roumen none is in view, so it alternated seek <-> roam. The leveller routes over the atlas.
+
+Live (local 2026 stack): NextBotA accepted and handed in quests across Roumen (Baby Steps chain, the Grandpa Robin
+chain, The Chief of Roumen ...), level 4 -> 6 in about 10 minutes, exp/h about 3400.
+
+Open bug: after a host restart NextBotA once logged in but never reached the world (no MAP_LOGIN_ACK logged; the
+supervisor showed InZone with empty vitals); a relog fixed it. Root cause not found yet (net logging was at Note
+level for that session). No watchdog added; tracked here.
