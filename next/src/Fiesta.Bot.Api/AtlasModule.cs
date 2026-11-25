@@ -132,6 +132,17 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached, Alloc = Alloc.LuaString)]
     public (string Map, double X, double Y, int NpcId) ServiceSpot(int roleMask)
     {
+        // asked by the upkeep's conditions every tick: the answer is kept per (role, here) for 10 s
+        var key = (roleMask, W.Map.MapId);
+        if (_svc.TryGetValue(key, out var c) && Ctx.Now - c.At < 10_000) return c.Spot;
+        var spot = ServiceSpotScan(roleMask);
+        _svc[key] = (spot, Ctx.Now);
+        return spot;
+    }
+    private readonly Dictionary<(int, int), ((string Map, double X, double Y, int NpcId) Spot, long At)> _svc = new();
+
+    private (string Map, double X, double Y, int NpcId) ServiceSpotScan(int roleMask)
+    {
         if (Ctx.Knowledge is not Fiesta.Bot.Services.KnowledgeStore ks) return ("", -1, -1, -1);
         (int Map, double X, double Y, int Id)? best = null; var bc = double.PositiveInfinity;
         foreach (var (id, mask, map, x, y) in ks.KnownNpcs())
