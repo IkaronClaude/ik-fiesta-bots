@@ -44,6 +44,17 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached, Alloc = Alloc.LuaString)]
     public (string Map, double X, double Y, double R, int MobId) GrindSpot(int minLv, int maxLv)
     {
+        // every spawn area of every map with a density count each: answers are kept per (here, band) for 30 s
+        if (_grindKey == (W.Map.MapId, minLv, maxLv, Ctx.RefusedMaps.Count) && Ctx.Now - _grindAt < 30_000) return _grind;
+        _grindKey = (W.Map.MapId, minLv, maxLv, Ctx.RefusedMaps.Count); _grindAt = Ctx.Now;
+        return _grind = GrindSpotScan(minLv, maxLv);
+    }
+    private (int, int, int, int) _grindKey = (-1, -1, -1, -1);   // (here, band, maps avoided)
+    private long _grindAt = long.MinValue / 2;
+    private (string Map, double X, double Y, double R, int MobId) _grind;
+
+    private (string Map, double X, double Y, double R, int MobId) GrindSpotScan(int minLv, int maxLv)
+    {
         SpawnArea? best = null; var bestScore = double.NegativeInfinity;
         foreach (var map in Ctx.Atlas.SpawnMaps)
         {

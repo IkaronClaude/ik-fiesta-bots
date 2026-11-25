@@ -31,7 +31,8 @@ public sealed class WorldAtlas
     private readonly Dictionary<int, List<(double X, double Y)>> _gatePoints = new();
     private readonly Dictionary<int, (double X, double Y)> _regen = new();
     private readonly List<(int Map, double X, double Y, int To)> _learned = new();
-    private readonly Dictionary<(int, int), WorldRoute?> _routes = new();
+    private readonly Dictionary<(int, int), double> _mapCost = new();
+    private readonly HashSet<int> _mapCostsDone = new();
     private readonly object _gate = new();
 
     /// <summary>Raised (outside the lock) when a gate was learned, to persist it.</summary>
@@ -176,7 +177,7 @@ public sealed class WorldAtlas
             var b = AddNode(toMap, ax, ay);
             _adj[a].Add((b, 0, true));
             _learned.Add((mapId, x, y, toMap));
-            _routes.Clear();
+            _mapCost.Clear(); _mapCostsDone.Clear();
         }
         GateLearned?.Invoke(mapId, x, y, toMap);
         return true;
@@ -192,7 +193,7 @@ public sealed class WorldAtlas
                 foreach (var (to, _, gate) in _adj[n])
                     if (gate && _nodes[to].Map == toMap && _regen.TryGetValue(toMap, out var rg) && _nodes[to].X == rg.X && _nodes[to].Y == rg.Y)
                         _nodes[to] = (toMap, x, y);
-            _routes.Clear();
+            _mapCost.Clear(); _mapCostsDone.Clear();
         }
     }
 
@@ -285,9 +286,14 @@ public sealed class WorldAtlas
     public void RouteCosts(int fromMap, double fx, double fy, Dictionary<int, double> costs, Func<int, bool>? avoid = null,
         Func<SpawnArea, bool>? dangerous = null)
     {
+        lock (_gate) RouteCostsLocked(fromMap, fx, fy, costs, avoid, dangerous);
+    }
+
+    private void RouteCostsLocked(int fromMap, double fx, double fy, Dictionary<int, double> costs, Func<int, bool>? avoid,
+        Func<SpawnArea, bool>? dangerous)
+    {
         costs.Clear();
         costs[fromMap] = 0;
-        lock (_gate)
         {
             if (!_nodesByMap.TryGetValue(fromMap, out var starts)) return;
             var n = _nodes.Count;
@@ -320,12 +326,17 @@ public sealed class WorldAtlas
         if (fromMap == toMap) return 0;
         lock (_gate)
         {
-            if (!_routes.TryGetValue((fromMap, toMap), out var r))
+            if (!_mapCostsDone.Contains(fromMap))
             {
+                // one search from the map's first node answers every map at once (a cold cache asked map by map was one
+                // Dijkstra per pair: tens of ms in a planner pick)
                 var start = _nodesByMap.TryGetValue(fromMap, out var l) && l.Count > 0 ? _nodes[l[0]] : default;
-                r = _routes[(fromMap, toMap)] = RouteLocked(fromMap, start.X, start.Y, toMap, double.NaN, double.NaN);
+                var costs = new Dictionary<int, double>();
+                RouteCostsLocked(fromMap, start.X, start.Y, costs, null, null);
+                foreach (var (m, c) in costs) _mapCost[(fromMap, m)] = c;
+                _mapCostsDone.Add(fromMap);
             }
-            return r?.Cost ?? -1;
+            return _mapCost.TryGetValue((fromMap, toMap), out var cost) ? cost : -1;
         }
     }
 }

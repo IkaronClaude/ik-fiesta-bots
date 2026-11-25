@@ -38,7 +38,9 @@ public sealed partial class ProduceModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>The production field a recipe belongs to (ProduceView id = the main skill to choose), -1 none.</summary>
     [LuaFn] public int FieldOf(int id) => (Ctx.Data as ClientData)?.ProduceField(id) ?? -1;
     /// <summary>Was a production field chosen (acked) this session?</summary>
-    [LuaFn] public bool HasField(int mainSkill) => Ctx.World.Skills.Fields.Contains(mainSkill);
+    // a field we work is a skill we know (its main skill, e.g. Stone Production, comes in the login skill list); the
+    // choice ack adds it at once
+    [LuaFn] public bool HasField(int mainSkill) => Ctx.World.Skills.Fields.Contains(mainSkill) || Ctx.World.Skills.Has(mainSkill);
     /// <summary>Does a recipe we know use this item as a material?</summary>
     [LuaFn]
     public bool UsesRaw(int itemId)

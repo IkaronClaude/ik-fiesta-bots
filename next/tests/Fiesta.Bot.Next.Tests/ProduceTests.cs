@@ -153,4 +153,18 @@ layers:
         Assert.InRange(c.FightMs / c.Kills, 1500, 3000);
         Assert.Equal(300, t.Ctx.World.Economy.QuestExp);
     }
+
+    [Fact]
+    public void A_production_field_we_work_is_known_from_the_login_skill_list()
+    {
+        // live 21:31: NextM knows Stone Production (29101) from the login skill list but asked to choose it again every
+        // minute (refused 0x0B13): fields were only learned from a choice ack
+        using var t = new TestBot();
+        t.Tick(2);
+        var p = new Fiesta.Bot.Api.ProduceModule(t.Ctx);
+        Assert.False(p.HasField(29101));
+        t.Ev(InboundKind.SkillLearned, a: 29101);
+        t.Tick();
+        Assert.True(p.HasField(29101));
+    }
 }
