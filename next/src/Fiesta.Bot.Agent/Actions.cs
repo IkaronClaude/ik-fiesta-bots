@@ -20,7 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
-    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack,
+    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack, Produce, ProductField,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -151,6 +151,12 @@ public static class ActionCatalog
         S(ActionKind.TradeLock, Resource.Npc, T(27, 26), 5000);
         S(ActionKind.TradeConfirm, Resource.Npc, T(33, 32), 5000);
         S(ActionKind.TradeCancel, Resource.None, new FnMatcher((a, e, w) => e.Kind == InboundKind.TradeEvent && e.A is 7 or 8 or 11 or 12 ? (ActionState.Acked, (ushort)0) : null), 5000);
+        // production: one cast makes one lot (PRODUCE_MAKE 0x0B01), refused by its code; choosing a field answers 0x0B01
+        S(ActionKind.Produce, Resource.Cast, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.ProduceMade ? (e.B == 0x0B01 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.B))
+            : e.Kind == InboundKind.ProduceFail ? (ActionState.Refused, (ushort)e.A) : null), 10000);
+        S(ActionKind.ProductField, Resource.None, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.ProduceField && e.A == a.Arg0 ? (e.B == 0x0B01 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.B)) : null), 3000);
         S(ActionKind.Talk, Resource.Npc, Controller, 20000);
         S(ActionKind.Storage, Resource.Npc, Controller, 6000);
         S(ActionKind.Gate, Resource.Movement, Controller, 20000);
@@ -404,6 +410,7 @@ public static class ErrorCodes
         0x0341 => "picked up",
         0x0346 => "bag full",
         0x0241 => "moved",
+        0x0B01 => "made / chosen",
         0x024A => "the item cannot go there",
         _ => "",
     };

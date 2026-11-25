@@ -89,6 +89,11 @@ public sealed record ItemInfoRow(int Id, string InxName, string Name, int Type, 
     public int UseValue { get; init; }
 }
 
+/// <summary>A client Produce row: the recipe (ProductID = the production skill id), what one cast makes (item, lot),
+/// the materials (item id, quantity), and the mastery it trains / needs.</summary>
+public sealed record ProduceRow(int Id, string Name, int Product, int Lot, (int Item, int Quantity)[] Raws,
+    int MasteryType, int MasteryGain, int NeededMasteryType, int NeededMasteryGain);
+
 /// <summary>Client MapInfo row.</summary>
 public sealed record MapInfoRow(int Id, string MapName, string Name, bool IsInstance, int RegenX, int RegenY);
 
@@ -174,6 +179,34 @@ public sealed class ClientData : IClientData
         _classes = new(LoadClasses);
         _useClass = new(() => T("UseClassTypeInfo"));
         _mountItems = new(LoadMountItems);
+        _produce = new(LoadProduce);
+    }
+
+    private readonly Lazy<Dictionary<int, ProduceRow>> _produce;
+    /// <summary>A production recipe by its ProductID (= the production skill id), null none.</summary>
+    public ProduceRow? Produce(int productId) => _produce.Value.GetValueOrDefault(productId);
+
+    private Dictionary<int, ProduceRow> LoadProduce()
+    {
+        var d = new Dictionary<int, ProduceRow>();
+        if (T("Produce") is not { } t) return d;
+        var byInx = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var it in _items.Value.Values) byInx.TryAdd(it.InxName, it.Id);
+        int Item(string? inx) => inx is { Length: > 0 } and not "-" && byInx.TryGetValue(inx, out var id) ? id : -1;
+        for (var r = 0; r < t.RowCount; r++)
+        {
+            var raws = new List<(int, int)>();
+            for (var k = 0; k < 8; k++)
+            {
+                var q = (int)t.Num(r, "Quantity" + k);
+                var it = Item(t.Str(r, "Raw" + k));
+                if (q > 0 && it >= 0) raws.Add((it, q));
+            }
+            var id = (int)t.Num(r, "ProductID");
+            d[id] = new ProduceRow(id, Name(t, r, "Name"), Item(t.Str(r, "Product")), Math.Max(1, (int)t.Num(r, "Lot")), raws.ToArray(),
+                (int)t.Num(r, "MasteryType"), (int)t.Num(r, "MasteryGain"), (int)t.Num(r, "NeededMasteryType"), (int)t.Num(r, "NeededMasteryGain"));
+        }
+        return d;
     }
 
     private ShnTable? T(string name)

@@ -347,6 +347,15 @@ kind, amount, claimer; `team.next(kind, maxAmount)` -> name, amount, map, x, y o
 claimed); `team.claim(name)` / `team.release(name)`; `team.player(name)` -> handle of that character in view. Asks
 expire 15 minutes after their last post. Strings are allocated: low-rate use only.
 
+### 2.11c `produce` (production)
+
+Recipes are the client's Produce rows; a recipe's id is its production skill id (learned like any skill).
+`produce.recipes()` (iter of learned recipe ids), `produce.product(id)` -> item, lot, `produce.raw(id, i)` -> item,
+quantity (material i, 1-based), `produce.makeable(id)` (casts the bag's materials allow), `produce.needs(id)` ->
+mastery type, amount, `produce.mastery(skill)` (total from SKILLEXP_CLIENT, -1 none yet),
+`produce.make(id)` (action: PRODUCE_CAST_REQ, acked on PRODUCE_MAKE `0x0B01`, refused with its code or
+PRODUCE_CAST_FAIL), `produce.field(mainSkill)` (action: PRODUCTFIELD_REQ, acked on `0x0B01`).
+
 ### 2.12 `know` (9) — learned knowledge (shared host-wide)
 
 Each estimator returns `estimate, low, high, samples`; `-1, -1, -1, 0` when unknown.

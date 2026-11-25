@@ -443,6 +443,8 @@ public sealed class SkillBook
     private readonly Dictionary<int, long> _readyAt = new();
     private readonly Dictionary<int, long> _groupReadyAt = new();
     private readonly List<int> _learned = new();
+    /// <summary>Mastery totals by skill (production skills: SKILLEXP_CLIENT).</summary>
+    public Dictionary<int, long> Mastery { get; } = new();
     /// <summary>Version.</summary>
     public int Version { get; private set; }
     /// <summary>Learned?</summary>
@@ -1044,6 +1046,9 @@ public sealed class WorldState
             case InboundKind.StatPointSpent:
                 if (Self.StatPoints > 0) Self.StatPoints--;   // the client counts the point spent (no REMAINPOINT follows)
                 Bump(WorldComponent.Self);
+                break;
+            case InboundKind.SkillExp:
+                Skills.Mastery[(int)e.A] = e.B;
                 break;
             case InboundKind.StorageList:
                 Bag.StorageCen = e.A; Bag.StoragePages = (int)e.B; Bag.StorageOpenAt = now;
