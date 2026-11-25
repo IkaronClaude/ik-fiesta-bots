@@ -749,8 +749,12 @@ layers:
         var yaml = Two.Replace("tick: m.count", "tick: m.spin");
         var b = t.Load(yaml, Mods);
         var sw = Stopwatch.StartNew();
+        // the first 30 s warm the caches: overruns are logged, not counted
         t.Tick(3);
-        Assert.True(sw.ElapsedMilliseconds < 1000, "the spinning state was not stopped by the budget");
+        Assert.False(b.Suspended);
+        t.Tick(1, 30_000);
+        t.Tick(3);
+        Assert.True(sw.ElapsedMilliseconds < 2000, "the spinning state was not stopped by the budget");
         Assert.True(b.Suspended);
         Assert.Contains(b.Debug.Errors(), e => e.Error.Contains("E_BUDGET"));
     }

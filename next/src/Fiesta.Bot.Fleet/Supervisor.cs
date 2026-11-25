@@ -65,6 +65,9 @@ public sealed class HostServices : IAsyncDisposable
         Fleet = new FleetStore(Path.Combine(DataDir, "fleet.json"));
         Checkpoints = new CheckpointStore(Path.Combine(DataDir, "checkpoints"));
         Atlas = new WorldAtlas(RessystemDir, n => Data.Map(n)?.Id ?? -1, Data.Maps.Select(m => (m.Id, (double)m.RegenX, (double)m.RegenY)));
+        // the grind-spot neighbourhoods take seconds to compute: off the tick, before the first bot asks
+        var atlas = Atlas; var data = Data;
+        _ = Task.Run(() => Fiesta.Bot.Api.AtlasModule.Prepare(atlas, data));
         var gates = Path.Combine(DataDir, "knowledge-gates.tsv");
         if (File.Exists(gates))
             foreach (var line in File.ReadAllLines(gates))

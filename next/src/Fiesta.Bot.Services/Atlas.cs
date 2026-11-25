@@ -177,7 +177,7 @@ public sealed class WorldAtlas
             var b = AddNode(toMap, ax, ay);
             _adj[a].Add((b, 0, true));
             _learned.Add((mapId, x, y, toMap));
-            _mapCost.Clear(); _mapCostsDone.Clear(); _danger.Clear();
+            _mapCost.Clear(); _mapCostsDone.Clear(); _walkLevel = null;
         }
         GateLearned?.Invoke(mapId, x, y, toMap);
         return true;
@@ -193,7 +193,7 @@ public sealed class WorldAtlas
                 foreach (var (to, _, gate) in _adj[n])
                     if (gate && _nodes[to].Map == toMap && _regen.TryGetValue(toMap, out var rg) && _nodes[to].X == rg.X && _nodes[to].Y == rg.Y)
                         _nodes[to] = (toMap, x, y);
-            _mapCost.Clear(); _mapCostsDone.Clear(); _danger.Clear();
+            _mapCost.Clear(); _mapCostsDone.Clear(); _walkLevel = null;
         }
     }
 
@@ -291,21 +291,62 @@ public sealed class WorldAtlas
         lock (_gate) RouteCostsLocked(fromMap, fx, fy, costs, avoid, dangerous, dangerKey);
     }
 
-    // walk danger per key: per node, per adjacency index (0 untested, 1 safe, 2 dangerous)
-    private readonly Dictionary<int, sbyte[][]> _danger = new();
-
-    private bool Dangerous(int u, int k, int v, Func<SpawnArea, bool> dangerous, int key)
+    /// <summary>Route costs from a spot to every map, avoiding walks past hostile mobs above <paramref name="maxMobLevel"/>.
+    /// Each walk's danger is one number - the highest hostile level it passes - computed once per walk for any level
+    /// (<see cref="PrepareWalkLevels"/> fills them all off the tick).</summary>
+    public void RouteCostsBelow(int fromMap, double fx, double fy, Dictionary<int, double> costs, Func<int, bool>? avoid, int maxMobLevel,
+        Func<int, int> hostileLevel)
     {
-        if (key == int.MinValue) return SegmentHitsDanger(_nodes[v].Map, _nodes[u].X, _nodes[u].Y, _nodes[v].X, _nodes[v].Y, dangerous);
-        if (!_danger.TryGetValue(key, out var table) || table.Length != _nodes.Count) _danger[key] = table = new sbyte[_nodes.Count][];
-        var row = table[u];
-        if (row is null || row.Length != _adj[u].Count) table[u] = row = new sbyte[_adj[u].Count];
-        if (row[k] == 0) row[k] = (sbyte)(SegmentHitsDanger(_nodes[v].Map, _nodes[u].X, _nodes[u].Y, _nodes[v].X, _nodes[v].Y, dangerous) ? 2 : 1);
-        return row[k] == 2;
+        lock (_gate)
+        {
+            _walkLevelFn ??= hostileLevel;
+            RouteCostsLocked(fromMap, fx, fy, costs, avoid, null, maxMobLevel, true);
+        }
+    }
+
+    /// <summary>Compute the highest hostile level along every walk (seconds; run it off the tick at host start).</summary>
+    public void PrepareWalkLevels(Func<int, int> hostileLevel)
+    {
+        lock (_gate)
+        {
+            _walkLevelFn ??= hostileLevel;
+            for (var u = 0; u < _nodes.Count; u++)
+                for (var k = 0; k < _adj[u].Count; k++)
+                {
+                    var v = _adj[u][k].To;
+                    if (_nodes[v].Map == _nodes[u].Map) WalkLevel(u, k, v);
+                }
+        }
+    }
+
+    // per node, per adjacency index: the highest hostile mob level near that walk (-1 none, int.MinValue not computed)
+    private int[][]? _walkLevel;
+    private Func<int, int>? _walkLevelFn;
+
+    private int WalkLevel(int u, int k, int v)
+    {
+        if (_walkLevel is null || _walkLevel.Length != _nodes.Count) _walkLevel = new int[_nodes.Count][];
+        var row = _walkLevel[u];
+        if (row is null || row.Length != _adj[u].Count) { _walkLevel[u] = row = new int[_adj[u].Count]; Array.Fill(row, int.MinValue); }
+        if (row[k] == int.MinValue)
+        {
+            var max = -1;
+            double ax = _nodes[u].X, ay = _nodes[u].Y, bx = _nodes[v].X, by = _nodes[v].Y;
+            foreach (var a in SpawnsOn(_nodes[v].Map))
+            {
+                var lv = _walkLevelFn!(a.MobId);
+                if (lv <= max) continue;
+                double dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+                var t = l2 <= 0 ? 0 : Math.Clamp(((a.X - ax) * dx + (a.Y - ay) * dy) / l2, 0, 1);
+                if (Dist(ax + t * dx, ay + t * dy, a.X, a.Y) < Math.Max(a.HalfW, a.HalfH) + 300) max = lv;
+            }
+            row[k] = max;
+        }
+        return row[k];
     }
 
     private void RouteCostsLocked(int fromMap, double fx, double fy, Dictionary<int, double> costs, Func<int, bool>? avoid,
-        Func<SpawnArea, bool>? dangerous, int dangerKey = int.MinValue)
+        Func<SpawnArea, bool>? dangerous, int dangerKey = int.MinValue, bool byLevel = false)
     {
         costs.Clear();
         costs[fromMap] = 0;
@@ -328,7 +369,11 @@ public sealed class WorldAtlas
                 {
                     var (v, c, _) = adj[k];
                     var vm = _nodes[v].Map;
-                    if (dangerous is not null && vm == um && vm != fromMap && Dangerous(u, k, v, dangerous, dangerKey)) continue;
+                    if (vm == um && vm != fromMap)
+                    {
+                        if (byLevel && WalkLevel(u, k, v) > dangerKey) continue;
+                        if (dangerous is not null && SegmentHitsDanger(vm, _nodes[u].X, _nodes[u].Y, _nodes[v].X, _nodes[v].Y, dangerous)) continue;
+                    }
                     var nd = du + c;
                     if (nd < dist[v]) { dist[v] = nd; pq.Enqueue(v, nd); }
                 }

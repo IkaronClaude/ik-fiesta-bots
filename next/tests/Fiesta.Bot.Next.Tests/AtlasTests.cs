@@ -82,4 +82,23 @@ public class AtlasTests
         Assert.True(checkedN > 20, $"{checkedN} maps reachable");
         Assert.True(oneMs < 50, $"{oneMs} ms");
     }
+
+    [Fact]
+    public void Walk_danger_by_level_gives_the_same_costs_as_the_danger_test()
+    {
+        if (Load() is not var (a, d)) return;
+        int Hostile(int id) => d.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } m ? m.Level : -1;
+        var from = d.Map("RouN")!;
+        foreach (var lv in new[] { 5, 15, 30 })
+        {
+            var byTest = new Dictionary<int, double>(); var byLevel = new Dictionary<int, double>();
+            a.RouteCosts(from.Id, from.RegenX, from.RegenY, byTest, null, s => Hostile(s.MobId) > lv);
+            a.RouteCostsBelow(from.Id, from.RegenX, from.RegenY, byLevel, null, lv, Hostile);
+            Assert.Equal(byTest.Count, byLevel.Count);
+            foreach (var (m, c) in byTest) Assert.Equal(c, byLevel[m], 3);
+        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        a.RouteCostsBelow(from.Id, from.RegenX, from.RegenY, new Dictionary<int, double>(), null, 20, Hostile);
+        Assert.True(sw.Elapsed.TotalMilliseconds < 20, $"{sw.Elapsed.TotalMilliseconds} ms with the walk levels known");
+    }
 }

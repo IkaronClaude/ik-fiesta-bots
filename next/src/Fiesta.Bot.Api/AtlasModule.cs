@@ -69,22 +69,49 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     }
 
     // the spawn areas of a level band with their density (matching areas within 1500 on the same map): client data
-    // only, so computed once per band and shared by every bot
+    // only, shared by every bot. The neighbourhoods (which areas lie within 1500 of each hostile area) are computed once
+    // per host - Prepare runs it at host start, off the tick - and a band then only counts its own neighbours.
+    private sealed record Hood(SpawnArea[] Areas, int[] Level, int[][] Near);
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<object, Hood> _hoods = new();
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<(object, int, int), (SpawnArea A, int N)[]> _bands = new();
+
+    /// <summary>Compute the spawn-area neighbourhoods of an atlas (seconds of work; call it off the tick at host start).</summary>
+    public static void Prepare(WorldAtlas atlas, IClientData data)
+    {
+        HoodOf(atlas, data);
+        atlas.PrepareWalkLevels(id => data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1);
+    }
+
+    private static Hood HoodOf(WorldAtlas atlas, IClientData data) => _hoods.GetOrAdd(atlas, _ =>
+    {
+        var areas = new List<SpawnArea>(); var lv = new List<int>(); var near = new List<int[]>();
+        foreach (var map in atlas.SpawnMaps)
+        {
+            if (data.Map(map) is not { IsInstance: false }) continue;
+            var start = areas.Count;
+            foreach (var x in atlas.SpawnsOn(map))
+                if (data.Mob(x.MobId) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } m) { areas.Add(x); lv.Add(m.Level); }
+            for (var i = start; i < areas.Count; i++)
+            {
+                var n = new List<int>();
+                for (var j = start; j < areas.Count; j++)
+                    if (MoveController.Dist(areas[j].X, areas[j].Y, areas[i].X, areas[i].Y) < 1500) n.Add(j);
+                near.Add(n.ToArray());
+            }
+        }
+        return new Hood(areas.ToArray(), lv.ToArray(), near.ToArray());
+    });
+
     private (SpawnArea A, int N)[] Candidates(int minLv, int maxLv) => _bands.GetOrAdd((Ctx.Atlas, minLv, maxLv), _ =>
     {
-        bool Hostile(int mob) => Ctx.Data.Mob(mob) is { } m && !m.IsNpc && !m.IsPlayerSide && m.MaxHp > 0 && m.Level >= minLv && m.Level <= maxLv;
+        var h = HoodOf(Ctx.Atlas, Ctx.Data);
         var list = new List<(SpawnArea, int)>();
-        foreach (var map in Ctx.Atlas.SpawnMaps)
+        for (var i = 0; i < h.Areas.Length; i++)
         {
-            if (Ctx.Data.Map(map) is not { IsInstance: false }) continue;
-            var areas = Ctx.Atlas.SpawnsOn(map).Where(x => Hostile(x.MobId)).ToArray();
-            foreach (var a in areas)
-            {
-                var n = 0;
-                foreach (var o in areas) if (MoveController.Dist(o.X, o.Y, a.X, a.Y) < 1500) n++;
-                list.Add((a, n));
-            }
+            if (h.Level[i] < minLv || h.Level[i] > maxLv) continue;
+            var n = 0;
+            foreach (var j in h.Near[i]) if (h.Level[j] >= minLv && h.Level[j] <= maxLv) n++;
+            list.Add((h.Areas[i], n));
         }
         return list.ToArray();
     });
@@ -182,7 +209,7 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
         if (_safeFrom != W.Map.MapId || _safeLevel != maxMobLevel || Ctx.Now - _safeAt >= 30_000)
         {
             var (px, py) = W.Self.Pos;
-            Ctx.Atlas.RouteCosts(W.Map.MapId, px, py, _safe, x => Ctx.Refused(x), a => Hostile(a.MobId) > maxMobLevel, maxMobLevel);
+            Ctx.Atlas.RouteCostsBelow(W.Map.MapId, px, py, _safe, x => Ctx.Refused(x), maxMobLevel, _hostile ??= Hostile);
             _safeFrom = W.Map.MapId; _safeLevel = maxMobLevel; _safeAt = Ctx.Now;
         }
         return _safe.TryGetValue(m.Id, out var c) ? c : -1;
@@ -191,5 +218,6 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     private int _safeFrom = -1, _safeLevel = -1;
     private long _safeAt = long.MinValue / 2;
 
+    private Func<int, int>? _hostile;
     private int Hostile(int id) => Ctx.Data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1;
 }

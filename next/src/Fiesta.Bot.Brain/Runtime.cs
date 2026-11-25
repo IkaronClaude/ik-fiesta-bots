@@ -709,7 +709,8 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
         if (r.Status == LuaCallStatus.Budget)
         {
             _ctx.Events.Raise(EventKind.Budget, lr.Index);
-            if (++lr.BudgetStrikes >= 3)
+            // the first 30 s of a brain warm the caches (route searches, tables): an overrun then is logged, never a strike
+            if (_now - _startAt >= 30_000 && ++lr.BudgetStrikes >= 3)
             {
                 _suspended = true;
                 _ctx.Log.Text(LogCategory.Brain, LogLevel.Crit, $"brain suspended: layer {lr.Name} state {s.Name} over its {lr.Def.BudgetMs} ms budget three times in a row");
