@@ -1,19 +1,143 @@
+using System.Buffers;
+using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 using Fiesta.Bot.Net;
 
 namespace Fiesta.Bot.Protocol;
 
-/// <summary>Kinds of decoded inbound events applied to the world state.</summary>
+/// <summary>Kinds of decoded inbound events applied to the world state. Field meaning per kind is documented on each
+/// value (H = Handle, H2 = Handle2).</summary>
 public enum InboundKind : ushort
 {
-    Unknown, EntityAppeared, EntityLeft, EntityMoved, EntityStopped, EntityHp, EntityDied, EntityTarget,
-    SelfHp, SelfSp, SelfStats, SelfLevel, SelfExp, SelfMoney, SelfSpeed, SelfAbstate, SelfMode,
-    Damage, SkillCastStart, SkillResult, CastFail, BashStop, MoveFail,
-    ItemCell, ItemUseResult, BuySellAck, StoneReserve,
-    QuestProgress, QuestState, QuestDialog, NpcMenu, ShopList,
-    PartyEvent, TradeEvent, Chat, Whisper, MapLink, Revive, DeadMenu, Door, TentAck, JobCompleted, Raw,
+    /// <summary>Not decoded.</summary>
+    Unknown,
+    /// <summary>H appeared. A = EntityKind bits (Mob/Npc/Player/Gate/Drop), B = mob id / item id (-1), C = level (-1), X,Y,
+    /// H2 = dropping mob (drops), Text = player name / gate destination map.</summary>
+    EntityAppeared,
+    /// <summary>H left view.</summary>
+    EntityLeft,
+    /// <summary>H moves from (A,B) to (X,Y) at raw speed C; H2 = 1 run, 0 walk.</summary>
+    EntityMoved,
+    /// <summary>H stopped at (X,Y).</summary>
+    EntityStopped,
+    /// <summary>H hp A / max B, level C (-1 unknown).</summary>
+    EntityHp,
+    /// <summary>H died, killed by H2.</summary>
+    EntityDied,
+    /// <summary>H targets H2 (a selection broadcast; for us, the server-confirmed selection).</summary>
+    EntityTarget,
+    /// <summary>H changed mode A.</summary>
+    EntityMode,
+    /// <summary>Our HP = A.</summary>
+    SelfHp,
+    /// <summary>Our SP = A.</summary>
+    SelfSp,
+    /// <summary>Our max HP A / max SP B (parameter change).</summary>
+    SelfMaxHpSp,
+    /// <summary>Character base: A level, B exp, C money, X hp stones, Y sp stones, Text = login map name.</summary>
+    SelfBase,
+    /// <summary>Level up to A (H = mob whose kill did it); B = prev exp, C = next exp of the new level.</summary>
+    SelfLevel,
+    /// <summary>Exp gained A (H = mob).</summary>
+    SelfExp,
+    /// <summary>Money now A.</summary>
+    SelfMoney,
+    /// <summary>Walk speed A / run speed B (raw).</summary>
+    SelfSpeed,
+    /// <summary>Abstate A on H set (B = 1) or reset (B = 0), C = ms left (-1 unknown).</summary>
+    SelfAbstate,
+    /// <summary>MAP_LOGIN_ACK: H = our handle, X,Y spawn, A max HP, B max SP, C next exp; H2 = prev exp (low 31 bits).</summary>
+    MapLoginAck,
+    /// <summary>MAP_LOGINFAIL: A = error, B = wrong data file index.</summary>
+    MapLoginFail,
+    /// <summary>Exp band of our level: A = prev exp, B = next exp.</summary>
+    SelfExpBand,
+    /// <summary>A swing landed: H attacker, H2 defender, A damage, B defender HP left, C flags.</summary>
+    Damage,
+    /// <summary>A skill hit: H caster, H2 target, A damage, B target HP left, C cast index.</summary>
+    SkillDamage,
+    /// <summary>Our cast started: A skill, H2 target, B cast index.</summary>
+    SkillCastStart,
+    /// <summary>Skill result (unused placeholder for aggregate results).</summary>
+    SkillResult,
+    /// <summary>Our cast refused: A = code.</summary>
+    CastFail,
+    /// <summary>Our cast accepted (cast bar started).</summary>
+    CastSucceeded,
+    /// <summary>Our cast cut / aborted: A = 1 abort, 0 cut.</summary>
+    CastAborted,
+    /// <summary>Someone (H) stopped bashing (cease fire).</summary>
+    BashStop,
+    /// <summary>A swing started: H attacker, H2 defender.</summary>
+    SwingStart,
+    /// <summary>Our move refused; (X,Y) = where the game has us.</summary>
+    MoveFail,
+    /// <summary>Bag/equip cell: A box, B slot, C item id (-1 empty), X lot.</summary>
+    ItemCell,
+    /// <summary>Item use result: A error code, B item id.</summary>
+    ItemUseResult,
+    /// <summary>Buy (B = 0) / sell (B = 1) ack: A code.</summary>
+    BuySellAck,
+    /// <summary>Soul stone reserve: A = 0 hp / 1 sp, B = count; C = 1 when from a buy ack.</summary>
+    StoneReserve,
+    /// <summary>Soul stone use result: A = 0 hp / 1 sp / 2 fail, B = code.</summary>
+    StoneUse,
+    /// <summary>Pick up result: A item, B lot, C error, H item handle.</summary>
+    PickAck,
+    /// <summary>Learned skill A, B = cooldown left ms.</summary>
+    SkillLearned,
+    /// <summary>Quest A in the log with status B, objective counts packed in C (5 bytes).</summary>
+    QuestProgress,
+    /// <summary>Quest A done (completed list).</summary>
+    QuestState,
+    /// <summary>Quest script step: A quest, B command, C data (SAY: dialog id), H2 npc mob id, X talker type.</summary>
+    QuestDialog,
+    /// <summary>A kill counted for quest A objective B.</summary>
+    QuestMobKill,
+    /// <summary>Quest A is available (readable) now.</summary>
+    QuestAvailable,
+    /// <summary>Quest error / start ack: A = opcode, B = code, C = quest (-1).</summary>
+    QuestAck,
+    /// <summary>The zone asks the client to open NPC A's menu (mob id).</summary>
+    NpcMenu,
+    /// <summary>Server menu: H = npc handle, A = option count, Text = title, Options = replies.</summary>
+    ServerMenu,
+    /// <summary>Shop list header: H npc handle, A = opcode, B = item count (ShopItem events follow).</summary>
+    ShopList,
+    /// <summary>One shop item: A slot, B item id.</summary>
+    ShopItem,
+    /// <summary>Party event (raw opcode in A).</summary>
+    PartyEvent,
+    /// <summary>Trade event (raw opcode in A, code B).</summary>
+    TradeEvent,
+    /// <summary>Chat: H speaker, Text.</summary>
+    Chat,
+    /// <summary>Whisper: Text = "name\ntext".</summary>
+    Whisper,
+    /// <summary>Map link: A map id, X,Y, B = 1 other server.</summary>
+    MapLink,
+    /// <summary>Revived on map A at (X,Y).</summary>
+    Revive,
+    /// <summary>Death menu: A seconds.</summary>
+    DeadMenu,
+    /// <summary>Door state (raw).</summary>
+    Door,
+    /// <summary>Tent ack (raw opcode A).</summary>
+    TentAck,
+    /// <summary>A job finished: A ticket, B ok (1/0).</summary>
+    JobCompleted,
+    /// <summary>The zone link changed state: A = LinkState.</summary>
+    LinkChanged,
+    /// <summary>Mount: A = 1 on, 0 off; H = mount handle.</summary>
+    Mount,
+    /// <summary>Stat points left A.</summary>
+    StatPoints,
+    /// <summary>Not decoded but passed (raw logging).</summary>
+    Raw,
 }
 
-/// <summary>One decoded inbound event (64 bytes, stored in rings). Variable data lives in a pooled buffer.</summary>
+/// <summary>One decoded inbound event stored in rings. Variable text lives in <see cref="Text"/> (rare kinds only).</summary>
 public struct InboundEvent
 {
     /// <summary>Event kind.</summary>
@@ -30,28 +154,35 @@ public struct InboundEvent
     public long A, B, C;
     /// <summary>Coordinates when the kind carries a position.</summary>
     public uint X, Y;
-    /// <summary>Pooled payload for variable-size kinds (lists, text), default when none.</summary>
-    public ReadOnlyMemory<byte> Payload;
+    /// <summary>Text for the few kinds that carry it (chat, names, menus); null otherwise.</summary>
+    public string? Text;
+    /// <summary>Menu options (server menu only).</summary>
+    public (byte Reply, string Text)[]? Options;
+
+    /// <summary>Create an event of a kind with no handles.</summary>
+    public static InboundEvent Of(InboundKind k, ushort op, long at) => new() { Kind = k, Opcode = op, At = at, Handle = -1, Handle2 = -1 };
 }
 
-/// <summary>One outbound request produced by the tick (opcode + inline payload or pooled bytes).</summary>
+/// <summary>Inline payload storage for intents (no allocation for frames up to 64 bytes).</summary>
+[InlineArray(64)]
+public struct IntentBytes { private byte _e0; }
+
+/// <summary>One outbound request produced by the tick: opcode + inline payload (or a heap payload for long frames).</summary>
 public struct Intent
 {
     /// <summary>Wire opcode.</summary>
     public ushort Opcode;
     /// <summary>Action this intent belongs to (-1 none).</summary>
     public int ActionId;
-    /// <summary>Encoded payload (pooled, owned by the outbound ring until sent).</summary>
-    public ReadOnlyMemory<byte> Payload;
-}
+    /// <summary>Inline bytes.</summary>
+    public IntentBytes Inline;
+    /// <summary>Inline length.</summary>
+    public byte Length;
+    /// <summary>Long payload (chat text), null when inline.</summary>
+    public byte[]? Heap;
 
-/// <summary>Decodes the frames of one packet family into <see cref="InboundEvent"/>s.</summary>
-public interface IPacketDecoder
-{
-    /// <summary>Opcodes this decoder handles.</summary>
-    IReadOnlyList<ushort> Opcodes { get; }
-    /// <summary>Decode one frame; writes 0..n events into the sink.</summary>
-    void Decode(in RawFrame frame, IEventSink sink);
+    /// <summary>Payload span.</summary>
+    [UnscopedRef] public ReadOnlySpan<byte> Payload => Heap ?? ((ReadOnlySpan<byte>)Inline)[..Length];
 }
 
 /// <summary>Receiver for decoded events (the bot's inbound ring).</summary>
@@ -61,124 +192,688 @@ public interface IEventSink
     bool TryWrite(in InboundEvent evt);
 }
 
-/// <summary>Opcode -> decoder table, built once at startup.</summary>
+/// <summary>Decodes the frames of one packet family into <see cref="InboundEvent"/>s.</summary>
+public interface IPacketDecoder
+{
+    /// <summary>Opcodes this decoder handles.</summary>
+    IReadOnlyList<ushort> Opcodes { get; }
+    /// <summary>Decode one (canonical-shaped) payload; writes 0..n events into the sink.</summary>
+    void Decode(ushort opcode, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink);
+}
+
+/// <summary>Little-endian readers that never throw on short frames (they return the fallback).</summary>
+internal static class Rd
+{
+    public static ushort U16(ReadOnlySpan<byte> p, int at) => at + 2 <= p.Length ? BinaryPrimitives.ReadUInt16LittleEndian(p[at..]) : (ushort)0;
+    public static uint U32(ReadOnlySpan<byte> p, int at) => at + 4 <= p.Length ? BinaryPrimitives.ReadUInt32LittleEndian(p[at..]) : 0;
+    public static long U64(ReadOnlySpan<byte> p, int at) => at + 8 <= p.Length ? (long)BinaryPrimitives.ReadUInt64LittleEndian(p[at..]) : 0;
+}
+
+/// <summary>Opcode -> decoder table for one wire profile, built once. Dispatch canonicalises the frame through the
+/// profile, then decodes.</summary>
 public sealed class DecoderTable
 {
-    /// <summary>Build from all decoders in this assembly.</summary>
-    public static DecoderTable CreateDefault() => throw new NotImplementedException();
+    private readonly IPacketDecoder?[] _byOp = new IPacketDecoder?[65536];
+    private readonly WireProfile _wire;
+
+    /// <summary>Create for a profile.</summary>
+    public DecoderTable(WireProfile wire) => _wire = wire;
+    /// <summary>The profile.</summary>
+    public WireProfile Wire => _wire;
+    /// <summary>Frames with no decoder (opcode counts, for the "decode it, don't leave it unknown" backlog).</summary>
+    public long[] Undecoded { get; } = new long[65536];
+
+    /// <summary>Build with every family decoder.</summary>
+    public static DecoderTable CreateDefault(WireProfile wire)
+    {
+        var t = new DecoderTable(wire);
+        t.Register(new EntityDecoder()); t.Register(new CombatDecoder()); t.Register(new SelfDecoder());
+        t.Register(new MovementDecoder()); t.Register(new ItemDecoder()); t.Register(new QuestMenuDecoder());
+        t.Register(new SocialDecoder()); t.Register(new WorldDecoder());
+        return t;
+    }
+
     /// <summary>Register a decoder for its opcodes.</summary>
-    public void Register(IPacketDecoder decoder) => throw new NotImplementedException();
-    /// <summary>Decode a frame with its registered decoder (unknown opcodes become Raw events when logging is on).</summary>
-    public void Dispatch(in RawFrame frame, IEventSink sink) => throw new NotImplementedException();
+    public void Register(IPacketDecoder decoder) { foreach (var op in decoder.Opcodes) _byOp[op] = decoder; }
+
+    /// <summary>Is there a decoder for an opcode?</summary>
+    public bool Handles(ushort op) => _byOp[op] is not null;
+
+    /// <summary>Decode a frame with its registered decoder.</summary>
+    public void Dispatch(in RawFrame frame, IEventSink sink) => Dispatch(frame.Opcode, frame.Payload.Span, frame.ReceivedAt, sink);
+
+    /// <summary>Decode a payload.</summary>
+    public void Dispatch(ushort op, ReadOnlySpan<byte> payload, long at, IEventSink sink)
+    {
+        var d = _byOp[op];
+        if (d is null) { Undecoded[op]++; return; }
+        byte[]? scratch = null;
+        var p = _wire.Normalize(op, payload, ref scratch);
+        d.Decode(op, p, at, _wire, sink);
+    }
 }
 
-/// <summary>Encodes typed requests into intents without allocation (pooled buffers).</summary>
-public static class IntentEncoder
-{
-    /// <summary>NC_ACT_MOVERUN: from/to.</summary>
-    public static Intent MoveRun(uint fx, uint fy, uint tx, uint ty, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_ACT_STOP at a position.</summary>
-    public static Intent Stop(uint x, uint y, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_BAT_TARGETTING.</summary>
-    public static Intent Target(ushort handle, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_ACT_CHANGEMODE (battle mode).</summary>
-    public static Intent ChangeMode(byte mode, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_BAT_SKILLBASH_OBJ_CAST.</summary>
-    public static Intent CastObject(ushort skill, ushort target, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_BAT_SKILLBASH_FLD_CAST.</summary>
-    public static Intent CastGround(ushort skill, uint x, uint y, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_BAT_BASHSTART / BASHSTOP.</summary>
-    public static Intent Bash(bool start, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_ITEM_USE.</summary>
-    public static Intent UseItem(byte slot, byte box, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_ITEM_BUY.</summary>
-    public static Intent Buy(ushort itemId, uint lot, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_ITEM_SELL.</summary>
-    public static Intent Sell(byte slot, uint lot, int actionId) => throw new NotImplementedException();
-    /// <summary>NC_ACT_NPCCLICK.</summary>
-    public static Intent NpcClick(ushort handle, int actionId) => throw new NotImplementedException();
-    /// <summary>Chat line (local).</summary>
-    public static Intent Chat(ReadOnlySpan<char> text, int actionId) => throw new NotImplementedException();
-    /// <summary>Raw opcode + payload (protocol experiments).</summary>
-    public static Intent Raw(ushort opcode, ReadOnlySpan<byte> payload, int actionId) => throw new NotImplementedException();
-}
-
-/// <summary>Packet family decoders (each a small pure class; split out of today's ZoneView).</summary>
+/// <summary>Briefinfo: players, mobs/NPCs/gates, drops, deletes.</summary>
 public sealed class EntityDecoder : IPacketDecoder
 {
+    /// <summary>Entity kind bits as sent in EntityAppeared.A (mirrors the agent's EntityKind values).</summary>
+    public const int KMob = 1, KNpc = 4, KPlayer = 8, KGate = 16, KDrop = 32;
+    /// <summary>Mob ids that are NPCs (client MobInfo.IsNPC); set by the host from client data.</summary>
+    public static Func<int, bool> IsNpc { get; set; } = _ => false;
+
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes => throw new NotImplementedException();
+    public IReadOnlyList<ushort> Opcodes { get; } = [0x1C06, 0x1C07, 0x1C08, 0x1C09, 0x1C0A, 0x1C0E, 0x1805];
+
     /// <inheritdoc/>
-    public void Decode(in RawFrame frame, IEventSink sink) => throw new NotImplementedException();
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        switch (op)
+        {
+            case 0x1C06: Player(p, op, at, sink); break;
+            case 0x1C07:
+                if (p.Length < 1) return;
+                for (int i = 0, n = p[0]; i < n && 1 + (i + 1) * 235 <= p.Length; i++) Player(p.Slice(1 + i * 235, 235), op, at, sink);
+                break;
+            case 0x1C08: Mob(p, op, at, sink); break;
+            case 0x1C09:
+                if (p.Length < 1) return;
+                for (int i = 0, n = p[0]; i < n && 1 + (i + 1) * 149 <= p.Length; i++) Mob(p.Slice(1 + i * 149, 149), op, at, sink);
+                break;
+            case 0x1C0A:
+                if (p.Length < 14) return;
+                var e = InboundEvent.Of(InboundKind.EntityAppeared, op, at);
+                e.Handle = Rd.U16(p, 0); e.A = KDrop; e.B = Rd.U16(p, 2); e.C = -1; e.X = Rd.U32(p, 4); e.Y = Rd.U32(p, 8); e.Handle2 = Rd.U16(p, 12);
+                sink.TryWrite(e);
+                break;
+            case 0x1C0E or 0x1805:
+                if (p.Length < 2) return;
+                var l = InboundEvent.Of(InboundKind.EntityLeft, op, at); l.Handle = Rd.U16(p, 0);
+                sink.TryWrite(l);
+                break;
+        }
+    }
+
+    // PROTO_NC_BRIEFINFO_LOGINCHARACTER_CMD (235): handle, charid[20], coord {xy, dir}, mode, class, ... Level @197
+    private static void Player(ReadOnlySpan<byte> r, ushort op, long at, IEventSink sink)
+    {
+        if (r.Length < 31) return;
+        var e = InboundEvent.Of(InboundKind.EntityAppeared, op, at);
+        e.Handle = Rd.U16(r, 0); e.A = KPlayer; e.B = -1; e.C = r.Length > 197 ? r[197] : -1;
+        e.X = Rd.U32(r, 22); e.Y = Rd.U32(r, 26); e.Text = Ascii.Get(r.Slice(2, 20));
+        e.Handle2 = r.Length > 32 ? r[32] : -1;   // class
+        sink.TryWrite(e);
+    }
+
+    // PROTO_NC_BRIEFINFO_REGENMOB_CMD (149): handle, mode, mobid, coord {xy, dir}, flagstate, flag blob (a gate's blob
+    // starts with its destination map name)
+    private static void Mob(ReadOnlySpan<byte> r, ushort op, long at, IEventSink sink)
+    {
+        if (r.Length < 15) return;
+        var e = InboundEvent.Of(InboundKind.EntityAppeared, op, at);
+        e.Handle = Rd.U16(r, 0);
+        var mobId = Rd.U16(r, 3);
+        var gate = r[14] == 1;
+        e.A = gate ? KGate | KNpc : IsNpc(mobId) ? KNpc : KMob;
+        e.B = mobId; e.C = -1; e.X = Rd.U32(r, 5); e.Y = Rd.U32(r, 9);
+        e.Handle2 = r[13];   // direction byte
+        if (gate && r.Length >= 15 + 32) e.Text = Ascii.Get(r.Slice(15, 32));
+        sink.TryWrite(e);
+    }
 }
 
-/// <summary>Combat: damage, cast start/result/fail, bash stop.</summary>
+/// <summary>Combat: damage, cast start/result/fail, bash stop, kills, target info.</summary>
 public sealed class CombatDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes => throw new NotImplementedException();
+    public IReadOnlyList<ushort> Opcodes { get; } =
+        [0x2448, 0x2449, 0x244A, 0x2402, 0x244E, 0x2452, 0x2434, 0x2435, 0x2437, 0x2438, 0x243D, 0x2447, 0x2009, 0x244D];
+
     /// <inheritdoc/>
-    public void Decode(in RawFrame frame, IEventSink sink) => throw new NotImplementedException();
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        var e = InboundEvent.Of(InboundKind.Unknown, op, at);
+        switch (op)
+        {
+            case 0x2448:   // SWING_DAMAGE {attacker, defender, flag u16, damage (u16 / u32 in 2026), resthp u32, ...}
+            {
+                var (len, dmg) = wire.SwingDamage;
+                if (p.Length < len && p.Length < 16) return;
+                if (p.Length != len) { dmg = p.Length >= 25 ? 4 : 2; }
+                e.Kind = InboundKind.Damage; e.Handle = Rd.U16(p, 0); e.Handle2 = Rd.U16(p, 2); e.C = Rd.U16(p, 4);
+                e.A = dmg == 4 ? Rd.U32(p, 6) : Rd.U16(p, 6);
+                e.B = Rd.U32(p, 6 + dmg);
+                break;
+            }
+            case 0x2449:   // SOMEONESWING_DAMAGE (canonical 13): attacker, defender, flag, damage u16, resthp? -> treat as damage
+                if (p.Length < 8) return;
+                e.Kind = InboundKind.Damage; e.Handle = Rd.U16(p, 0); e.Handle2 = Rd.U16(p, 2); e.C = Rd.U16(p, 4); e.A = Rd.U16(p, 6);
+                e.B = p.Length >= 12 ? Rd.U32(p, 8) : -1;
+                break;
+            case 0x244A:   // REALLYKILL {dead, attacker}
+                if (p.Length < 4) return;
+                e.Kind = InboundKind.EntityDied; e.Handle = Rd.U16(p, 0); e.Handle2 = Rd.U16(p, 2);
+                break;
+            case 0x2402:   // TARGETINFO {order, handle, hp, maxhp, sp, maxsp, lp, maxlp, level}
+                if (p.Length < 28) return;
+                e.Kind = InboundKind.EntityHp; e.Handle = Rd.U16(p, 1); e.A = Rd.U32(p, 3); e.B = Rd.U32(p, 7); e.C = p[27];
+                break;
+            case 0x244E:   // SKILLBASH_HIT_OBJ_START {skill, target, index}
+                if (p.Length < 6) return;
+                e.Kind = InboundKind.SkillCastStart; e.A = Rd.U16(p, 0); e.Handle2 = Rd.U16(p, 2); e.B = Rd.U16(p, 4);
+                break;
+            case 0x2452:   // SKILLBASH_HIT_DAMAGE {index, caster, n, n x 14 {target u16, flag u16?, damage u32, resthp u32, ...}}
+            {
+                if (p.Length < 5) return;
+                var caster = Rd.U16(p, 2); var idx = Rd.U16(p, 0);
+                for (int i = 0, n = p[4]; i < n && 5 + (i + 1) * 14 <= p.Length; i++)
+                {
+                    var t = p.Slice(5 + i * 14, 14);
+                    var d = InboundEvent.Of(InboundKind.SkillDamage, op, at);
+                    d.Handle = caster; d.Handle2 = Rd.U16(t, 0); d.A = Rd.U32(t, 4); d.B = Rd.U32(t, 8); d.C = idx;
+                    sink.TryWrite(d);
+                }
+                return;
+            }
+            case 0x2434:   // SKILLBASH_CAST_FAIL_ACK {code u16}
+                e.Kind = InboundKind.CastFail; e.A = Rd.U16(p, 0);
+                break;
+            case 0x2435: e.Kind = InboundKind.CastSucceeded; break;
+            case 0x2437: e.Kind = InboundKind.CastAborted; e.A = 1; break;
+            case 0x2438: e.Kind = InboundKind.CastAborted; e.A = 0; e.Handle = Rd.U16(p, 0); break;
+            case 0x243D:   // CEASE_FIRE {handle}
+                e.Kind = InboundKind.BashStop; e.Handle = Rd.U16(p, 0);
+                break;
+            case 0x2447:   // SWING_START {attacker, defender, ...}
+                if (p.Length < 4) return;
+                e.Kind = InboundKind.SwingStart; e.Handle = Rd.U16(p, 0); e.Handle2 = Rd.U16(p, 2);
+                break;
+            case 0x2009:   // SOMEONECHANGEMODE {handle, mode}
+                if (p.Length < 3) return;
+                e.Kind = InboundKind.EntityMode; e.Handle = Rd.U16(p, 0); e.A = p[2];
+                break;
+            case 0x244D:   // TARGETCHANGE: our server-side selection {target}
+                if (p.Length < 2) return;
+                e.Kind = InboundKind.EntityTarget; e.Handle = -1; e.Handle2 = Rd.U16(p, 0);
+                break;
+            default: return;
+        }
+        sink.TryWrite(e);
+    }
 }
 
-/// <summary>Self: HP/SP, stats, level, exp, money, speed, abstates, mode.</summary>
+/// <summary>Self: HP/SP, base, level, exp, money, speed, abstates, map login, skills.</summary>
 public sealed class SelfDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes => throw new NotImplementedException();
+    public IReadOnlyList<ushort> Opcodes { get; } =
+        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x2411, 0xCC02, 0xCC06];
+
     /// <inheritdoc/>
-    public void Decode(in RawFrame frame, IEventSink sink) => throw new NotImplementedException();
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        var e = InboundEvent.Of(InboundKind.Unknown, op, at);
+        switch (op)
+        {
+            case 0x240E: if (p.Length < 4) return; e.Kind = InboundKind.SelfHp; e.A = Rd.U32(p, 0); break;
+            case 0x240F: if (p.Length < 4) return; e.Kind = InboundKind.SelfSp; e.A = Rd.U32(p, 0); break;
+            case 0x1035:   // CHANGEPARAMCHANGE {n u8, (id u8, value u32) x n}: 0x10 MaxHp, 0x11 MaxSp
+            {
+                if (p.Length < 1) return;
+                long mh = -1, ms = -1;
+                for (int i = 0, n = p[0]; i < n && 1 + 5 * (i + 1) <= p.Length; i++)
+                {
+                    var id = p[1 + 5 * i]; var v = Rd.U32(p, 2 + 5 * i);
+                    if (id == 0x10) mh = v; else if (id == 0x11) ms = v;
+                }
+                if (mh < 0 && ms < 0) return;
+                e.Kind = InboundKind.SelfMaxHpSp; e.A = mh; e.B = ms;
+                break;
+            }
+            case 0x1038:   // CHAR_BASE (canonical 105): level @25, exp @26, stones @38/@40, hp @42, sp @46, cen @58, map @66
+            {
+                if (p.Length < 66) return;
+                e.Kind = InboundKind.SelfBase; e.A = p[25]; e.B = Rd.U64(p, 26); e.C = Rd.U64(p, 58);
+                e.X = Rd.U16(p, 38); e.Y = Rd.U16(p, 40);
+                e.Text = p.Length >= 78 ? Ascii.Get(p.Slice(66, 12)) : null;
+                sink.TryWrite(e);
+                var hp = InboundEvent.Of(InboundKind.SelfHp, op, at); hp.A = Rd.U32(p, 42); sink.TryWrite(hp);
+                var sp = InboundEvent.Of(InboundKind.SelfSp, op, at); sp.A = Rd.U32(p, 46); sink.TryWrite(sp);
+                return;
+            }
+            case 0x240C:   // LEVELUP {level u8, mob u16, CHAR_PARAMETER_DATA {prevExp u64, nextExp u64, ...}}
+                if (p.Length < 3) return;
+                e.Kind = InboundKind.SelfLevel; e.A = p[0]; e.Handle = Rd.U16(p, 1); e.B = Rd.U64(p, 3); e.C = Rd.U64(p, 11);
+                break;
+            case 0x240B: if (p.Length < 4) return; e.Kind = InboundKind.SelfExp; e.A = Rd.U32(p, 0); e.Handle = Rd.U16(p, 4); break;
+            case 0x2411: if (p.Length < 4) return; e.Kind = InboundKind.SelfExp; e.A = -(long)Rd.U32(p, 0); break;
+            case 0x1033: if (p.Length < 8) return; e.Kind = InboundKind.SelfMoney; e.A = Rd.U64(p, 0); break;
+            case 0x203E: if (p.Length < 4) return; e.Kind = InboundKind.SelfSpeed; e.A = Rd.U16(p, 0); e.B = Rd.U16(p, 2); break;
+            case 0x2427 or 0x2428:   // ABSTATESET / RESET {handle u16, abstate u32 ...}
+                if (p.Length < 6) return;
+                e.Kind = InboundKind.SelfAbstate; e.Handle = Rd.U16(p, 0); e.A = Rd.U32(p, 2); e.B = op == 0x2427 ? 1 : 0;
+                e.C = p.Length >= 10 ? Rd.U32(p, 6) : -1;
+                break;
+            case 0x1802:   // MAP_LOGIN_ACK {charhandle, CHAR_PARAMETER_DATA (232), logincoord}
+            {
+                if (p.Length < 10) return;
+                e.Kind = InboundKind.MapLoginAck; e.Handle = Rd.U16(p, 0);
+                e.X = Rd.U32(p, p.Length - 8); e.Y = Rd.U32(p, p.Length - 4);
+                e.A = p.Length >= 154 ? Rd.U32(p, 146) : -1; e.B = p.Length >= 154 ? Rd.U32(p, 150) : -1;
+                sink.TryWrite(e);
+                if (p.Length >= 18)
+                {
+                    var b = InboundEvent.Of(InboundKind.SelfExpBand, op, at); b.A = Rd.U64(p, 2); b.B = Rd.U64(p, 10);
+                    sink.TryWrite(b);
+                }
+                return;
+            }
+            case 0x1804:   // MAP_LOGINFAIL {err u16, wrong file index u8}
+                e.Kind = InboundKind.MapLoginFail; e.A = Rd.U16(p, 0); e.B = p.Length >= 3 ? p[2] : -1;
+                break;
+            case 0x103D:   // CLIENT_SKILL {restempow, partmark, maxnum u16, chrregnum u32, number u16, n x 12 {skill, cooltime u32, empow, mastery}}
+            {
+                if (p.Length < 10) return;
+                for (int i = 0, n = Rd.U16(p, 8); i < n && 10 + (i + 1) * 12 <= p.Length; i++)
+                {
+                    var s = InboundEvent.Of(InboundKind.SkillLearned, op, at);
+                    s.A = Rd.U16(p, 10 + i * 12); s.B = Rd.U32(p, 12 + i * 12);
+                    sink.TryWrite(s);
+                }
+                return;
+            }
+            case 0x105B: if (p.Length < 1) return; e.Kind = InboundKind.StatPoints; e.A = p[0]; break;
+            case 0xCC02: e.Kind = InboundKind.Mount; e.A = 1; e.Handle = Rd.U16(p, 0); break;
+            case 0xCC06: e.Kind = InboundKind.Mount; e.A = 0; break;
+            default: return;
+        }
+        sink.TryWrite(e);
+    }
 }
 
-/// <summary>Movement: moves, stops, MOVEFAIL, speed.</summary>
+/// <summary>Movement: moves, stops, MOVEFAIL.</summary>
 public sealed class MovementDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes => throw new NotImplementedException();
+    public IReadOnlyList<ushort> Opcodes { get; } = [0x2018, 0x201A, 0x2013, 0x201B, 0x2007];
+
     /// <inheritdoc/>
-    public void Decode(in RawFrame frame, IEventSink sink) => throw new NotImplementedException();
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        var e = InboundEvent.Of(InboundKind.Unknown, op, at);
+        switch (op)
+        {
+            case 0x2018 or 0x201A:   // SOMEONEMOVEWALK / RUN {handle, from xy, to xy, speed u16, attr}
+                if (p.Length < 18) return;
+                e.Kind = InboundKind.EntityMoved; e.Handle = Rd.U16(p, 0); e.A = Rd.U32(p, 2); e.B = Rd.U32(p, 6);
+                e.X = Rd.U32(p, 10); e.Y = Rd.U32(p, 14); e.C = Rd.U16(p, 18); e.Handle2 = op == 0x201A ? 1 : 0;
+                break;
+            case 0x2013:   // SOMEONESTOP {handle, xy}
+                if (p.Length < 10) return;
+                e.Kind = InboundKind.EntityStopped; e.Handle = Rd.U16(p, 0); e.X = Rd.U32(p, 2); e.Y = Rd.U32(p, 6);
+                break;
+            case 0x201B or 0x2007:   // MOVEFAIL {back xy}
+                if (p.Length < 8) return;
+                e.Kind = InboundKind.MoveFail; e.X = Rd.U32(p, 0); e.Y = Rd.U32(p, 4);
+                break;
+            default: return;
+        }
+        sink.TryWrite(e);
+    }
 }
 
-/// <summary>Items: cell changes, use results, buy/sell acks, stone reserves.</summary>
+/// <summary>Items: bag list, cell changes, use results, buy/sell acks, stone reserves, pick up.</summary>
 public sealed class ItemDecoder : IPacketDecoder
 {
+    /// <summary>The bag box id in item locations ((box &lt;&lt; 10) | slot).</summary>
+    public const int BagBox = 9, EquipBox = 8;
+
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes => throw new NotImplementedException();
+    public IReadOnlyList<ushort> Opcodes { get; } =
+        [0x1047, 0x3001, 0x3002, 0x3016, 0x3004, 0x3005, 0x5003, 0x5004, 0x5005, 0x5006, 0x5008, 0x500A, 0x300A, 0x0700];
+
     /// <inheritdoc/>
-    public void Decode(in RawFrame frame, IEventSink sink) => throw new NotImplementedException();
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        var e = InboundEvent.Of(InboundKind.Unknown, op, at);
+        switch (op)
+        {
+            case 0x1047:   // CLIENT_ITEM (canonical) {count u8, box u8, flag u8, records {datasize, location u16, itemid u16, attr..}}
+            {
+                if (p.Length < 3) return;
+                int n = p[0], box = p[1], off = 3;
+                // an empty-box marker so a fresh login clears the box first
+                var clear = InboundEvent.Of(InboundKind.ItemCell, op, at); clear.A = box; clear.B = -1; clear.C = -1;
+                sink.TryWrite(clear);
+                for (var i = 0; i < n && off + 5 <= p.Length; i++)
+                {
+                    int ds = p[off];
+                    var c = InboundEvent.Of(InboundKind.ItemCell, op, at);
+                    var loc = Rd.U16(p, off + 1);
+                    c.A = loc >> 10; c.B = loc & 0x3FF; c.C = Rd.U16(p, off + 3);
+                    if (c.C == 0xFFFF) c.C = -1;
+                    c.X = (uint)Lot(p.Slice(off + 5, Math.Max(0, Math.Min(ds - 4, p.Length - off - 5))));
+                    sink.TryWrite(c);
+                    off += 1 + ds;
+                }
+                return;
+            }
+            case 0x3001:   // CELLCHANGE {exchange, location u16, itemid u16, attr}
+            {
+                if (p.Length < 6) return;
+                var loc = Rd.U16(p, 2);
+                e.Kind = InboundKind.ItemCell; e.A = loc >> 10; e.B = loc & 0x3FF; e.C = Rd.U16(p, 4);
+                if (e.C == 0xFFFF) e.C = -1;
+                e.X = (uint)Lot(p[6..]);
+                break;
+            }
+            case 0x3002:   // EQUIPCHANGE {exchange u16 (bag location), location u8 (equip slot), itemid u16, attr}
+            {
+                if (p.Length < 5) return;
+                var from = Rd.U16(p, 0);
+                var v = InboundEvent.Of(InboundKind.ItemCell, op, at); v.A = from >> 10; v.B = from & 0x3FF; v.C = -1;
+                sink.TryWrite(v);
+                e.Kind = InboundKind.ItemCell; e.A = EquipBox; e.B = p[2]; e.C = Rd.U16(p, 3);
+                if (e.C == 0xFFFF) e.C = -1;
+                e.X = 1;
+                break;
+            }
+            case 0x3016 or 0x0700:   // ITEM_USE_ACK {error u16, item u16, invenType}
+                e.Kind = InboundKind.ItemUseResult; e.A = Rd.U16(p, 0); e.B = Rd.U16(p, 2);
+                break;
+            case 0x3004 or 0x3005: e.Kind = InboundKind.BuySellAck; e.A = Rd.U16(p, 0); e.B = op == 0x3004 ? 0 : 1; break;
+            case 0x5003 or 0x5004: e.Kind = InboundKind.StoneReserve; e.A = op == 0x5003 ? 0 : 1; e.B = Rd.U16(p, 0); e.C = 1; break;
+            case 0x5005: e.Kind = InboundKind.StoneUse; e.A = 3; e.B = Rd.U16(p, 0); break;
+            case 0x5006: e.Kind = InboundKind.StoneUse; e.A = 2; e.B = Rd.U16(p, 0); break;
+            case 0x5008 or 0x500A: e.Kind = InboundKind.StoneUse; e.A = op == 0x5008 ? 0 : 1; e.B = 0; break;
+            case 0x300A:   // PICK_ACK {itemid, lot u32, error, itemhandle}
+                if (p.Length < 10) return;
+                e.Kind = InboundKind.PickAck; e.A = Rd.U16(p, 0); e.B = Rd.U32(p, 2); e.C = Rd.U16(p, 6); e.Handle = Rd.U16(p, 8);
+                break;
+            default: return;
+        }
+        sink.TryWrite(e);
+    }
+
+    // the lot is the attribute byte(s) right after the item id for stackables: 1 byte or 2 bytes; gear has more
+    private static int Lot(ReadOnlySpan<byte> attr) => attr.Length switch { 1 => attr[0], 2 => attr[0] | (attr[1] << 8), _ => 1 };
 }
 
 /// <summary>Quests, dialogue pages, NPC menus, shop lists.</summary>
 public sealed class QuestMenuDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes => throw new NotImplementedException();
+    public IReadOnlyList<ushort> Opcodes { get; } =
+        [0x103A, 0x103B, 0x10CE, 0x4401, 0x440D, 0x4408, 0x4410, 0x4413, 0x4415, 0x201C, 0x3C01, 0x3C03, 0x3C04, 0x3C06, 0x3C09, 0x3C0A, 0x3C0B, 0x3C05];
+
     /// <inheritdoc/>
-    public void Decode(in RawFrame frame, IEventSink sink) => throw new NotImplementedException();
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        var e = InboundEvent.Of(InboundKind.Unknown, op, at);
+        switch (op)
+        {
+            case 0x103A:   // CLIENT_QUEST_DOING {chr u32, clear u8, count u8, n x PLAYER_QUEST_INFO (32)}
+            {
+                if (p.Length < 6) return;
+                for (int i = 0, n = p[5]; i < n && 6 + (i + 1) * 32 <= p.Length; i++)
+                {
+                    var q = p.Slice(6 + i * 32, 32);
+                    var x = InboundEvent.Of(InboundKind.QuestProgress, op, at);
+                    x.A = Rd.U16(q, 0); x.B = q[2];
+                    long packed = 0;
+                    for (var k = 0; k < 5; k++) packed |= (long)q[24 + k] << (8 * k);
+                    x.C = packed;
+                    sink.TryWrite(x);
+                }
+                return;
+            }
+            case 0x103B:   // CLIENT_QUEST_DONE {chr u32, total u32?, count u16 @8, pad, n x {id u16, end time i64}}
+            {
+                if (p.Length < 12) return;
+                for (int i = 0, n = Rd.U16(p, 8); i < n && 12 + i * 10 + 2 <= p.Length; i++)
+                {
+                    var x = InboundEvent.Of(InboundKind.QuestState, op, at); x.A = Rd.U16(p, 12 + i * 10);
+                    sink.TryWrite(x);
+                }
+                return;
+            }
+            case 0x10CE:   // CLIENT_QUEST_READ {chr u32, count u16, ids u16[]}
+            {
+                if (p.Length < 6) return;
+                for (int i = 0, n = Rd.U16(p, 4); i < n && 6 + i * 2 + 2 <= p.Length; i++)
+                {
+                    var x = InboundEvent.Of(InboundKind.QuestAvailable, op, at); x.A = Rd.U16(p, 6 + i * 2);
+                    sink.TryWrite(x);
+                }
+                return;
+            }
+            case 0x4401:   // QUEST_SCRIPT_CMD_REQ {quest u16, cmd u32, pigeon u8, data: SAY {dialog u32, talker u32, npc u16} / others {id u16}}
+                if (p.Length < 9) return;
+                e.Kind = InboundKind.QuestDialog; e.A = Rd.U16(p, 0); e.B = Rd.U32(p, 2);
+                var say = e.B == 2;
+                e.C = say ? Rd.U32(p, 7) : Rd.U16(p, 7);
+                e.X = say ? Rd.U32(p, 11) : 0;
+                e.Handle2 = say ? Rd.U16(p, 15) : -1;
+                break;
+            case 0x440D:   // NOTIFY_MOB_KILL {n u8, n x {objIdx u16, quest u16}}
+            {
+                if (p.Length < 1) return;
+                for (int i = 0, n = p[0]; i < n && 1 + (i + 1) * 4 <= p.Length; i++)
+                {
+                    var x = InboundEvent.Of(InboundKind.QuestMobKill, op, at); x.B = Rd.U16(p, 1 + i * 4); x.A = Rd.U16(p, 3 + i * 4);
+                    sink.TryWrite(x);
+                }
+                return;
+            }
+            case 0x4408: e.Kind = InboundKind.QuestAck; e.A = op; e.C = Rd.U16(p, 0); e.B = Rd.U16(p, 2); break;
+            case 0x4410 or 0x4413 or 0x4415: e.Kind = InboundKind.QuestAck; e.A = op; e.B = Rd.U16(p, 0); e.C = -1; break;
+            case 0x201C: if (p.Length < 2) return; e.Kind = InboundKind.NpcMenu; e.A = Rd.U16(p, 0); break;
+            case 0x3C01:   // SERVERMENU_REQ {title[128], priority, npc u16, npc xy, range u16, menunum, n x {reply u8, text[32]}}
+            {
+                if (p.Length < 142) return;
+                e.Kind = InboundKind.ServerMenu; e.Handle = Rd.U16(p, 129); e.Text = Ascii.Get(p[..128]);
+                e.X = Rd.U32(p, 131); e.Y = Rd.U32(p, 135);
+                int n = p[141];
+                var opts = new (byte, string)[n];
+                for (var i = 0; i < n && 142 + (i + 1) * 33 <= p.Length; i++) opts[i] = (p[142 + i * 33], Ascii.Get(p.Slice(143 + i * 33, 32)));
+                e.Options = opts; e.A = n;
+                break;
+            }
+            case 0x3C05:   // SHOPOPENSOULSTONE: a soul stone merchant opened its window
+                e.Kind = InboundKind.ShopList; e.A = op; e.Handle = p.Length >= 2 ? Rd.U16(p, 0) : -1; e.B = 0;
+                break;
+            case 0x3C03 or 0x3C04 or 0x3C06 or 0x3C09 or 0x3C0A or 0x3C0B:   // SHOPOPEN tables (canonical {n u16, npc u16, n x {slot u8, item u16}})
+            {
+                if (p.Length < 4) return;
+                int n = Rd.U16(p, 0);
+                e.Kind = InboundKind.ShopList; e.A = op; e.Handle = Rd.U16(p, 2); e.B = n;
+                sink.TryWrite(e);
+                for (var i = 0; i < n && 4 + (i + 1) * 3 <= p.Length; i++)
+                {
+                    var s = InboundEvent.Of(InboundKind.ShopItem, op, at); s.A = p[4 + i * 3]; s.B = Rd.U16(p, 5 + i * 3);
+                    sink.TryWrite(s);
+                }
+                return;
+            }
+            default: return;
+        }
+        sink.TryWrite(e);
+    }
 }
 
-/// <summary>Party, trade, chat, whisper.</summary>
+/// <summary>Chat, whisper (party and trade are passed as raw events for now).</summary>
 public sealed class SocialDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes => throw new NotImplementedException();
+    public IReadOnlyList<ushort> Opcodes { get; } = [0x2002, 0x200D, 0x2011];
+
     /// <inheritdoc/>
-    public void Decode(in RawFrame frame, IEventSink sink) => throw new NotImplementedException();
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        var e = InboundEvent.Of(InboundKind.Unknown, op, at);
+        switch (op)
+        {
+            case 0x2002:   // SOMEONECHAT {links u8, handle u16, len u8, flag, font, balloon, content}
+                if (p.Length < 7) return;
+                e.Kind = InboundKind.Chat; e.Handle = Rd.U16(p, 1);
+                e.Text = Text(p.Slice(7, Math.Min(p[3], p.Length - 7)));
+                break;
+            case 0x200D:   // SOMEONEWHISPER {links u8, talker[20], flag, len, content}
+                if (p.Length < 23) return;
+                e.Kind = InboundKind.Whisper;
+                e.Text = Ascii.Get(p.Slice(1, 20)) + "\n" + Text(p.Slice(23, Math.Min(p[22], p.Length - 23)));
+                break;
+            case 0x2011:   // NOTICE {u8, len, text}
+                if (p.Length < 2) return;
+                e.Kind = InboundKind.Chat; e.Handle = -1; e.Text = Text(p.Slice(2, Math.Min(p[1], p.Length - 2)));
+                break;
+            default: return;
+        }
+        sink.TryWrite(e);
+    }
+
+    private static string Text(ReadOnlySpan<byte> b)
+    {
+        var n = b.IndexOf((byte)0);
+        return System.Text.Encoding.Latin1.GetString(n < 0 ? b : b[..n]);
+    }
 }
 
-/// <summary>Map links, revive, dead menu, doors, tent.</summary>
+/// <summary>Map links, revive, dead menu.</summary>
 public sealed class WorldDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes => throw new NotImplementedException();
+    public IReadOnlyList<ushort> Opcodes { get; } = [0x1809, 0x180A, 0x104D, 0x104F, 0x1050];
+
     /// <inheritdoc/>
-    public void Decode(in RawFrame frame, IEventSink sink) => throw new NotImplementedException();
+    public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
+    {
+        var e = InboundEvent.Of(InboundKind.Unknown, op, at);
+        switch (op)
+        {
+            case 0x1809 or 0x180A:   // LINKSAME {map u16, x, y} / LINKOTHER {..., ip[16], port, wm}
+                if (p.Length < 10) return;
+                e.Kind = InboundKind.MapLink; e.A = Rd.U16(p, 0); e.X = Rd.U32(p, 2); e.Y = Rd.U32(p, 6); e.B = op == 0x180A ? 1 : 0;
+                break;
+            case 0x104D: e.Kind = InboundKind.DeadMenu; e.A = Rd.U32(p, 0); break;
+            case 0x104F or 0x1050:
+                if (p.Length < 10) return;
+                e.Kind = InboundKind.Revive; e.A = Rd.U16(p, 0); e.X = Rd.U32(p, 2); e.Y = Rd.U32(p, 6); e.B = op == 0x1050 ? 1 : 0;
+                break;
+            default: return;
+        }
+        sink.TryWrite(e);
+    }
 }
 
-/// <summary>Writes every frame, both directions, to a rolling per-bot file (survives relogs).</summary>
+/// <summary>Encodes typed requests into intents without allocation (inline payloads).</summary>
+public static class IntentEncoder
+{
+    /// <summary>Opcodes the encoder uses (shared by both packet sets).</summary>
+    public const ushort OpMoveRun = 0x2019, OpMoveWalk = 0x2017, OpStop = 0x2012, OpTarget = 0x2401, OpUntarget = 0x2408,
+        OpChangeMode = 0x2008, OpCastObj = 0x2440, OpCastFld = 0x2441, OpBashStart = 0x242B, OpBashStop = 0x2432,
+        OpItemUse = 0x3015, OpBuy = 0x3003, OpSell = 0x3006, OpNpcClick = 0x200A, OpChat = 0x2001, OpPick = 0x3009,
+        OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpQuestScriptAck = 0x4402,
+        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009,
+        OpLoginComplete = 0x1803;
+
+    private static Intent Make(ushort op, int action, ReadOnlySpan<byte> payload)
+    {
+        var i = new Intent { Opcode = op, ActionId = action };
+        if (payload.Length <= 64) { payload.CopyTo(i.Inline); i.Length = (byte)payload.Length; }
+        else i.Heap = payload.ToArray();
+        return i;
+    }
+
+    /// <summary>MOVERUN (or MOVEWALK): from/to.</summary>
+    public static Intent MoveRun(uint fx, uint fy, uint tx, uint ty, int actionId, bool walk = false)
+    {
+        Span<byte> b = stackalloc byte[16];
+        BinaryPrimitives.WriteUInt32LittleEndian(b, fx); BinaryPrimitives.WriteUInt32LittleEndian(b[4..], fy);
+        BinaryPrimitives.WriteUInt32LittleEndian(b[8..], tx); BinaryPrimitives.WriteUInt32LittleEndian(b[12..], ty);
+        return Make(walk ? OpMoveWalk : OpMoveRun, actionId, b);
+    }
+    /// <summary>STOP at a position.</summary>
+    public static Intent Stop(uint x, uint y, int actionId)
+    {
+        Span<byte> b = stackalloc byte[8];
+        BinaryPrimitives.WriteUInt32LittleEndian(b, x); BinaryPrimitives.WriteUInt32LittleEndian(b[4..], y);
+        return Make(OpStop, actionId, b);
+    }
+    /// <summary>TARGETTING {handle}.</summary>
+    public static Intent Target(ushort handle, int actionId) { Span<byte> b = stackalloc byte[2]; BinaryPrimitives.WriteUInt16LittleEndian(b, handle); return Make(OpTarget, actionId, b); }
+    /// <summary>Clear the selection.</summary>
+    public static Intent Untarget(int actionId) => Make(OpUntarget, actionId, default);
+    /// <summary>CHANGEMODE (2 = battle).</summary>
+    public static Intent ChangeMode(byte mode, int actionId) { Span<byte> b = [mode]; return Make(OpChangeMode, actionId, b); }
+    /// <summary>SKILLBASH_OBJ_CAST {skill, target}.</summary>
+    public static Intent CastObject(ushort skill, ushort target, int actionId)
+    {
+        Span<byte> b = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt16LittleEndian(b, skill); BinaryPrimitives.WriteUInt16LittleEndian(b[2..], target);
+        return Make(OpCastObj, actionId, b);
+    }
+    /// <summary>SKILLBASH_FLD_CAST {skill, xy}.</summary>
+    public static Intent CastGround(ushort skill, uint x, uint y, int actionId)
+    {
+        Span<byte> b = stackalloc byte[10];
+        BinaryPrimitives.WriteUInt16LittleEndian(b, skill); BinaryPrimitives.WriteUInt32LittleEndian(b[2..], x); BinaryPrimitives.WriteUInt32LittleEndian(b[6..], y);
+        return Make(OpCastFld, actionId, b);
+    }
+    /// <summary>BASHSTART / BASHSTOP (empty).</summary>
+    public static Intent Bash(bool start, int actionId) => Make(start ? OpBashStart : OpBashStop, actionId, default);
+    /// <summary>ITEM_USE {slot, box}.</summary>
+    public static Intent UseItem(byte slot, byte box, int actionId) { Span<byte> b = [slot, box]; return Make(OpItemUse, actionId, b); }
+    /// <summary>ITEM_BUY {itemid u16, lot u32}.</summary>
+    public static Intent Buy(ushort itemId, uint lot, int actionId)
+    {
+        Span<byte> b = stackalloc byte[6];
+        BinaryPrimitives.WriteUInt16LittleEndian(b, itemId); BinaryPrimitives.WriteUInt32LittleEndian(b[2..], lot);
+        return Make(OpBuy, actionId, b);
+    }
+    /// <summary>ITEM_SELL {slot u8, lot u32}.</summary>
+    public static Intent Sell(byte slot, uint lot, int actionId)
+    {
+        Span<byte> b = stackalloc byte[5];
+        b[0] = slot; BinaryPrimitives.WriteUInt32LittleEndian(b[1..], lot);
+        return Make(OpSell, actionId, b);
+    }
+    /// <summary>NPCCLICK {handle}.</summary>
+    public static Intent NpcClick(ushort handle, int actionId) { Span<byte> b = stackalloc byte[2]; BinaryPrimitives.WriteUInt16LittleEndian(b, handle); return Make(OpNpcClick, actionId, b); }
+    /// <summary>ITEM_PICK {handle}.</summary>
+    public static Intent Pick(ushort handle, int actionId) { Span<byte> b = stackalloc byte[2]; BinaryPrimitives.WriteUInt16LittleEndian(b, handle); return Make(OpPick, actionId, b); }
+    /// <summary>A one-byte reply (server menu / npc menu ack).</summary>
+    public static Intent Reply(ushort op, byte reply, int actionId) { Span<byte> b = [reply]; return Make(op, actionId, b); }
+    /// <summary>QUEST_SCRIPT_CMD_ACK {quest u16, qsc u8, result u32}.</summary>
+    public static Intent QuestScriptAck(ushort quest, byte qsc, uint result, int actionId)
+    {
+        Span<byte> b = stackalloc byte[7];
+        BinaryPrimitives.WriteUInt16LittleEndian(b, quest); b[2] = qsc; BinaryPrimitives.WriteUInt32LittleEndian(b[3..], result);
+        return Make(OpQuestScriptAck, actionId, b);
+    }
+    /// <summary>QUEST_SELECT_START {npc mob id u16, quest u16}.</summary>
+    public static Intent QuestSelectStart(ushort npcMob, ushort quest, int actionId)
+    {
+        Span<byte> b = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt16LittleEndian(b, npcMob); BinaryPrimitives.WriteUInt16LittleEndian(b[2..], quest);
+        return Make(OpQuestSelectStart, actionId, b);
+    }
+    /// <summary>CHAT_REQ {links u8 = 0, len u8, text}.</summary>
+    public static Intent Chat(ReadOnlySpan<char> text, int actionId)
+    {
+        var n = Math.Min(text.Length, 120);
+        var b = new byte[2 + n];
+        b[1] = (byte)n;
+        for (var i = 0; i < n; i++) b[2 + i] = (byte)text[i];
+        return new Intent { Opcode = OpChat, ActionId = actionId, Heap = b };
+    }
+    /// <summary>Raw opcode + payload.</summary>
+    public static Intent Raw(ushort opcode, ReadOnlySpan<byte> payload, int actionId) => Make(opcode, actionId, payload);
+}
+
+/// <summary>Writes every frame, both directions, to a rolling per-bot sink.</summary>
 public interface IPacketLog
 {
-    /// <summary>Whether logging is enabled (persisted per bot).</summary>
+    /// <summary>Whether logging is enabled.</summary>
     bool Enabled { get; set; }
     /// <summary>Record a frame (C->S logged before encryption).</summary>
     void Record(bool outbound, ushort opcode, ReadOnlySpan<byte> payload, long at);

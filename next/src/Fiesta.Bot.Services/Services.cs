@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+
 namespace Fiesta.Bot.Services;
 
 /// <summary>Monotonic clock; the tick reads it once (replayable).</summary>
@@ -12,30 +15,47 @@ public interface IClock
 /// <summary>Real clock.</summary>
 public sealed class SystemClock : IClock
 {
+    /// <summary>Shared instance.</summary>
+    public static readonly SystemClock Instance = new();
+    private static readonly long Start = Stopwatch.GetTimestamp();
+    private static readonly DateTime StartUtc = DateTime.UtcNow;
     /// <inheritdoc/>
-    public long NowMs => throw new NotImplementedException();
+    public long NowMs => (long)Stopwatch.GetElapsedTime(Start).TotalMilliseconds;
     /// <inheritdoc/>
-    public DateTime UtcNow => throw new NotImplementedException();
+    public DateTime UtcNow => DateTime.UtcNow;
+    /// <summary>Wall time of a monotonic stamp.</summary>
+    public static DateTime ToUtc(long ms) => StartUtc.AddMilliseconds(ms);
+}
+
+/// <summary>A clock the test or the replayer moves.</summary>
+public sealed class ManualClock : IClock
+{
+    /// <summary>Now.</summary>
+    public long NowMs { get; set; }
+    /// <inheritdoc/>
+    public DateTime UtcNow => new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(NowMs);
 }
 
 /// <summary>Client MobInfo row (the fields the runtime uses).</summary>
 public sealed record MobInfoRow(int Id, string InxName, string Name, int Level, int MaxHp, int WalkSpeed, int RunSpeed,
-    bool IsNpc, int AbsoluteSize, int WeaponType, int GradeType, int Type);
+    bool IsNpc, int AbsoluteSize, int WeaponType, int GradeType, int Type, bool IsPlayerSide);
 
 /// <summary>Client ActiveSkill row (the fields the runtime uses).</summary>
-public sealed record ActiveSkillRow(int Id, string InxName, string Name, int Range, int Area, int TargetNumber, int CastTimeMs,
-    int DelayMs, int DelayGroup, int Sp, int Hp, bool IsMovingSkill, int First, int EffectType, int UsableDegree, int DemandWeapon);
+public sealed record ActiveSkillRow(int Id, string InxName, string Name, int Step, int Range, int Area, int TargetNumber,
+    int CastTimeMs, int DelayMs, int DelayGroup, int DelayGroupMs, int Sp, int Hp, bool IsMovingSkill, int UsableDegree,
+    int DemandType, int SkillTargetState, int EffectType, int UseClass, int MinWc, int MaxWc, int MinMa, int MaxMa,
+    string Family, string StaNameA, string StaNameB, string StaNameC, string StaNameD);
 
 /// <summary>Client ItemInfo row.</summary>
-public sealed record ItemInfoRow(int Id, string InxName, string Name, int Type, int ItemClass, int DemandLevel, int WeaponType,
-    int SellPrice, int MaxLot, bool IsQuestItem);
+public sealed record ItemInfoRow(int Id, string InxName, string Name, int Type, int ItemClass, int Equip, int DemandLevel,
+    int WeaponType, int SellPrice, int BuyPrice, int MaxLot, int UseClass, string ItemUseSkill);
 
 /// <summary>Client MapInfo row.</summary>
-public sealed record MapInfoRow(int Id, string MapName, string Name, bool IsInstance);
+public sealed record MapInfoRow(int Id, string MapName, string Name, bool IsInstance, int RegenX, int RegenY);
 
 /// <summary>A quest definition parsed from QuestData.</summary>
 public sealed record QuestDef(int Id, string Name, int MinLevel, int MaxLevel, bool Repeatable, int StartNpc,
-    IReadOnlyList<QuestObjectiveDef> Objectives, long Exp, string StartScript, string ActionScript, string FinishScript);
+    IReadOnlyList<QuestObjectiveDef> Objectives, long Exp, int PrevQuest, int StartClass, int EndClass, string Script);
 
 /// <summary>One quest objective.</summary>
 public sealed record QuestObjectiveDef(QuestObjectiveKind Kind, int MobId, int ItemId, int Need);
@@ -60,100 +80,327 @@ public interface IClientData
     QuestDef? Quest(int id);
     /// <summary>QuestDialog text by dialog id.</summary>
     string? Dialog(int id);
+    /// <summary>Base class of a class (the first class of its line, from UseClassTypeInfo), -1 unknown.</summary>
+    int ClassFamily(int classId);
+    /// <summary>Class name.</summary>
+    string ClassName(int classId);
+    /// <summary>All quests.</summary>
+    IReadOnlyCollection<QuestDef> Quests { get; }
+    /// <summary>The ressystem directory.</summary>
+    string Dir { get; }
 }
 
-/// <summary>Walkability for one map: .shbd OR .shab, with door overlays; immutable once built.</summary>
-public sealed class BlockLayer
+/// <summary>Client data loaded from a ressystem directory. Tables load lazily, once; rows are immutable.</summary>
+public sealed class ClientData : IClientData
 {
-    /// <summary>World units per tile.</summary>
-    public const double WorldPerTile = 6.25;
-    /// <summary>Load a map's block files from a directory.</summary>
-    public static BlockLayer Load(string blockInfoDir, string mapName) => throw new NotImplementedException();
-    /// <summary>Width in tiles.</summary>
-    public int Width => throw new NotImplementedException();
-    /// <summary>Height in tiles.</summary>
-    public int Height => throw new NotImplementedException();
-    /// <summary>Is the tile blocked for movement (.shbd | .shab, doors applied)?</summary>
-    public bool Blocked(int tx, int ty) => throw new NotImplementedException();
-    /// <summary>Is the tile in the attack-block layer (line of fire)?</summary>
-    public bool AttackBlocked(int tx, int ty) => throw new NotImplementedException();
-    /// <summary>World to tile.</summary>
-    public static (int Tx, int Ty) ToTile(double x, double y) => throw new NotImplementedException();
-}
+    private readonly Lazy<Dictionary<int, MobInfoRow>> _mobs;
+    private readonly Lazy<Dictionary<int, ActiveSkillRow>> _skills;
+    private readonly Lazy<Dictionary<int, ItemInfoRow>> _items;
+    private readonly Lazy<(Dictionary<int, MapInfoRow> ById, Dictionary<string, MapInfoRow> ByName)> _maps;
+    private readonly Lazy<Dictionary<int, string>> _dialogs;
+    private readonly Lazy<Dictionary<int, QuestDef>> _quests;
+    private readonly Lazy<Dictionary<long, string>> _texts;
+    private readonly Lazy<(int[] Family, string[] Names)> _classes;
 
-/// <summary>Per-bot changes on top of the shared block layer: learned blocks with TTL, observed doors.</summary>
-public sealed class NavOverlay
-{
-    /// <summary>Record a server-refused segment end as blocked for a time.</summary>
-    public void LearnBlocked(int tx, int ty, long untilMs) => throw new NotImplementedException();
-    /// <summary>Observed door state.</summary>
-    public void SetDoor(string door, bool closed) => throw new NotImplementedException();
-    /// <summary>Is the tile blocked by the overlay at time now?</summary>
-    public bool Blocked(int tx, int ty, long nowMs) => throw new NotImplementedException();
-    /// <summary>Forget everything (map change).</summary>
-    public void Clear() => throw new NotImplementedException();
-}
+    /// <inheritdoc/>
+    public string Dir { get; }
 
-/// <summary>Rectangle/portal split of a block layer (kept from today's NavMesh).</summary>
-public sealed class NavMesh
-{
-    /// <summary>Build from a block layer.</summary>
-    public static NavMesh Build(BlockLayer layer) => throw new NotImplementedException();
-    /// <summary>Region index at a tile, -1 outside.</summary>
-    public int RegionAt(int tx, int ty) => throw new NotImplementedException();
-    /// <summary>Number of regions.</summary>
-    public int RegionCount => throw new NotImplementedException();
-}
+    /// <summary>Create over a ressystem directory.</summary>
+    public ClientData(string ressystemDir)
+    {
+        Dir = ressystemDir;
+        _texts = new(LoadTexts);
+        _mobs = new(LoadMobs);
+        _skills = new(LoadSkills);
+        _items = new(LoadItems);
+        _maps = new(LoadMaps);
+        _dialogs = new(LoadDialogs);
+        _quests = new(LoadQuests);
+        _classes = new(LoadClasses);
+    }
 
-/// <summary>Outcome of a path search.</summary>
-public enum PathStatus : byte { Pending, Ready, Failed }
+    private ShnTable? T(string name)
+    {
+        var p = Path.Combine(Dir, name + ".shn");
+        return File.Exists(p) ? ShnTable.Load(p) : null;
+    }
 
-/// <summary>A finished path (pooled waypoint array, world units).</summary>
-public sealed record PathResult(PathStatus Status, IReadOnlyList<(uint X, uint Y)> Waypoints, double Length, string? FailReason);
+    private string Name(ShnTable t, int row, string col)
+    {
+        var c = t.Col(col);
+        if (c < 0) return "";
+        if (t.Str(row, c) is { } s) return s;
+        var id = t.Num(row, c);   // 2026 tables carry a text id here
+        return _texts.Value.TryGetValue(id, out var text) ? text : "";
+    }
 
-/// <summary>Corridor A* over regions + funnel + corner nudge + goal snapping (ported from fiesta-godot).</summary>
-public static class PathSearch
-{
-    /// <summary>Find a path in tiles; null when unreachable.</summary>
-    public static List<(int X, int Y)>? Find(NavMesh mesh, BlockLayer layer, NavOverlay? overlay, int sx, int sy, int gx, int gy) => throw new NotImplementedException();
-    /// <summary>Snap a target to the nearest walkable tile, ring search toward the start (client behaviour).</summary>
-    public static (int X, int Y)? SnapGoal(BlockLayer layer, NavOverlay? overlay, int sx, int sy, int gx, int gy) => throw new NotImplementedException();
-    /// <summary>Region connectivity with doors.</summary>
-    public static bool Reachable(NavMesh mesh, int sx, int sy, int gx, int gy) => throw new NotImplementedException();
-}
+    private Dictionary<long, string> LoadTexts()
+    {
+        var d = new Dictionary<long, string>();
+        foreach (var n in new[] { "TextData", "TextData2", "TextData3" })
+            if (T(n) is { } t)
+                for (var r = 0; r < t.RowCount; r++) d.TryAdd(t.Num(r, "eTextID"), t.Str(r, "acString") ?? "");
+        return d;
+    }
 
-/// <summary>Shared navigation per map plus the job entry points.</summary>
-public interface INavService
-{
-    /// <summary>Block layer for a map (loaded once).</summary>
-    BlockLayer Layer(string mapName);
-    /// <summary>Mesh for a map (built once, shared).</summary>
-    NavMesh Mesh(string mapName);
-    /// <summary>Queue a path search; the result is posted to the bot as a job completion.</summary>
-    JobTicket RequestPath(int botIndex, string mapName, NavOverlay overlay, uint fx, uint fy, uint tx, uint ty);
-    /// <summary>Read a finished path.</summary>
-    PathResult? Result(JobTicket ticket);
+    private Dictionary<int, MobInfoRow> LoadMobs()
+    {
+        var d = new Dictionary<int, MobInfoRow>();
+        if (T("MobInfo") is not { } t) return d;
+        for (var r = 0; r < t.RowCount; r++)
+        {
+            var inx = t.Str(r, "InxName") ?? "";
+            var name = Name(t, r, "Name");
+            d[(int)t.Num(r, "ID")] = new MobInfoRow((int)t.Num(r, "ID"), inx, name.Length > 0 ? name : inx, (int)t.Num(r, "Level"),
+                (int)t.Num(r, "MaxHP"), (int)t.Num(r, "WalkSpeed"), (int)t.Num(r, "RunSpeed"), t.Num(r, "IsNPC") != 0,
+                (int)t.Num(r, "AbsoluteSize"), (int)t.Num(r, "WeaponType"), (int)t.Num(r, "GradeType"), (int)t.Num(r, "Type"),
+                t.Num(r, "IsPlayerSide") != 0);
+        }
+        return d;
+    }
+
+    /// <summary>Skill family = InxName without its trailing rank digits.</summary>
+    public static string FamilyOf(string inx)
+    {
+        var n = inx.Length;
+        while (n > 0 && char.IsDigit(inx[n - 1])) n--;
+        return inx[..n];
+    }
+
+    private Dictionary<int, ActiveSkillRow> LoadSkills()
+    {
+        var d = new Dictionary<int, ActiveSkillRow>();
+        if (T("ActiveSkill") is not { } t) return d;
+        for (var r = 0; r < t.RowCount; r++)
+        {
+            var inx = t.Str(r, "InxName") ?? "";
+            var nm = Name(t, r, "Name");
+            int I(string c) => (int)t.Num(r, c);
+            d[I("ID")] = new ActiveSkillRow(I("ID"), inx, nm.Length > 0 ? nm : inx, I("Step"), I("Range"), I("Area"), I("TargetNumber"),
+                I("CastTime"), I("DlyTime"), I("DlyGroupNum"), I("DlyTimeGroup"), I("SP"), I("HP"), I("IsMovingSkill") != 0,
+                I("UsableDegree"), I("DemandType"), I("SkillTargetState"), I("EffectType"), I("UseClass"),
+                I("MinWC"), I("MaxWC"), I("MinMA"), I("MaxMA"), FamilyOf(inx),
+                t.Str(r, "StaNameA") ?? "-", t.Str(r, "StaNameB") ?? "-", t.Str(r, "StaNameC") ?? "-", t.Str(r, "StaNameD") ?? "-");
+        }
+        return d;
+    }
+
+    private Dictionary<int, ItemInfoRow> LoadItems()
+    {
+        var d = new Dictionary<int, ItemInfoRow>();
+        if (T("ItemInfo") is not { } t) return d;
+        for (var r = 0; r < t.RowCount; r++)
+        {
+            int I(string c) => (int)t.Num(r, c);
+            var inx = t.Str(r, "InxName") ?? "";
+            var nm = Name(t, r, "Name");
+            d[I("ID")] = new ItemInfoRow(I("ID"), inx, nm.Length > 0 ? nm : inx, I("Type"), I("Class"), I("Equip"), I("DemandLv"),
+                I("WeaponType"), I("SellPrice"), I("BuyPrice"), I("MaxLot"), I("UseClass"), t.Str(r, "ItemUseSkill") ?? "-");
+        }
+        return d;
+    }
+
+    private (Dictionary<int, MapInfoRow>, Dictionary<string, MapInfoRow>) LoadMaps()
+    {
+        var a = new Dictionary<int, MapInfoRow>(); var b = new Dictionary<string, MapInfoRow>(StringComparer.OrdinalIgnoreCase);
+        if (T("MapInfo") is not { } t) return (a, b);
+        for (var r = 0; r < t.RowCount; r++)
+        {
+            var m = new MapInfoRow((int)t.Num(r, "ID"), t.Str(r, "MapName") ?? "", Name(t, r, "Name"), t.Num(r, "InSide") != 0,
+                (int)t.Num(r, "RegenX"), (int)t.Num(r, "RegenY"));
+            a[m.Id] = m; b.TryAdd(m.MapName, m);
+        }
+        return (a, b);
+    }
+
+    private Dictionary<int, string> LoadDialogs()
+    {
+        var d = new Dictionary<int, string>();
+        if (T("QuestDialog") is not { } t) return d;
+        for (var r = 0; r < t.RowCount; r++) d[(int)t.Num(r, "ID")] = t.Str(r, "Dialog") ?? "";
+        return d;
+    }
+
+    private Dictionary<int, QuestDef> LoadQuests()
+    {
+        var d = new Dictionary<int, QuestDef>();
+        if (T("QuestData") is not { } t || t.Col("Script") < 0) return d;   // the 2016 client's bespoke QuestData: not read yet
+        var obj = new Dictionary<int, List<QuestObjectiveDef>>();
+        void Add(int q, QuestObjectiveDef o) { if (!obj.TryGetValue(q, out var l)) obj[q] = l = new(); l.Add(o); }
+        if (T("QuestEndNpc") is { } en)
+            for (var r = 0; r < en.RowCount; r++)
+            {
+                if (en.Num(r, "IsEnabled") == 0) continue;
+                var n = (int)en.Num(r, "Count");
+                Add((int)en.Num(r, "ID"), new QuestObjectiveDef(n > 0 ? QuestObjectiveKind.Kill : QuestObjectiveKind.Talk, (int)en.Num(r, "MobID"), -1, Math.Max(1, n)));
+            }
+        if (T("QuestEndItem") is { } ei)
+            for (var r = 0; r < ei.RowCount; r++)
+                Add((int)ei.Num(r, "ID"), new QuestObjectiveDef(QuestObjectiveKind.Collect, -1, (int)ei.Num(r, "ItemID"), (int)ei.Num(r, "Count")));
+        var exp = new Dictionary<int, long>();
+        if (T("QuestReward") is { } rw)
+            for (var r = 0; r < rw.RowCount; r++)
+                if (rw.Num(r, "RewardType") == 0) exp[(int)rw.Num(r, "ID")] = rw.Num(r, "Flag");
+        for (var r = 0; r < t.RowCount; r++)
+        {
+            int I(string c) => (int)t.Num(r, c);
+            var id = I("ID");
+            var name = Dialog(I("NameId"))?.Trim() ?? $"quest {id}";
+            d[id] = new QuestDef(id, name, I("LvlStart"), I("LvlEnd"), I("RepeatType") != 0, I("NPCID"),
+                obj.TryGetValue(id, out var o) ? o : Array.Empty<QuestObjectiveDef>(), exp.GetValueOrDefault(id), I("PrevQuestID"),
+                I("StartClassID"), I("EndClassID"), t.Str(r, "Script") ?? "");
+        }
+        return d;
+    }
+
+    // a class line = the largest contiguous run of classes (at most five) that one UseClassTypeInfo row allows
+    private (int[], string[]) LoadClasses()
+    {
+        var names = new string[64]; var fam = new int[64];
+        Array.Fill(names, ""); Array.Fill(fam, -1);
+        if (T("ClassName") is { } cn)
+            for (var r = 0; r < cn.RowCount; r++) { var id = (int)cn.Num(r, "ClassID"); if (id is >= 0 and < 64) names[id] = cn.Str(r, "acEngName") ?? ""; }
+        var best = new int[64];
+        if (T("UseClassTypeInfo") is { } u)
+        {
+            var classCols = Enumerable.Range(1, u.Columns.Length - 1).ToArray();   // column k = class k
+            for (var r = 0; r < u.RowCount; r++)
+            {
+                var set = classCols.Where(c => u.Num(r, c) != 0).ToArray();
+                if (set.Length is 0 or > 5) continue;
+                var contiguous = set[^1] - set[0] + 1 == set.Length;
+                if (!contiguous) continue;
+                foreach (var c in set)
+                    if (c < 64 && set.Length > best[c]) { best[c] = set.Length; fam[c] = set[0]; }
+            }
+        }
+        return (fam, names);
+    }
+
+    /// <inheritdoc/>
+    public MobInfoRow? Mob(int id) => _mobs.Value.GetValueOrDefault(id);
+    /// <inheritdoc/>
+    public ActiveSkillRow? Skill(int id) => _skills.Value.GetValueOrDefault(id);
+    /// <inheritdoc/>
+    public ItemInfoRow? Item(int id) => _items.Value.GetValueOrDefault(id);
+    /// <inheritdoc/>
+    public MapInfoRow? Map(int id) => _maps.Value.ById.GetValueOrDefault(id);
+    /// <inheritdoc/>
+    public MapInfoRow? Map(string mapName) => _maps.Value.ByName.GetValueOrDefault(mapName);
+    /// <inheritdoc/>
+    public QuestDef? Quest(int id) => _quests.Value.GetValueOrDefault(id);
+    /// <inheritdoc/>
+    public string? Dialog(int id) => _dialogs.Value.GetValueOrDefault(id);
+    /// <inheritdoc/>
+    public int ClassFamily(int classId) => classId is >= 0 and < 64 ? _classes.Value.Family[classId] : -1;
+    /// <inheritdoc/>
+    public string ClassName(int classId) => classId is >= 0 and < 64 ? _classes.Value.Names[classId] : "";
+    /// <inheritdoc/>
+    public IReadOnlyCollection<QuestDef> Quests => _quests.Value.Values;
+    /// <summary>All skills.</summary>
+    public IReadOnlyCollection<ActiveSkillRow> Skills => _skills.Value.Values;
+    /// <summary>Item class lookup for the 2026 item-record translation.</summary>
+    public int ItemClass(int id) => Item(id)?.ItemClass ?? -1;
+    /// <summary>Force-load everything (startup, off the tick).</summary>
+    public void Preload() { _ = _mobs.Value; _ = _skills.Value; _ = _items.Value; _ = _maps.Value; _ = _quests.Value; _ = _classes.Value; }
 }
 
 /// <summary>Job kinds that run off the tick.</summary>
 public enum JobKind : byte { Path, RouteLength, QuestPlan, TravelPlan, SafeSpot, Custom }
 
 /// <summary>Handle to a job.</summary>
-public readonly record struct JobTicket(int Value);
+public readonly record struct JobTicket(int Value)
+{
+    /// <summary>Rejected / none.</summary>
+    public static readonly JobTicket None = new(-1);
+}
 
-/// <summary>Bounded worker pool for off-tick work; completions are posted to the owning bot's inbound lane.</summary>
+/// <summary>Bounded worker pool for off-tick work; completions are posted to the owning bot through a callback.</summary>
 public interface IJobScheduler
 {
-    /// <summary>Submit work; never blocks (rejects with an invalid ticket when saturated).</summary>
-    JobTicket Submit(int botIndex, JobKind kind, Func<CancellationToken, object?> work);
+    /// <summary>Submit work; never blocks (rejects with <see cref="JobTicket.None"/> when saturated).</summary>
+    JobTicket Submit(int botIndex, JobKind kind, Func<CancellationToken, object?> work, Action<JobTicket, bool>? done = null);
     /// <summary>Result of a completed job, null while pending.</summary>
     object? Result(JobTicket ticket);
+    /// <summary>Is the job finished?</summary>
+    bool IsDone(JobTicket ticket);
     /// <summary>Cancel if not started.</summary>
     bool Cancel(JobTicket ticket);
+    /// <summary>Forget a result (frees it).</summary>
+    void Forget(JobTicket ticket);
+}
+
+/// <summary>Default job pool: a fixed number of worker threads over a bounded queue.</summary>
+public sealed class JobScheduler : IJobScheduler, IDisposable
+{
+    private sealed class Job { public int Id; public Func<CancellationToken, object?> Work = null!; public Action<JobTicket, bool>? Done; public volatile bool Cancelled; }
+    private readonly System.Threading.Channels.Channel<Job> _queue;
+    private readonly ConcurrentDictionary<int, (bool Done, object? Result)> _results = new();
+    private readonly CancellationTokenSource _cts = new();
+    private int _next;
+    private readonly Thread[] _workers;
+    /// <summary>Jobs run.</summary>
+    public long Completed;
+
+    /// <summary>Create with workers and a queue bound.</summary>
+    public JobScheduler(int workers = 2, int capacity = 4096)
+    {
+        _queue = System.Threading.Channels.Channel.CreateBounded<Job>(new System.Threading.Channels.BoundedChannelOptions(capacity) { FullMode = System.Threading.Channels.BoundedChannelFullMode.Wait });
+        _workers = new Thread[workers];
+        for (var i = 0; i < workers; i++)
+        {
+            _workers[i] = new Thread(Loop) { IsBackground = true, Name = $"jobs-{i}", Priority = ThreadPriority.BelowNormal };
+            _workers[i].Start();
+        }
+    }
+
+    private void Loop()
+    {
+        var reader = _queue.Reader;
+        while (!_cts.IsCancellationRequested)
+        {
+            Job job;
+            try { if (!reader.WaitToReadAsync(_cts.Token).AsTask().GetAwaiter().GetResult()) return; } catch { return; }
+            if (!reader.TryRead(out job!)) continue;
+            if (job.Cancelled) { _results.TryRemove(job.Id, out _); continue; }
+            object? r = null; var ok = true;
+            try { r = job.Work(_cts.Token); } catch (Exception e) { r = e; ok = false; }
+            _results[job.Id] = (true, r);
+            Interlocked.Increment(ref Completed);
+            job.Done?.Invoke(new JobTicket(job.Id), ok);
+        }
+    }
+
+    private readonly ConcurrentDictionary<int, Job> _pending = new();
+
+    /// <inheritdoc/>
+    public JobTicket Submit(int botIndex, JobKind kind, Func<CancellationToken, object?> work, Action<JobTicket, bool>? done = null)
+    {
+        var id = Interlocked.Increment(ref _next);
+        var job = new Job { Id = id, Work = work, Done = done };
+        _results[id] = (false, null);
+        if (!_queue.Writer.TryWrite(job)) { _results.TryRemove(id, out _); return JobTicket.None; }
+        _pending[id] = job;
+        return new JobTicket(id);
+    }
+    /// <inheritdoc/>
+    public object? Result(JobTicket t) => _results.TryGetValue(t.Value, out var r) && r.Done ? r.Result : null;
+    /// <inheritdoc/>
+    public bool IsDone(JobTicket t) => _results.TryGetValue(t.Value, out var r) && r.Done;
+    /// <inheritdoc/>
+    public bool Cancel(JobTicket t) { if (_pending.TryRemove(t.Value, out var j)) { j.Cancelled = true; return true; } return false; }
+    /// <inheritdoc/>
+    public void Forget(JobTicket t) { _results.TryRemove(t.Value, out _); _pending.TryRemove(t.Value, out _); }
+    /// <inheritdoc/>
+    public void Dispose() { _cts.Cancel(); _queue.Writer.TryComplete(); }
 }
 
 /// <summary>An interval estimate learned from observations.</summary>
-public sealed record Estimate(double Value, double Low, double High, int Samples);
+public sealed record Estimate(double Value, double Low, double High, int Samples)
+{
+    /// <summary>Nothing known.</summary>
+    public static readonly Estimate Unknown = new(-1, -1, -1, 0);
+}
 
 /// <summary>What a mob estimator tracks.</summary>
 public enum MobFact : byte { DetectRadius, ChaseDistance, Reach, AttackInterval, Armour, MagicResist, HitAvg, HitMax }
@@ -175,4 +422,80 @@ public interface IKnowledgeStore
     int NpcRole(int npcId);
     /// <summary>Record an NPC role.</summary>
     void LearnNpcRole(int npcId, int roleMask, int mapId, uint x, uint y);
+    /// <summary>Known NPC of a role on a map: (npc mob id, x, y) or null.</summary>
+    (int NpcId, uint X, uint Y)? KnownNpc(int roleMask, int mapId);
+}
+
+/// <summary>In-memory knowledge store with interval estimators, optionally persisted to a JSON file.</summary>
+public sealed class KnowledgeStore : IKnowledgeStore
+{
+    private sealed class Acc
+    {
+        public double Lo = double.NaN, Hi = double.NaN, Sum; public int N, Bounds;
+        public Estimate Get()
+        {
+            if (N == 0 && Bounds == 0) return Estimate.Unknown;
+            var v = N > 0 ? Sum / N : !double.IsNaN(Lo) && !double.IsNaN(Hi) ? (Lo + Hi) / 2 : !double.IsNaN(Lo) ? Lo : Hi;
+            return new Estimate(v, double.IsNaN(Lo) ? v : Lo, double.IsNaN(Hi) ? v : Hi, N + Bounds);
+        }
+    }
+    private readonly ConcurrentDictionary<(int, MobFact), Acc> _mob = new();
+    private readonly ConcurrentDictionary<int, Acc> _assist = new();
+    private readonly ConcurrentDictionary<int, (int Mask, int Map, uint X, uint Y)> _npc = new();
+
+    /// <inheritdoc/>
+    public Estimate Mob(int mobId, MobFact fact) => _mob.TryGetValue((mobId, fact), out var a) ? a.Get() : Estimate.Unknown;
+    /// <inheritdoc/>
+    public void ObserveAtLeast(int mobId, MobFact fact, double value)
+    {
+        var a = _mob.GetOrAdd((mobId, fact), _ => new Acc());
+        lock (a) { a.Lo = double.IsNaN(a.Lo) ? value : Math.Max(a.Lo, value); a.Bounds++; }
+    }
+    /// <inheritdoc/>
+    public void ObserveAtMost(int mobId, MobFact fact, double value)
+    {
+        var a = _mob.GetOrAdd((mobId, fact), _ => new Acc());
+        lock (a) { a.Hi = double.IsNaN(a.Hi) ? value : Math.Min(a.Hi, value); a.Bounds++; }
+    }
+    /// <inheritdoc/>
+    public void Sample(int mobId, MobFact fact, double value)
+    {
+        var a = _mob.GetOrAdd((mobId, fact), _ => new Acc());
+        lock (a)
+        {
+            a.Sum += value; a.N++;
+            a.Lo = double.IsNaN(a.Lo) ? value : Math.Min(a.Lo, value);
+            a.Hi = double.IsNaN(a.Hi) ? value : Math.Max(a.Hi, value);
+        }
+    }
+    /// <inheritdoc/>
+    public Estimate Assist(int familyId) => _assist.TryGetValue(familyId, out var a) ? a.Get() : Estimate.Unknown;
+    /// <summary>Add an assist sample.</summary>
+    public void SampleAssist(int familyId, double d) { var a = _assist.GetOrAdd(familyId, _ => new Acc()); lock (a) { a.Sum += d; a.N++; } }
+    /// <inheritdoc/>
+    public int NpcRole(int npcId) => _npc.TryGetValue(npcId, out var r) ? r.Mask : 0;
+    /// <inheritdoc/>
+    public void LearnNpcRole(int npcId, int roleMask, int mapId, uint x, uint y)
+        => _npc.AddOrUpdate(npcId, (roleMask, mapId, x, y), (_, o) => (o.Mask | roleMask, mapId, x, y));
+    /// <inheritdoc/>
+    public (int NpcId, uint X, uint Y)? KnownNpc(int roleMask, int mapId)
+    {
+        foreach (var kv in _npc) if ((kv.Value.Mask & roleMask) != 0 && kv.Value.Map == mapId) return (kv.Key, kv.Value.X, kv.Value.Y);
+        return null;
+    }
+    /// <summary>Snapshot for persistence and the knowledge endpoint.</summary>
+    public object Snapshot(int mobId) => Enum.GetValues<MobFact>().ToDictionary(f => f.ToString(), f => Mob(mobId, f));
+
+    /// <summary>Serialise NPC roles (JSON).</summary>
+    public string ExportNpcs() => System.Text.Json.JsonSerializer.Serialize(_npc.Select(k => new { id = k.Key, mask = k.Value.Mask, map = k.Value.Map, x = k.Value.X, y = k.Value.Y }));
+    /// <summary>Load NPC roles (JSON from <see cref="ExportNpcs"/>).</summary>
+    public void ImportNpcs(string json)
+    {
+        try
+        {
+            foreach (var e in System.Text.Json.JsonDocument.Parse(json).RootElement.EnumerateArray())
+                _npc[e.GetProperty("id").GetInt32()] = (e.GetProperty("mask").GetInt32(), e.GetProperty("map").GetInt32(), e.GetProperty("x").GetUInt32(), e.GetProperty("y").GetUInt32());
+        }
+        catch (System.Text.Json.JsonException) { }
+    }
 }

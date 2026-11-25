@@ -254,6 +254,8 @@ public sealed class BrainInstance : IBrainTicker
     public void Tick(AgentContext ctx) => throw new NotImplementedException();
     /// <inheritdoc/>
     public long LastInstructions => throw new NotImplementedException();
+    /// <inheritdoc/>
+    public object? Control(ControlCommand cmd, AgentContext ctx) => throw new NotImplementedException();
     /// <summary>Hot-swap to a new version at the next tick boundary, keeping matching states and bb.bot.</summary>
     public void Swap(CompiledBrain next, bool keepState) => throw new NotImplementedException();
     /// <summary>Checkpoint: active state paths + bb.bot.</summary>

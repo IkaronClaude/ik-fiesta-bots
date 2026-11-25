@@ -1,8 +1,10 @@
 using Fiesta.Bot.Protocol;
+using Fiesta.Bot.Services;
+using Fiesta.Bot.Services.Logging;
 
 namespace Fiesta.Bot.Agent;
 
-/// <summary>Action identifier (index + generation into the action table).</summary>
+/// <summary>Action identifier (a monotonically increasing number; the table keeps the last 1,024).</summary>
 public readonly record struct ActionId(int Value)
 {
     /// <summary>"Rejected before queueing".</summary>
@@ -18,6 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
+    MenuReply,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -28,11 +31,14 @@ public enum Resource : byte { None = 0, Movement = 1, Combat = 2, Cast = 4, Inve
 public enum LocalRefusal : ushort
 {
     None = 0, LinkDown = 0xF001, Preempted, UnknownSkill, NotReady, OutOfRange, Moving, Mounted, Busy, QueueFull, InvalidTarget,
+    NoPath, MoveFailed, Desync, NotInWorld, Dead,
 }
 
 /// <summary>Stored state of one action.</summary>
 public struct ActionRecord
 {
+    /// <summary>Id (validates the slot).</summary>
+    public int Id;
     /// <summary>Kind.</summary>
     public ActionKind Kind;
     /// <summary>State.</summary>
@@ -45,52 +51,314 @@ public struct ActionRecord
     public long QueuedAt, SentAt, ResolvedAt, Deadline;
     /// <summary>Arguments for matching (skill, target, item...).</summary>
     public long Arg0, Arg1;
+    /// <summary>Is the action still pending?</summary>
+    public readonly bool Pending => State is ActionState.Queued or ActionState.Sent;
 }
 
 /// <summary>Decides whether an inbound event resolves a pending action.</summary>
 public interface IResultMatcher
 {
-    /// <summary>Return the new state if <paramref name="evt"/> resolves <paramref name="action"/>, else null.</summary>
-    (ActionState State, ushort Code)? Match(in ActionRecord action, in InboundEvent evt);
+    /// <summary>The new state and code if <paramref name="evt"/> resolves <paramref name="action"/>, else null.</summary>
+    (ActionState State, ushort Code)? Match(in ActionRecord action, in InboundEvent evt, WorldState world);
 }
 
 /// <summary>Static description of an action kind: matcher, timeout, resource.</summary>
 public sealed record ActionSpec(ActionKind Kind, Resource Resource, IResultMatcher Matcher, TimeSpan BaseTimeout);
 
-/// <summary>The table of every action kind; an action kind without a matcher cannot be registered.</summary>
+/// <summary>Matcher implementations.</summary>
+internal sealed class FnMatcher(Func<ActionRecord, InboundEvent, WorldState, (ActionState, ushort)?> f) : IResultMatcher
+{
+    public (ActionState State, ushort Code)? Match(in ActionRecord a, in InboundEvent e, WorldState w) => f(a, e, w);
+}
+
+/// <summary>The table of every action kind with its result matcher; an action kind without a matcher has no entry
+/// and <see cref="ActionSystem.Issue"/> refuses it, so "wire an action = wire its result" is enforced at one place.</summary>
 public static class ActionCatalog
 {
-    /// <summary>Spec of a kind.</summary>
-    public static ActionSpec Get(ActionKind kind) => throw new NotImplementedException();
+    private static readonly ActionSpec?[] Specs = new ActionSpec?[64];
+    /// <summary>Resolved by the controller / procedure that runs the action (moves, procedures).</summary>
+    public static readonly IResultMatcher Controller = new FnMatcher((_, _, _) => null);
+    /// <summary>Fire-and-forget: resolved as acked when the intent is queued (the game sends no result).</summary>
+    public static readonly IResultMatcher OnSend = new FnMatcher((_, _, _) => null);
+
+    static ActionCatalog()
+    {
+        void S(ActionKind k, Resource r, IResultMatcher m, int ms) => Specs[(int)k] = new ActionSpec(k, r, m, TimeSpan.FromMilliseconds(ms));
+        var cast = new FnMatcher((a, e, w) => e.Kind switch
+        {
+            InboundKind.SkillCastStart when e.A == a.Arg0 => (ActionState.Acked, (ushort)0),
+            InboundKind.CastFail => (ActionState.Refused, (ushort)e.A),
+            _ => null,
+        });
+        S(ActionKind.Cast, Resource.Cast, cast, 1500);
+        S(ActionKind.CastGround, Resource.Cast, cast, 1500);
+        S(ActionKind.Bash, Resource.Combat, new FnMatcher((a, e, w) =>
+            (e.Kind is InboundKind.Damage or InboundKind.SwingStart) && e.Handle == w.Self.Handle && e.Handle2 == a.Arg0 ? (ActionState.Acked, (ushort)0) : null), 2500);
+        S(ActionKind.StopBash, Resource.Combat, OnSend, 0);
+        S(ActionKind.Target, Resource.Combat, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.EntityHp && e.Opcode == 0x2402 && e.Handle == a.Arg0 ? (ActionState.Acked, (ushort)0) : null), 1500);
+        S(ActionKind.Untarget, Resource.Combat, OnSend, 0);
+        S(ActionKind.Move, Resource.Movement, Controller, 60000);
+        S(ActionKind.MoveDirect, Resource.Movement, Controller, 30000);
+        S(ActionKind.Follow, Resource.Movement, Controller, 600000);
+        S(ActionKind.Stop, Resource.Movement, OnSend, 0);
+        S(ActionKind.UseItem, Resource.Inventory, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.ItemUseResult ? (e.A == 0x0700 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.A)) : null), 2000);
+        S(ActionKind.Mount, Resource.Movement, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.Mount && e.A == 1 ? (ActionState.Acked, (ushort)0)
+            : e.Kind == InboundKind.ItemUseResult && e.A != 0x0700 ? (ActionState.Refused, (ushort)e.A) : null), 6000);
+        S(ActionKind.Dismount, Resource.Movement, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.Mount && e.A == 0 ? (ActionState.Acked, (ushort)0)
+            : e.Kind == InboundKind.ItemUseResult && e.A != 0x0700 ? (ActionState.Refused, (ushort)e.A) : null), 6000);
+        var stone = new FnMatcher((a, e, w) => e.Kind == InboundKind.StoneUse
+            ? (e.A == a.Arg0 ? (ActionState.Acked, (ushort)0) : e.A >= 2 ? (ActionState.Refused, (ushort)e.B) : null) : null);
+        S(ActionKind.StoneHp, Resource.Inventory, stone, 2000);
+        S(ActionKind.StoneSp, Resource.Inventory, stone, 2000);
+        S(ActionKind.Loot, Resource.Inventory, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.PickAck ? (e.C == 0x0341 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.C)) : null), 2000);
+        S(ActionKind.Buy, Resource.Npc, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.BuySellAck && e.B == 0 ? (e.A == 0x0201 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.A)) : null), 2000);
+        S(ActionKind.Sell, Resource.Npc, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.BuySellAck && e.B == 1 ? (e.A == 0x0381 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.A)) : null), 2000);
+        S(ActionKind.OpenShop, Resource.Npc, Controller, 6000);
+        S(ActionKind.Talk, Resource.Npc, Controller, 20000);
+        S(ActionKind.Storage, Resource.Npc, Controller, 6000);
+        S(ActionKind.Gate, Resource.Movement, Controller, 20000);
+        S(ActionKind.Travel, Resource.Movement, Controller, 600000);
+        S(ActionKind.Revive, Resource.None, Controller, 30000);
+        S(ActionKind.Say, Resource.Chat, OnSend, 0);
+        S(ActionKind.Whisper, Resource.Chat, OnSend, 0);
+        S(ActionKind.MenuReply, Resource.Npc, OnSend, 0);
+        S(ActionKind.Raw, Resource.None, OnSend, 0);
+    }
+
+    /// <summary>Spec of a kind, null when the kind has no result wiring yet.</summary>
+    public static ActionSpec? Get(ActionKind kind) => Specs[(int)kind];
     /// <summary>All specs.</summary>
-    public static IReadOnlyList<ActionSpec> All => throw new NotImplementedException();
+    public static IReadOnlyList<ActionSpec> All => Specs.Where(s => s is not null).ToList()!;
 }
 
 /// <summary>Creates actions, tracks them, resolves them from inbound events, times them out. Tick thread only.</summary>
 public sealed class ActionSystem
 {
+    private readonly ActionRecord[] _t;
+    private readonly int[] _pending = new int[256];
+    private int _pendingN;
+    private int _next = 1;
+    private readonly OutboundRing _out;
+    private readonly Resource[] _claims = new Resource[16];
+    private long _now;
+    /// <summary>Events (set by the agent).</summary>
+    public BrainEventBus? Events { get; set; }
+    /// <summary>World (for matchers).</summary>
+    public WorldState? World { get; set; }
+    /// <summary>Logger (set by the agent).</summary>
+    public BotLogger? Log { get; set; }
+    /// <summary>Issued / resolved counters.</summary>
+    public long Issued, Resolved;
+
     /// <summary>Create for one bot.</summary>
-    public ActionSystem(OutboundRing outbound, int capacity = 1024) => throw new NotImplementedException();
-    /// <summary>Queue an action with its intents; returns <see cref="ActionId.None"/> with a refusal when it cannot be queued.</summary>
-    public ActionId Issue(ActionKind kind, byte layer, long arg0, long arg1, ReadOnlySpan<Intent> intents) => throw new NotImplementedException();
+    public ActionSystem(OutboundRing outbound, int capacity = 1024) { _out = outbound; _t = new ActionRecord[capacity]; }
+
+    /// <summary>The tick's clock (set at tick start).</summary>
+    public long Now { get => _now; set => _now = value; }
+
+    /// <summary>Queue an action with its intents; returns <see cref="ActionId.None"/> with <see cref="LastRejection"/>
+    /// when it cannot be queued.</summary>
+    public ActionId Issue(ActionKind kind, byte layer, long arg0, long arg1, ReadOnlySpan<Intent> intents, int timeoutMs = -1)
+    {
+        var spec = ActionCatalog.Get(kind);
+        if (spec is null) return Reject(LocalRefusal.UnknownSkill);
+        if (!_out.LinkUp) return Reject(LocalRefusal.LinkDown);
+        if (Preempted(layer, spec.Resource)) return Reject(LocalRefusal.Preempted);
+        if (_out.Free < intents.Length) return Reject(LocalRefusal.QueueFull);
+        var id = New(kind, layer, arg0, arg1, timeoutMs >= 0 ? timeoutMs : (int)spec.BaseTimeout.TotalMilliseconds);
+        for (var i = 0; i < intents.Length; i++)
+        {
+            var it = intents[i]; it.ActionId = id.Value;
+            _out.TryEnqueue(it);
+        }
+        ref var r = ref Slot(id.Value);
+        r.State = ActionState.Sent; r.SentAt = _now;
+        if (ReferenceEquals(spec.Matcher, ActionCatalog.OnSend)) Resolve(id, ActionState.Acked, 0);
+        return id;
+    }
+
+    /// <summary>Start an action that a controller or procedure resolves (no intents now).</summary>
+    public ActionId Begin(ActionKind kind, byte layer, long arg0, long arg1, int timeoutMs = -1)
+    {
+        var spec = ActionCatalog.Get(kind);
+        if (spec is null) return Reject(LocalRefusal.UnknownSkill);
+        if (!_out.LinkUp) return Reject(LocalRefusal.LinkDown);
+        if (Preempted(layer, spec.Resource)) return Reject(LocalRefusal.Preempted);
+        var id = New(kind, layer, arg0, arg1, timeoutMs >= 0 ? timeoutMs : (int)spec.BaseTimeout.TotalMilliseconds);
+        ref var r = ref Slot(id.Value);
+        r.State = ActionState.Sent; r.SentAt = _now;
+        return id;
+    }
+
+    /// <summary>Enqueue an intent outside any action (controllers' housekeeping: STOP after a leg, re-arm a bash).</summary>
+    public bool Send(in Intent intent) => _out.LinkUp && _out.TryEnqueue(intent);
+
+    private ActionId New(ActionKind kind, byte layer, long a0, long a1, int timeout)
+    {
+        var id = _next++;
+        ref var r = ref Slot(id);
+        r = new ActionRecord { Id = id, Kind = kind, State = ActionState.Queued, Layer = layer, QueuedAt = _now, Arg0 = a0, Arg1 = a1, Deadline = timeout > 0 ? _now + timeout : long.MaxValue };
+        if (_pendingN < _pending.Length) _pending[_pendingN++] = id;
+        Issued++;
+        return new ActionId(id);
+    }
+
+    private ref ActionRecord Slot(int id) => ref _t[id % _t.Length];
+
+    private ActionId Reject(LocalRefusal why) { LastRejection = why; return ActionId.None; }
+
     /// <summary>Queue a locally refused action so the brain sees a handle with the reason.</summary>
-    public ActionId Refuse(ActionKind kind, byte layer, LocalRefusal reason) => throw new NotImplementedException();
-    /// <summary>Record of an action.</summary>
-    public ref readonly ActionRecord Get(ActionId id) => throw new NotImplementedException();
+    public ActionId Refuse(ActionKind kind, byte layer, LocalRefusal reason)
+    {
+        var id = New(kind, layer, 0, 0, 0);
+        Resolve(id, ActionState.Refused, (ushort)reason);
+        return id;
+    }
+
+    /// <summary>Record of an action (a default record with Id 0 when unknown / evicted).</summary>
+    public ActionRecord Get(ActionId id)
+    {
+        if (id.Value <= 0) return default;
+        var r = Slot(id.Value);
+        return r.Id == id.Value ? r : default;
+    }
+
+    /// <summary>Resolve (controllers, procedures, matchers).</summary>
+    public void Resolve(ActionId id, ActionState state, ushort code)
+    {
+        if (id.Value <= 0) return;
+        ref var r = ref Slot(id.Value);
+        if (r.Id != id.Value || !r.Pending) return;
+        r.State = state; r.Code = code; r.ResolvedAt = _now;
+        for (var i = 0; i < _pendingN; i++) if (_pending[i] == id.Value) { _pending[i] = _pending[--_pendingN]; break; }
+        Resolved++;
+        Events?.Raise(EventKind.ActionResolved, id.Value, (long)state);
+        if (r.Kind is ActionKind.Cast or ActionKind.CastGround) Events?.Raise(EventKind.CastResult, r.Arg0, code);
+        if (state is ActionState.Refused or ActionState.TimedOut or ActionState.Failed && Log is { } log && log.IsEnabled(LogCategory.Core, LogLevel.Info))
+            log.Log(LogCategory.Core, LogLevel.Info, $"action {id.Value} {r.Kind}({r.Arg0},{r.Arg1}) {state} 0x{code:X4} {ErrorCodes.Describe(code)}");
+    }
+
     /// <summary>Match an inbound event against pending actions.</summary>
-    public void Apply(in InboundEvent evt, BrainEventBus events) => throw new NotImplementedException();
-    /// <summary>Time out stale actions (tick step 3).</summary>
-    public void Advance(long nowMs, BrainEventBus events) => throw new NotImplementedException();
-    /// <summary>Cancel if possible.</summary>
-    public bool Cancel(ActionId id) => throw new NotImplementedException();
+    public void Apply(in InboundEvent evt)
+    {
+        if (_pendingN == 0 || World is null) return;
+        for (var i = _pendingN - 1; i >= 0; i--)
+        {
+            if (i >= _pendingN) continue;
+            var id = _pending[i];
+            ref var r = ref Slot(id);
+            var spec = ActionCatalog.Get(r.Kind);
+            if (spec is null || ReferenceEquals(spec.Matcher, ActionCatalog.Controller)) continue;
+            if (spec.Matcher.Match(r, evt, World) is { } m)
+            {
+                Resolve(new ActionId(id), m.State, m.Code);
+                if (evt.Kind == InboundKind.CastFail) break;   // one refusal resolves one cast
+            }
+        }
+    }
+
+    /// <summary>Time out stale actions (tick step 3); a link going down fails everything pending.</summary>
+    public void Advance(long nowMs)
+    {
+        _now = nowMs;
+        for (var i = _pendingN - 1; i >= 0; i--)
+        {
+            if (i >= _pendingN) continue;
+            var id = _pending[i];
+            ref var r = ref Slot(id);
+            if (!_out.LinkUp) Resolve(new ActionId(id), ActionState.Failed, (ushort)LocalRefusal.LinkDown);
+            else if (nowMs > r.Deadline) Resolve(new ActionId(id), ActionState.TimedOut, 0);
+        }
+    }
+
+    /// <summary>Cancel if pending.</summary>
+    public bool Cancel(ActionId id)
+    {
+        var r = Get(id);
+        if (r.Id == 0 || !r.Pending) return false;
+        Resolve(id, ActionState.Cancelled, 0);
+        return true;
+    }
+
     /// <summary>Newest unresolved action of a kind.</summary>
-    public ActionId Pending(ActionKind kind) => throw new NotImplementedException();
+    public ActionId Pending(ActionKind kind)
+    {
+        var best = -1;
+        for (var i = 0; i < _pendingN; i++) { var id = _pending[i]; if (Slot(id).Kind == kind && id > best) best = id; }
+        return new ActionId(best);
+    }
+
+    /// <summary>Pending actions (debugger).</summary>
+    public int PendingCount => _pendingN;
+    /// <summary>The last N records, newest first (debugger; allocates, off the tick).</summary>
+    public IReadOnlyList<ActionRecord> Recent(int n)
+    {
+        var o = new List<ActionRecord>(n);
+        for (var id = _next - 1; id > 0 && id > _next - 1 - _t.Length && o.Count < n; id--)
+        {
+            var r = Slot(id);
+            if (r.Id == id) o.Add(r);
+        }
+        return o;
+    }
+
     /// <summary>Reason of the last Issue that returned None.</summary>
-    public LocalRefusal LastRejection => throw new NotImplementedException();
-    /// <summary>Resource claims per layer (set by the brain each tick).</summary>
-    public void SetClaims(byte layer, Resource claims) => throw new NotImplementedException();
+    public LocalRefusal LastRejection { get; private set; }
+    /// <summary>Resource claims per layer index (0 = highest priority), set by the brain after transitions.</summary>
+    public void SetClaims(byte layer, Resource claims) { if (layer < _claims.Length) _claims[layer] = claims; }
+    /// <summary>Claims of a layer.</summary>
+    public Resource Claims(byte layer) => layer < _claims.Length ? _claims[layer] : Resource.None;
     /// <summary>Is a resource claimed by a layer above <paramref name="layer"/>?</summary>
-    public bool Preempted(byte layer, Resource resource) => throw new NotImplementedException();
+    public bool Preempted(byte layer, Resource resource)
+    {
+        if (resource == Resource.None) return false;
+        for (var i = 0; i < layer && i < _claims.Length; i++) if ((_claims[i] & resource) != 0) return true;
+        return false;
+    }
+}
+
+/// <summary>Text for result codes: local refusals and the game's common refusal codes (as observed on the wire).</summary>
+public static class ErrorCodes
+{
+    /// <summary>Describe a code.</summary>
+    public static string Describe(ushort code) => code switch
+    {
+        0 => "ok",
+        (ushort)LocalRefusal.LinkDown => "link down",
+        (ushort)LocalRefusal.Preempted => "resource claimed by a higher layer",
+        (ushort)LocalRefusal.UnknownSkill => "unknown skill / action",
+        (ushort)LocalRefusal.NotReady => "not ready",
+        (ushort)LocalRefusal.OutOfRange => "out of range",
+        (ushort)LocalRefusal.Moving => "moving",
+        (ushort)LocalRefusal.Mounted => "mounted",
+        (ushort)LocalRefusal.Busy => "busy (procedure running)",
+        (ushort)LocalRefusal.QueueFull => "outbound queue full",
+        (ushort)LocalRefusal.InvalidTarget => "invalid target",
+        (ushort)LocalRefusal.NoPath => "no path",
+        (ushort)LocalRefusal.MoveFailed => "move refused",
+        (ushort)LocalRefusal.Desync => "position desync",
+        (ushort)LocalRefusal.NotInWorld => "not in the world",
+        (ushort)LocalRefusal.Dead => "dead",
+        0x0FC0 => "cast refused: not in battle mode / state",
+        0x0FC4 => "cast refused: target",
+        0x0FC6 => "cast refused: cooldown",
+        0x0FCA => "cast refused: out of range",
+        0x0FD5 => "cast refused: not enough SP",
+        0x0FDC => "cast refused: not enough HP",
+        0x0700 => "item used",
+        0x0381 => "sold",
+        0x0201 => "bought",
+        0x0341 => "picked up",
+        0x0346 => "bag full",
+        _ => "",
+    };
 }
 
 /// <summary>Procedure kinds (multi-packet interactions).</summary>
@@ -110,68 +378,243 @@ public interface IProcedure
     ProcedureStatus Status { get; }
     /// <summary>Failure reason when failed.</summary>
     string? FailReason { get; }
+    /// <summary>When the current step began (ms).</summary>
+    long StepSince { get; }
     /// <summary>Advance: look at new events/state, issue intents, update status.</summary>
     void Advance(AgentContext ctx);
     /// <summary>Feed one inbound event.</summary>
-    void Apply(in InboundEvent evt);
+    void Apply(in InboundEvent evt, AgentContext ctx);
     /// <summary>Abort.</summary>
     void Cancel();
+    /// <summary>The action this procedure resolves.</summary>
+    ActionId Action { get; set; }
 }
 
-/// <summary>Base for procedures: timeouts per step, status plumbing.</summary>
+/// <summary>Base for procedures: steps with deadlines, status plumbing.</summary>
 public abstract class ProcedureBase : IProcedure
 {
     /// <inheritdoc/>
     public abstract ProcedureKind Kind { get; }
     /// <inheritdoc/>
-    public string Step { get; protected set; } = "start";
+    public string Step { get; private set; } = "start";
     /// <inheritdoc/>
     public ProcedureStatus Status { get; protected set; }
     /// <inheritdoc/>
     public string? FailReason { get; protected set; }
     /// <inheritdoc/>
+    public long StepSince { get; private set; }
+    /// <inheritdoc/>
+    public ActionId Action { get; set; }
+    /// <summary>Deadline of the current step.</summary>
+    protected long Deadline;
+    /// <inheritdoc/>
     public abstract void Advance(AgentContext ctx);
     /// <inheritdoc/>
-    public abstract void Apply(in InboundEvent evt);
+    public abstract void Apply(in InboundEvent evt, AgentContext ctx);
     /// <inheritdoc/>
-    public void Cancel() => throw new NotImplementedException();
+    public void Cancel() { if (Status == ProcedureStatus.Running) { Status = ProcedureStatus.Cancelled; FailReason = "cancelled"; } }
+    /// <summary>Go to a step with a timeout.</summary>
+    protected void Go(string step, AgentContext ctx, int timeoutMs) { Step = step; StepSince = ctx.Now; Deadline = ctx.Now + timeoutMs; }
+    /// <summary>Did the step time out?</summary>
+    protected bool Expired(AgentContext ctx) => ctx.Now > Deadline;
     /// <summary>Fail the procedure with a reason.</summary>
-    protected void Fail(string reason) => throw new NotImplementedException();
+    protected void Fail(string reason) { if (Status == ProcedureStatus.Running) { Status = ProcedureStatus.Failed; FailReason = reason; } }
+    /// <summary>Succeed.</summary>
+    protected void Done() { if (Status == ProcedureStatus.Running) Status = ProcedureStatus.Succeeded; }
 }
 
-/// <summary>END_OF_TRADE -> NPCCLICK -> menu -> shop list.</summary>
-public sealed class OpenShopProcedure(int npcHandle, byte menuOption) : ProcedureBase
+/// <summary>Open an NPC's shop: END_OF_TRADE -> NPCCLICK -> answer the NPC menu (or a server menu) -> the shop list.</summary>
+public sealed class OpenShopProcedure(int npcHandle, int menuReply = 1) : ProcedureBase
 {
     /// <summary>NPC handle.</summary>
     public int NpcHandle { get; } = npcHandle;
-    /// <summary>Menu option to answer.</summary>
-    public byte MenuOption { get; } = menuOption;
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.OpenShop;
+    private bool _started;
+
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public override void Advance(AgentContext ctx)
+    {
+        if (!_started)
+        {
+            _started = true;
+            ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
+            ctx.Actions.Send(IntentEncoder.NpcClick((ushort)NpcHandle, Action.Value));
+            Go("awaitMenuOrShop", ctx, 5000);
+            return;
+        }
+        if (Expired(ctx)) Fail($"no shop list from npc {NpcHandle} in step {Step}");
+    }
+
     /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public override void Apply(in InboundEvent e, AgentContext ctx)
+    {
+        switch (e.Kind)
+        {
+            case InboundKind.NpcMenu:
+                ctx.Actions.Send(IntentEncoder.Reply(IntentEncoder.OpNpcMenuAck, (byte)menuReply, Action.Value));
+                ctx.Log.Log(LogCategory.Item, LogLevel.Info, $"shop: npc menu (mob {e.A}) answered {menuReply}");
+                Go("awaitShop", ctx, 5000);
+                break;
+            case InboundKind.ServerMenu when e.Handle == NpcHandle && e.Options is { Length: > 0 } opts:
+                var pick = opts[Math.Clamp(menuReply - 1, 0, opts.Length - 1)];
+                ctx.Actions.Send(IntentEncoder.Reply(IntentEncoder.OpServerMenuAck, pick.Reply, Action.Value));
+                ctx.Log.Log(LogCategory.Item, LogLevel.Info, $"shop: server menu '{e.Text}' answered {pick.Reply}={pick.Text}");
+                Go("awaitShop", ctx, 5000);
+                break;
+            case InboundKind.ShopList when e.Handle == NpcHandle || e.Handle < 0:
+                ctx.Knowledge.LearnNpcRole(ctx.World.Entities.SlotOf(NpcHandle) is var s and >= 0 ? ctx.World.Entities.MobId(s) : -1,
+                    e.A == 0x3C05 ? 2 : 1, ctx.World.Map.MapId, (uint)ctx.World.Self.Pos.X, (uint)ctx.World.Self.Pos.Y);
+                Done();
+                break;
+        }
+    }
 }
 
-/// <summary>Quest dialogue page by page ([NEXT], [MENU], [BUTTON], [SHOW_REWARD]).</summary>
+/// <summary>Quest dialogue page by page: click the NPC, select the quest when the NPC lists several, answer every
+/// SAY page with the answer the quest script needs to reach ACCEPT / DONE (derived from QuestData), stop at the
+/// terminal command.</summary>
 public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewardIndex) : ProcedureBase
 {
-    /// <summary>NPC handle.</summary>
+    /// <summary>NPC handle (-1 = remote: pages already triggered).</summary>
     public int NpcHandle { get; } = npcHandle;
-    /// <summary>Quest id.</summary>
+    /// <summary>Quest id (-1 = whatever the NPC offers).</summary>
     public int QuestId { get; } = questId;
     /// <summary>Reward choice (-1 none).</summary>
     public int RewardIndex { get; } = rewardIndex;
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.QuestDialogue;
+    private bool _started, _selected;
+    private Dictionary<int, uint>? _answers;
+    /// <summary>Pages answered.</summary>
+    public int Pages { get; private set; }
+    /// <summary>The terminal command seen (6 accept, 10 done, 1 end), -1 none.</summary>
+    public int Terminal { get; private set; } = -1;
+
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public override void Advance(AgentContext ctx)
+    {
+        if (!_started)
+        {
+            _started = true;
+            if (QuestId >= 0 && ctx.Data.Quest(QuestId) is { } q) _answers = QuestScripts.MenuAnswers(q.Script);
+            if (NpcHandle >= 0)
+            {
+                ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
+                ctx.Actions.Send(IntentEncoder.NpcClick((ushort)NpcHandle, Action.Value));
+            }
+            Go("awaitPage", ctx, 4000);
+            return;
+        }
+        if (Expired(ctx))
+        {
+            if (Pages > 0 || Terminal >= 0) Done(); else Fail($"no dialogue page in step {Step}");
+        }
+    }
+
     /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public override void Apply(in InboundEvent e, AgentContext ctx)
+    {
+        if (e.Kind == InboundKind.NpcMenu && QuestId >= 0 && !_selected)
+        {
+            _selected = true;
+            ctx.Actions.Send(IntentEncoder.QuestSelectStart((ushort)e.A, (ushort)QuestId, Action.Value));
+            ctx.Log.Log(LogCategory.Quest, LogLevel.Info, $"talk: npc menu (mob {e.A}) -> select quest {QuestId}");
+            Go("awaitPage", ctx, 4000);
+            return;
+        }
+        if (e.Kind == InboundKind.NpcMenu)
+        {
+            ctx.Actions.Send(IntentEncoder.Reply(IntentEncoder.OpNpcMenuAck, 1, Action.Value));
+            Go("awaitPage", ctx, 4000);
+            return;
+        }
+        if (e.Kind != InboundKind.QuestDialog) return;
+        var quest = (int)e.A; var cmd = (int)e.B;
+        if (cmd is 6 or 10 or 1)
+        {
+            if (QuestId < 0 || quest == QuestId) { Terminal = cmd; ctx.Log.Log(LogCategory.Quest, LogLevel.Note, $"talk: quest {Q(ctx, quest)} {(cmd == 6 ? "ACCEPTED" : cmd == 10 ? "DONE" : "ended")}"); Done(); }
+            return;
+        }
+        if (cmd == 2)
+        {
+            var dialog = (int)e.C;
+            uint answer = _answers is not null && _answers.TryGetValue(dialog, out var a) ? a : 1u;
+            if (QuestId >= 0 && quest != QuestId && !_selected && ctx.Data.Dialog(dialog)?.Contains("[MENU]", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                _selected = true;
+                ctx.Actions.Send(IntentEncoder.QuestSelectStart((ushort)e.Handle2, (ushort)QuestId, Action.Value));
+                Go("awaitPage", ctx, 4000);
+                return;
+            }
+            ctx.Actions.Send(IntentEncoder.QuestScriptAck((ushort)quest, (byte)cmd, answer, Action.Value));
+            Pages++;
+            if (ctx.Log.IsEnabled(LogCategory.Quest, LogLevel.Info))
+                ctx.Log.Log(LogCategory.Quest, LogLevel.Info, $"talk: quest {Q(ctx, quest)} page {dialog} answered {answer}");
+            Go("awaitPage", ctx, 3000);
+        }
+        else
+        {
+            ctx.Actions.Send(IntentEncoder.QuestScriptAck((ushort)quest, (byte)cmd, 1, Action.Value));
+            Go("awaitPage", ctx, 3000);
+        }
+    }
+
+    private static string Q(AgentContext ctx, int q) => $"'{ctx.Data.Quest(q)?.Name ?? "?"}' ({q})";
 }
 
-/// <summary>Dismount -> walk into gate range -> click -> answer -> await the map link.</summary>
+/// <summary>Quest script reading (client QuestData script text).</summary>
+public static class QuestScripts
+{
+    /// <summary>For each SAY page followed by an IF RESULT branch, the answer whose branch reaches ACCEPT or DONE.</summary>
+    public static Dictionary<int, uint> MenuAnswers(string? script)
+    {
+        var map = new Dictionary<int, uint>();
+        if (string.IsNullOrWhiteSpace(script)) return map;
+        var lines = script.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        var label = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < lines.Count; i++) if (lines[i].StartsWith(':')) label[lines[i][1..].Trim()] = i;
+        static (bool If, uint Val, string Lbl) ParseIf(string l)
+        {
+            var p = l.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            return p.Length >= 6 && p[0].Equals("IF", StringComparison.OrdinalIgnoreCase) && p[1].Equals("RESULT", StringComparison.OrdinalIgnoreCase)
+                   && p[2] == "==" && uint.TryParse(p[3], out var v) && p[4].Equals("GOTO", StringComparison.OrdinalIgnoreCase)
+                ? (true, v, p[5]) : (false, 0, "");
+        }
+        bool Reaches(string lbl, HashSet<string> seen)
+        {
+            if (!seen.Add(lbl) || !label.TryGetValue(lbl, out var start)) return false;
+            for (var i = start + 1; i < lines.Count; i++)
+            {
+                var ln = lines[i];
+                if (ln.StartsWith(':') || ln.Equals("END", StringComparison.OrdinalIgnoreCase)) return false;
+                if (ln.Equals("ACCEPT", StringComparison.OrdinalIgnoreCase) || ln.Equals("DONE", StringComparison.OrdinalIgnoreCase)) return true;
+                var f = ParseIf(ln);
+                if (f.If && Reaches(f.Lbl, seen)) return true;
+                if (ln.StartsWith("GOTO ", StringComparison.OrdinalIgnoreCase)) return Reaches(ln[5..].Trim(), seen);
+            }
+            return false;
+        }
+        var lastSay = -1;
+        for (var i = 0; i < lines.Count; i++)
+        {
+            var p = lines[i].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (p.Length >= 2 && p[0].Equals("SAY", StringComparison.OrdinalIgnoreCase) && int.TryParse(p[1], out var say)) { lastSay = say; continue; }
+            var f = ParseIf(lines[i]);
+            if (!f.If || lastSay < 0) continue;
+            for (var j = i; j < lines.Count; j++)
+            {
+                var g = ParseIf(lines[j]);
+                if (!g.If) break;
+                if (Reaches(g.Lbl, new HashSet<string>(StringComparer.OrdinalIgnoreCase))) { map[lastSay] = g.Val; break; }
+            }
+            lastSay = -1;
+        }
+        return map;
+    }
+}
+
+/// <summary>Gate hop: dismount -> walk into gate range -> click -> answer the menu -> the map link.</summary>
 public sealed class GateHopProcedure(int gateHandle, string? destMap) : ProcedureBase
 {
     /// <summary>Gate handle.</summary>
@@ -180,35 +623,134 @@ public sealed class GateHopProcedure(int gateHandle, string? destMap) : Procedur
     public string? DestMap { get; } = destMap;
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.GateHop;
+    private ActionId _move = ActionId.None;
+    private bool _clicked;
+    private int _mapAtStart = -1;
+    /// <summary>Distance at which the gate answers a click.</summary>
+    public const double ClickRange = 150;
+
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public override void Advance(AgentContext ctx)
+    {
+        if (Step == "start")
+        {
+            _mapAtStart = ctx.World.Map.MapId;
+            if (ctx.World.Self.Mounted) { Fail("mounted: dismount first (a gate ignores a mounted rider)"); return; }
+            var s = ctx.World.Entities.SlotOf(GateHandle);
+            if (s < 0) { Fail($"gate {GateHandle} not in view"); return; }
+            var (gx, gy) = ctx.World.Entities.Pos(s, ctx.Now);
+            var d = Dist(ctx.World.Self.Pos, (gx, gy));
+            if (d > ClickRange)
+            {
+                _move = ctx.Move.Order(new MoveOrder(gx, gy, true, ClickRange * 0.6, ActionId.None), ctx, 0);
+                Go("walk", ctx, 60000);
+            }
+            else Go("click", ctx, 0);
+            return;
+        }
+        if (Step == "walk")
+        {
+            var r = ctx.Actions.Get(_move);
+            if (r.Id != 0 && !r.Pending)
+            {
+                if (r.State == ActionState.Acked) Go("click", ctx, 0);
+                else Fail($"could not reach the gate: {r.State} {ErrorCodes.Describe(r.Code)}");
+            }
+            else if (Expired(ctx)) Fail("walk to gate timed out");
+            return;
+        }
+        if (Step == "click" && !_clicked)
+        {
+            _clicked = true;
+            ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
+            ctx.Actions.Send(IntentEncoder.NpcClick((ushort)GateHandle, Action.Value));
+            Go("awaitMenu", ctx, 6000);
+            return;
+        }
+        if (Expired(ctx)) Fail($"gate: nothing in step {Step}");
+    }
+
     /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public override void Apply(in InboundEvent e, AgentContext ctx)
+    {
+        if (e.Kind == InboundKind.ServerMenu && Step == "awaitMenu" && e.Options is { Length: > 0 } opts)
+        {
+            // the gate's menu: the first option is the move (yes); log the choice
+            var pick = opts[0];
+            ctx.Actions.Send(IntentEncoder.Reply(IntentEncoder.OpServerMenuAck, pick.Reply, Action.Value));
+            ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"gate: '{e.Text}' answered {pick.Reply}={pick.Text}");
+            Go("awaitLink", ctx, 15000);
+        }
+        else if (e.Kind == InboundKind.MapLink && e.A != _mapAtStart) Done();
+    }
+
+    private static double Dist((double X, double Y) a, (double X, double Y) b) => Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
 }
 
-/// <summary>Use the mount item and wait for the ride-off event (no fixed sleeps).</summary>
+/// <summary>Use the mount item and wait for the ride-off event.</summary>
 public sealed class DismountProcedure : ProcedureBase
 {
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.Dismount;
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public override void Advance(AgentContext ctx)
+    {
+        if (!ctx.World.Self.Mounted) { Done(); return; }
+        if (Step == "start")
+        {
+            var slot = Mounts.FindMount(ctx);
+            if (slot < 0) { Fail("mounted but no mount item in the bag"); return; }
+            ctx.Actions.Send(IntentEncoder.UseItem((byte)slot, 9, Action.Value));
+            Go("awaitRideOff", ctx, 8000);
+            return;
+        }
+        if (Expired(ctx)) Fail("no ride-off after using the mount");
+    }
     /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public override void Apply(in InboundEvent e, AgentContext ctx) { if (e.Kind == InboundKind.Mount && e.A == 0) Done(); }
 }
 
-/// <summary>Revive request and the same-map / other-map revive paths.</summary>
+/// <summary>Mount helpers.</summary>
+public static class Mounts
+{
+    /// <summary>The bag slot of a mount item (ItemInfo class of mounts, learned as the class that RIDE_ON follows; the
+    /// first item whose ItemInfo class is the mount class), -1 none.</summary>
+    public static int FindMount(AgentContext ctx)
+    {
+        for (var i = 0; i < ctx.World.Bag.Size; i++)
+        {
+            var (item, _) = ctx.World.Bag.At(i);
+            if (item >= 0 && ctx.Data.Item(item) is { } it && it.InxName.Contains("Mount", StringComparison.OrdinalIgnoreCase)) return i;
+        }
+        return -1;
+    }
+}
+
+/// <summary>Revive: answer the death menu (revive at the respawn point) and wait for the revive packet.</summary>
 public sealed class ReviveProcedure : ProcedureBase
 {
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.Revive;
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public override void Advance(AgentContext ctx)
+    {
+        if (Step == "start")
+        {
+            if (!ctx.World.Self.Dead) { Done(); return; }
+            ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpRevive, default, Action.Value));
+            Go("awaitRevive", ctx, 25000);
+            return;
+        }
+        if (Expired(ctx)) Fail("no revive packet");
+    }
     /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public override void Apply(in InboundEvent e, AgentContext ctx)
+    {
+        if (e.Kind is InboundKind.Revive or InboundKind.MapLink) Done();
+    }
 }
 
-/// <summary>Propose/accept -> board items/money -> lock -> confirm.</summary>
+/// <summary>Propose/accept -> board items/money -> lock -> confirm (trade packets not wired yet: fails with a reason).</summary>
 public sealed class TradeProcedure(int partnerHandle) : ProcedureBase
 {
     /// <summary>Partner handle.</summary>
@@ -216,23 +758,23 @@ public sealed class TradeProcedure(int partnerHandle) : ProcedureBase
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.Trade;
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public override void Advance(AgentContext ctx) => Fail("trade is not wired in this runtime yet");
     /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public override void Apply(in InboundEvent evt, AgentContext ctx) { }
 }
 
-/// <summary>Find a clear spot (nav.clearSpot) -> walk -> pitch -> rest -> fold.</summary>
+/// <summary>Tent: not wired yet (fails with a reason).</summary>
 public sealed class TentProcedure : ProcedureBase
 {
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.Tent;
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public override void Advance(AgentContext ctx) => Fail("tent is not wired in this runtime yet");
     /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public override void Apply(in InboundEvent evt, AgentContext ctx) { }
 }
 
-/// <summary>Open the storage keeper and move items.</summary>
+/// <summary>Open the storage keeper: click, answer the menu, wait for the storage list.</summary>
 public sealed class StorageProcedure(int keeperHandle) : ProcedureBase
 {
     /// <summary>Keeper handle.</summary>
@@ -240,12 +782,12 @@ public sealed class StorageProcedure(int keeperHandle) : ProcedureBase
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.Storage;
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public override void Advance(AgentContext ctx) => Fail("storage is not wired in this runtime yet");
     /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public override void Apply(in InboundEvent evt, AgentContext ctx) { }
 }
 
-/// <summary>Multi-map travel: a chain of GateHop procedures along a planned map route.</summary>
+/// <summary>Multi-map travel: a chain of gate hops along a planned map route (needs the map link graph; not wired yet).</summary>
 public sealed class TravelProcedure(string destMap) : ProcedureBase
 {
     /// <summary>Destination map.</summary>
@@ -253,20 +795,78 @@ public sealed class TravelProcedure(string destMap) : ProcedureBase
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.Travel;
     /// <inheritdoc/>
-    public override void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public override void Advance(AgentContext ctx)
+    {
+        if (string.Equals(ctx.World.Map.MapName, DestMap, StringComparison.OrdinalIgnoreCase)) { Done(); return; }
+        Fail("multi-map travel planning is not wired in this runtime yet (use gates in view)");
+    }
     /// <inheritdoc/>
-    public override void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public override void Apply(in InboundEvent evt, AgentContext ctx) { }
 }
 
 /// <summary>Runs the bot's active procedures (at most one per resource).</summary>
 public sealed class ProcedureRunner
 {
+    private readonly List<IProcedure> _active = new();
+    private readonly List<(IProcedure P, long At)> _recent = new();
+
     /// <summary>Start a procedure bound to an action.</summary>
-    public ActionId Start(IProcedure procedure, ActionKind kind, byte layer) => throw new NotImplementedException();
+    public ActionId Start(IProcedure procedure, ActionKind kind, byte layer, AgentContext ctx)
+    {
+        var res = ActionCatalog.Get(kind)?.Resource ?? Resource.None;
+        foreach (var p in _active)
+            if (p.Status == ProcedureStatus.Running && (ActionCatalog.Get(ctx.Actions.Get(p.Action).Kind)?.Resource ?? Resource.None) == res && res != Resource.None)
+                return ctx.Actions.Refuse(kind, layer, LocalRefusal.Busy);
+        var id = ctx.Actions.Begin(kind, layer, 0, 0);
+        if (id.Value < 0) return id;
+        procedure.Action = id;
+        _active.Add(procedure);
+        procedure.Advance(ctx);
+        Settle(ctx);
+        return id;
+    }
+
     /// <summary>Advance all active procedures.</summary>
-    public void Advance(AgentContext ctx) => throw new NotImplementedException();
+    public void Advance(AgentContext ctx)
+    {
+        for (var i = 0; i < _active.Count; i++)
+        {
+            var p = _active[i];
+            if (p.Status == ProcedureStatus.Running) p.Advance(ctx);
+        }
+        Settle(ctx);
+    }
+
     /// <summary>Feed an inbound event to active procedures.</summary>
-    public void Apply(in InboundEvent evt) => throw new NotImplementedException();
+    public void Apply(in InboundEvent evt, AgentContext ctx)
+    {
+        for (var i = 0; i < _active.Count; i++)
+            if (_active[i].Status == ProcedureStatus.Running) _active[i].Apply(evt, ctx);
+    }
+
+    private void Settle(AgentContext ctx)
+    {
+        for (var i = _active.Count - 1; i >= 0; i--)
+        {
+            var p = _active[i];
+            if (p.Status == ProcedureStatus.Running)
+            {
+                // the action was cancelled or timed out from outside
+                var r = ctx.Actions.Get(p.Action);
+                if (r.Id != 0 && !r.Pending) p.Cancel(); else continue;
+            }
+            var ok = p.Status == ProcedureStatus.Succeeded;
+            ctx.Actions.Resolve(p.Action, ok ? ActionState.Acked : p.Status == ProcedureStatus.Cancelled ? ActionState.Cancelled : ActionState.Failed, 0);
+            ctx.Events.Raise(EventKind.ProcedureDone, (long)p.Kind, ok ? 1 : 0);
+            if (!ok) ctx.Log.Text(LogCategory.Core, LogLevel.Note, $"procedure {p.Kind} {p.Status}: {p.FailReason}");
+            _active.RemoveAt(i);
+            _recent.Add((p, ctx.Now));
+            if (_recent.Count > 20) _recent.RemoveAt(0);
+        }
+    }
+
     /// <summary>Active procedures (for the debugger).</summary>
-    public IReadOnlyList<IProcedure> Active => throw new NotImplementedException();
+    public IReadOnlyList<IProcedure> Active => _active;
+    /// <summary>Recently finished.</summary>
+    public IReadOnlyList<(IProcedure P, long At)> Recent => _recent;
 }
