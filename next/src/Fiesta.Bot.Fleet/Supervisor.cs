@@ -276,8 +276,11 @@ public sealed class BotRuntime
                 BuildSession(login, wire);
                 State = SupervisorState.InZone;
                 SessionStart = DateTime.UtcNow;
-                backoff = 5;
                 await Session!.RunAsync(login, ct);
+                // the back-off starts over only after a session that lasted: a login the server drops at once (live
+                // 23:48-23:50: each new NextBotA was dropped right after entering, next to the previous attempt's
+                // character still in the world) would otherwise retry every 5 s forever
+                if (DateTime.UtcNow - SessionStart > TimeSpan.FromSeconds(60)) backoff = 5;
                 if (Session.Error is { } se) LastError = se.Message;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
