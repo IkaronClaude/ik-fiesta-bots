@@ -1297,6 +1297,10 @@ public sealed partial class DbgModule(AgentContext ctx) : ApiModule(ctx)
 {
     /// <summary>The brain's sink (set by the runtime).</summary>
     public IDbgSink? Sink { get; set; }
+
+    /// <summary>A wall-clock microsecond counter for measuring what a piece of brain code costs (differences only; not
+    /// game time - use time.now() for that).</summary>
+    [LuaFn] public double Us() => System.Diagnostics.Stopwatch.GetTimestamp() * 1e6 / System.Diagnostics.Stopwatch.Frequency;
     private void Line(LogLevel level, string? fmt, LuaAny args)
     {
         if (!Ctx.Log.IsEnabled(LogCategory.Script, level)) return;
