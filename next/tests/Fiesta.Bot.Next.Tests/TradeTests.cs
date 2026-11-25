@@ -126,4 +126,18 @@ public class TradeTests
         Assert.True(board.Claim("Mage", "Archer"));
         Assert.Null(board.Get("Mage", 2000));                                // expired
     }
+
+    [Fact]
+    public void A_party_battle_zone_is_learned_and_routed_around()
+    {
+        Assert.Equal((InboundKind.PvpZone, 1L, 1L), (One(0x1818).Kind, One(0x1818).A, One(0x1818).B));   // captured: LINKOTHER to map 67, then 0x1818 {}
+        Assert.Equal((0L, 2L), (One(0x1813).A, One(0x1813).B));
+        using var t = new TestBot();
+        t.Ctx.Learners.Add(new AtlasLearner());
+        t.Ev(InboundKind.SelfBase, a: 10, b: 0, c: 100, text: "TestMap");
+        t.Tick(2);
+        t.Ev(InboundKind.PvpZone, a: 1, b: 1);
+        t.Tick();
+        Assert.True(t.Ctx.Refused(7));
+    }
 }

@@ -164,6 +164,9 @@ public enum InboundKind : ushort
     ProduceFail,
     /// <summary>A skill's mastery total (SKILL_SKILLEXP_CLIENT_CMD): A skill, B mastery.</summary>
     SkillExp,
+    /// <summary>The map we stand on is a player-fight area (MAP_FREEPKZONE_ON / PARTYBATTLEZONE_ON) or no longer one
+    /// (the OFF commands): A = 1 on / 0 off, B = 2 free player kill, 1 party battle.</summary>
+    PvpZone,
     /// <summary>Not decoded but passed (raw logging).</summary>
     Raw,
 }
@@ -828,7 +831,7 @@ public sealed class SocialDecoder : IPacketDecoder
 public sealed class WorldDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes { get; } = [0x1809, 0x180A, 0x104D, 0x104F, 0x1050];
+    public IReadOnlyList<ushort> Opcodes { get; } = [0x1809, 0x180A, 0x104D, 0x104F, 0x1050, 0x1812, 0x1813, 0x1818, 0x1819];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -841,6 +844,9 @@ public sealed class WorldDecoder : IPacketDecoder
                 e.Kind = InboundKind.MapLink; e.A = Rd.U16(p, 0); e.X = Rd.U32(p, 2); e.Y = Rd.U32(p, 6); e.B = op == 0x180A ? 1 : 0;
                 break;
             case 0x104D: e.Kind = InboundKind.DeadMenu; e.A = Rd.U32(p, 0); break;
+            case 0x1812 or 0x1813 or 0x1818 or 0x1819:   // MAP_FREEPKZONE_ON / OFF, MAP_PARTYBATTLEZONE_ON / OFF
+                e.Kind = InboundKind.PvpZone; e.A = op is 0x1812 or 0x1818 ? 1 : 0; e.B = op is 0x1812 or 0x1813 ? 2 : 1;
+                break;
             case 0x104F or 0x1050:
                 if (p.Length < 10) return;
                 e.Kind = InboundKind.Revive; e.A = Rd.U16(p, 0); e.X = Rd.U32(p, 2); e.Y = Rd.U32(p, 6); e.B = op == 0x1050 ? 1 : 0;

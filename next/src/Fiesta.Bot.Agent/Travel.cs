@@ -185,6 +185,12 @@ public sealed class AtlasLearner : ILearner
             case InboundKind.MapLink:
                 if (_mapBefore >= 0 && e.A != _mapBefore) ctx.Atlas.LearnArrival(_mapBefore, (int)e.A, e.X, e.Y);
                 break;
+            // a map where players may kill us (free battle / party battle zone, told by the zone on entry): never a
+            // way through again (the client's gate tables link such zones like any field, so routes used to cross one)
+            case InboundKind.PvpZone when e.A == 1 && ctx.World.Map.MapId >= 0:
+                ctx.RefusedMaps[ctx.World.Map.MapId] = ctx.Now + 7L * 24 * 3600 * 1000;
+                ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"{ctx.World.Map.MapName} is a player-fight area ({(e.B == 2 ? "free battle" : "party battle")}): routed around from now on");
+                break;
         }
         if (e.Kind is InboundKind.MapLoginAck or InboundKind.MapLink) _mapBefore = e.Kind == InboundKind.MapLink ? (int)e.A : ctx.World.Map.MapId;
     }
