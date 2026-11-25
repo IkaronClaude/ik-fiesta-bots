@@ -779,7 +779,7 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
     {
         var paths = new Dictionary<string, IReadOnlyList<string>>();
         foreach (var lr in _layers) { CollectPath(lr); paths[lr.Name] = lr.Path.Select(p => p.Name).ToList(); }
-        return new BrainCheckpoint(_ctx.BotId, DateTime.UtcNow, VersionHash, paths, _engine.Snapshot("bot", null, 1 << 16).ToJsonString());
+        return new BrainCheckpoint(_ctx.BotId, SystemClock.ToUtc(_ctx.Now), VersionHash, paths, _engine.Snapshot("bot", null, 1 << 16).ToJsonString());
     }
 
     /// <summary>Resume from a checkpoint (same or compatible version).</summary>

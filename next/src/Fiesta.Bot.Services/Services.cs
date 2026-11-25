@@ -3,6 +3,15 @@ using System.Diagnostics;
 
 namespace Fiesta.Bot.Services;
 
+/// <summary>Marks a method as tick-path code checked by the allocation analyzer (FBOT002).</summary>
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class HotPathAttribute : Attribute;
+
+/// <summary>Marks a member of a tick-path assembly that may block or read wall time (FBOT001 does not apply): code that
+/// runs off the tick, or rare tick work (a brain swap).</summary>
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class | AttributeTargets.Property | AttributeTargets.Constructor)]
+public sealed class OffTickAttribute : Attribute;
+
 /// <summary>Monotonic clock; the tick reads it once (replayable).</summary>
 public interface IClock
 {

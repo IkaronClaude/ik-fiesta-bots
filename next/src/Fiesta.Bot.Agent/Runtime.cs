@@ -143,6 +143,7 @@ public sealed class OutboundRing : Fiesta.Bot.Net.IOutboundSource
         return true;
     }
     /// <inheritdoc/>
+    [OffTick]
     public async ValueTask<bool> WaitToReadAsync(CancellationToken ct)
     {
         while (Volatile.Read(ref _tail) >= Volatile.Read(ref _head))
@@ -392,7 +393,7 @@ public sealed class BotAgent
         Context = context; _in = inbound; _out = outbound; _control = control; Brain = brain; _clock = clock;
         context.Actions.Events = context.Events; context.Actions.World = context.World; context.Actions.Log = context.Log;
         context.Move.Moved = c => c.Combat.OnMoved(c);
-        _snapshot = new AgentSnapshot(context.BotId, 0, DateTime.UtcNow, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, -1, false);
+        _snapshot = new AgentSnapshot(context.BotId, 0, clock.UtcNow, "", 0, 0, 0, 0, 0, 0, 0, 0, 0, false, false, -1, false);
     }
 
     /// <summary>The context.</summary>
@@ -566,7 +567,7 @@ public sealed class BotAgent
     private void Publish(long now)
     {
         var w = Context.World; var self = w.Self;
-        _snapshot = new AgentSnapshot(Context.BotId, Context.Tick, DateTime.UtcNow, w.Map.MapName, self.Pos.X, self.Pos.Y, self.Level,
+        _snapshot = new AgentSnapshot(Context.BotId, Context.Tick, _clock.UtcNow, w.Map.MapName, self.Pos.X, self.Pos.Y, self.Level,
             self.Hp, self.MaxHp, self.Sp, self.MaxSp, self.Money, w.Bag.Free, self.Dead, self.InCombat(now), w.Map.MapId, self.InWorld)
         { Exp = self.Exp, NextExp = self.NextExp, Name = self.Name, ClassId = self.ClassId, Kills = self.Kills, Deaths = self.Deaths, ExpGained = self.ExpGained, Entities = w.Entities.Count, Paused = Paused };
     }

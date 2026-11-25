@@ -258,6 +258,12 @@ public sealed class CombatController
     private int _castSkill = -1;
     private int _assertedTarget = -1;
     private readonly Intent[] _buf = new Intent[8];
+    private bool _landedSinceStart;
+    private int _refusedStarts;
+    /// <summary>The last target whose swing starts the game refused (no damage before CEASE_FIRE, twice), and when.</summary>
+    public int RefusedTarget { get; private set; } = -1;
+    /// <summary>When (ms).</summary>
+    public long RefusedAt { get; private set; } = -1;
     /// <summary>Server-confirmed / asserted target.</summary>
     public int Target => _assertedTarget;
     /// <summary>Bashing now?</summary>
@@ -367,7 +373,8 @@ public sealed class CombatController
         var id = ctx.Actions.Issue(ActionKind.Bash, layer, targetHandle, 0, buf[..n]);
         if (id.Value > 0)
         {
-            _bashTarget = targetHandle; _bashWanted = true; _rearm = false;
+            if (_bashTarget != targetHandle) _refusedStarts = 0;
+            _bashTarget = targetHandle; _bashWanted = true; _rearm = false; _landedSinceStart = false;
             if (_fightStart < 0) { _fightStart = ctx.Now; FightDamage = 0; }
         }
         return id;
@@ -417,7 +424,12 @@ public sealed class CombatController
         switch (e.Kind)
         {
             case InboundKind.Damage when e.Handle == ctx.World.Self.Handle:
-                LastSwingAt = ctx.Now; FightDamage += e.A;
+                if (!_landedSinceStart && ctx.Log.IsEnabled(LogCategory.Combat, LogLevel.Info) && ctx.World.Entities.SlotOf(e.Handle2) is var ls and >= 0)
+                {
+                    var (tx, ty) = ctx.World.Entities.Pos(ls, ctx.Now);
+                    ctx.Log.Log(LogCategory.Combat, LogLevel.Info, $"swing landed on {e.Handle2} at dist {MoveController.Dist(ctx.World.Self.Pos.X, ctx.World.Self.Pos.Y, tx, ty):0}");
+                }
+                LastSwingAt = ctx.Now; FightDamage += Math.Max(0, e.A); _landedSinceStart = true; _refusedStarts = 0;
                 break;
             case InboundKind.SkillDamage when e.Handle == ctx.World.Self.Handle:
                 FightDamage += e.A; _castUntil = 0;
@@ -427,7 +439,21 @@ public sealed class CombatController
                 _castUntil = 0;
                 break;
             case InboundKind.BashStop when e.Handle == ctx.World.Self.Handle:
-                if (_bashWanted) _rearm = true;   // the swing stream ended; re-arm while the target lives
+                // the swing stream ended. Re-arm while the target lives - unless the stream landed nothing: then the
+                // game refused the start (out of its reach) and re-arming from the same spot only repeats it. Two
+                // such refusals in a row stop the bash and raise CAST_RESULT(-1, L_OUT_OF_RANGE) so the brain closes in.
+                if (_bashWanted)
+                {
+                    if (_landedSinceStart) { _refusedStarts = 0; _rearm = true; }
+                    else if (++_refusedStarts >= 2)
+                    {
+                        _bashWanted = false; _rearm = false; _refusedStarts = 0;
+                        ctx.Events.Raise(EventKind.CastResult, -1, (long)LocalRefusal.OutOfRange);
+                        RefusedTarget = _bashTarget; RefusedAt = ctx.Now;
+                    }
+                    else _rearm = true;
+                }
+                _landedSinceStart = false;
                 if (ctx.Log.IsEnabled(LogCategory.Combat, LogLevel.Info) && ctx.World.Entities.SlotOf(_bashTarget) is var bs and >= 0)
                 {
                     var (tx, ty) = ctx.World.Entities.Pos(bs, ctx.Now);
@@ -471,9 +497,14 @@ public static class GameRules
 
     /// <summary>Body size of a mob (MobInfo AbsoluteSize * 50 / 1000).</summary>
     public static double MobBody(MobInfoRow mob) => mob.AbsoluteSize * 50.0 / 1000.0;
-    /// <summary>Auto-attack reach: (body + weapon reach) * 1.25.</summary>
+    /// <summary>Auto-attack keep reach: a running swing stream continues while distance &lt;= (body + weapon reach) * 1.25.</summary>
     public static double BashReach(double targetBody, WeaponClass weapon)
         => (targetBody + (weapon is WeaponClass.Bow or WeaponClass.Crossbow ? BowReach : MeleeReach)) * 1.25;
+    /// <summary>Auto-attack start reach: (body + weapon reach) without the keep tolerance. Measured live: BASHSTART at
+    /// 161-162 u from a Slime (keep reach 162.5) got SWING_START then CEASE_FIRE with no damage, 23 times in 10 s,
+    /// while starts well inside the bare reach landed.</summary>
+    public static double BashStartReach(double targetBody, WeaponClass weapon)
+        => targetBody + (weapon is WeaponClass.Bow or WeaponClass.Crossbow ? BowReach : MeleeReach);
     /// <summary>Skill reach: r = Range + max(50, Range/10) + body; accepted up to min(r * 1.25, r + 60).</summary>
     public static double SkillReach(ActiveSkillRow skill, double targetBody)
     {

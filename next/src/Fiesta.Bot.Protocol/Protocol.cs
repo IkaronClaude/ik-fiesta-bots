@@ -53,7 +53,8 @@ public enum InboundKind : ushort
     MapLoginFail,
     /// <summary>Exp band of our level: A = prev exp, B = next exp.</summary>
     SelfExpBand,
-    /// <summary>A swing landed: H attacker, H2 defender, A damage, B defender HP left, C flags.</summary>
+    /// <summary>A swing (or a damage-over-time tick) landed: H attacker (-1 for a DoT), H2 defender, A damage (-1 when
+    /// the packet carries none), B defender HP left, C flags.</summary>
     Damage,
     /// <summary>A skill hit: H caster, H2 target, A damage, B target HP left, C cast index.</summary>
     SkillDamage,
@@ -326,7 +327,7 @@ public sealed class CombatDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x2448, 0x2449, 0x244A, 0x2402, 0x244E, 0x2452, 0x2434, 0x2435, 0x2437, 0x2438, 0x243D, 0x2447, 0x2009, 0x244D];
+        [0x2448, 0x2449, 0x243C, 0x244A, 0x2402, 0x244E, 0x2452, 0x2434, 0x2435, 0x2437, 0x2438, 0x243D, 0x2447, 0x2009, 0x244D];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -344,10 +345,13 @@ public sealed class CombatDecoder : IPacketDecoder
                 e.B = Rd.U32(p, 6 + dmg);
                 break;
             }
-            case 0x2449:   // SOMEONESWING_DAMAGE (canonical 13): attacker, defender, flag, damage u16, resthp? -> treat as damage
+            case 0x2449:   // SOMEONESWING_DAMAGE (canonical 13): attacker, defender, flag u8, resthp u32 @5 (no damage amount)
+                if (p.Length < 9) return;
+                e.Kind = InboundKind.Damage; e.Handle = Rd.U16(p, 0); e.Handle2 = Rd.U16(p, 2); e.C = p[4]; e.A = -1; e.B = Rd.U32(p, 5);
+                break;
+            case 0x243C:   // DOTDAMAGE (canonical 13): object, resthp u32 @2, damage u16 @6, abstate u16 @8
                 if (p.Length < 8) return;
-                e.Kind = InboundKind.Damage; e.Handle = Rd.U16(p, 0); e.Handle2 = Rd.U16(p, 2); e.C = Rd.U16(p, 4); e.A = Rd.U16(p, 6);
-                e.B = p.Length >= 12 ? Rd.U32(p, 8) : -1;
+                e.Kind = InboundKind.Damage; e.Handle = -1; e.Handle2 = Rd.U16(p, 0); e.B = Rd.U32(p, 2); e.A = Rd.U16(p, 6); e.C = Rd.U16(p, 8);
                 break;
             case 0x244A:   // REALLYKILL {dead, attacker}
                 if (p.Length < 4) return;

@@ -573,7 +573,8 @@ public sealed class WorldState
         if (!Entities.Dead[slot]) k |= EntityKind.Alive;
         var hit = Entities.HitUsAt[slot];
         if ((hit >= 0 && now - hit < 10000) || (Entities.TargetH[slot] == Self.Handle && Self.Handle >= 0)) k |= EntityKind.Aggro;
-        if ((k & EntityKind.Mob) != 0 && !Entities.Dead[slot] && !(Data?.Mob(Entities.Mob[slot])?.IsPlayerSide ?? false)) k |= EntityKind.Huntable;
+        // huntable: a live mob that has hit points and is not on the player side (gathering nodes have MaxHP 0)
+        if ((k & EntityKind.Mob) != 0 && !Entities.Dead[slot] && Data?.Mob(Entities.Mob[slot]) is not { IsPlayerSide: true } && Data?.Mob(Entities.Mob[slot]) is not { MaxHp: 0 }) k |= EntityKind.Huntable;
         return k;
     }
 
@@ -740,6 +741,7 @@ public sealed class WorldState
                 if (e.Handle2 == me)
                 {
                     Self.LastHitAt = now;
+                    var dmg = e.A >= 0 ? e.A : Math.Max(0, (long)Self.Hp - e.B);
                     if (e.B >= 0) { Self.Hp = e.B; ev.Raise(EventKind.HpChanged, e.B, (long)Self.MaxHp); }
                     var s = Entities.SlotOf(e.Handle);
                     if (s >= 0)
@@ -757,12 +759,12 @@ public sealed class WorldState
                         if (e.Kind == InboundKind.Damage) Entities.LastSwingAt[s] = now;
                         if (Knowledge is { } kk && Entities.Mob[s] >= 0)
                         {
-                            kk.Sample(Entities.Mob[s], MobFact.HitAvg, e.A);
+                            kk.Sample(Entities.Mob[s], MobFact.HitAvg, dmg);
                             if (e.Kind == InboundKind.Damage) kk.ObserveAtLeast(Entities.Mob[s], MobFact.Reach, Math.Max(0, d - GameRules.PlayerBody));
                         }
                         if (first) ev.Raise(EventKind.AggroGained, e.Handle);
                     }
-                    ev.Raise(EventKind.Damaged, e.Handle, e.A);
+                    ev.Raise(EventKind.Damaged, e.Handle, dmg);
                 }
                 else
                 {
@@ -773,7 +775,7 @@ public sealed class WorldState
                         Entities.DamagedAt[s] = now;
                         var (px, py) = Entities.Pos(s, now);
                         Entities.HitPosX[s] = px; Entities.HitPosY[s] = py;
-                        if (e.Handle == me) { Entities.DamageByUs[s] += e.A; Self.LastHitOutAt = now; ev.Raise(EventKind.Hit, e.Handle2, e.A); }
+                        if (e.Handle == me && e.A > 0) { Entities.DamageByUs[s] += e.A; Self.LastHitOutAt = now; ev.Raise(EventKind.Hit, e.Handle2, e.A); }
                     }
                 }
                 break;

@@ -6,5 +6,6 @@
     <ProjectReference Include="../Fiesta.Bot.Api/Fiesta.Bot.Api.csproj" />
     <PackageReference Include="YamlDotNet" Version="16.3.0" />
     <EmbeddedResource Include="lib/**/*.lua" />
+    <ProjectReference Include="../Fiesta.Bot.CodeAnalysis/Fiesta.Bot.CodeAnalysis.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

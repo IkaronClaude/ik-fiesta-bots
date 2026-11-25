@@ -36,14 +36,6 @@ public sealed class LuaConstAttribute : Attribute
     public string? Name { get; init; }
 }
 
-/// <summary>Marks a method as tick-path code checked by the allocation analyzer (FBOT002).</summary>
-[AttributeUsage(AttributeTargets.Method)]
-public sealed class HotPathAttribute : Attribute;
-
-/// <summary>Marks a member in a tick-path assembly that runs off the tick (FBOT001 does not apply).</summary>
-[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class | AttributeTargets.Property)]
-public sealed class OffTickAttribute : Attribute;
-
 /// <summary>Cost classes.</summary>
 public enum Cost : byte { O1, Ok, On, Cached, Job }
 

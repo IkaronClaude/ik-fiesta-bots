@@ -5,5 +5,6 @@
   <ItemGroup>
     <ProjectReference Include="../Fiesta.Bot.Services/Fiesta.Bot.Services.csproj" />
     <ProjectReference Include="../Fiesta.Bot.Protocol/Fiesta.Bot.Protocol.csproj" />
+    <ProjectReference Include="../Fiesta.Bot.CodeAnalysis/Fiesta.Bot.CodeAnalysis.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
 </Project>

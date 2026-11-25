@@ -159,6 +159,29 @@ public class WireTests
     }
 
     [Fact]
+    public void Someone_swing_carries_rest_hp_not_damage()
+    {
+        // PDB layout: attacker u16, defender u16, flag u8, resthp u32 @5, order u16, index u8, sequence u8 (13 B);
+        // the 2026 frame is 20 B (7 trailing bytes)
+        foreach (var len in new[] { 13, 20 })
+        {
+            var p = new byte[len];
+            BinaryPrimitives.WriteUInt16LittleEndian(p, 7); BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(2), 1000);
+            BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(5), 33);
+            var sink = new Sink();
+            DecoderTable.CreateDefault(WireProfile.For(len == 13 ? WireKind.Wire2016 : WireKind.Wire2026)).Dispatch(0x2449, p, 0, sink);
+            var e = Assert.Single(sink.E);
+            Assert.Equal(33, e.B); Assert.Equal(-1, e.A);
+        }
+        using var t = new TestBot();
+        t.Tick();
+        t.Ev(InboundKind.Damage, h: 7, h2: 1000, a: -1, b: 60);
+        t.Tick();
+        Assert.Equal(60, t.Ctx.World.Self.Hp);
+        Assert.Equal(40, t.Ctx.Events.Last(EventKind.Damaged)!.Value.Arg2);
+    }
+
+    [Fact]
     public void Wide_2026_char_base_is_canonicalised()
     {
         var p = new byte[362];
@@ -393,6 +416,36 @@ public class ActionTests
         t.Tick(200);
         Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(a).State);
         Assert.True(Math.Abs(t.Ctx.World.Self.Pos.X - 5600) < 2);
+    }
+
+    [Fact]
+    public void Refused_swing_starts_are_not_rearmed_forever()
+    {
+        using var t = new TestBot();
+        t.Tick();
+        t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)EntityKind.Mob, b: 1, x: 5160, y: 5000);
+        t.Tick();
+        t.Ctx.Combat.Bash(2000, 1, t.Ctx);
+        t.Tick();
+        for (var i = 0; i < 5; i++) { t.Ev(InboundKind.BashStop, h: 1000); t.Tick(); }
+        Assert.False(t.Ctx.Combat.Bashing);
+        Assert.Equal(2000, t.Ctx.Combat.RefusedTarget);
+        Assert.True(t.Sent.Count(o => o == IntentEncoder.OpBashStart) <= 2);
+        Assert.Equal(GameRules.BashStartReach(50, WeaponClass.Melee) * 1.25, GameRules.BashReach(50, WeaponClass.Melee));
+    }
+
+    [Fact]
+    public void A_swing_stream_that_landed_is_rearmed()
+    {
+        using var t = new TestBot();
+        t.Tick();
+        t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)EntityKind.Mob, b: 1, x: 5060, y: 5000);
+        t.Tick();
+        t.Ctx.Combat.Bash(2000, 1, t.Ctx);
+        t.Tick();
+        for (var i = 0; i < 4; i++) { t.Ev(InboundKind.Damage, h: 1000, h2: 2000, a: 5, b: 400); t.Ev(InboundKind.BashStop, h: 1000); t.Tick(); }
+        Assert.True(t.Ctx.Combat.Bashing);
+        Assert.True(t.Sent.Count(o => o == IntentEncoder.OpBashStart) >= 4);
     }
 
     private static List<ushort> Drain(TestBot t) { t.Tick(); return t.Sent; }

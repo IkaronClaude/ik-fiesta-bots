@@ -118,6 +118,7 @@ namespace Fiesta.Bot.CodeAnalysis
         private static void Emit(SourceProductionContext spc, ImmutableArray<Module> mods)
         {
             var ordered = mods.OrderBy(m => m.LuaName).ToList();
+            if (ordered.Count == 0) return;   // an assembly without [LuaModule] classes (the analyzers run there too)
             for (var k = 0; k < ordered.Count; k++)
             {
                 var m = ordered[k];
