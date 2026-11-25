@@ -4,6 +4,8 @@ The compiling skeleton of the redesigned runtime (`docs/REDESIGN.md`), with the 
 Location: `next/` (own solution `next/Fiesta.Bot.Next.slnx`; the current `ik-fiesta-bots.slnx` and
 `src/` are untouched). Bodies throw `NotImplementedException`; signatures and XML summaries are the spec.
 
+The web UI (REDESIGN 9) lives in `next/ui` (TypeScript/React SPA, built to static files the host serves; see `docs/UI_STATUS.md`).
+
 Build: `dotnet build next/Fiesta.Bot.Next.slnx` (0 warnings, 0 errors on .NET SDK 10.0.203).
 
 Naming during coexistence: the new host is `Fiesta.Bot.Server` (it replaces `Fiesta.Bot.Host` at the end of

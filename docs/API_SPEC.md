@@ -782,3 +782,115 @@ at most 20 lines/s per subscription; Debug/Trace only while the subscriber asked
 Per layer: 5 `dbg.*` lines per tick and 60 per minute; the excess is counted and reported once per minute
 as `script lines dropped: N`. `dbg.log(fmt, ...)` evaluates its arguments in Lua (scalars) and formats in
 C# only when enabled; text arguments over 512 bytes are truncated with a marker.
+
+---
+
+## 13. UI requests (from the UI branch, `redesign-2026-11-ui`)
+
+Additions and clarifications the web UI (`next/ui`, `docs/UI_STATUS.md`) builds against. The mock host
+(`next/ui/mock/server.mjs`) implements every item below as written; the UI degrades gracefully when the real
+host lacks one (it shows "not provided yet" instead of failing). Items are numbered for reference.
+
+### 13.1 Serving and transport
+
+- **U1. Static UI.** The host serves the built UI (`next/ui/dist`, path configurable, e.g. `UI_DIR`) at `/`,
+  with an SPA fallback to `index.html` for unknown non-`/api` paths. The bundle is self-contained (no CDN, no
+  network fonts); building it needs Node only at build time (`npm ci && npm run build` in `next/ui`).
+- **U2. WebSocket path and auth.** The hub lives at **`/api/v3/ws`** (section 8.4 says `/ws`, under the
+  `/api/v3` base). Browsers cannot set `Authorization` on a WebSocket, so the bearer token is also accepted as
+  the query parameter **`?token=<token>`** on the upgrade request.
+- **U3. Envelope.** Server -> client messages are `{"topic", "bot"?, "full": true, "data"}` for a full frame and
+  `{"topic", "bot"?, "full": false, "patch": [RFC 6902 ops]}` for a delta against the previous frame of the same
+  subscription. `full` is used for the state topics (`fleet`, `debug`, `sensors`); event topics (`transition`,
+  `log`, `alert`) are always `{"topic", "bot", "data"}`. After a (re)subscribe the first message of a state
+  subscription is full. The UI also accepts messages without `full` as full frames.
+- **U4. JSON naming.** camelCase; enums as strings (`"refused"`, `"InZone"`, `"value"`), read case-insensitively;
+  resources (`claims`) as a string array, not the `Resource` flags integer; timestamps ISO 8601 UTC.
+
+### 13.2 Host info and the wire setting (operator requirement 2026-11-25: 2016 and 2026 packet sets per bot)
+
+- **U5. `GET /api/v3/host`** -> `HostInfo`:
+  `{ name, apiVersion: 3, wires: ["2016","2026"], defaultWire: "2016", defaultLogin?: {host, loginPort},
+  classes?: [{id, name}], channels?: ["stable","candidate","operator-test"], mock?: false }`.
+  `defaultWire` is the host default (`FIESTA_WIRE`, else `2016`); `classes` comes from client data (ClassName)
+  for the spawn form's "create character" picker; `defaultLogin` pre-fills the spawn form (the UI hardcodes no
+  login endpoint).
+- **U6. `wire`** (string, one of `HostInfo.wires`) is a field of `SpawnRequest` (optional, default
+  `HostInfo.defaultWire`), of `BotRecord` / the `bots` table, and of `BotSummary` / `BotDetail`.
+- **U7. `PATCH /api/v3/bots/{id}`**, body any of `{host, loginPort, username, password, character, autostart,
+  wire}` -> `BotSummary`. Changes the persisted bot / profile configuration; wire, endpoint and credentials apply
+  at the next login (the UI says so). 400 on an unknown wire.
+
+### 13.3 BotSummary / BotDetail fields the fleet and bot pages show
+
+`BotSummary` = section 8.1 plus `character, username, host, loginPort, wire, classFamily, brain, channel,
+versionHash, autostart, packetLog, paused, ticksPerSec`,
+`layerSince: {layer: ISO time the layer's top-level state was entered}`,
+`lastTransition: {at, layer, from, to, reason} | null`,
+`vitals: {hp, maxHp, sp, maxSp, exp, expNext, money, bagFree, bagSize, x, y}` (all from the agent snapshot).
+`BotDetail` = `BotSummary` + `record` (persisted config without the password) + `logLevels` + `packetCapture`.
+
+### 13.4 Debug frame (section 7.1) clarifications
+
+- **U8.** The example uses `"tick"` twice (tick number and tick stats). The tick number stays `tick`; the stats
+  object is **`tickStats`** `{p50us, p99us, allocP95B, steps: {step: us}}`.
+- **U9.** `blackboard` is a JSON object `{bot: {}, layer: {<layer>: {}}, state: {<layer>: {}}}`, not a string.
+- **U10.** `LayerTrace` adds `enteredAtPath` (ISO time per element of `path`, outermost first) and `budgetMs`
+  (the active state's budget), so the UI shows time in state and stall vs budget for nested states.
+- **U11.** `ConditionTrace` adds `state` (the state on the active path that owns the transition), `depth` (its
+  index in `path`), `index` (0-based position of the transition in that state's `transitions`) and `holdTarget`
+  (the transition's `hold`, ms). The live graph matches an evaluation to its edge by `(state, index)`.
+- **U12.** `TransitionRecord` adds `depth`, `index` (as above; `-1` for operator transitions) and `leafFrom` (the
+  leaf state active when it fired). `kind` is the condition kind in lower case (`value, lua, event, action,
+  after, every, stuck, procedure, job, always, all, any, not`) or `operator`.
+- **U13.** `DebugFrame` adds `paused` (brain paused by the operator).
+
+### 13.5 API manifest (section 8.2 `GET /api-manifest`) shape for the editor
+
+`{ apiVersion, functions: [{module, name, signature, params: [string], returns, cost, alloc, doc, resource?,
+aliasOf?}], constants: {module: {NAME: value}}, events: [{name, arg1, arg2, doc}], sensors: [{name, returns,
+doc}], resources: [...], procedures: [...], jobs: [...], actionKinds: [...] }`.
+Global aliases are listed with module `_G` and `aliasOf` (`canUse` -> `skills.canUse`, `log` -> `dbg.log`).
+`sensors` is the `SensorRegistry` content (what `value:` and `progress:` accept); `events` is the `ev.*` table of
+section 3. The editor's pickers (event, sensor, resource, procedure, job, operator action kind) and its
+completion / hover / signature help come only from this manifest; nothing is baked into the UI.
+
+### 13.6 Brains and libraries
+
+- **U14. Definition text.** `POST /brains/{name}/versions` and `POST /brains/lint` take `definition` as a string
+  (YAML or JSON). `GET /brains/{name}/versions/{hash}` returns `definition` as the stored text,
+  `modules: {path: source}` (brain-private modules), `libraries: {path: {hash, source}}` (pinned library
+  versions) and `lint` (findings at creation; only warnings, since errors refuse the version).
+  `BrainVersionInfo` adds `libraries: {path: hash}` and `warnings` (count). A refused create is 400 with the
+  problem body carrying `lint: LintResult[]`.
+- **U15. `ui` key.** A definition may carry a top-level `ui` object, `ui.layout["layer:<name>[/<state>...]" |
+  "machine:<name>[/...]"] = {state: [x, y]}` (the editor's node positions). Runtime and linter ignore it; it is
+  part of the stored text and so of the hash.
+- **U16.** `LintResult` adds `column` (0-based, optional).
+- **U17. `GET /brains/{name}/assignments`** -> `AssignmentRecord[]` (newest first) over all bots, for the
+  brain-wide timeline. `AssignmentRecord` adds `brain`.
+- **U18. `GET /brains/{name}/metrics?versions=h1,h2`** -> `[{hash, perClass: [{classFamily, bots, hours,
+  expPerHour, deathsPerHour, questsPerHour, stuckExitsPerHour, tickP99Us, stateShare: {"<layer>/<state>":
+  0..1}}]}]` (REDESIGN 9.2).
+- **U19. Library paths in URLs** are one URL-encoded segment (`/libraries/user%2Fikaron%2Fheal/versions`).
+  `GET /libraries/{path}/versions/{hash}` -> `{hash, path, created, author, message, source}`; `GET /libraries`
+  items add `readOnly` (`lib/*`) and `versions` (count); `POST /libraries/lint {path, source}` ->
+  `LintResult[]` (lint before saving).
+- **U20. "Update brains that use it"** is done by the UI as a new version per brain with the library reference
+  unpinned (section 6: unpinned references resolve to the latest at creation). No extra endpoint.
+
+### 13.7 Observation
+
+- **U21.** `GET /bots/{id}/inventory` -> `{bagSize, money, slots: [{slot, itemId, name, lot, category}],
+  equipped: [{equipSlot, itemId, name}]}`; `GET /bots/{id}/quests` -> `[{id, name, state: active|ready|done,
+  objectives: [{kind, mobId, itemId, have, need}]}]`; `GET /bots/{id}/skills` -> `[{id, name, rank, tags,
+  readyInMs, spCost, canUse, whyNot}]` (`canUse` / `whyNot` with ourselves as target). Names from client data.
+- **U22. Replay frames.** `GET /bots/{id}/recordings/{rid}/frames?from=&to=&every=` -> `{debug: DebugFrame[],
+  sensors: SensorFrame[]}` produced by replaying the recording on the host (the UI cannot replay `.botrec`
+  itself). A recording with `kind: "ring"` may expose the in-memory frame history of the last minutes.
+- **U23.** `SensorFrame` entities add `name` (read-time name) and optional `assist` (learned family-assist
+  radius); the frame may add `nav: {rects: [[x, y, w, h]]}` (nav mesh rectangles near us) for the overlay.
+- **U24.** Log lines (HTTP and the `log` topic) are `{t, level, category, text, repeat}` with `level` one of
+  `C, N, I, D, T` (full lower-case names also accepted); the `log` subscription's `level` accepts both;
+  `PUT /log-levels` takes lower-case names.
+- **U25.** `POST /bots/{id}/actions` returns `{id, state}`.
