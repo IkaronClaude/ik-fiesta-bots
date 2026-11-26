@@ -32,4 +32,14 @@ public class JobChangeTests
         Assert.Equal(0, c.Quest(60015)!.PrevQuest);
         Assert.Equal(20, c.Quest(60015)!.MinLevel);
     }
+
+    [Fact]
+    public void Ice_bolt_is_a_slow_by_its_effect()
+    {
+        if (Client() is not { } c) return;
+        // StaIceBolt's SubAbState carries the move-speed-down action; Magic Missile has no state at all
+        Assert.True(c.IsSlowState(c.Skill(6020)!.StaNameA));
+        Assert.True((Fiesta.Bot.Api.SkillTags.Of(c, 6020) & (int)Fiesta.Bot.Api.SkillTag.Slow) != 0);
+        Assert.Equal(0, Fiesta.Bot.Api.SkillTags.Of(c, 6000) & (int)Fiesta.Bot.Api.SkillTag.Slow);
+    }
 }

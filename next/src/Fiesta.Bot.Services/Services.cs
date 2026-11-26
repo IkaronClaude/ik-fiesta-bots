@@ -259,6 +259,29 @@ public sealed class ClientData : IClientData
         return d;
     }
 
+    // SLOWS: an abnormal state whose SubAbState carries the move-speed-down action (SubAbState ActionIndexA..D == 88;
+    // e.g. Ice Bolt's StaIceBolt). Found by effect, never by name. (The old Lua drivers' host did the same.)
+    private const int SpeedDownAction = 88;
+    private HashSet<string>? _slowStates;
+    /// <summary>Does the abnormal state (AbState InxName, as a skill's StaNameA names it) slow its target?</summary>
+    public bool IsSlowState(string abStateInx)
+    {
+        if (_slowStates is null)
+        {
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            var subs = new HashSet<string>(StringComparer.Ordinal);
+            if (T("SubAbState") is { } sub)
+                for (var r = 0; r < sub.RowCount; r++)
+                    foreach (var c in new[] { "ActionIndexA", "ActionIndexB", "ActionIndexC", "ActionIndexD" })
+                        if (sub.Col(c) >= 0 && sub.Num(r, c) == SpeedDownAction) { subs.Add(sub.Str(r, "InxName") ?? ""); break; }
+            if (T("AbState") is { } ab)
+                for (var r = 0; r < ab.RowCount; r++)
+                    if (ab.Str(r, "SubAbState") is { Length: > 0 } sn && subs.Contains(sn)) set.Add(ab.Str(r, "InxName") ?? "");
+            _slowStates = set;
+        }
+        return _slowStates.Contains(abStateInx);
+    }
+
     private ShnTable? T(string name)
     {
         var p = Path.Combine(Dir, name + ".shn");

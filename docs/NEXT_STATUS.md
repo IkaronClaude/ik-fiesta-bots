@@ -506,27 +506,52 @@ Promotion); to be confirmed on a live hand-in.
   exp/h, no deaths; money -6906 / -10020 per hour with 9786 / 15300 per hour on stones (the top-up rule's first
   restock after the restarts; watching whether it settles).
 
-#### Natural regeneration while standing: measured, NOT confirmed as game behaviour (possible server-port bug)
+#### Confirmed game behaviour (operator, 2026-11-25)
 
-Two measurements, both "no regeneration out of combat while not in the tent":
-- 21:43:00-21:43:45 UTC, BEFORE the switch to all-native Linux servers (the zones still ran the earlier build):
-  NextA on RouCos03 / Rou, HP 208/455 unchanged for 45 s, standing out of combat; the full packet log of those 45 s
-  has no HP or SP change at all (only stat-parameter 0x1035 and movement frames).
-- 23:32:57-23:33:58 UTC, on the all-native Linux stack: NextA on RouVal01, HP 465/484 unchanged for 61 s, out of
-  combat (walking to a merchant); no NC_BAT_HPCHANGE in the packet log for that minute.
-(The private Lua drivers recorded the same on the cluster in October: a character standing at 29 % for 9 minutes.)
-In the tent HP does come back (NextA 58 % -> 96 % in 24 s, 22:01).
-Status: an open question for the server side, not a rule. The leveller's `rest` state pitches the tent whenever it
-needs HP between fights; it does not depend on standing regeneration being absent (the tent is the faster recovery
-either way), and nothing else in the bot assumes it. If standing regeneration is confirmed and fixed server-side, the
-rest state can also stand without the tent where a tent is refused.
+- HP regenerates ONLY inside the mini-house tent (measured twice standing: 21:43 before the native switch, 23:33 on
+  the native Linux stack - no HP change, no HP packet). The leveller rests in the tent; the tent cannot stand near an
+  NPC or a gate (refusal 0x0A83), so the rest walks clear of the NPCs / gates in view first, and learns a larger
+  clearance from each 0x0A83.
+- MapInfo InSide = indoor rendering ("not open sky"), nothing else. Nothing in the bot reads it as instance / dungeon.
+- Instance = the server's MAP_FIELD_ATTRIBUTE on entry (field map type 0 open world, 1 the job change's dungeon in
+  Z:/JCQ.pcapng), logged on every entry. Scenario packets and KingdomMap are not used to decide it (ada7aa1).
+- The bag-slot-22 storage oddity was ours: the storage window comes one frame per page (pages 3, 0, 1, 2 in
+  Z:/Storage.pcapng) and the decoder cleared the box on every frame, so occupied cells looked free and our deposits
+  swapped stored items back into the bag. Fixed (d0c3e4d, test from the captured page order); a deposit that swaps
+  anything back now stops the visit with a crit line. To be proven at the next deposit (packet logs on).
 
-#### Open: storage deposits all logged from bag slot 22 (possible server-port bug)
+#### Behaviour knobs reviewed against the old Lua drivers (operator: the old Lua is the reference for tuned behaviour)
 
-NextA, 21:58:04-06 (before the all-native switch): every deposited item was logged as moved from bag slot 22 in turn,
-each move acked by slot 22's cell change, and the items left the bag. To be captured with full packet logs at the next
-deposit (both bots' packet logs are on since 23:32) and sent to the server side with the raw C->S RELOC requests and
-every S->C cell change / ack.
+Aligned with the old Lua (value now taken from it): HEAL_AT 40 (HEAL_PCT), REST_AT 60 (REST_PCT), SP_LOW 30
+(SP_HEAL_PCT), POTION_GAP_MS 1200 (POTION_CD), GRIND_ABOVE 3 (GRIND_MAP_MAX_OVER), REST_TO 95 (TENT_FULL_PCT),
+TENT_RETRY_MS 4000 (TENT_ACK_WAIT_MS), TENT_NPC_MARGIN 100, stones restock below 10 % of the server-reported reserve
+(stonesLow), the mage fight values (MAGE_NO_AA_LEVEL 5 / SKILLS 3, engage at 0.85 x the shortest damage-skill range,
+KITE_HOLD_GAP 200, KITE_STEP 150, KITE_LATERAL 150). Removed: the "top HP stones up to 15" rule (no basis).
+
+No basis in the old Lua or the game data yet (to align or justify):
+| knob | value | plan |
+|---|---|---|
+| EXP_PER_MONEY / ITEM_EXP / CHAIN_BONUS | 0.1 / 50 / 1e6 | planner weights (new capability, no Lua equivalent); justify from measured exp/h vs money/h per level |
+| DEFAULT_KILL_S / _EXP / _STONES_PER_KILL | 15 / 10 / 0.2 | only before the first measured kill; replace by the bot's measured average (done for kill time / exp / stones) |
+| REST_S_PER_KILL, DEATH_COST_EXP, KILLS_PER_ITEM, GRIND_ROUND_S | 3 / 500 / 1.5 / 600 | measure: rest time per kill (tent), exp lost per death, drops per kill |
+| STONE_MARGIN, STONES_UNMEASURED | 1.5 / 3 | old Lua refilled to the reserve; ours buys the planned need; keep under review with stones per kill |
+| MANY_ON_US, AVOID_MOB_DEATHS, REMEDY_MS, REST_FULL_AT, SP_EARLY | 2 / 2 / 30 min / 90 / 50 | guard reactions (new); old Lua had OVERWHELM_AGGRESSORS 2 - align MANY_ON_US to it (same value) |
+| DEATHS_H_ALARM, DEATHS_ALARM_N, MONEY_ALARM, ECON_WINDOW_MIN | 3 / 3 / 500 / 30 | economy guard (new); old Lua had no alarm |
+| MOB_ABOVE, CROSS_ABOVE | 3 / 8 | old SWARM_MARGIN 2 is a different notion; check its level band and align |
+| NOT_OFFERED_MIN, ACCEPT_SCAN/SLICE, TRIP_OVERHEAD_S, RUN_SPEED | 360 / 20,5 / 20 / 120 | planner mechanics; RUN_SPEED should come from the server's move speed (self.runSpeed) |
+Known old-Lua flaws not carried over: its attack range constants (ours: skill ranges from data; weapon reach still a
+constant 120 / 600 - to derive from item data and verify against out-of-range refusals), its path handling, its tick
+cost.
+
+#### Mage fight (caster.lua, ported from the old Lua's mage fight)
+
+Before (NextM, per-mob ledger at 23:59): stones per kill 0.4 (mob 135), 0.1 (340), 0.75 (6), 1.0 (8 / 9 / 10);
+deaths 27.9/h over the last 30 min, money -6857/h. The old fight walked a mage into melee to auto-attack whenever no
+skill was usable. Now: no auto-attack from level 5 with 3 damage skills; stand at 0.85 x the shortest damage range;
+open with the strongest skill; a mob closing within 200 is slowed (the slow found by its effect: SubAbState move-speed-
+down 88, e.g. Ice Bolt) or stepped away from (away from all mobs, lateral zigzag); never step during a cast or cast while
+walking; at 0 SP stand and auto-attack. Each fight logs: won / left, time, HP before / after, stones, casts, kite
+steps. After: to be measured (target: HP stones only against strong mobs, money/h positive).
 
 #### Efficiency per bot (live, local stack)
 

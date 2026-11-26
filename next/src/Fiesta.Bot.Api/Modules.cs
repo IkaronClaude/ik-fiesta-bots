@@ -33,6 +33,7 @@ public static class SkillTags
             if (s.IsMovingSkill) m |= (int)SkillTag.Moving;
             if (sta.Length > 0) m |= dmg ? (int)SkillTag.Debuff : (int)SkillTag.Buff;
             if (sta.Contains("Stun", StringComparison.OrdinalIgnoreCase)) m |= (int)SkillTag.Stun;
+            if (sta.Length > 0 && data is ClientData cd && cd.IsSlowState(sta)) m |= (int)SkillTag.Slow;
             if (s.EffectType == 8) m |= (int)SkillTag.Dispel;
         }
         Cache[id] = m;
