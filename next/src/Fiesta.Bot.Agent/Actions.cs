@@ -20,7 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
-    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack, Produce, ProductField, Split, Tent, BagSort,
+    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack, Produce, ProductField, Split, Tent, BagSort, Upgrade,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -168,6 +168,10 @@ public static class ActionCatalog
             e.Kind == InboundKind.Tent && e.A == a.Arg0 ? (e.B == 0x0A81 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.B)) : null), 4000);
         // the client's bag auto-arrange (stacks loose items together, compacts): resolved by its answer, whatever the code
         // (0x30A8 is what the real client's sort receives)
+        // the upgrade answer is a code for every outcome (success, failed, -1, destroyed, refused): the matcher acks on any
+        // of them and the code says which; the outcome is the caller's to read
+        S(ActionKind.Upgrade, Resource.Inventory, new FnMatcher((a, e, w) =>
+            e.Kind == InboundKind.UpgradeAck ? (e.A == 0x08C3 || e.A == 0x08C5 || e.A == 0x08C6 || e.A == 0x08C7 ? ActionState.Acked : ActionState.Failed, (ushort)Math.Max(0, e.A)) : null), 8000);
         S(ActionKind.BagSort, Resource.Inventory, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.SortAck ? (ActionState.Acked, (ushort)Math.Max(0, e.A)) : null), 4000);
         S(ActionKind.Talk, Resource.Npc, Controller, 20000);
@@ -425,6 +429,12 @@ public static class ErrorCodes
         0x0241 => "moved",
         0x0441 => "split",
         0x30A8 => "bag arranged",
+        0x08C3 => "upgrade succeeded (+1)",
+        0x08C5 => "upgrade failed, nothing lost",
+        0x08C6 => "upgrade failed, the item lost a level",
+        0x08C7 => "upgrade failed, the item was destroyed",
+        0x08C9 => "upgrade refused, nothing consumed",
+        0x08D9 => "upgrade answered 0x08D9 (seen once with a Blessed Xir; meaning not known)",
         0x0A81 => "tent ok",
         0x0A82 => "tent: not in this mode (moving, mounted, busy)",
         0x0A83 => "tent: too near an NPC or another tent",

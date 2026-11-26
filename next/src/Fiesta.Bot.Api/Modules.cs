@@ -595,6 +595,16 @@ public sealed partial class ActModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>The client's bag auto-arrange (ITEM_AUTO_ARRANGE_INVEN_REQ 0x304A, empty): stacks loose items of one kind
     /// together and compacts the bag, as the client's sort button does; resolved by its answer.</summary>
     [LuaFn] public int SortBag() => One(ActionKind.BagSort, 0, 0, IntentEncoder.Raw(IntentEncoder.OpBagSort, default, -1));
+    /// <summary>Enhance the item in a bag slot with the enhance stone in another (ITEM_UPGRADE_REQ 0x3017); the three
+    /// safety stones (red, blue, gold kinds) by bag slot, -1 none. Resolved by ITEM_UPGRADE_ACK: act.result is the code
+    /// (0x08C3 success, 0x08C5 failed, 0x08C6 -1 level, 0x08C7 destroyed; 0x08C9 refused fails the action).</summary>
+    [LuaFn] public int Upgrade(int itemSlot, int stoneSlot, int left = -1, int right = -1, int middle = -1)
+    {
+        static byte Sl(int s) => s < 0 ? (byte)0xFF : (byte)s;
+        if (itemSlot < 0 || stoneSlot < 0) return Id(Ctx.Actions.Refuse(ActionKind.Upgrade, CallingLayer, LocalRefusal.InvalidTarget));
+        Ctx.Log.Log(LogCategory.Item, LogLevel.Note, $"upgrade: item in slot {itemSlot} ({Ctx.World.Bag.At(itemSlot).ItemId}) with the stone in slot {stoneSlot} ({Ctx.World.Bag.At(stoneSlot).ItemId}), safety {left}/{right}/{middle}");
+        return One(ActionKind.Upgrade, itemSlot, stoneSlot, IntentEncoder.Upgrade(Sl(itemSlot), Sl(stoneSlot), Sl(left), Sl(right), Sl(middle), -1));
+    }
     /// <summary>Fold the tent (FOLDTENT_REQ) before acting again.</summary>
     [LuaFn] public int FoldTent() => One(ActionKind.Tent, 0, 0, IntentEncoder.Raw(IntentEncoder.OpFoldTent, default, -1));
     /// <summary>HP soul stone.</summary>

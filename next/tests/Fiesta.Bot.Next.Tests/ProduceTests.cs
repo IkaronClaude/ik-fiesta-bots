@@ -169,6 +169,35 @@ layers:
     }
 
     [Fact]
+    public void The_item_upgrade_request_matches_the_real_client_and_its_answer_resolves_it()
+    {
+        // real client (GearEnchantment capture): item in bag slot 2, Elrue in 7, red safety in 6, none right, gold in 10
+        var i = IntentEncoder.Upgrade(2, 7, 6, 0xFF, 10, -1);
+        Assert.Equal((ushort)0x3017, i.Opcode);
+        Assert.Equal(new byte[] { 0x02, 0x07, 0x06, 0xFF, 0, 0, 0, 0, 0x0A }, i.Payload.ToArray());
+        var sink = new Sink();
+        var table = DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016));
+        table.Dispatch(0x3018, new byte[] { 0xC3, 0x08 }, 0, sink);   // success
+        table.Dispatch(0x3018, new byte[] { 0xC9, 0x08 }, 0, sink);   // refused, nothing consumed
+        Assert.Equal((InboundKind.UpgradeAck, 0x08C3L), (sink.E[0].Kind, sink.E[0].A));
+        using var t = new TestBot();
+        t.Tick(2);
+        var act = new Fiesta.Bot.Api.ActModule(t.Ctx);
+        var a = act.Upgrade(2, 7);
+        t.Tick();
+        Assert.Contains(IntentEncoder.OpUpgrade, t.Sent);
+        t.In.TryWrite(sink.E[0]);
+        t.Tick();
+        Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(new ActionId(a)).State);
+        Assert.Equal(0x08C3, t.Ctx.Actions.Get(new ActionId(a)).Code);
+        var b = act.Upgrade(2, 7);
+        t.Tick();
+        t.In.TryWrite(sink.E[1]);
+        t.Tick();
+        Assert.Equal(ActionState.Failed, t.Ctx.Actions.Get(new ActionId(b)).State);
+    }
+
+    [Fact]
     public void The_rest_tent_is_pitched_and_folded_with_its_acks()
     {
         // PITCHTENT_REQ 0x2027 -> PITCHTENT_ACK {0x0A81}; FOLDTENT_REQ 0x202A -> FOLDTENT_ACK {0x0A81}; a refusal carries why
