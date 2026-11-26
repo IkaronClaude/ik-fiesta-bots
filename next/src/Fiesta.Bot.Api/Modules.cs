@@ -768,6 +768,10 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
             var o = def.Objectives[i];
             var have = o.Kind == QuestObjectiveKind.Collect ? Ctx.World.Bag.Count(o.ItemId) : Q.Have(q, def.CounterOf(i));
             if (o.Kind != QuestObjectiveKind.Talk && have < o.Need) return false;
+            // a talk objective is met when the server says so (its reward state 8), not by assumption: NextA 'handed in'
+            // Hopeless James 2 and Reward for Perseverance and Passion again and again (status 6, the server ran their
+            // [SCRIPT_DOING] each time: 01:02, 01:04)
+            if (o.Kind == QuestObjectiveKind.Talk && Q.Status(q) >= 0) return false;
         }
         return true;
     }
