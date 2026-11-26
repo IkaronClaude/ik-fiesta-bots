@@ -276,6 +276,7 @@ public sealed class CombatController
     private bool _rearm;
     private long _castUntil;
     private int _castSkill = -1;
+    private double _castDist = -1;
     private int _assertedTarget = -1;
     private readonly Intent[] _buf = new Intent[8];
     private bool _landedSinceStart;
@@ -349,7 +350,13 @@ public sealed class CombatController
         }
         buf[n++] = IntentEncoder.CastObject((ushort)skillId, (ushort)targetHandle, -1);
         var id = ctx.Actions.Issue(ActionKind.Cast, layer, skillId, targetHandle, buf[..n], 1500 + sk.CastTimeMs);
-        if (id.Value > 0) { _castSkill = skillId; _castUntil = ctx.Now + sk.CastTimeMs + 300; }
+        if (id.Value > 0)
+        {
+            _castSkill = skillId; _castUntil = ctx.Now + sk.CastTimeMs + 300;
+            var ts = ctx.World.Entities.SlotOf(targetHandle);
+            if (ts >= 0) { var (cx, cy) = ctx.World.Entities.Pos(ts, ctx.Now); _castDist = MoveController.Dist(ctx.World.Self.Pos.X, ctx.World.Self.Pos.Y, cx, cy); }
+            else _castDist = -1;
+        }
         return id;
     }
 
@@ -462,6 +469,14 @@ public sealed class CombatController
             // 0x0FC4 refusals in an hour, 01:00-01:57)
             case InboundKind.CastFail when e.A is 0x0FC4 or 0x0FC6:
                 _castUntil = ctx.Now + 600;
+                break;
+            // "out of range" from where we cast: the skill's reach is shorter than that (by at least a tile), learned so
+            // canUse says Range from there on and the fight closes in instead of recasting (NextA recast a skill from
+            // too far three times in a row, 13:34 - REPEATED REFUSAL)
+            case InboundKind.CastFail when e.A == 0x0FCA && _castSkill >= 0 && _castDist > 0:
+                ctx.World.Skills.LearnReach(_castSkill, _castDist - BlockLayer.WorldPerTile);
+                _castUntil = 0;
+                ctx.Log.Log(LogCategory.Combat, LogLevel.Info, $"skill {_castSkill}: out of range from {_castDist:0}: its reach is under that, closing in from now on");
                 break;
             case InboundKind.CastFail:
             case InboundKind.CastAborted:
@@ -613,7 +628,7 @@ public static class GameRules
         if (s < 0 || w.Entities.IsDead(s)) return CanUseReason.Target;
         var (tx, ty) = w.Entities.Pos(s, ctx.Now);
         var d = MoveController.Dist(self.Pos.X, self.Pos.Y, tx, ty);
-        if (d > SkillReach(sk, w.Entities.BodyOf(s))) return CanUseReason.Range;
+        if (d > SkillReach(sk, w.Entities.BodyOf(s)) || d > w.Skills.LearnedReach(skillId)) return CanUseReason.Range;
         if (!LineOfFire(ctx.Nav.Layer(w.Map.MapName), self.Pos.X, self.Pos.Y, tx, ty)) return CanUseReason.LineOfFire;
         return CanUseReason.Ok;
     }

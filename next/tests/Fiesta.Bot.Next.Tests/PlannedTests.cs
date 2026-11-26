@@ -629,6 +629,24 @@ public class ActionTests
     }
 
     [Fact]
+    public void An_out_of_range_refusal_teaches_the_skill_its_reach()
+    {
+        using var t = new TestBot();
+        t.Tick(30);
+        t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)EntityKind.Mob, b: 1, x: 5080, y: 5000);
+        t.Tick();
+        Assert.Equal(CanUseReason.Ok, GameRules.CanUse(t.Ctx, 0, 2000));      // the data's reach allows 80
+        t.Ctx.Combat.Cast(0, 2000, 1, t.Ctx);
+        t.Tick();
+        t.Ev(InboundKind.CastFail, a: 0x0FCA);                                 // "out of range" from 80
+        t.Tick();
+        t.Clock.NowMs += 2000; t.Tick();                                       // past the cooldown
+        Assert.Equal(CanUseReason.Range, GameRules.CanUse(t.Ctx, 0, 2000));   // from 80: too far now
+        t.Ev(InboundKind.EntityAppeared, h: 2001, a: (long)EntityKind.Mob, b: 1, x: 5040, y: 5000); t.Tick();
+        Assert.NotEqual(CanUseReason.Range, GameRules.CanUse(t.Ctx, 0, 2001)); // closer in: fine
+    }
+
+    [Fact]
     public void A_cancelled_move_stops_walking()
     {
         using var t = new TestBot();
