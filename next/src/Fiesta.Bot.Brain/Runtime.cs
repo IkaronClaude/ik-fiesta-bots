@@ -23,7 +23,14 @@ public sealed record ConditionTrace(string To, string Kind, string Expr, double?
 /// <summary>Live state of one layer for the debugger (UI U10).</summary>
 public sealed record LayerTrace(string Name, int Priority, IReadOnlyList<string> Path, DateTime? EnteredAt, long TimeInStateMs,
     IReadOnlyList<DateTime> EnteredAtPath, double? Progress, DateTime? ProgressBestAt, int BudgetMs, IReadOnlyList<string> Claims,
-    IReadOnlyList<ConditionTrace> Conditions);
+    IReadOnlyList<ConditionTrace> Conditions)
+{
+    /// <summary>The layer's slowest run in the last minute (microseconds) and the state it was in: which layer and state
+    /// a slow brain tick came from.</summary>
+    public double MaxUs { get; init; }
+    /// <summary>The state path of that slowest run.</summary>
+    public string? MaxAt { get; init; }
+}
 
 /// <summary>Action row for the debugger.</summary>
 public sealed record ActionTrace(int Id, string Kind, string State, int Code, string Reason, DateTime SentAt, DateTime? ResolvedAt, string Layer);
@@ -192,6 +199,7 @@ public sealed class LayerRuntime
     internal LayerDef Def = null!;
     internal MachineRuntime Root = null!;
     internal long LastRun = -1, LastRunTick = -1;
+    internal double MaxUs; internal long MaxAtMs = long.MinValue / 2; internal string? MaxState;
     internal readonly long[] EventTotals = new long[64];
     internal readonly List<ConditionTrace> Traces = new();
     internal readonly List<StateRuntime> Path = new();
@@ -446,7 +454,11 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
             if (!lr.Due(_now)) continue;
             ApiScope.Bind(_modules, _arena, _errors, lr.Index);
             _engine.BindLayer(lr.Name);
+            var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             RunLayer(lr, ctx);
+            var us = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1e6 / System.Diagnostics.Stopwatch.Frequency;
+            if (_now - lr.MaxAtMs > 60_000) { lr.MaxUs = 0; lr.MaxAtMs = _now; }
+            if (us > lr.MaxUs) { lr.MaxUs = us; lr.MaxState = lr.Path.Count > 0 ? lr.Path[^1].Name : null; }
             lr.LastRun = _now; lr.LastRunTick = ctx.Tick;
             for (var k = 0; k < EventKindCount; k++) lr.EventTotals[k] = ctx.Events.Total((EventKind)k);
             if (_suspended) break;
@@ -849,7 +861,7 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
                 withProgress is null || double.IsNegativeInfinity(withProgress.Best) ? null : withProgress.Best,
                 withProgress is null ? null : SystemClock.ToUtc(withProgress.BestAt), leaf?.BudgetMs ?? 0,
                 Enum.GetValues<Resource>().Where(r => r is not Resource.None and not Resource.All && (lr.Claims & r) != 0).Select(r => r.ToString()).ToList(),
-                lr.Traces.ToList()));
+                lr.Traces.ToList()) { MaxUs = Math.Round(lr.MaxUs, 1), MaxAt = lr.MaxState });
         }
         var actions = ctx.Actions.Recent(20).Select(a => new ActionTrace(a.Id, LuaConstants.Upper(a.Kind.ToString()), a.State.ToString().ToLowerInvariant(), a.Code,
             ErrorCodes.Describe(a.Code), SystemClock.ToUtc(a.SentAt == 0 ? a.QueuedAt : a.SentAt), a.Pending ? null : SystemClock.ToUtc(a.ResolvedAt),
