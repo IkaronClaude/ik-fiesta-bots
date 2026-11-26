@@ -592,3 +592,7 @@ The ledger lives in memory: a host restart starts the hour over (the rates read 
 | 22:52 (after two stack restarts) | NextM | 12 | 7585 | 250 | 4004 | 0 | 0 | hunt q416 Despicable Little Ones (4.0 exp/s) |
 | 23:21 | NextA | 14 | 25148 | 1517 | -6906 | 9786 | 0 | hunt q316 Blue Crab Dish (6.4 exp/s) |
 | 23:21 | NextM | 12 | 20280 | 458 | -10020 | 15300 | 0 | hunt q29 Medicinal Herbs (5.2 exp/s) |
+| 00:50 (rates now over the real ledger age) | NextA | 15 | 17786 | 2664 | 5295 | 0 | 0 | quests in Rou |
+| 00:50 | NextM | 14 | 6715 | 1152 | 2942 | 0 | 5.25 (the 00:21 death) | caster fights, no stones since 00:22 |
+
+At 00:50 both bots earn money and NextM (mage) uses no stones: the operator's success criterion for the mage fight (HP stones only against strong mobs, money/h positive) holds in this window.
