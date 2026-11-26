@@ -459,6 +459,24 @@ public class ActionTests
     }
 
     [Fact]
+    public void One_cease_fire_with_nothing_landed_is_retried_then_a_second_stops_the_bash()
+    {
+        // NextA, 02:48:22: one CEASE_FIRE right after the start, then 24 s "bashing" without a packet
+        using var t = new TestBot();
+        t.Tick();
+        t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)EntityKind.Mob, b: 1, x: 5060, y: 5000);
+        t.Tick();
+        t.Ctx.Combat.Bash(2000, 1, t.Ctx);
+        t.Tick();
+        var starts = t.Sent.Count(o => o == IntentEncoder.OpBashStart);
+        t.Ev(InboundKind.BashStop, h: 1000); t.Tick(3);
+        Assert.True(t.Sent.Count(o => o == IntentEncoder.OpBashStart) > starts);   // retried
+        Assert.True(t.Ctx.Combat.Bashing);
+        t.Ev(InboundKind.BashStop, h: 1000); t.Tick(3);
+        Assert.False(t.Ctx.Combat.Bashing);                                         // the second refusal ends it
+    }
+
+    [Fact]
     public void A_swing_stream_that_landed_is_rearmed()
     {
         using var t = new TestBot();

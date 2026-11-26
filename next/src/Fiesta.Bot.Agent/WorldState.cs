@@ -1171,6 +1171,9 @@ public sealed class WorldState
             case InboundKind.Tent:
                 if (e.A == 1 && e.B == 0x0A81) Self.TentPitched = true;
                 else if (e.A is 0 or 2 && e.B == 0x0A81) Self.TentPitched = false;
+                // a pitched or folded tent leaves us out of battle mode with no mode broadcast: the next attack must ask
+                // for it again (NextA folded at 02:48:21, its BASHSTART was ignored in silence until a CHANGEMODE 2 at 02:48:47)
+                if (e.B == 0x0A81) Self.BattleMode = false;
                 Bump(WorldComponent.Self);
                 break;
             case InboundKind.ProduceField when e.B == 0x0B01:

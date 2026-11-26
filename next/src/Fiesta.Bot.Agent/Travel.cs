@@ -144,6 +144,9 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         Plan(ctx);
     }
 
+    /// <summary>How long a map whose gate answered no menu twice is routed around.</summary>
+    public const long GateSilentRefuseMs = 5 * 60 * 1000;
+
     private void Settle(AgentContext ctx)
     {
         if (_hop is null || _hop.Status == ProcedureStatus.Running) return;
@@ -152,8 +155,12 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         if (_hop.FailReason?.Contains("awaitMenu") == true && ++_menuRefusals >= 2)
         {
             _refusedInto.Add(_next.To); _menuRefusals = 0;
-            ctx.RefusedMaps[_next.To] = ctx.Now + 60 * 60 * 1000;   // remembered for later trips (retried after an hour: a level gate stays shut for a while)
-            ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"travel: the gate to {ctx.Data.Map(_next.To)?.MapName} answers no menu twice: routing around it");
+            // remembered for later trips only briefly: a silent gate is not a shut map. After the 02:24 reconnect NextM's
+            // clicks on the gates to Rou, Eld and RouVal01 all went unanswered (no NPC answered any click in that
+            // session, the next session's first click opened a menu), and the old one-hour refusal cut it off from both
+            // towns and every quest field for an hour ("no quest", 02:38-02:48)
+            ctx.RefusedMaps[_next.To] = ctx.Now + GateSilentRefuseMs;
+            ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"travel: the gate to {ctx.Data.Map(_next.To)?.MapName} answers no menu twice: routing around it for {GateSilentRefuseMs / 60000} min");
         }
         _hop = null;
         if (++_hopFails > 3) { Fail("gate hops keep failing"); return; }

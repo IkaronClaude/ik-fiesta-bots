@@ -245,6 +245,18 @@ layers:
         t.Ev(InboundKind.EntityMode, h: 1000, a: 1);
         t.Tick();
         Assert.False(t.Ctx.World.Self.BattleMode);
+        // the tent leaves battle mode without a broadcast: a fold ack clears it, so the next attack asks again
+        t.Ev(InboundKind.EntityMode, h: 1000, a: 2);
+        t.Tick();
+        t.Ev(InboundKind.Tent, a: 0, b: 0x0A81);
+        t.Tick();
+        Assert.False(t.Ctx.World.Self.BattleMode);
+        t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)EntityKind.Mob, b: 1, x: 5060, y: 5000);
+        t.Tick();
+        t.Sent.Clear();
+        t.Ctx.Combat.Bash(2000, 1, t.Ctx);
+        t.Tick();
+        Assert.Contains(IntentEncoder.OpChangeMode, t.Sent);
     }
 
     [Fact]

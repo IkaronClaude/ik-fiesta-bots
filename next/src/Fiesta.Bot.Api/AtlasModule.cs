@@ -125,6 +125,9 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
         return true;
     }
 
+    /// <summary>Stop avoiding a map now (an avoid that turned out wrong); false when it was not avoided.</summary>
+    [LuaFn] public bool Unavoid(string map) => Ctx.Data.Map(map) is { } m && Ctx.RefusedMaps.Remove(m.Id);
+
     /// <summary>Is a map avoided for this bot now?</summary>
     [LuaFn] public bool Avoided(string map) => Ctx.Data.Map(map) is { } m && Ctx.Refused(m.Id);
 
