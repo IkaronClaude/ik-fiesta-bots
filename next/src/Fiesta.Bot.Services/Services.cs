@@ -498,6 +498,8 @@ public sealed class ClientData : IClientData
     public ActiveSkillRow? Skill(int id) => _skills.Value.GetValueOrDefault(id);
     /// <inheritdoc/>
     public ItemInfoRow? Item(int id) => _items.Value.GetValueOrDefault(id);
+    /// <summary>Every ItemInfo row (for whole-table questions such as the best piece for a slot; callers cache).</summary>
+    public IReadOnlyCollection<ItemInfoRow> AllItems => _items.Value.Values;
     /// <inheritdoc/>
     public MapInfoRow? Map(int id) => _maps.Value.ById.GetValueOrDefault(id);
     /// <inheritdoc/>

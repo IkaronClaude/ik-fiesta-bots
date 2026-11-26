@@ -69,7 +69,7 @@ public class LevelerBrainTests
     }
 
     [Fact]
-    public void Two_deaths_on_a_map_within_five_minutes_avoid_it()
+    public void Two_deaths_on_a_level_appropriate_map_do_not_make_us_leave_it()
     {
         if (Load() is not var (yaml, mods)) return;
         using var t = new TestBot();
@@ -84,7 +84,8 @@ public class LevelerBrainTests
             t.Ev(InboundKind.Revive, a: t.Ctx.World.Map.MapId, b: 1, x: 5000, y: 5000);
             t.Tick(3);
         }
-        Assert.True(t.Ctx.Refused(t.Ctx.World.Map.MapId));
+        // operator rule: deaths in a level-appropriate field are combat bugs, never a reason to avoid it
+        Assert.False(t.Ctx.Refused(t.Ctx.World.Map.MapId));
         Assert.Empty(b.Debug.Errors().Where(e => !e.Error.Contains("E_BUDGET")));   // wall-clock Lua budgets depend on machine load
     }
 
@@ -312,7 +313,7 @@ public class LevelerBrainTests
         var now = Fiesta.Bot.Services.SystemClock.UnixMs(t.Clock.NowMs);
         Assert.True(bot["pullOneUntil"]!.GetValue<long>() > now, Diag(t));   // the cause (several mobs on us) is fixed
         Assert.True(bot["restFullUntil"]!.GetValue<long>() > now);
-        Assert.True(bot["avoidMob"]?[ "1" ] is not null);                     // the same mob type killed us again: left alone
+        Assert.True(bot["avoidMob"]?["1"] is null);                          // an in-band mob that kills us is a combat bug, never avoided
         Assert.True(bot["econSafe"]!.GetValue<bool>());                      // money 100 and falling: efficient earning
         Assert.Null(bot["caution"]);                                         // no lowering of the fight level
         Assert.Contains("DEATH DIAGNOSIS", Diag(t));

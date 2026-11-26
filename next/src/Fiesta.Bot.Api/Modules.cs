@@ -394,6 +394,39 @@ public sealed partial class SkillsModule(AgentContext ctx) : ApiModule(ctx)
 {
     private IClientData D => Ctx.Data;
     private SkillBook B => Ctx.World.Skills;
+
+    /// <summary>Skills we are behind on: skill families where a buyable skill book (ItemInfo row named like an
+    /// ActiveSkill row, a BuyPrice, demand level at most ours) for our class teaches a higher rank than the highest we
+    /// know (a family we lack entirely counts too; production recipes left out: they are a choice of field, not power).
+    /// Cached per (level, learned count); each recompute logs the families and ranks behind.</summary>
+    [LuaFn]
+    public int Behind()
+    {
+        var lv = Ctx.World.Self.Level; var known = B.Learned.Count;
+        if (_behindLv == lv && _behindKnown == known) return _behind;
+        var n = 0;
+        if (Ctx.Data is ClientData cd)
+        {
+            var byInx = cd.Skills.GroupBy(x => x.InxName).ToDictionary(g => g.Key, g => g.First());
+            var top = new Dictionary<string, ActiveSkillRow>();
+            foreach (var i in cd.AllItems)
+                if (i.BuyPrice > 0 && i.DemandLevel <= lv && i.InxName is { Length: > 0 } && byInx.TryGetValue(i.InxName, out var sk)
+                    && cd.Produce(sk.Id) is null && cd.ClassAllowed(sk.UseClass, Ctx.World.Self.ClassId) != false
+                    && (!top.TryGetValue(sk.Family, out var t) || sk.Step > t.Step))
+                    top[sk.Family] = sk;
+            var parts = new List<string>();
+            foreach (var (fam, sk) in top)
+            {
+                var have = HighestRank(fam);
+                var haveStep = have >= 0 ? D.Skill(have)?.Step ?? 0 : 0;
+                if (sk.Step > haveStep) { n++; parts.Add($"{sk.Name} {haveStep}->{sk.Step}"); }
+            }
+            Ctx.Log.Text(LogCategory.Script, LogLevel.Info, $"skills behind at level {lv}: {n} [{string.Join(", ", parts)}]", CallingLayer);
+        }
+        _behindLv = lv; _behindKnown = known; _behind = n;
+        return n;
+    }
+    private int _behindLv = -1, _behindKnown = -1, _behind;
     /// <summary>Learned?</summary>
     [LuaFn] public bool Has(int id) => B.Has(id);
     /// <summary>Learned skills (highest rank per family) with all tags of the mask.</summary>
@@ -720,6 +753,29 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn]
     public double GearScore(int itemId) => Ctx.Data.Item(itemId) is not { } i ? -1
         : (i.MinWc + i.MaxWc) / 2.0 + i.Ac + (i.MinMa + i.MaxMa) / 2.0 + i.Mr;
+
+    /// <summary>The current tier client data says we may wear in an equipment slot at our level: buyable (a BuyPrice),
+    /// our class, the highest demand level at most ours, the best <see cref="GearScore"/> of that level; -1 none. (By
+    /// level first: the level-1 tutorial shirt outscores the level-2 Novice Shirt but no shop sells it.) Cached per (slot, level,
+    /// class), so a readiness check costs a lookup.</summary>
+    [LuaFn]
+    public int BestWearable(int equipSlot)
+    {
+        var lv = Ctx.World.Self.Level; var cls = Ctx.World.Self.ClassId;
+        var key = ((long)equipSlot << 32) | ((long)lv << 16) | (uint)(cls & 0xFFFF);
+        if (_bestWearable.TryGetValue(key, out var hit)) return hit;
+        var best = -1; var bestLv = -1; var bestScore = double.MinValue;
+        if (Ctx.Data is ClientData cd)
+            foreach (var i in cd.AllItems)
+                if (i.Equip == equipSlot && i.BuyPrice > 0 && i.DemandLevel <= lv && cd.ClassAllowed(i.UseClass, cls) != false)
+                {
+                    var sc = GearScore(i.Id);
+                    if (i.DemandLevel > bestLv || (i.DemandLevel == bestLv && sc > bestScore)) { best = i.Id; bestLv = i.DemandLevel; bestScore = sc; }
+                }
+        _bestWearable[key] = best;
+        return best;
+    }
+    private readonly Dictionary<long, int> _bestWearable = new();
 
     /// <summary>Is the item an upgrade over what we wear in its slot (usable by our class at our level)?</summary>
     [LuaFn]
