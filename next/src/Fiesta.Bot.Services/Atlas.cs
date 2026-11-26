@@ -139,6 +139,12 @@ public sealed class WorldAtlas
     /// <summary>Where an NPC (MobInfo id) stands; several entries when it stands in more than one map.</summary>
     public IReadOnlyList<MapSpot> NpcSpots(int npcId) { lock (_npc) return _npc.TryGetValue(npcId, out var l) ? l.ToArray() : []; }
 
+    /// <summary>Every NPC with a spot and each of its spots (a snapshot).</summary>
+    public List<(int NpcId, MapSpot Spot)> AllNpcSpots()
+    {
+        lock (_npc) { var r = new List<(int, MapSpot)>(); foreach (var (id, l) in _npc) foreach (var s in l) r.Add((id, s)); return r; }
+    }
+
     /// <summary>An NPC seen standing in the world (or remembered from a survey): a spot for it unless one within
     /// <see cref="NpcSpotMerge"/> on that map is known. The client's MobCoordinate lacks many NPCs (the fighter's job
     /// change master, GrandMasterShone, was seen on RouVal01 and still had no spot, so its quest was never planned).

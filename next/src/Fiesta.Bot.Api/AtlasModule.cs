@@ -203,6 +203,25 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
         return ("", -1, -1);
     }
 
+    /// <summary>NPCs whose role nobody has learned (no window opened at them yet) standing in towns (maps without a
+    /// hostile spawn), nearest by route first; each once. A player looking for a service none of the known NPCs offers
+    /// (the new class's skill master after a promotion) walks the towns and asks the NPCs it has not asked yet.</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached, Alloc = Alloc.Iterator)]
+    public LuaIter UnprobedNpcs()
+    {
+        var s = Ctx.Scratch(256); var n = 0;
+        var best = new Dictionary<int, double>();
+        foreach (var (id, spot) in Ctx.Atlas.AllNpcSpots())
+        {
+            if (Ctx.Knowledge.NpcRole(id) != 0 || Ctx.Refused(spot.MapId) || Ctx.Atlas.EasiestMobLevel(spot.MapId, Hostile) >= 0) continue;
+            if (Ctx.Data.Mob(id) is { IsNpc: false }) continue;
+            var c = CostTo(spot.MapId, spot.X, spot.Y);
+            if (double.IsFinite(c) && (!best.TryGetValue(id, out var o) || c < o)) best[id] = c;
+        }
+        foreach (var (id, _) in best.OrderBy(kv => kv.Value)) if (n < s.Length) s[n++] = id;
+        return ApiScope.Iter(s[..n]);
+    }
+
     /// <summary>Learned role mask of an NPC id (0 = not probed or no shop).</summary>
     [LuaFn] public int NpcRole(int npcId) => Ctx.Knowledge.NpcRole(npcId);
 
