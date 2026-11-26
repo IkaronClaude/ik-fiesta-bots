@@ -644,6 +644,25 @@ run speed 105 against our 120). Before blaming combat choices, the character its
   decoded yet (`skills.empower` returns zeros), so "empowered up to what the level allows" is not in the readiness
   line - a decode gap, ticketed.
 
+#### "No quest" and the negative grind (02:38-02:57)
+
+- **The grind spot was level-appropriate.** Mob 10 is a Boogy, lv 15. The ledger's 45 was the exp of 2 kills (22.5 each;
+  in-band kills pay 19-26 exp on the wire, EXPGAIN 0x240B). The value went negative from the death term alone: 1 death
+  in 2 kills x 500 exp. Fixed: a death rate needs RISK_PRIOR_KILLS (10) clean kills before it is believed, and a death is
+  charged in time, DEATH_COST_S 40 (no exp-loss frame followed any of NextM's 11 deaths; the in-place revive at 30 % HP
+  took 25 s and 2 stones to refill, plus the lost fight). With nothing else to do the grind is taken even at <= 0.
+- **"No quest" was a map refusal.** A candidate dump (`plan: no quest chosen - candidates: ...`, at most once a minute
+  when grind wins or nothing does) showed quests 24 / 25 / 26 blocked by "map RouVal01 avoided". After the 02:24
+  reconnect no NPC click of NextM's was answered (the gates to Rou, Eld and RouVal01 gave no menu; the next session's
+  first click opened one), and two silent gates refused each whole map for an hour: both towns and every quest field.
+  Now 5 min; `atlas.unavoid` / `bb.bot.reopenMaps` lift a wrong avoid. After the reopen NextM accepted a quest at once
+  (8.8 exp/s, 02:56). Why that session's clicks went unanswered is open (ticketed).
+- **Trivial kills:** 70 kills at 1 exp each (02:00-02:09) were quest hunts (Mushroom Assault, an event quest) whose work
+  was estimated at 16-18 s against ~5 minutes of kills - the quest work estimate undercounts (ticketed).
+- **NextA's silent bash:** a tent pitch or fold leaves battle mode with no broadcast; the next BASHSTART was ignored.
+  The tent ack now clears BattleMode. NextA also walked back into a fleeing-from MageBook (lv 22) six times: an
+  out-of-band attacker is now fought only while within 250 of us.
+
 #### Efficiency per bot (live, local stack)
 
 | time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
