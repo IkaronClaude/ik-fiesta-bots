@@ -66,11 +66,18 @@ export function versioned(u: string): string {
   return `${u}${u.includes('?') ? '&' : '?'}v=${encodeURIComponent(fingerprint)}`;
 }
 
-function get(url: string) {
+function get(url: string, cache: RequestCache = 'default') {
   const tok = getToken();
   url = versioned(url);
-  return fetch(url, { headers: tok ? { Authorization: `Bearer ${tok}` } : {} }).then(r => (r.ok ? r.json() : null));
+  return fetch(url, { cache, headers: tok ? { Authorization: `Bearer ${tok}` } : {} }).then(r => (r.ok ? r.json() : null));
 }
+
+/** Map records are few and tiny, and the host fills a map's placement (world / cover) only once it has loaded that
+ *  map, under the same URL and ETag: they bypass the HTTP cache, and a record without placement is asked again
+ *  (at most every 15 s) while something keeps looking it up. */
+const MAP_RETRY_MS = 15000;
+const retryAt = new Map<string, number>();
+const incomplete = (kind: StaticKind, d: any) => kind === 'maps' && d && d.image && !d.cover;
 
 function flush() {
   scheduled = false;
@@ -79,8 +86,13 @@ function flush() {
   const byKind = new Map<StaticKind, string[]>();
   for (const key of keys) { const [k, id] = key.split(':'); byKind.set(k as StaticKind, [...(byKind.get(k as StaticKind) ?? []), id]); }
   for (const [kind, ids] of byKind) {
-    const single = (id: string) => get(`/api/v3/static/${kind}/${id}`)
-      .then(d => { cache.set(`${kind}:${id}`, d ? { state: 'ok', data: norm(kind, d) } : { state: 'missing' }); notify(); })
+    const single = (id: string) => get(`/api/v3/static/${kind}/${id}`, kind === 'maps' ? 'no-store' : 'default')
+      .then(d => {
+        const n = d ? norm(kind, d) : null;
+        cache.set(`${kind}:${id}`, n ? { state: 'ok', data: n } : { state: 'missing' });
+        if (incomplete(kind, n)) retryAt.set(`${kind}:${id}`, Date.now() + MAP_RETRY_MS); else retryAt.delete(`${kind}:${id}`);
+        notify();
+      })
       .catch(() => { cache.set(`${kind}:${id}`, { state: 'missing' }); notify(); });
     if (BATCH.includes(kind) && ids.length > 1) {
       for (let i = 0; i < ids.length; i += 100) {
@@ -101,6 +113,12 @@ export function lookup<T>(kind: StaticKind, id: number | null | undefined): T | 
   if (id == null || id < 0) return undefined;
   const key = `${kind}:${id}`;
   const e = cache.get(key);
+  const again = retryAt.get(key);
+  if (e && again != null && Date.now() >= again) {           // a map record without placement: ask once more
+    retryAt.set(key, Date.now() + MAP_RETRY_MS);
+    queue.add(key);
+    if (!scheduled) { scheduled = true; queueMicrotask(flush); }
+  }
   if (e) return e.data as T | undefined;
   cache.set(key, { state: 'loading' });
   queue.add(key);
@@ -130,13 +148,16 @@ export function iconUrl(u: string | null | undefined): string | undefined {
 }
 
 const images = new Map<string, HTMLImageElement | null>();
+const failed = new Set<string>();
+/** The image could not be loaded (404 or a broken file): no art for it. */
+export function imageFailed(url: string | null | undefined) { return !!url && failed.has(url); }
 /** A decoded image for canvas drawing (map art); null while loading or when absent. */
 export function image(url: string | null | undefined): HTMLImageElement | null {
   if (!url) return null;
   if (images.has(url)) { const im = images.get(url)!; return im && im.complete && im.naturalWidth ? im : null; }
   const im = new Image();
   im.onload = () => notify();
-  im.onerror = () => images.set(url, null);
+  im.onerror = () => { images.set(url, null); failed.add(url); notify(); };
   im.src = iconUrl(url)!;
   images.set(url, im);
   return null;

@@ -3,7 +3,7 @@
 // 5 Hz game updates and drawn every animation frame from refs, so React never re-renders for movement.
 import { useEffect, useRef, useState } from 'react';
 import type { GameEnt, GameState } from './types';
-import { image, lookup, type MapInfo, type MobInfo } from './staticData';
+import { image, imageFailed, lookup, type MapInfo, type MobInfo } from './staticData';
 
 const ZOOMS = [800, 1600, 3200, 6400]; // world units across the view; last = whole map when art is known
 const LERP_MS = 220;
@@ -79,6 +79,16 @@ export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { e
         try { g.drawImage(im, srcX, srcY, srcW, srcH, 0, 0, w, h); } catch { /* not decoded yet */ }
         g.globalAlpha = 1;
       } else {
+        // say why there is no art instead of leaving an empty box
+        const label = map?.name ?? map?.short ?? `map ${st.self.mapId}`;
+        const why = !map ? null
+          : !map.image || imageFailed(map.image) ? `no minimap for ${label}`
+          : !cover ? `minimap placement for ${label} not known yet`
+          : null;
+        if (why) {
+          g.fillStyle = 'rgba(230,236,238,.45)'; g.font = '12px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'top';
+          g.fillText(why, w / 2, 10);
+        }
         g.strokeStyle = 'rgba(255,255,255,0.05)'; g.lineWidth = 1;
         const step = 200 * s; if (step > 6) {
           for (let x = ((sx(0) % step) + step) % step; x < w; x += step) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
