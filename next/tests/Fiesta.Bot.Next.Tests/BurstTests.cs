@@ -102,3 +102,20 @@ public class BurstTests
         Assert.True(p.Steps > 2);
     }
 }
+
+/// <summary>Test data with two given skills (ids 0 and 1) over the plain test data.</summary>
+public sealed class GroupData(ActiveSkillRow a, ActiveSkillRow b) : IClientData
+{
+    private readonly TestData _t = new();
+    public MobInfoRow? Mob(int id) => _t.Mob(id);
+    public ActiveSkillRow? Skill(int id) => id == 0 ? a : id == 1 ? b : null;
+    public ItemInfoRow? Item(int id) => _t.Item(id);
+    public MapInfoRow? Map(int id) => _t.Map(id);
+    public MapInfoRow? Map(string mapName) => _t.Map(mapName);
+    public QuestDef? Quest(int id) => _t.Quest(id);
+    public string? Dialog(int id) => null;
+    public int ClassFamily(int classId) => 1;
+    public string ClassName(int classId) => "";
+    public IReadOnlyCollection<QuestDef> Quests => [];
+    public string Dir => "";
+}

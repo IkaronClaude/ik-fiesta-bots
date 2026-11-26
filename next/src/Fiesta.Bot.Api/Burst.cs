@@ -73,7 +73,9 @@ public static class Burst
             var low = Math.Max(0, mean - ConfidenceSd * sd);
             if (low <= 0) continue;
             ids[k] = id; dmg[k] = low;
-            ready[k] = Math.Max(w.Skills.ReadyInMs(id, sk.DelayGroup, ctx.Now) / 1000.0, Approach(GameRules.Skillable(ctx, sk, slot), GameRules.ClientSlack));
+            // ready: its cooldown, the walk into its reach, and a target that spawned moments ago (skills wait out its guard)
+            ready[k] = Math.Max(Math.Max(w.Skills.ReadyInMs(id, sk.DelayGroup, ctx.Now), GameRules.SpawnGuardLeftMs(ctx, slot)) / 1000.0,
+                Approach(GameRules.Skillable(ctx, sk, slot), GameRules.ClientSlack));
             k++;
         }
         // swings: measured, else the weapon's data (its damage at its attack interval)
@@ -99,7 +101,8 @@ public static class Burst
             {
                 if (d.Skill(ids[i]) is not { } sk || sk.Sp > sp) continue;
                 var at = Math.Max(ready[i], castFree);
-                if (at < bestAt) { bestAt = at; best = i; }
+                // the soonest; at the same moment the harder hitter (ranks of one skill share a group: the higher rank)
+                if (at < bestAt || (at == bestAt && best >= 0 && dmg[i] > dmg[best])) { bestAt = at; best = i; }
             }
             if (best < 0 && double.IsPositiveInfinity(nextSwing)) break;
             if (nextSwing <= bestAt)
@@ -113,6 +116,11 @@ public static class Burst
                 t = bestAt + sk.CastTimeMs / 1000.0;   // the damage lands when the cast completes
                 left -= dmg[best]; sp -= sk.Sp; steps++;
                 ready[best] = bestAt + Math.Max(sk.DelayMs, sk.DelayGroupMs) / 1000.0;
+                // the group's cooldown holds every skill of the group (the ranks of a skill share one)
+                if (sk.DelayGroup > 0)
+                    for (var j = 0; j < k; j++)
+                        if (j != best && d.Skill(ids[j]) is { } sj && sj.DelayGroup == sk.DelayGroup)
+                            ready[j] = Math.Max(ready[j], bestAt + sk.DelayGroupMs / 1000.0);
                 castFree = bestAt + Math.Max(sk.CastTimeMs / 1000.0, spacing);
                 if (first < 0) first = ids[best];
                 sequence?.Append(' ').Append(sk.Name).Append('@').Append(t.ToString("0.0"));

@@ -159,7 +159,7 @@ public sealed class EntityTable
     internal readonly double[] FaceX = new double[Cap], FaceY = new double[Cap];
     internal readonly bool[] HasFace = new bool[Cap];
     internal readonly int[] TargetH = new int[Cap];
-    internal readonly long[] HitUsAt = new long[Cap], DamagedAt = new long[Cap], AppearedAt = new long[Cap];
+    internal readonly long[] HitUsAt = new long[Cap], DamagedAt = new long[Cap], AppearedAt = new long[Cap], SpawnAt = new long[Cap];
     internal readonly double[] HitPosX = new double[Cap], HitPosY = new double[Cap], SpawnX = new double[Cap], SpawnY = new double[Cap];
     internal readonly bool[] Dead = new bool[Cap];
     internal readonly long[] DamageByUs = new long[Cap];
@@ -234,6 +234,8 @@ public sealed class EntityTable
     public long LastHitUsAt(int slot) => HitUsAt[slot];
     /// <summary>Where it was last damaged (leash origin), null never.</summary>
     public (double X, double Y)? LastHitPos(int slot) => DamagedAt[slot] >= 0 ? (HitPosX[slot], HitPosY[slot]) : null;
+    /// <summary>When it appeared through its spawn in our view (ms), -1 when it came into view already spawned.</summary>
+    public long SpawnedAt(int slot) => SpawnAt[slot];
     /// <summary>First position seen.</summary>
     public (double X, double Y) SpawnPos(int slot) => (SpawnX[slot], SpawnY[slot]);
 
@@ -247,7 +249,7 @@ public sealed class EntityTable
             _slotOf[handle] = (short)s;
             _livePos[s] = LiveN; Live[LiveN++] = s;
             Handle[s] = handle; HpV[s] = -1; MaxHpV[s] = -1; Lvl[s] = -1; TargetH[s] = -1; HitUsAt[s] = -1; DamagedAt[s] = -1;
-            HasFace[s] = false; Dead[s] = false; DamageByUs[s] = 0; FirstHitByUsAt[s] = -1; Name[s] = null; SpawnX[s] = x; SpawnY[s] = y; AppearedAt[s] = now;
+            HasFace[s] = false; Dead[s] = false; DamageByUs[s] = 0; FirstHitByUsAt[s] = -1; Name[s] = null; SpawnX[s] = x; SpawnY[s] = y; AppearedAt[s] = now; SpawnAt[s] = -1;
             LastSwingAt[s] = -1; HitDist[s] = -1;
         }
         Kinds[s] = kind; Mob[s] = mob; X[s] = x; Y[s] = y; ToX[s] = x; ToY[s] = y; Spd[s] = 0; MoveAt[s] = now;
@@ -779,9 +781,10 @@ public sealed class WorldState
             case InboundKind.EntityAppeared:
             {
                 if (e.Handle == me) { Self.ServerPos = (e.X, e.Y); break; }
-                var kind = (EntityKind)(int)e.A;
+                var kind = (EntityKind)(int)(e.A & ~Fiesta.Bot.Protocol.EntityDecoder.KSpawning);
                 var s = Entities.Add(e.Handle, kind, (int)e.B, e.X, e.Y, now);
                 if (s < 0) break;
+                if ((e.A & Fiesta.Bot.Protocol.EntityDecoder.KSpawning) != 0) Entities.SpawnAt[s] = now;
                 if (e.C >= 0) Entities.Lvl[s] = (int)e.C;
                 Entities.Name[s] = e.Text;
                 if (Scenario.WaveAt >= 0 && (kind & EntityKind.Mob) != 0) Scenario.Wave.Add(e.Handle);

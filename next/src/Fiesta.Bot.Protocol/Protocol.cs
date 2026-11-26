@@ -318,6 +318,10 @@ public sealed class EntityDecoder : IPacketDecoder
 {
     /// <summary>Entity kind bits as sent in EntityAppeared.A (mirrors the agent's EntityKind values).</summary>
     public const int KMob = 1, KNpc = 4, KPlayer = 8, KGate = 16, KDrop = 32;
+    /// <summary>Extra bit in an appearance's A (above the kind bits): the mob appeared through its spawn (REGENMOB mode 0),
+    /// not by coming into view (mode 2). Observed: every mode-0 appearance carries the spawn's immortal abstate, and skills
+    /// at it are refused 0x0FCD for about 2 s after it.</summary>
+    public const int KSpawning = 1 << 16;
     /// <summary>Mob ids that are NPCs (client MobInfo.IsNPC); set by the host from client data.</summary>
     public static Func<int, bool> IsNpc { get; set; } = _ => false;
 
@@ -374,6 +378,7 @@ public sealed class EntityDecoder : IPacketDecoder
         var mobId = Rd.U16(r, 3);
         var gate = r[14] == 1;
         e.A = gate ? KGate | KNpc : IsNpc(mobId) ? KNpc : KMob;
+        if (r[2] == 0 && !gate) e.A |= KSpawning;   // mode byte: 0 = spawned now, 2 = came into view
         e.B = mobId; e.C = -1; e.X = Rd.U32(r, 5); e.Y = Rd.U32(r, 9);
         e.Handle2 = r[13];   // direction byte
         if (gate && r.Length >= 15 + 32) e.Text = Ascii.Get(r.Slice(15, 32));

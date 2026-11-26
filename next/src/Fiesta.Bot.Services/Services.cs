@@ -623,7 +623,18 @@ public sealed record Estimate(double Value, double Low, double High, int Samples
 }
 
 /// <summary>What a mob estimator tracks.</summary>
-public enum MobFact : byte { DetectRadius, ChaseDistance, Reach, AttackInterval, Armour, MagicResist, HitAvg, HitMax }
+public enum MobFact : byte
+{
+    DetectRadius, ChaseDistance, Reach, AttackInterval, Armour, MagicResist, HitAvg, HitMax,
+    /// <summary>Ms after a mob spawns in view during which skills at it are refused (0x0FCD): the ages of refused casts
+    /// (lower bounds). Mob id -1 holds the value over all mobs (for mobs never fought).</summary>
+    SpawnRefused,
+    /// <summary>The ages after its spawn at which a cast at the mob was taken (upper bounds of the same window).</summary>
+    SpawnTaken,
+    /// <summary>Ms after our own map entry during which our casts are refused (0x0FC1 "Cannot use the skill right after
+    /// logging in."): the ages of refused casts, kept under mob id -1 (a fact about us, not a mob).</summary>
+    LoginRefused,
+}
 
 /// <summary>Host-wide learned knowledge (server-only facts estimated from the wire), persisted and shared.</summary>
 public interface IKnowledgeStore

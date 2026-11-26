@@ -656,6 +656,55 @@ public class ActionTests
     }
 
     [Fact]
+    public void A_mob_spawning_in_view_takes_skills_only_after_the_learned_guard()
+    {
+        using var t = new TestBot();
+        t.Tick(30);
+        const long spawning = (long)EntityKind.Mob | EntityDecoder.KSpawning;
+        t.Ev(InboundKind.EntityAppeared, h: 2000, a: spawning, b: 1, x: 5080, y: 5000);
+        t.Tick();
+        Assert.Equal(CanUseReason.Ok, GameRules.CanUse(t.Ctx, 0, 2000));         // nothing learned yet: try
+        t.Ctx.Combat.Cast(0, 2000, 1, t.Ctx);
+        t.Clock.NowMs += 500;
+        t.Ev(InboundKind.CastFail, a: 0x0FCD);                                    // refused 500+ ms after its spawn
+        t.Tick();
+        Assert.Equal(1, t.Ctx.Combat.CastsRefused);
+        t.Ev(InboundKind.EntityAppeared, h: 2001, a: spawning, b: 1, x: 5080, y: 5010);
+        t.Tick();
+        Assert.Equal(CanUseReason.Spawning, GameRules.CanUse(t.Ctx, 0, 2001));   // a fresh spawn waits the window out
+        t.Ev(InboundKind.EntityAppeared, h: 2002, a: (long)EntityKind.Mob, b: 1, x: 5080, y: 5020);
+        t.Tick();
+        Assert.Equal(CanUseReason.Ok, GameRules.CanUse(t.Ctx, 0, 2002));         // came into view already spawned: no wait
+        t.Clock.NowMs += 600; t.Tick();
+        Assert.Equal(CanUseReason.Ok, GameRules.CanUse(t.Ctx, 0, 2001));         // past the window
+        t.Ctx.Combat.Cast(0, 2001, 1, t.Ctx);
+        t.Ev(InboundKind.SkillCastStart, a: 0, h2: 2001);                         // taken 600 ms after: an upper bound only
+        t.Tick();
+        t.Ev(InboundKind.EntityAppeared, h: 2003, a: spawning, b: 1, x: 5080, y: 5030);
+        t.Tick();
+        t.Clock.NowMs += 501; t.Tick();
+        Assert.Equal(0, GameRules.SpawnGuardLeftMs(t.Ctx, t.Ctx.World.Entities.SlotOf(2003)));   // the wait is the refused bound, not the taken one
+    }
+
+    [Fact]
+    public void The_burst_plan_holds_every_rank_of_a_skill_on_the_group_cooldown()
+    {
+        var d = new TestData();
+        var sk = d.Skill(0)!;
+        var data = new GroupData(sk with { Id = 0, DelayGroup = 10, DelayGroupMs = 5000 }, sk with { Id = 1, Step = 2, MinWc = sk.MinWc * 2, MaxWc = sk.MaxWc * 2, DelayGroup = 10, DelayGroupMs = 5000 });
+        using var t = new TestBot(data);
+        t.Ev(InboundKind.SkillLearned, a: 0); t.Ev(InboundKind.SkillLearned, a: 1);
+        t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)EntityKind.Mob, b: 1, x: 5050, y: 5000);
+        t.Ev(InboundKind.EntityHp, h: 2000, a: 100000, b: 100000);
+        t.Tick(2);
+        var sb = new System.Text.StringBuilder();
+        var p = Burst.Decide(t.Ctx, 2000, swings: false, sb);
+        Assert.Equal(1, p.FirstSkill);                                            // the higher rank first
+        var at = System.Text.RegularExpressions.Regex.Matches(sb.ToString(), @"@([0-9.]+)").Take(2).Select(m => double.Parse(m.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        Assert.True(at[1] - at[0] >= 4.9, sb.ToString());                         // the next cast of the group waits its 5 s
+    }
+
+    [Fact]
     public void A_cancelled_move_stops_walking()
     {
         using var t = new TestBot();

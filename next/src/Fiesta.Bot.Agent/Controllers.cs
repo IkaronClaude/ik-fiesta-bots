@@ -43,6 +43,8 @@ public sealed class MoveController
 
     /// <summary>Moving now?</summary>
     public bool Moving => _leg >= 0 && _leg < _path.Count;
+    /// <summary>Where the current order goes, null without one.</summary>
+    public (double X, double Y)? Destination => _order is { } o ? (o.X, o.Y) : null;
     /// <summary>Index of the path point being walked to (-1 standing).</summary>
     public int Leg => _leg;
     /// <summary>Waiting for a path job.</summary>
@@ -276,7 +278,11 @@ public sealed class CombatController
     private bool _rearm;
     private long _castUntil;
     private int _castSkill = -1;
+    private int _castTarget = -1;
     private double _castDist = -1;
+    /// <summary>Casts the game started (SKILLBASH_HIT_OBJ_START for us) and casts it refused (CAST_FAIL), since the bot
+    /// started: a fight's own count is the difference across it.</summary>
+    public long CastsStarted, CastsRefused;
     private int _assertedTarget = -1;
     private readonly Intent[] _buf = new Intent[8];
     private bool _landedSinceStart;
@@ -323,7 +329,9 @@ public sealed class CombatController
         var self = targetHandle == ctx.World.Self.Handle;
         if (!self) EnsureTarget(targetHandle, ctx, -1, buf, ref n);
         EnsureMode(ctx, buf, ref n, -1);
-        if (ctx.Move.Moving && !sk.IsMovingSkill) { ctx.Move.Stop(ctx); }
+        // the client stops before a cast, except a moving skill (ActiveSkill IsMovingSkill) cast on the way somewhere else:
+        // one cast while walking into the target's range stops first too (its STOP_REQ before the cast)
+        if (ctx.Move.Moving && (!sk.IsMovingSkill || Approaching(ctx, targetHandle))) { ctx.Move.Stop(ctx); }
         // inside an instance, while our swings on this target land, we already face it (the swing stream turns us): the
         // face step's MOVERUN is refused in tight rooms and turns us away again (all casts refused 0x0FCA there)
         else if (ctx.World.Map.IsInstance && Bashing && BashTarget == targetHandle && LastSwingAt >= 0 && ctx.Now - LastSwingAt < 2500) { }
@@ -352,12 +360,21 @@ public sealed class CombatController
         var id = ctx.Actions.Issue(ActionKind.Cast, layer, skillId, targetHandle, buf[..n], 1500 + sk.CastTimeMs);
         if (id.Value > 0)
         {
-            _castSkill = skillId; _castUntil = ctx.Now + sk.CastTimeMs + 300;
+            _castSkill = skillId; _castTarget = targetHandle; _castUntil = ctx.Now + sk.CastTimeMs + 300;
             var ts = ctx.World.Entities.SlotOf(targetHandle);
             if (ts >= 0) { var (cx, cy) = ctx.World.Entities.Pos(ts, ctx.Now); _castDist = MoveController.Dist(ctx.World.Self.Pos.X, ctx.World.Self.Pos.Y, cx, cy); }
             else _castDist = -1;
         }
         return id;
+    }
+
+    // our move is a walk towards the target: its destination is nearer the target than we are
+    private static bool Approaching(AgentContext ctx, int targetHandle)
+    {
+        var s = ctx.World.Entities.SlotOf(targetHandle);
+        if (s < 0 || ctx.Move.Destination is not { } dst) return false;
+        var (tx, ty) = ctx.World.Entities.Pos(s, ctx.Now);
+        return MoveController.Dist(dst.X, dst.Y, tx, ty) < MoveController.Dist(ctx.World.Self.Pos.X, ctx.World.Self.Pos.Y, tx, ty);
     }
 
     private static LocalRefusal MapReason(CanUseReason r) => r switch
@@ -382,7 +399,7 @@ public sealed class CombatController
         if (ctx.Move.Moving && !sk.IsMovingSkill) ctx.Move.Stop(ctx);
         buf[n++] = IntentEncoder.CastGround((ushort)skillId, (uint)x, (uint)y, -1);
         var id = ctx.Actions.Issue(ActionKind.CastGround, layer, skillId, -1, buf[..n], 1500 + sk.CastTimeMs);
-        if (id.Value > 0) { _castSkill = skillId; _castUntil = ctx.Now + sk.CastTimeMs + 300; }
+        if (id.Value > 0) { _castSkill = skillId; _castTarget = -1; _castUntil = ctx.Now + sk.CastTimeMs + 300; }
         return id;
     }
 
@@ -448,6 +465,24 @@ public sealed class CombatController
         }
     }
 
+    // a cast at a mob that spawned in view: its age then bounds the spawn guard (refused: at least; started: at most)
+    private static bool SpawnGuardSample(AgentContext ctx, int target, bool refused)
+    {
+        var s = target >= 0 ? ctx.World.Entities.SlotOf(target) : -1;
+        if (s < 0 || ctx.World.Entities.SpawnedAt(s) < 0) return false;
+        var age = ctx.Now - ctx.World.Entities.SpawnedAt(s);
+        var mob = ctx.World.Entities.MobId(s);
+        var f = refused ? MobFact.SpawnRefused : MobFact.SpawnTaken;
+        if (refused) { ctx.Knowledge.ObserveAtLeast(mob, f, age); ctx.Knowledge.ObserveAtLeast(-1, f, age); }
+        else { ctx.Knowledge.ObserveAtMost(mob, f, age); ctx.Knowledge.ObserveAtMost(-1, f, age); }
+        if (ctx.Log.IsEnabled(LogCategory.Combat, LogLevel.Info))
+        {
+            var lo = ctx.Knowledge.Mob(mob, MobFact.SpawnRefused); var hi = ctx.Knowledge.Mob(mob, MobFact.SpawnTaken);
+            ctx.Log.Log(LogCategory.Combat, LogLevel.Info, $"spawn guard: cast at {target} (mob {mob}) {(refused ? "refused" : "taken")} {age} ms after its spawn; refused up to {lo.Value:0} ms, taken from {hi.Value:0} ms");
+        }
+        return true;
+    }
+
     /// <summary>Feed combat events.</summary>
     public void Apply(in InboundEvent e, AgentContext ctx)
     {
@@ -464,20 +499,50 @@ public sealed class CombatController
             case InboundKind.SkillDamage when e.Handle == ctx.World.Self.Handle:
                 FightDamage += e.A; _castUntil = 0;
                 break;
+            case InboundKind.SkillCastStart:
+                CastsStarted++;
+                SpawnGuardSample(ctx, (int)e.Handle2, refused: false);
+                break;
+            // 0x0FCD "Skill has not been finished normally." (the client's text): observed only at a mob that spawned in
+            // view under ~2 s before (every one of 121 runs, 2026-11-26): learn the window, CanUse waits it out
+            case InboundKind.CastFail when e.A == 0x0FCD:
+                CastsRefused++;
+                _castUntil = 0;
+                if (!SpawnGuardSample(ctx, _castTarget, refused: true))
+                    ctx.Log.Log(LogCategory.Combat, LogLevel.Note, $"skill {_castSkill} at {_castTarget}: refused 0x0FCD at a target not seen spawning");
+                break;
             // 0x0FC4 "Casting another skill now." / 0x0FC6 "Incorrect Skill." (the client's own error texts): every cast
             // waits 600 ms, as the old drivers learned - re-pressing at tick cadence drew runs of refusals (NextM: 138
             // 0x0FC4 refusals in an hour, 01:00-01:57)
+            // 0x0FC1 "Cannot use the skill right after logging in." (the client's text): learn how long after our map entry
+            case InboundKind.CastFail when e.A == 0x0FC1:
+            {
+                CastsRefused++;
+                _castUntil = 0;
+                if (ctx.World.Self.SpawnedAt >= 0)
+                {
+                    var age = ctx.Now - ctx.World.Self.SpawnedAt;
+                    ctx.Knowledge.ObserveAtLeast(-1, MobFact.LoginRefused, age);
+                    ctx.Log.Log(LogCategory.Combat, LogLevel.Info, $"login guard: cast refused {age} ms after our map entry; refused up to {ctx.Knowledge.Mob(-1, MobFact.LoginRefused).Value:0} ms");
+                }
+                break;
+            }
             case InboundKind.CastFail when e.A is 0x0FC4 or 0x0FC6:
+                CastsRefused++;
                 _castUntil = ctx.Now + 600;
                 break;
             // out of range although the client's own range rule said in range: the game holds us (or the target) elsewhere
             // than we believe - re-sync our position to the game's, so the next check walks in from where we really are
             case InboundKind.CastFail when e.A == 0x0FCA && _castSkill >= 0:
+                CastsRefused++;
                 _castUntil = 0;
                 ctx.Log.Log(LogCategory.Combat, LogLevel.Info, $"skill {_castSkill}: refused out of range at {_castDist:0} by our position: re-syncing to the game's ({ctx.World.Self.ServerPos.X},{ctx.World.Self.ServerPos.Y})");
                 ctx.World.Self.Pos = (ctx.World.Self.ServerPos.X, ctx.World.Self.ServerPos.Y);
                 break;
             case InboundKind.CastFail:
+                CastsRefused++;
+                _castUntil = 0;
+                break;
             case InboundKind.CastAborted:
                 _castUntil = 0;
                 break;
@@ -519,6 +584,10 @@ public sealed class CombatController
 public enum CanUseReason : byte
 {
     Ok, NotLearned, Cooldown, Sp, Hp, Dead, State, Mounted, Casting, Moving, Weapon, Target, Range, LineOfFire, Map,
+    /// <summary>The target spawned in view moments ago: the game refuses skills at it (0x0FCD) for a learned window.</summary>
+    Spawning,
+    /// <summary>We entered the map moments ago: the game refuses our casts (0x0FC1) for a learned window.</summary>
+    JustEntered,
 }
 
 /// <summary>Weapon class for reach.</summary>
@@ -632,6 +701,30 @@ public static class GameRules
         return WeaponClass.Melee;
     }
 
+    /// <summary>Ms until a mob that spawned in our view takes skills (0 = now): observed, skills at a mob that has just
+    /// spawned are refused 0x0FCD ("Skill has not been finished normally.") for about 2 s - learned per mob from the
+    /// refused and accepted casts (the value over all mobs for one never fought; nothing known = try).</summary>
+    public static long SpawnGuardLeftMs(AgentContext ctx, int slot)
+    {
+        var at = ctx.World.Entities.SpawnedAt(slot);
+        if (at < 0) return 0;
+        var g = ctx.Knowledge.Mob(ctx.World.Entities.MobId(slot), MobFact.SpawnRefused);
+        if (g.Samples == 0) g = ctx.Knowledge.Mob(-1, MobFact.SpawnRefused);
+        if (g.Samples == 0 || g.Value <= 0) return 0;
+        return Math.Max(0, (long)Math.Ceiling(g.Value) - (ctx.Now - at));
+    }
+
+    /// <summary>Ms until our casts are taken after our map entry (0 = now): observed, casts right after a map entry are
+    /// refused 0x0FC1 ("Cannot use the skill right after logging in."); learned from the refused ones (nothing known = try).</summary>
+    public static long LoginGuardLeftMs(AgentContext ctx)
+    {
+        var at = ctx.World.Self.SpawnedAt;
+        if (at < 0) return 0;
+        var g = ctx.Knowledge.Mob(-1, MobFact.LoginRefused);
+        if (g.Samples == 0 || g.Value <= 0) return 0;
+        return Math.Max(0, (long)Math.Ceiling(g.Value) - (ctx.Now - at));
+    }
+
     /// <summary>The generic usability check behind Lua `canUse` (API_SPEC 2.5.1). Objective only: no policy.</summary>
     public static CanUseReason CanUse(AgentContext ctx, int skillId, int targetHandle)
     {
@@ -644,9 +737,11 @@ public static class GameRules
         if (sk.Hp > 0 && sk.Hp >= self.Hp) return CanUseReason.Hp;
         if (self.Mounted) return CanUseReason.Mounted;
         if (ctx.Combat.Casting(ctx.Now)) return CanUseReason.Casting;
+        if (LoginGuardLeftMs(ctx) > 0) return CanUseReason.JustEntered;
         if (targetHandle == self.Handle) return CanUseReason.Ok;
         var s = w.Entities.SlotOf(targetHandle);
         if (s < 0 || w.Entities.IsDead(s)) return CanUseReason.Target;
+        if (SpawnGuardLeftMs(ctx, s) > 0) return CanUseReason.Spawning;
         var (tx, ty) = w.Entities.Pos(s, ctx.Now);
         var d = MoveController.Dist(self.Pos.X, self.Pos.Y, tx, ty);
         if (d >= Skillable(ctx, sk, s) + ClientSlack) return CanUseReason.Range;

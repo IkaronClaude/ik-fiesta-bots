@@ -388,6 +388,9 @@ public sealed partial class CombatModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public long LastSwingMs() => Ctx.Combat.LastSwingAt < 0 ? -1 : Ctx.Now - Ctx.Combat.LastSwingAt;
     /// <summary>Our damage/s over the current fight.</summary>
     [LuaFn] public double DpsOut() => Ctx.Combat.DpsOut(Ctx.Now);
+    /// <summary>Casts the game started (its cast start for us) and casts it refused, since the bot started: a fight's
+    /// count is the difference across the fight.</summary>
+    [LuaFn] public (int Started, int Refused) CastCounts() => ((int)Ctx.Combat.CastsStarted, (int)Ctx.Combat.CastsRefused);
     /// <summary>The burst decision for target h (Burst.Decide): commit?, time to kill and to die (s, inf = never), the
     /// first skill of the plan (-1 none: swings only / nothing). <paramref name="swings"/>: this character auto-attacks.</summary>
     [LuaFn] public (bool Commit, double Ttk, double Ttd, int First) Burst(int h, bool swings = false)
