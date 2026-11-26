@@ -298,7 +298,20 @@ public sealed class ActionSystem
         if (r.Kind is ActionKind.Cast or ActionKind.CastGround) Events?.Raise(EventKind.CastResult, r.Arg0, code);
         if (state is ActionState.Refused or ActionState.TimedOut or ActionState.Failed && Log is { } log && log.IsEnabled(LogCategory.Core, LogLevel.Info))
             log.Log(LogCategory.Core, LogLevel.Info, $"action {id.Value} {r.Kind}({r.Arg0},{r.Arg1}) {state} 0x{code:X4} {ErrorCodes.Describe(code)}");
+        // the same request answered the same refusal again and again is a loop, whatever asked for it (NextA offered one
+        // item 4-6 times a minute for 30 minutes, every one refused 0x038F): said loudly at the third in a row
+        var key = (r.Kind, r.Arg0, r.Arg1, state, code);
+        if (state is ActionState.Refused or ActionState.Failed && key == _lastRefusal) RefusalStreak++;
+        else { _lastRefusal = state is ActionState.Refused or ActionState.Failed ? key : default; RefusalStreak = _lastRefusal == default ? 0 : 1; }
+        if (RefusalStreak == SameRefusalLoop && Log is { } l2)
+            l2.Log(LogCategory.Core, LogLevel.Crit, $"REPEATED REFUSAL: {r.Kind}({r.Arg0},{r.Arg1}) {state} 0x{code:X4} {ErrorCodes.Describe(code)} {SameRefusalLoop} times in a row - the caller is looping on an answer it does not act on");
     }
+    private (ActionKind, long, long, ActionState, ushort) _lastRefusal;
+    /// <summary>Identical refusals in a row so far.</summary>
+    public int RefusalStreak { get; private set; }
+    /// <summary>The streak called a loop (bot behaviour: twice can be a retry after a fix, a third identical answer means
+    /// nothing changed between the tries).</summary>
+    public const int SameRefusalLoop = 3;
 
     /// <summary>Match an inbound event against pending actions.</summary>
     public void Apply(in InboundEvent evt)
