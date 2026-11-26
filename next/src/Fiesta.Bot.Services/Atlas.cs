@@ -67,7 +67,7 @@ public sealed class WorldAtlas
     public WorldAtlas(string ressystemDir, Func<string, int> mapIdByName, IEnumerable<(int Id, double X, double Y)>? regenPoints = null)
     {
         if (regenPoints is not null) foreach (var (id, x, y) in regenPoints) _regen[id] = (x, y);
-        ShnTable? T(string n) { var p = Path.Combine(ressystemDir, n + ".shn"); return File.Exists(p) ? ShnTable.Load(p) : null; }
+        ShnTable? T(string n) => ClientFiles.LoadTable(ressystemDir, n);
         if (T("MobCoordinate") is { } mc)
             for (var r = 0; r < mc.RowCount; r++)
             {

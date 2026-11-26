@@ -73,6 +73,8 @@ public sealed class HostServices : IAsyncDisposable
             foreach (var line in File.ReadAllLines(gates))
                 if (line.Split('\t') is [var a, var b, var c, var d] && int.TryParse(a, out var m) && double.TryParse(b, out var gx) && double.TryParse(c, out var gy) && int.TryParse(d, out var to))
                     Atlas.LearnGate(m, gx, gy, to);
+        // every client file the bots open goes through one resolver; a file it cannot find is said once, with where it looked
+        ClientFiles.For(ClientRoot).OnMiss = (what, tried) => Console.WriteLine($"[files] not found: {what}; tried {string.Join(", ", tried)}");
         Atlas.GateCorrected += (m, gx, gy, to, n) => Console.WriteLine($"[atlas] gate on map {m} at ({gx:0},{gy:0}) leads to map {to}: {n} table link(s) from that spot to other maps dropped");
         Atlas.GateLearned += (m, gx, gy, to) => { lock (Atlas) File.AppendAllText(gates, $"{m}\t{gx:0}\t{gy:0}\t{to}\n"); };
         var pvp = Path.Combine(DataDir, "atlas-pvp-maps.txt");

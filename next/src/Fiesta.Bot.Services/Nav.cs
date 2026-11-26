@@ -43,27 +43,18 @@ public sealed class BlockLayer
     }
 
     /// <summary>Find a map's folder under a client root (resmap/&lt;kind&gt;/&lt;folder&gt;) or a flat block directory.</summary>
-    public static string? FindFile(string root, string mapName, string folder, string ext)
+    public static string? FindFile(string root, string mapName, string? folder, string ext)
     {
-        var flat = Path.Combine(root, mapName + ext);
-        if (File.Exists(flat)) return flat;
-        var resmap = Path.Combine(root, "resmap");
-        if (!Directory.Exists(resmap)) return null;
-        foreach (var kind in new[] { "field", "IDField", "KDField", "MHField" })
-        {
-            foreach (var f in new[] { folder, mapName })
-            {
-                var p = Path.Combine(resmap, kind, f, mapName + ext);
-                if (File.Exists(p)) return p;
-            }
-        }
-        return null;
+        // the client's own map files only (never a server data folder): the shared resolver's rules - the folder from
+        // MapInfo's MapFolderName (Rou reads B_Rou/B_Rou.shbd), resmap kinds in the client's order, case-blind
+        var files = ClientFiles.For(root);
+        return files.MapFile(folder ?? files.MapFolder(mapName), ext);
     }
 
     /// <summary>A map's size in tiles from its .shbd header alone (8 bytes; no grid is loaded): width, height; null absent.</summary>
     public static (int W, int H)? ReadSize(string root, string mapName, string? folder = null)
     {
-        var shbd = FindFile(root, mapName, folder ?? mapName, ".shbd");
+        var shbd = FindFile(root, mapName, folder, ".shbd");
         if (shbd is null) return null;
         using var f = File.OpenRead(shbd);
         Span<byte> b = stackalloc byte[8];
@@ -75,11 +66,11 @@ public sealed class BlockLayer
     /// <summary>Load a map's block files from a client root (or a flat .shbd directory); null when absent.</summary>
     public static BlockLayer? Load(string root, string mapName, string? folder = null)
     {
-        var shbd = FindFile(root, mapName, folder ?? mapName, ".shbd");
+        var shbd = FindFile(root, mapName, folder, ".shbd");
         if (shbd is null || Read(shbd) is not { } m) return null;
         var bits = m.Bits;
         byte[]? attack = null;
-        var shabPath = FindFile(root, mapName, folder ?? mapName, ".shab");
+        var shabPath = FindFile(root, mapName, folder, ".shab");
         if (shabPath is not null && Read(shabPath) is { } a && a.Stride == m.Stride && a.H == m.H)
         {
             attack = a.Bits;

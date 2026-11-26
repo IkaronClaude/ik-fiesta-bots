@@ -284,8 +284,7 @@ public sealed class ClientData : IClientData
 
     private ShnTable? T(string name)
     {
-        var p = Path.Combine(Dir, name + ".shn");
-        return File.Exists(p) ? ShnTable.Load(p) : null;
+        return ClientFiles.LoadTable(Dir, name);
     }
 
     private string Name(ShnTable t, int row, string col)

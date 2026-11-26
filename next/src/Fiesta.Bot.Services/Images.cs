@@ -6,8 +6,10 @@ namespace Fiesta.Bot.Services;
 /// read from the configured client directory at runtime; nothing is shipped.</summary>
 public static class ClientImages
 {
-    /// <summary>Icon atlases are an 8 x 8 grid of cells whatever their pixel size.</summary>
-    public const int AtlasColumns = 8;
+    /// <summary>The client's icon cell: its icon sheets are grids of 32 x 32 cells, the cell of an index at (index % per
+    /// row, index / per row) with per row = sheet width / 32 (the game client's layout; a 128-wide sheet has 4 per row,
+    /// not 8 - the old fixed 8 x 8 grid cut those into 16-pixel quarters).</summary>
+    public const int IconCell = 32;
 
     /// <summary>One cell of a DDS atlas as PNG, or null.</summary>
     public static byte[]? AtlasCellPng(string ddsPath, int index)
@@ -15,10 +17,11 @@ public static class ClientImages
         if (!File.Exists(ddsPath)) return null;
         var surface = DecodeDds(File.ReadAllBytes(ddsPath), out var w, out var h);
         if (surface is null) return null;
-        var size = Math.Max(1, w / AtlasColumns);
-        var cells = AtlasColumns * Math.Max(1, h / size);
+        var size = Math.Min(IconCell, Math.Min(w, h));
+        var perRow = Math.Max(1, w / size);
+        var cells = perRow * Math.Max(1, h / size);
         if (index < 0 || index >= cells) return null;
-        int cx = index % AtlasColumns * size, cy = index / AtlasColumns * size;
+        int cx = index % perRow * size, cy = index / perRow * size;
         var tile = new byte[size * size * 4];
         for (var y = 0; y < size && cy + y < h; y++)
             Buffer.BlockCopy(surface, ((cy + y) * w + cx) * 4, tile, y * size * 4, Math.Min(size, w - cx) * 4);

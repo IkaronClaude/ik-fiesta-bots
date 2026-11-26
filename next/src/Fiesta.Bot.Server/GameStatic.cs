@@ -13,7 +13,7 @@ public sealed class GameStatic
 {
     private readonly HostServices _h;
     private readonly Lazy<ShnTable?> _itemView, _skillView, _abView, _abState, _mapView;
-    private readonly Lazy<Dictionary<string, string>> _iconFiles, _minimapFiles;
+    private readonly ClientFiles _files;
     private readonly Lazy<Dictionary<int, int>> _abRowByWire;
     private readonly Lazy<HashSet<int>> _productionIds;
     private readonly ConcurrentDictionary<(char, int), byte[]?> _icons = new();
@@ -29,14 +29,13 @@ public sealed class GameStatic
     public GameStatic(HostServices h)
     {
         _h = h;
-        ShnTable? T(string n) { var p = Path.Combine(h.RessystemDir, n + ".shn"); return File.Exists(p) ? ShnTable.Load(p) : null; }
+        ShnTable? T(string n) => ClientFiles.LoadTable(h.RessystemDir, n);
+        _files = ClientFiles.For(h.ClientRoot);
         _itemView = new(() => T("ItemViewInfo"));
         _skillView = new(() => T("ActiveSkillView"));
         _abView = new(() => T("AbStateView"));
         _abState = new(() => T("AbState"));
         _mapView = new(() => T("MapViewInfo"));
-        _iconFiles = new(() => Index(Path.Combine(h.ClientRoot, "resmenu", "Icon")));
-        _minimapFiles = new(() => Index(Path.Combine(h.ClientRoot, "resmenu", "minimap"), keepExtension: true));
         _abRowByWire = new(() =>
         {
             var d = new Dictionary<int, int>();
@@ -60,14 +59,6 @@ public sealed class GameStatic
         Fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString())))[..16].ToLowerInvariant();
     }
 
-    private static Dictionary<string, string> Index(string dir, bool keepExtension = false)
-    {
-        var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        try { foreach (var f in Directory.EnumerateFiles(dir)) d[keepExtension ? Path.GetFileName(f) : Path.GetFileNameWithoutExtension(f)] = f; }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
-        return d;
-    }
 
     private static int RowOf(ShnTable? t, string col, long id)
     {
@@ -116,7 +107,7 @@ public sealed class GameStatic
     public byte[]? Icon(char kind, int id) => _icons.GetOrAdd((kind, id), k =>
     {
         var cell = k.Item1 switch { 'i' => ItemIcon(k.Item2), 's' => SkillIcon(k.Item2), _ => AbIcon(k.Item2) };
-        if (cell is not { } c || !_iconFiles.Value.TryGetValue(c.File, out var path)) return null;
+        if (cell is not { } c || _files.Icon(c.File) is not { } path) return null;
         try { return ClientImages.AtlasCellPng(path, c.Index); } catch (IOException) { return null; }
     });
 
@@ -132,7 +123,7 @@ public sealed class GameStatic
             if (mv.Col("MinimapView") >= 0) shown = mv.Num(r, "MinimapView") != 0;
         }
         foreach (var name in new[] { folder, m.MapName })
-            if (!string.IsNullOrEmpty(name) && _minimapFiles.Value.TryGetValue(name + ".dds", out var p)) return (p, shown);
+            if (!string.IsNullOrEmpty(name) && _files.Minimap(name) is { } p) return (p, shown);
         return (null, shown);
     }
 
@@ -148,7 +139,7 @@ public sealed class GameStatic
     public object? Item(int id) => _h.Data.Item(id) is not { } r ? null : new
     {
         id, inx = r.InxName, name = r.Name, type = r.Type, @class = r.ItemClass, equip = r.Equip, demandLv = r.DemandLevel,
-        maxLot = r.MaxLot, buyPrice = r.BuyPrice, sellPrice = r.SellPrice, icon = ItemIcon(id) is { } c && _iconFiles.Value.ContainsKey(c.File),
+        maxLot = r.MaxLot, buyPrice = r.BuyPrice, sellPrice = r.SellPrice, icon = ItemIcon(id) is { } c && _files.Icon(c.File) is not null,
     };
 
     /// <summary>Skill.</summary>
@@ -162,7 +153,7 @@ public sealed class GameStatic
         {
             id, inx = r.InxName, name = r.Name, category = SkillCategory(id, r.InxName), rowKey = r.Family, step = r.Step, maxStep = r.MaxStep, sp = r.Sp, hp = r.Hp, cooldownMs = r.DelayMs,
             groupCooldownMs = r.DelayGroup > 0 ? r.DelayGroupMs : 0, range = r.Range, castMs = r.CastTimeMs, description = desc,
-            icon = SkillIcon(id) is { } c && _iconFiles.Value.ContainsKey(c.File),
+            icon = SkillIcon(id) is { } c && _files.Icon(c.File) is not null,
         };
     }
 
@@ -192,7 +183,7 @@ public sealed class GameStatic
         {
             id = wire, inx = st.Str(r, "InxName"), name = vr >= 0 ? v!.Str(vr, "Descript") : st.Str(r, "InxName"),
             description = vr >= 0 ? v!.Str(vr, "Descript") : null, sort = vr >= 0 ? v!.Str(vr, "IconSort") : null,
-            icon = AbIcon(wire) is { } c && _iconFiles.Value.ContainsKey(c.File),
+            icon = AbIcon(wire) is { } c && _files.Icon(c.File) is not null,
         };
     }
 

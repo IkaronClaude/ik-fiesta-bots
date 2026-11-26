@@ -69,7 +69,8 @@ public class ScenarioTests
         Assert.True(d.Blocked(0, 15, 5));
         Assert.False(d.Blocked(1, 15, 5));
         Assert.False(d.Blocked(0, 24, 5));
-        var file = Path.Combine(Path.GetTempPath(), "TestMap.sbi");
+        var dir = Path.Combine(Path.GetTempPath(), "resmap", "field", "TestMap"); Directory.CreateDirectory(dir);   // the client layout: resmap/<kind>/<folder>/<folder>.sbi
+            var file = Path.Combine(dir, "TestMap.sbi");
         File.WriteAllBytes(file, SbiFile());
         try
         {
