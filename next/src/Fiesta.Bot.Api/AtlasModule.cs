@@ -79,6 +79,7 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     public static void Prepare(WorldAtlas atlas, IClientData data)
     {
         HoodOf(atlas, data);
+        atlas.PrepareMapCosts();
         atlas.PrepareWalkLevels(id => data.Mob(id) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi ? mi.Level : -1);
     }
 

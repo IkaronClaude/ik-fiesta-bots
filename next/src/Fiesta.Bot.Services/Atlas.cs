@@ -316,6 +316,15 @@ public sealed class WorldAtlas
         }
     }
 
+    /// <summary>Fill the map-to-map cost table from every map (one search each; run it off the tick at host start): a
+    /// planner pick on a map not asked before cost a full search on the tick (NextM, 'handins took 22 ms', 00:54).</summary>
+    public void PrepareMapCosts()
+    {
+        int[] maps;
+        lock (_gate) maps = _nodesByMap.Keys.ToArray();
+        foreach (var m in maps) MapDistance(m, m == 0 ? 1 : 0);
+    }
+
     /// <summary>Compute the highest hostile level along every walk (seconds; run it off the tick at host start).</summary>
     public void PrepareWalkLevels(Func<int, int> hostileLevel)
     {
