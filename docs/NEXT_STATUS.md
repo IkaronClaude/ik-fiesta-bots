@@ -12,7 +12,7 @@ FIESTA_WIRE=2016|2026 ASPNETCORE_URLS=http://127.0.0.1:5098 dotnet next/src/Fies
 ```
 
 - `CLIENT_ROOT` defaults to the ressystem's parent; walkability is read from the client's own
-  `resmap/<kind>/<map>/<map>.shbd` (+ `.shab`), not from any server data.
+  `resmap/<kind>/<map>/<map>.shbd` (+ `.shab`), from the client's own files.
 - `BOT_DATA_DIR` holds the brain / library store, the fleet file, checkpoints, logs, packet captures and
   recordings. Brains are private and never stored in this repository.
 - Other commands of the same binary: `login-test` (one login through a wire profile), `shn DIR TABLE[:rows]`
@@ -192,7 +192,7 @@ Both times the previous session had just logged out (the restart's graceful drai
 still holding the character while its logout completes; not confirmed. The session now ends when MAP_LOGIN_REQ is
 not answered within 20 s or is answered with MAP_LOGINFAIL (a missing answer is an error like any other, test
 `A_zone_that_never_answers_the_map_login_ends_the_session`), so the supervisor logs in again with its backoff. The
-server-side cause stays open.
+game-side cause stays open.
 
 ### Leveller port, steps 1-2 (survival, upkeep)
 
@@ -368,7 +368,7 @@ What the leveller does with it:
 2. An active scenario quest that is not done, outside its instance: back to its giver to be sent in (task `enter`).
    Its collect objective (an item issued inside) is not hunted in the field.
 3. Inside the instance the quest layer waits; the `instance` layer plays the rooms: an asked area is confirmed every
-   500 ms until the room's wave appears (the server judges the confirm by our server-side position; a single confirm
+   500 ms until the room's wave appears (the game judges the confirm by the position it holds for us; a single confirm
    sent while it still has us short of the trigger is lost - the old bots' "second room never spawns"), the wave is
    held and fought (no flee inside an instance), then after 5.5 s (the next trigger is armed late) the bot walks to
    the nearest trigger area it has not been asked about or walked to, until the server asks again.

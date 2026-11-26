@@ -454,7 +454,7 @@ public sealed class CombatDecoder : IPacketDecoder
                 if (p.Length < 3) return;
                 e.Kind = InboundKind.EntityMode; e.Handle = Rd.U16(p, 0); e.A = p[2];
                 break;
-            case 0x244D:   // TARGETCHANGE: our server-side selection {target}
+            case 0x244D:   // TARGETCHANGE: our selection as the game holds it {target}
                 if (p.Length < 2) return;
                 e.Kind = InboundKind.EntityTarget; e.Handle = -1; e.Handle2 = Rd.U16(p, 0);
                 break;
@@ -1049,7 +1049,7 @@ public static class IntentEncoder
     /// <summary>ITEM_UPGRADE_REQ {equip u8 = bag slot of the item, raw u8 = bag slot of the enhance stone, raw_left u8,
     /// raw_right u8, gift_money u32, raw_middle u8} - the three safety-stone bag slots, 0xFF for none (real-client capture).</summary>
     public static Intent Upgrade(byte itemSlot, byte stoneSlot, byte left, byte right, byte middle, int actionId)
-    { Span<byte> b = [itemSlot, stoneSlot, left, right, 0, 0, 0, 0, middle]; return Make(OpUpgrade, actionId, b); }
+    { Span<byte> b = [itemSlot, stoneSlot, left, right, 0, 0, 0, 0, middle]; return Make(OpUpgrade, actionId, b); }
     public static Intent ChangeMode(byte mode, int actionId) { Span<byte> b = [mode]; return Make(OpChangeMode, actionId, b); }
     /// <summary>SKILLBASH_OBJ_CAST {skill, target}.</summary>
     public static Intent CastObject(ushort skill, ushort target, int actionId)

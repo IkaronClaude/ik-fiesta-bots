@@ -45,10 +45,10 @@ public sealed class BlockLayer
     /// <summary>Find a map's folder under a client root (resmap/&lt;kind&gt;/&lt;folder&gt;) or a flat block directory.</summary>
     public static string? FindFile(string root, string mapName, string? folder, string ext, bool optional = false)
     {
-        // the client's own map files only (never a server data folder), through the shared resolver (resmap kinds in the
+        // the client's own map files only (nothing outside the client), through the shared resolver (resmap kinds in the
         // client's order, case-blind). The map's OWN folder first, its MapInfo MapFolderName folder only when that has
         // none: the MapFolderName folder (B_Eld for Eld) is the render map, and its walk grid differs from the one the
-        // game moves us on - Eld/Eld.shbd is the game's grid byte for byte, B_Eld/B_Eld.shbd differs in 48,012 cells, and
+        // game moves us on - B_Eld/B_Eld.shbd and Eld/Eld.shbd disagree in 48,012 cells, the moves the game accepts follow Eld's, and
         // a path planned on it walked NextA into a refused leg on every arrival (10:34-11:10); AlDn02 and PsyInDn02 alike.
         // Maps with no folder of their own (BFGate02-04, Gate, ArkDn02) read the shared one, which matches.
         var files = ClientFiles.For(root);

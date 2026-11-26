@@ -234,7 +234,7 @@ public sealed class MoveController
                 if (kind == MoveFailKind.Blocked && Moving)
                 {
                     // the game refused the whole leg: every tile it crosses past the one we stand on is learned as blocked
-                    // for this map (the client's grid differs from the game's in places - Rou in 23,386 cells), so the
+                    // for this map (the client's grid allows moves the game refuses in places), so the
                     // next path goes round it instead of repeating the same refused leg
                     var dx = _legTx - evt.X; var dy = _legTy - evt.Y; var d = Math.Sqrt(dx * dx + dy * dy);
                     var (sx, sy) = BlockLayer.ToTile(evt.X, evt.Y);

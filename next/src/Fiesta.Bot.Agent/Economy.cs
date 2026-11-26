@@ -59,7 +59,7 @@ public sealed class Economy
     public (long Sum, int Count) ExpLost => (_expLostSum, _expLostN);
     internal void LostExp(long amount) { _expLostSum += amount; _expLostN++; }
 
-    // which levels a death costs exp at, learned (the start level is server data, not in the client files): a death at
+    // which levels a death costs exp at, learned (the start level is not in the client files): a death at
     // level L that is revived with no BAT_EXPLOST in between means none is lost at L; a loss at L is measured there
     private int _deathLevel = -1; private bool _lostSinceDeath;
     private int _noLossMax = -1, _lossMin = -1;
