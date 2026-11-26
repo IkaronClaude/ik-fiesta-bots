@@ -120,10 +120,27 @@ public sealed class GameStatic
         try { return ClientImages.AtlasCellPng(path, c.Index); } catch (IOException) { return null; }
     });
 
-    /// <summary>A map's minimap PNG, or null.</summary>
+    /// <summary>A map's minimap art file and whether the game shows a minimap there at all, from MapViewInfo: the art is
+    /// named by its MapFolderName (PsyInDn02 draws PsyIn.dds; Rou / Eld use B_Rou / B_Eld), falling back to the map name;
+    /// MinimapView 0 means the game itself shows none (the job-change instances, Tower, QField, Wedding ...).</summary>
+    private (string? Path, bool Shown) MinimapFile(MapInfoRow m)
+    {
+        var shown = true; string? folder = null;
+        if (_mapView.Value is { } mv && FindMapView(mv, m.MapName) is var r and >= 0)
+        {
+            folder = mv.Str(r, "MapFolderName");
+            if (mv.Col("MinimapView") >= 0) shown = mv.Num(r, "MinimapView") != 0;
+        }
+        foreach (var name in new[] { folder, m.MapName })
+            if (!string.IsNullOrEmpty(name) && _minimapFiles.Value.TryGetValue(name + ".dds", out var p)) return (p, shown);
+        return (null, shown);
+    }
+
+    /// <summary>A map's minimap PNG, or null when the client has no art for it (served even where the game hides its
+    /// minimap: the console still draws it).</summary>
     public byte[]? Minimap(int mapId) => _minimaps.GetOrAdd(mapId, id =>
     {
-        if (_h.Data.Map(id) is not { } m || !_minimapFiles.Value.TryGetValue(m.MapName + ".dds", out var path)) return null;
+        if (_h.Data.Map(id) is not { } m || MinimapFile(m) is not { Path: { } path }) return null;
         try { return ClientImages.ImagePng(path); } catch (IOException) { return null; }
     });
 
@@ -207,7 +224,8 @@ public sealed class GameStatic
         }
         return new
         {
-            id, mapName = m.MapName, name = m.Name, minimap = _minimapFiles.Value.ContainsKey(m.MapName + ".dds"),
+            id, mapName = m.MapName, name = m.Name, minimap = MinimapFile(m) is { Path: not null },
+            minimapShown = MinimapFile(m).Shown,
             world = ww is null ? null : new { w = ww, h = wh }, cover,
         };
     }
