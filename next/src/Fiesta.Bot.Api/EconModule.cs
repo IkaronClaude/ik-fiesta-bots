@@ -23,4 +23,7 @@ public sealed partial class EconModule(AgentContext ctx) : ApiModule(ctx)
 
     /// <summary>Exp that came with no kill (quest rewards) since the session began.</summary>
     [LuaFn] public long QuestExp() => Ctx.World.Economy.QuestExp;
+
+    /// <summary>Exp the game took for deaths (BAT_EXPLOST): average per loss and the number of losses seen (-1, 0 none).</summary>
+    [LuaFn] public (double Avg, int Count) ExpLost() { var (s, n) = Ctx.World.Economy.ExpLost; return n > 0 ? ((double)s / n, n) : (-1, 0); }
 }

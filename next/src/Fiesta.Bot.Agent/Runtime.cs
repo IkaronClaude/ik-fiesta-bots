@@ -573,6 +573,12 @@ public sealed class BotAgent
                 log.Log(LogCategory.Core, e.B == 0x0A81 ? LogLevel.Info : LogLevel.Note,
                     $"tent: {(e.A == 1 ? "PITCH" : e.A == 0 ? "FOLD" : "folded by the server")} 0x{e.B:X4} {ErrorCodes.Describe((ushort)e.B)}");
                 break;
+            case InboundKind.ExpLost:
+                {
+                    var span = Context.World.Self.NextExp - Context.World.Self.PrevExp;
+                    log.Log(LogCategory.Core, LogLevel.Note, $"EXPLOST {e.A} exp = {(span > 0 ? e.A * 100.0 / span : -1):0.00}% of level {Context.World.Self.Level}'s span ({Context.World.Self.PrevExp}..{Context.World.Self.NextExp}), now {Context.World.Self.Exp}");
+                }
+                break;
             case InboundKind.UpgradeAck:
                 log.Log(LogCategory.Item, e.A == 0x08C3 ? LogLevel.Note : LogLevel.Info, $"UPGRADE_ACK 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
                 break;

@@ -54,6 +54,10 @@ public sealed class Economy
     private readonly Dictionary<int, MobCost> _mobs = new();
     private int _fightMob = -1; private long _fightStart = -1;
     private long _questExp;
+    private long _expLostSum; private int _expLostN;
+    /// <summary>Exp lost to deaths as the game reported it (BAT_EXPLOST): the total and the number of losses.</summary>
+    public (long Sum, int Count) ExpLost => (_expLostSum, _expLostN);
+    internal void LostExp(long amount) { _expLostSum += amount; _expLostN++; }
 
     /// <summary>A mob type's measured numbers (all 0 when never fought).</summary>
     public MobCost Mob(int mobId) => _mobs.GetValueOrDefault(mobId);
@@ -95,7 +99,7 @@ public sealed class Economy
 
     // ---- persistence across sessions and host restarts (times as Unix minutes / ms)
     /// <summary>The ledger as plain data: the last hour's buckets keyed by Unix minute, the per-mob numbers, quest exp.</summary>
-    public sealed record Saved(long StartedUnixMs, long QuestExp, List<long[]> Buckets, Dictionary<int, long[]> Mobs);
+    public sealed record Saved(long StartedUnixMs, long QuestExp, List<long[]> Buckets, Dictionary<int, long[]> Mobs, long ExpLostSum = 0, int ExpLostCount = 0);
 
     /// <summary>Export for saving (<paramref name="unixNow"/> is the wall clock matching <paramref name="now"/>).</summary>
     public Saved Export(long now, long unixNow)
@@ -106,7 +110,7 @@ public sealed class Economy
             if (_exp[i] != 0 || _earn[i] != 0 || _spend[i] != 0 || _stones[i] != 0 || _deaths[i] != 0)
                 buckets.Add([_bucketMinute[i] + shift, _exp[i], _earn[i], _spend[i], _stones[i], _deaths[i]]);
         var mobs = _mobs.ToDictionary(kv => kv.Key, kv => new long[] { kv.Value.Kills, kv.Value.FightMs, kv.Value.Stones, kv.Value.Exp, kv.Value.Deaths });
-        return new Saved(!_begun ? -1 : _startedAt + (unixNow - now), _questExp, buckets, mobs);
+        return new Saved(!_begun ? -1 : _startedAt + (unixNow - now), _questExp, buckets, mobs, _expLostSum, _expLostN);
     }
 
     /// <summary>Restore a saved ledger (buckets older than an hour are dropped).</summary>
@@ -125,6 +129,7 @@ public sealed class Economy
         foreach (var (id, v) in s.Mobs)
             if (v.Length >= 5) _mobs[id] = new MobCost { Kills = (int)v[0], FightMs = v[1], Stones = (int)v[2], Exp = v[3], Deaths = (int)v[4] };
         _questExp = s.QuestExp;
+        _expLostSum = s.ExpLostSum; _expLostN = s.ExpLostCount;
         if (s.StartedUnixMs >= 0) { _startedAt = Math.Max(now - 3_600_000, s.StartedUnixMs - (unixNow - now)); _begun = true; }
     }
 }

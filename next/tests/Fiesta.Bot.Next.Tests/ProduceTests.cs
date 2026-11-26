@@ -221,6 +221,29 @@ layers:
     }
 
     [Fact]
+    public void A_death_exp_loss_is_decoded_applied_and_measured_but_never_below_the_level_start()
+    {
+        // BAT_EXPLOST 0x2411 {explost u32} on a death above the level's start
+        var sink = new Sink();
+        DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016)).Dispatch(0x2411, new byte[] { 0x72, 0x00, 0x00, 0x00 }, 0, sink);
+        Assert.Equal((InboundKind.ExpLost, 114L), (sink.E[0].Kind, sink.E[0].A));
+        using var t = new TestBot();
+        t.Tick(2);
+        t.Ev(InboundKind.SelfExpBand, a: 10000, b: 21400);
+        t.Ev(InboundKind.SelfExp, a: 10500);       // 500 into the level
+        t.Tick();
+        t.In.TryWrite(sink.E[0]);
+        t.Tick();
+        Assert.Equal(10386, t.Ctx.World.Self.Exp);
+        Assert.Equal((114L, 1), t.Ctx.World.Economy.ExpLost);
+        var econ = new Fiesta.Bot.Api.EconModule(t.Ctx);
+        Assert.Equal((114.0, 1), econ.ExpLost());
+        t.Ev(InboundKind.ExpLost, a: 5000);           // more than is into the level: it stops at the level's start
+        t.Tick();
+        Assert.Equal(10000, t.Ctx.World.Self.Exp);
+    }
+
+    [Fact]
     public void The_rest_tent_is_pitched_and_folded_with_its_acks()
     {
         // PITCHTENT_REQ 0x2027 -> PITCHTENT_ACK {0x0A81}; FOLDTENT_REQ 0x202A -> FOLDTENT_ACK {0x0A81}; a refusal carries why

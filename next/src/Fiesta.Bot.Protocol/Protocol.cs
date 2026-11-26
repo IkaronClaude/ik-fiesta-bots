@@ -174,6 +174,8 @@ public enum InboundKind : ushort
     SortAck,
     /// <summary>ITEM_UPGRADE_ACK {err u16}: A = the result code (0x08C3 success, 0x08C5 failed, 0x08C6 failed -1, 0x08C7 destroyed, 0x08C9 refused).</summary>
     UpgradeAck,
+    /// <summary>BAT_EXPLOST {explost u32}: exp a death took (A).</summary>
+    ExpLost,
     /// <summary>Instance scenario (dept 27) and doors: A = scenario command (5 area entry asked, 7 area leave asked,
     /// 9 door state, 11 object type change, 22 timer, 33 timer start, 34 timer end, 4 notice, 27 system message; 1000 =
     /// BUILDDOOR), Text = area name / message, Handle = door / object, B = door state / object type / seconds / notice.</summary>
@@ -513,7 +515,7 @@ public sealed class SelfDecoder : IPacketDecoder
                 e.Kind = InboundKind.SelfLevel; e.A = p[0]; e.Handle = Rd.U16(p, 1); e.B = Rd.U64(p, 3); e.C = Rd.U64(p, 11);
                 break;
             case 0x240B: if (p.Length < 4) return; e.Kind = InboundKind.SelfExp; e.A = Rd.U32(p, 0); e.Handle = Rd.U16(p, 4); break;
-            case 0x2411: if (p.Length < 4) return; e.Kind = InboundKind.SelfExp; e.A = -(long)Rd.U32(p, 0); break;
+            case 0x2411: if (p.Length < 4) return; e.Kind = InboundKind.ExpLost; e.A = Rd.U32(p, 0); break;   // BAT_EXPLOST {explost u32}
             case 0x1033: if (p.Length < 8) return; e.Kind = InboundKind.SelfMoney; e.A = Rd.U64(p, 0); break;
             case 0x203E: if (p.Length < 4) return; e.Kind = InboundKind.SelfSpeed; e.A = Rd.U16(p, 0); e.B = Rd.U16(p, 2); break;
             case 0x2427 or 0x2428:   // ABSTATESET / RESET {handle u16, abstate u32 ...}

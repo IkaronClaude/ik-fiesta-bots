@@ -60,6 +60,10 @@ public sealed partial class SelfModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public long Exp() => S.Exp;
     /// <summary>Experience needed for the next level (cumulative).</summary>
     [LuaFn] public long ExpNext() => S.NextExp;
+    /// <summary>The current level's exp span (next level's start minus this level's start), -1 unknown.</summary>
+    [LuaFn] public long ExpSpan() => S.NextExp > S.PrevExp ? S.NextExp - S.PrevExp : -1;
+    /// <summary>Exp earned into the current level (what a death can take at most).</summary>
+    [LuaFn] public long ExpIntoLevel() => Math.Max(0, S.Exp - S.PrevExp);
     /// <summary>Current HP.</summary>
     [LuaFn] public double Hp() => S.Hp;
     /// <summary>Max HP.</summary>

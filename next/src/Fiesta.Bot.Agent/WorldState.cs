@@ -29,6 +29,8 @@ public sealed class SelfState
     public int Level { get; internal set; }
     /// <summary>Experience.</summary>
     public long Exp { get; internal set; }
+    /// <summary>Exp the last death took (BAT_EXPLOST), -1 none seen.</summary>
+    public long LastExpLost { get; internal set; } = -1;
     /// <summary>Exp at the start / end of this level.</summary>
     public long PrevExp { get; internal set; }
     /// <summary>Exp needed for the next level (cumulative).</summary>
@@ -891,6 +893,12 @@ public sealed class WorldState
                 if (e.C > 0) { Self.PrevExp = e.B; Self.NextExp = e.C; }
                 Bump(WorldComponent.Self);
                 ev.Raise(EventKind.LevelUp, e.A);
+                break;
+            case InboundKind.ExpLost:
+                Self.LastExpLost = e.A;
+                Self.Exp = Math.Max(Self.PrevExp, Self.Exp - e.A);   // the game never takes us below the level's start
+                Economy.LostExp(e.A);
+                Bump(WorldComponent.Self);
                 break;
             case InboundKind.SelfExp:
                 Self.Exp += e.A;
