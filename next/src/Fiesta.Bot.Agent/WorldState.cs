@@ -464,11 +464,7 @@ public sealed class SkillBook
     public bool Has(int skillId) => _readyAt.ContainsKey(skillId);
     /// <summary>Learned skills (in order learned).</summary>
     public IReadOnlyList<int> Learned => _learned;
-    private readonly Dictionary<int, double> _reach = new();
-    /// <summary>The farthest a skill may be cast from, as the game taught us by refusing it farther ("out of range");
-    /// infinity until it has.</summary>
-    public double LearnedReach(int skill) => _reach.TryGetValue(skill, out var r) ? r : double.PositiveInfinity;
-    internal void LearnReach(int skill, double reach) { if (reach > 0 && reach < LearnedReach(skill)) _reach[skill] = reach; }
+
     /// <summary>Milliseconds until ready (0 ready).</summary>
     public long ReadyInMs(int skillId, int group, long nowMs)
     {

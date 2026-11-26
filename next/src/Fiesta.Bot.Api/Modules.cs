@@ -351,9 +351,13 @@ public sealed partial class CombatModule(AgentContext ctx) : ApiModule(ctx)
 {
     private WorldState W => Ctx.World;
     /// <summary>Auto-attack reach against h: (body + weapon reach) * 1.25.</summary>
-    [LuaFn] public double BashReach(int h) { var s = W.Entities.SlotOf(h); return GameRules.BashReach(s < 0 ? GameRules.PlayerBody : W.Entities.BodyOf(s), GameRules.Weapon(Ctx)); }
+    [LuaFn] public double BashReach(int h) { var s = W.Entities.SlotOf(h); return s < 0 ? -1 : GameRules.Attackable(Ctx, s) + GameRules.ClientSlack; }
+    /// <summary>The client's attackable distance to h: where it walks to (this - 1) before swinging.</summary>
+    [LuaFn] public double Attackable(int h) { var s = W.Entities.SlotOf(h); return s < 0 ? -1 : GameRules.Attackable(Ctx, s); }
+    /// <summary>The client's skillable distance for a skill on h: where it walks to (this - 1) before casting.</summary>
+    [LuaFn] public double Skillable(int skill, int h) { var s = W.Entities.SlotOf(h); return GameRules.Skillable(Ctx, Ctx.Data.Skill(skill), s); }
     /// <summary>Skill reach against h.</summary>
-    [LuaFn] public double SkillReach(int skill, int h) { var sk = Ctx.Data.Skill(skill); var s = W.Entities.SlotOf(h); return sk is null ? -1 : GameRules.SkillReach(sk, s < 0 ? 0 : W.Entities.BodyOf(s)); }
+    [LuaFn] public double SkillReach(int skill, int h) { var s = W.Entities.SlotOf(h); return GameRules.Skillable(Ctx, Ctx.Data.Skill(skill), s) + GameRules.ClientSlack; }
     /// <summary>Within reach to bash h: the start reach (body + weapon reach) when not already bashing h, the keep reach
     /// ((body + weapon reach) * 1.25) while a swing stream on h runs.</summary>
     [LuaFn]
@@ -362,14 +366,14 @@ public sealed partial class CombatModule(AgentContext ctx) : ApiModule(ctx)
         var s = W.Entities.SlotOf(h); if (s < 0) return false;
         var (x, y) = W.Entities.Pos(s, Ctx.Now);
         var keep = Ctx.Combat.Bashing && Ctx.Combat.BashTarget == h;
-        var reach = keep ? BashReach(h) : GameRules.BashStartReach(W.Entities.BodyOf(s), GameRules.Weapon(Ctx));
+        var reach = GameRules.Attackable(Ctx, s) + (keep ? GameRules.ClientSlack : GameRules.SwingStartSlack);
         // the game just refused swing starts on h from where we stood (its position of h differs from ours while h
         // moves): count it in reach only well inside, so the caller closes in instead of restarting from the edge
         if (!keep && Ctx.Combat.RefusedTarget == h && Ctx.Now - Ctx.Combat.RefusedAt < 5000) reach *= 0.6;
         return MoveController.Dist(x, y, W.Self.Pos.X, W.Self.Pos.Y) <= reach;
     }
     /// <summary>The reach to start a swing on h (body + weapon reach).</summary>
-    [LuaFn] public double BashStartReach(int h) { var s = W.Entities.SlotOf(h); return GameRules.BashStartReach(s < 0 ? GameRules.PlayerBody : W.Entities.BodyOf(s), GameRules.Weapon(Ctx)); }
+    [LuaFn] public double BashStartReach(int h) { var s = W.Entities.SlotOf(h); return s < 0 ? -1 : GameRules.Attackable(Ctx, s) + GameRules.SwingStartSlack; }
     /// <summary>Line of fire to h (attack-block layer).</summary>
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.On)] public bool Los(int h) { var s = W.Entities.SlotOf(h); if (s < 0) return false; var (x, y) = W.Entities.Pos(s, Ctx.Now); return GameRules.LineOfFire(Ctx.Nav.Layer(W.Map.MapName), W.Self.Pos.X, W.Self.Pos.Y, x, y); }
     /// <summary>Our selection.</summary>

@@ -349,11 +349,19 @@ public class GameRulesTests
     [Fact]
     public void Reach_formulas()
     {
-        Assert.Equal((50 + 120) * 1.25, GameRules.BashReach(50, WeaponClass.Melee));
-        Assert.Equal((50 + 600) * 1.25, GameRules.BashReach(50, WeaponClass.Bow));
-        var r = 100 + 50 + 50.0;   // range + max(50, 10) + body
-        Assert.Equal(Math.Min(r * 1.25, r + 60), GameRules.SkillReach(TestData.S, 50));
+        // the game client's rules: a mob's attackable distance is its body (+ 450 with a bow); a swing starts within that
+        // + 50 - 10 and keeps within + 50; a skill on a mob reaches Range + body and is cast while that + 50 exceeds the
+        // distance; on a character Range + 50; with no target Range
         Assert.Equal(50, GameRules.MobBody(TestData.M));
+        Assert.Equal(50, GameRules.Attackable(50, WeaponClass.Melee));
+        Assert.Equal(500, GameRules.Attackable(50, WeaponClass.Bow));
+        Assert.Equal(50 + 40, GameRules.BashStartReach(50, WeaponClass.Melee));
+        Assert.Equal(50 + 50, GameRules.BashReach(50, WeaponClass.Melee));
+        Assert.Equal(100 + 50, GameRules.Skillable(TestData.S, 50, targetIsMob: true, hasTarget: true));
+        Assert.Equal(100 + 50, GameRules.Skillable(TestData.S, 0, targetIsMob: false, hasTarget: true));
+        Assert.Equal(100, GameRules.Skillable(TestData.S, 0, targetIsMob: false, hasTarget: false));
+        Assert.Equal(50, GameRules.Skillable(null, 0, true, true));
+        Assert.Equal(100 + 50 + 50, GameRules.SkillReach(TestData.S, 50));
     }
 
     [Fact]
@@ -455,7 +463,7 @@ public class ActionTests
         Assert.False(t.Ctx.Combat.Bashing);
         Assert.Equal(2000, t.Ctx.Combat.RefusedTarget);
         Assert.True(t.Sent.Count(o => o == IntentEncoder.OpBashStart) <= 2);
-        Assert.Equal(GameRules.BashStartReach(50, WeaponClass.Melee) * 1.25, GameRules.BashReach(50, WeaponClass.Melee));
+        Assert.Equal(GameRules.BashStartReach(50, WeaponClass.Melee) + 10, GameRules.BashReach(50, WeaponClass.Melee));
     }
 
     [Fact]
@@ -629,21 +637,22 @@ public class ActionTests
     }
 
     [Fact]
-    public void An_out_of_range_refusal_teaches_the_skill_its_reach()
+    public void An_out_of_range_refusal_re_syncs_our_position_and_learns_no_range()
     {
         using var t = new TestBot();
         t.Tick(30);
         t.Ev(InboundKind.EntityAppeared, h: 2000, a: (long)EntityKind.Mob, b: 1, x: 5080, y: 5000);
         t.Tick();
-        Assert.Equal(CanUseReason.Ok, GameRules.CanUse(t.Ctx, 0, 2000));      // the data's reach allows 80
+        Assert.Equal(CanUseReason.Ok, GameRules.CanUse(t.Ctx, 0, 2000));      // 80 < Range 100 + body 50 + 50
+        t.Ctx.World.Self.GetType().GetProperty("ServerPos")!.SetValue(t.Ctx.World.Self, ((uint)4700, (uint)5000));
         t.Ctx.Combat.Cast(0, 2000, 1, t.Ctx);
         t.Tick();
-        t.Ev(InboundKind.CastFail, a: 0x0FCA);                                 // "out of range" from 80
+        t.Ev(InboundKind.CastFail, a: 0x0FCA);                                 // the game had us elsewhere
         t.Tick();
-        t.Clock.NowMs += 2000; t.Tick();                                       // past the cooldown
-        Assert.Equal(CanUseReason.Range, GameRules.CanUse(t.Ctx, 0, 2000));   // from 80: too far now
-        t.Ev(InboundKind.EntityAppeared, h: 2001, a: (long)EntityKind.Mob, b: 1, x: 5040, y: 5000); t.Tick();
-        Assert.NotEqual(CanUseReason.Range, GameRules.CanUse(t.Ctx, 0, 2001)); // closer in: fine
+        Assert.Equal(4700, t.Ctx.World.Self.Pos.X, 0);                       // re-synced to the game's position
+        t.Clock.NowMs += 2000; t.Tick();
+        t.Ctx.World.Self.GetType().GetProperty("Pos")!.SetValue(t.Ctx.World.Self, (5000.0, 5000.0));
+        Assert.Equal(CanUseReason.Ok, GameRules.CanUse(t.Ctx, 0, 2000));      // the skill's range is the data's, untouched
     }
 
     [Fact]

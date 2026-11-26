@@ -33,6 +33,12 @@ public static class Burst
         var slot = w.Entities.SlotOf(h);
         if (slot < 0 || w.Entities.IsDead(slot)) return new(false, double.PositiveInfinity, double.PositiveInfinity, -1, 0, "no target", 0);
         double mobHp = w.Entities.Hp(slot);
+        // the walk in, as the game client does it: an action out of its reach (skillable / attackable + slack) starts
+        // after walking to that distance less one, at our run speed
+        var (tx, ty) = w.Entities.Pos(slot, ctx.Now);
+        var dist = MoveController.Dist(w.Self.Pos.X, w.Self.Pos.Y, tx, ty);
+        var speed = Math.Max(1, w.Self.RunSpeed);
+        double Approach(double reachTo, double slack) => dist < reachTo + slack ? 0 : Math.Max(0, dist - (reachTo - 1)) / speed;
         if (mobHp <= 0) mobHp = d.Mob(w.Entities.MobId(slot))?.MaxHp ?? 0;
 
         // the prior scale for skills never measured: measured mean over data estimate, averaged over the measured skills
@@ -66,14 +72,18 @@ public static class Burst
             }
             var low = Math.Max(0, mean - ConfidenceSd * sd);
             if (low <= 0) continue;
-            ids[k] = id; dmg[k] = low; ready[k] = w.Skills.ReadyInMs(id, sk.DelayGroup, ctx.Now) / 1000.0; k++;
+            ids[k] = id; dmg[k] = low;
+            ready[k] = Math.Max(w.Skills.ReadyInMs(id, sk.DelayGroup, ctx.Now) / 1000.0, Approach(GameRules.Skillable(ctx, sk, slot), GameRules.ClientSlack));
+            k++;
         }
         // swings: measured, else the weapon's data (its damage at its attack interval)
         double swingDmg = 0, swingIv = 0;
         if (swings && f.Swing.N > 0 && f.SwingInterval.N > 0)
         { swingDmg = Math.Max(0, f.Swing.Mean - ConfidenceSd * f.Swing.Sd); swingIv = (f.SwingInterval.Mean + ConfidenceSd * f.SwingInterval.Sd) / 1000.0; }
         else if (swings && weaponDmg > 0 && weaponIv > 0) { swingDmg = weaponDmg; swingIv = weaponIv / 1000.0; }
-        var nextSwing = swingDmg > 0 ? Math.Max(0, swingIv - Math.Max(0, ctx.Now - ctx.Combat.LastSwingAt) / 1000.0) : double.PositiveInfinity;
+        var nextSwing = swingDmg > 0
+            ? Math.Max(Math.Max(0, swingIv - Math.Max(0, ctx.Now - ctx.Combat.LastSwingAt) / 1000.0), Approach(GameRules.Attackable(ctx, slot), GameRules.SwingStartSlack))
+            : double.PositiveInfinity;
         var spacing = f.CastSpacing > 0 ? f.CastSpacing / 1000.0 : 0;
         var castFree = ctx.Combat.Casting(ctx.Now) ? spacing : 0.0;   // a cast in flight holds the next one by the spacing
 

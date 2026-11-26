@@ -470,13 +470,12 @@ public sealed class CombatController
             case InboundKind.CastFail when e.A is 0x0FC4 or 0x0FC6:
                 _castUntil = ctx.Now + 600;
                 break;
-            // "out of range" from where we cast: the skill's reach is shorter than that (by at least a tile), learned so
-            // canUse says Range from there on and the fight closes in instead of recasting (NextA recast a skill from
-            // too far three times in a row, 13:34 - REPEATED REFUSAL)
-            case InboundKind.CastFail when e.A == 0x0FCA && _castSkill >= 0 && _castDist > 0:
-                ctx.World.Skills.LearnReach(_castSkill, _castDist - BlockLayer.WorldPerTile);
+            // out of range although the client's own range rule said in range: the game holds us (or the target) elsewhere
+            // than we believe - re-sync our position to the game's, so the next check walks in from where we really are
+            case InboundKind.CastFail when e.A == 0x0FCA && _castSkill >= 0:
                 _castUntil = 0;
-                ctx.Log.Log(LogCategory.Combat, LogLevel.Info, $"skill {_castSkill}: out of range from {_castDist:0}: its reach is under that, closing in from now on");
+                ctx.Log.Log(LogCategory.Combat, LogLevel.Info, $"skill {_castSkill}: refused out of range at {_castDist:0} by our position: re-syncing to the game's ({ctx.World.Self.ServerPos.X},{ctx.World.Self.ServerPos.Y})");
+                ctx.World.Self.Pos = (ctx.World.Self.ServerPos.X, ctx.World.Self.ServerPos.Y);
                 break;
             case InboundKind.CastFail:
             case InboundKind.CastAborted:
@@ -530,10 +529,21 @@ public static class GameRules
 {
     /// <summary>A player's body size.</summary>
     public const double PlayerBody = 50;
-    /// <summary>Melee weapon reach.</summary>
-    public const double MeleeReach = 120;
-    /// <summary>Bow/crossbow reach.</summary>
-    public const double BowReach = 600;
+    // ---- the game client's range rules (its GetSkillableDistance / GetAttackableDistance and their callers):
+    //   skill: a mob target adds its body (MobInfo AbsoluteSize * 50 / 1000) to the skill's Range, a character target 50,
+    //   no target nothing, no skill row 50; it is cast while Range + 50 exceeds the distance, else walked to Range - 1.
+    //   auto-attack: a gather object (MobInfo Type 8, 9, 10, 21, 22) 10, a mob its body (+ 450 for a bow), a character
+    //   50 (450 for a bow); started within that + 50 - 10, else walked to that - 1.
+    /// <summary>What the client adds to a skill's range for a character target, and the slack a cast is allowed.</summary>
+    public const double ClientSlack = 50;
+    /// <summary>A bow's extra auto-attack reach in the client's rule.</summary>
+    public const double BowExtra = 450;
+    /// <summary>The auto-attack reach of a gather object (the client's fixed 10).</summary>
+    public const double GatherReach = 10;
+    /// <summary>The client's swing start tolerance: within attackable + 50 - 10.</summary>
+    public const double SwingStartSlack = ClientSlack - 10;
+    /// <summary>MobInfo Type values the client treats as gather objects (fixed auto-attack reach).</summary>
+    public static readonly HashSet<int> GatherTypes = [8, 9, 10, 21, 22];
     /// <summary>Maximum distance between our move's `from` and the game's position.</summary>
     public const double MoveFromTolerance = 200;
     /// <summary>A mob further than this from its spawn stops acquiring new targets.</summary>
@@ -541,20 +551,31 @@ public static class GameRules
 
     /// <summary>Body size of a mob (MobInfo AbsoluteSize * 50 / 1000).</summary>
     public static double MobBody(MobInfoRow mob) => mob.AbsoluteSize * 50.0 / 1000.0;
-    /// <summary>Auto-attack keep reach: a running swing stream continues while distance &lt;= (body + weapon reach) * 1.25.</summary>
-    public static double BashReach(double targetBody, WeaponClass weapon)
-        => (targetBody + (weapon is WeaponClass.Bow or WeaponClass.Crossbow ? BowReach : MeleeReach)) * 1.25;
-    /// <summary>Auto-attack start reach: (body + weapon reach) without the keep tolerance. Measured live: BASHSTART at
-    /// 161-162 u from a Slime (keep reach 162.5) got SWING_START then CEASE_FIRE with no damage, 23 times in 10 s,
-    /// while starts well inside the bare reach landed.</summary>
-    public static double BashStartReach(double targetBody, WeaponClass weapon)
-        => targetBody + (weapon is WeaponClass.Bow or WeaponClass.Crossbow ? BowReach : MeleeReach);
-    /// <summary>Skill reach: r = Range + max(50, Range/10) + body; accepted up to min(r * 1.25, r + 60).</summary>
-    public static double SkillReach(ActiveSkillRow skill, double targetBody)
+    static bool IsBow(WeaponClass w) => w is WeaponClass.Bow or WeaponClass.Crossbow;
+    /// <summary>The client's attackable distance to a mob of this body (not a gather object).</summary>
+    public static double Attackable(double mobBody, WeaponClass weapon) => mobBody + (IsBow(weapon) ? BowExtra : 0);
+    /// <summary>The client's attackable distance to an entity in view.</summary>
+    public static double Attackable(AgentContext ctx, int slot)
     {
-        var r = skill.Range + Math.Max(50, skill.Range * 0.10) + targetBody;
-        return Math.Min(r * 1.25, r + 60);
+        var w = ctx.World; var weapon = Weapon(ctx);
+        if ((w.Entities.Kind(slot) & EntityKind.Mob) == 0) return IsBow(weapon) ? BowExtra : ClientSlack;   // a character
+        if (ctx.Data.Mob(w.Entities.MobId(slot)) is { } mi && GatherTypes.Contains(mi.Type)) return GatherReach;
+        return Attackable(w.Entities.BodyOf(slot), weapon);
     }
+    /// <summary>Auto-attack keep reach (a running swing stream): the client's attackable + 50.</summary>
+    public static double BashReach(double targetBody, WeaponClass weapon) => Attackable(targetBody, weapon) + ClientSlack;
+    /// <summary>Auto-attack start reach: the client's attackable + 50 - 10.</summary>
+    public static double BashStartReach(double targetBody, WeaponClass weapon) => Attackable(targetBody, weapon) + SwingStartSlack;
+    /// <summary>The client's skillable distance: Range + the mob's body (mob), Range + 50 (character), Range (no target).</summary>
+    public static double Skillable(ActiveSkillRow? skill, double mobBody, bool targetIsMob, bool hasTarget)
+        => skill is null ? ClientSlack : !hasTarget ? skill.Range : targetIsMob ? mobBody + skill.Range : skill.Range + ClientSlack;
+    /// <summary>The client's skillable distance to an entity in view.</summary>
+    public static double Skillable(AgentContext ctx, ActiveSkillRow? skill, int slot)
+        => slot < 0 ? Skillable(skill, 0, false, false)
+            : Skillable(skill, ctx.World.Entities.BodyOf(slot), (ctx.World.Entities.Kind(slot) & EntityKind.Mob) != 0, true);
+    /// <summary>The distance a skill is cast within on a mob of this body: skillable + 50 (the client casts while that
+    /// exceeds the distance).</summary>
+    public static double SkillReach(ActiveSkillRow skill, double mobBody) => Skillable(skill, mobBody, true, true) + ClientSlack;
     /// <summary>A move destination is accepted when any tile of its 3x3 block is walkable.</summary>
     public static bool MoveTargetAccepted(BlockLayer layer, double x, double y)
     {
@@ -628,7 +649,7 @@ public static class GameRules
         if (s < 0 || w.Entities.IsDead(s)) return CanUseReason.Target;
         var (tx, ty) = w.Entities.Pos(s, ctx.Now);
         var d = MoveController.Dist(self.Pos.X, self.Pos.Y, tx, ty);
-        if (d > SkillReach(sk, w.Entities.BodyOf(s)) || d > w.Skills.LearnedReach(skillId)) return CanUseReason.Range;
+        if (d >= Skillable(ctx, sk, s) + ClientSlack) return CanUseReason.Range;
         if (!LineOfFire(ctx.Nav.Layer(w.Map.MapName), self.Pos.X, self.Pos.Y, tx, ty)) return CanUseReason.LineOfFire;
         return CanUseReason.Ok;
     }
