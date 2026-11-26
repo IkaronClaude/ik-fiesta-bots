@@ -408,6 +408,8 @@ public sealed class Inventory
     public int StoragePages { get; internal set; }
     /// <summary>When the storage window opened (ms), -1 = not open (closed by another window, a map change).</summary>
     public long StorageOpenAt { get; set; } = -1;
+    /// <summary>The last ITEM_UPGRADE_ACK code (-1 none yet).</summary>
+    public int LastUpgradeCode { get; set; } = -1;
     /// <summary>Occupied storage cells.</summary>
     public int StoreUsed { get; private set; }
 
@@ -1167,6 +1169,9 @@ public sealed class WorldState
                 break;
             case InboundKind.ReviveItemAllowed:
                 Map.ReviveItems = e.A != 0;
+                break;
+            case InboundKind.UpgradeAck:
+                Bag.LastUpgradeCode = (int)e.A;
                 break;
             case InboundKind.Tent:
                 if (e.A == 1 && e.B == 0x0A81) Self.TentPitched = true;

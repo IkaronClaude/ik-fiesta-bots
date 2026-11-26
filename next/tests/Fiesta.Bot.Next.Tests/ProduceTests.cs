@@ -198,6 +198,29 @@ layers:
     }
 
     [Fact]
+    public void An_upgrade_at_a_smith_leaves_its_menu_open_as_the_client_does()
+    {
+        // real client: NPCCLICK -> NPCMENUOPEN_REQ (smith) -> no menu answer -> ITEM_UPGRADE_REQ -> ACK -> END_OF_TRADE
+        using var t = new TestBot();
+        t.Tick(30);
+        t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)EntityKind.Npc, b: 28, x: 5050, y: 5000);
+        t.Tick();
+        t.Sent.Clear();
+        var npc = new Fiesta.Bot.Api.NpcModule(t.Ctx);
+        var a = npc.UpgradeAt(3000, 19, 21);
+        t.Tick();
+        Assert.Contains(IntentEncoder.OpNpcClick, t.Sent);
+        t.Ev(InboundKind.NpcMenu, h: 3000, a: 28);
+        t.Tick();
+        Assert.Contains(IntentEncoder.OpUpgrade, t.Sent);
+        Assert.DoesNotContain(IntentEncoder.OpNpcMenuAck, t.Sent);
+        t.Ev(InboundKind.UpgradeAck, a: 0x08C3);
+        t.Tick();
+        Assert.Equal(ActionState.Acked, t.Ctx.Actions.Get(new ActionId(a)).State);
+        Assert.Equal(0x08C3, t.Ctx.World.Bag.LastUpgradeCode);
+    }
+
+    [Fact]
     public void The_rest_tent_is_pitched_and_folded_with_its_acks()
     {
         // PITCHTENT_REQ 0x2027 -> PITCHTENT_ACK {0x0A81}; FOLDTENT_REQ 0x202A -> FOLDTENT_ACK {0x0A81}; a refusal carries why

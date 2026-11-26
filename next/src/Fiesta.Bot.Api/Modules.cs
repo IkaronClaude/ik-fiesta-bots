@@ -806,6 +806,8 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
         for (var s = 0; s < B.Size; s++) { var (it, _) = B.At(s); if (it >= 0 && IsUpgrade(it)) return s; }
         return -1;
     }
+    /// <summary>The last ITEM_UPGRADE_ACK code (-1 none yet).</summary>
+    [LuaFn] public int LastUpgrade() => B.LastUpgradeCode;
     /// <summary>Equipped item id by equipment slot, -1 none.</summary>
     [LuaFn] public int Equipped(int equipSlot) => B.Equipped(equipSlot);
     /// <summary>Occupied slots into a caller-owned table.</summary>
@@ -1164,6 +1166,13 @@ public sealed partial class NpcModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>NPC mob id.</summary>
     [LuaFn] public int NpcId(int h) { var s = W.Entities.SlotOf(h); return s < 0 ? -1 : W.Entities.MobId(s); }
     /// <summary>Open an NPC's shop (procedure; resolves when the list arrived).</summary>
+    /// <summary>Enhance a bag item at a smith (h = the smith in view), as the client does: click, leave its menu open,
+    /// ITEM_UPGRADE_REQ, the answer, end of trade. Safety stones by bag slot, -1 none. items.lastUpgrade() is the code.</summary>
+    [LuaFn] public int UpgradeAt(int h, int itemSlot, int stoneSlot, int left = -1, int right = -1, int middle = -1)
+    {
+        static byte Sl(int s) => s < 0 ? (byte)0xFF : (byte)s;
+        return Ctx.Procedures.Start(new UpgradeAtNpcProcedure(h, Sl(itemSlot), Sl(stoneSlot), Sl(left), Sl(right), Sl(middle)), ActionKind.UpgradeAtNpc, CallingLayer, Ctx).Value;
+    }
     [LuaFn] public int OpenShop(int h, int reply = 1) => Ctx.Procedures.Start(new OpenShopProcedure(h, reply), ActionKind.OpenShop, CallingLayer, Ctx).Value;
     /// <summary>The open shop sells the item.</summary>
     /// <summary>Item ids the open shop sells.</summary>

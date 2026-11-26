@@ -20,7 +20,7 @@ public enum ActionKind : byte
     Cast, CastGround, Bash, StopBash, Target, Untarget, Move, MoveDirect, Follow, Stop, Mount, Dismount,
     UseItem, StoneHp, StoneSp, Loot, Buy, Sell, OpenShop, Talk, Storage, Gate, Travel, Revive, Say, Whisper,
     TradePropose, TradeOfferItem, TradeOfferMoney, TradeLock, TradeConfirm, TradeCancel, PartyInvite, PartyAccept, PartyLeave, Raw,
-    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack, Produce, ProductField, Split, Tent, BagSort, Upgrade,
+    MenuReply, BuyStones, StatPoint, Equip, StorageMove, TradeAnswer, TradeTakeBack, Produce, ProductField, Split, Tent, BagSort, Upgrade, UpgradeAtNpc,
 }
 
 /// <summary>Resources a layer can claim (REDESIGN 5.1).</summary>
@@ -121,6 +121,7 @@ public static class ActionCatalog
         S(ActionKind.Sell, Resource.Npc, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.BuySellAck && e.B == 1 ? (e.A == 0x0381 ? (ActionState.Acked, (ushort)0) : (ActionState.Refused, (ushort)e.A)) : null), 2000);
         S(ActionKind.OpenShop, Resource.Npc, Controller, 6000);
+        S(ActionKind.UpgradeAtNpc, Resource.Npc, Controller, 15000);
         // soul stones: HP_BUY_ACK / SP_BUY_ACK carry the new total; BUYFAIL the reason
         S(ActionKind.BuyStones, Resource.Npc, new FnMatcher((a, e, w) =>
             e.Kind == InboundKind.StoneReserve && e.A == a.Arg0 ? (ActionState.Acked, (ushort)0)
@@ -450,7 +451,7 @@ public static class ErrorCodes
 }
 
 /// <summary>Procedure kinds (multi-packet interactions).</summary>
-public enum ProcedureKind : byte { OpenShop, QuestDialogue, GateHop, Dismount, Revive, Trade, Tent, Storage, Travel }
+public enum ProcedureKind : byte { OpenShop, QuestDialogue, GateHop, Dismount, Revive, Trade, Tent, Storage, Travel, Upgrade }
 
 /// <summary>Procedure outcome.</summary>
 public enum ProcedureStatus : byte { Running, Succeeded, Failed, Cancelled }
@@ -509,6 +510,51 @@ public abstract class ProcedureBase : IProcedure
     protected void Fail(string reason) { if (Status == ProcedureStatus.Running) { Status = ProcedureStatus.Failed; FailReason = reason; } }
     /// <summary>Succeed.</summary>
     protected void Done() { if (Status == ProcedureStatus.Running) Status = ProcedureStatus.Succeeded; }
+}
+
+/// <summary>Enhance an item at a smith the way the game client does: END_OF_TRADE -> NPCCLICK -> the smith's NPC menu
+/// (NPCMENUOPEN_REQ) is left OPEN, unanswered -> ITEM_UPGRADE_REQ -> ITEM_UPGRADE_ACK {code} -> END_OF_TRADE. (Answering
+/// the menu opens the shop list instead, and an upgrade sent from the shop state was answered 0x08D7: NextA, 05:42.)
+/// Succeeds on an outcome code (+1, failed, -1, destroyed) and fails on a refusal; the code is Bag.LastUpgradeCode.</summary>
+public class UpgradeAtNpcProcedure(int npcHandle, byte itemSlot, byte stoneSlot, byte left, byte right, byte middle) : ProcedureBase
+{
+    /// <inheritdoc/>
+    public override ProcedureKind Kind => ProcedureKind.Upgrade;
+    private bool _started;
+
+    /// <inheritdoc/>
+    public override void Advance(AgentContext ctx)
+    {
+        if (!_started)
+        {
+            if (Camp.FoldFirst(ctx, Action.Value)) return;
+            _started = true;
+            ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
+            ctx.World.Bag.StorageOpenAt = -1;
+            ctx.Actions.Send(IntentEncoder.NpcClick((ushort)npcHandle, Action.Value));
+            Go("awaitMenu", ctx, 5000);
+            return;
+        }
+        if (Expired(ctx)) Fail($"upgrade at npc {npcHandle}: nothing in step {Step}");
+    }
+
+    /// <inheritdoc/>
+    public override void Apply(in InboundEvent e, AgentContext ctx)
+    {
+        switch (e.Kind)
+        {
+            case InboundKind.NpcMenu when Step == "awaitMenu":
+                ctx.Actions.Send(IntentEncoder.Upgrade(itemSlot, stoneSlot, left, right, middle, Action.Value));
+                ctx.Log.Log(LogCategory.Item, LogLevel.Note, $"upgrade: smith menu (mob {e.A}) open, sending ITEM_UPGRADE_REQ item slot {itemSlot}, stone slot {stoneSlot}, safety {left}/{right}/{middle}");
+                Go("awaitAnswer", ctx, 8000);
+                break;
+            case InboundKind.UpgradeAck when Step == "awaitAnswer":
+                ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
+                if (e.A is 0x08C3 or 0x08C5 or 0x08C6 or 0x08C7) Done();
+                else Fail($"upgrade refused 0x{e.A:X4} {ErrorCodes.Describe((ushort)e.A)}");
+                break;
+        }
+    }
 }
 
 /// <summary>Open an NPC's shop: END_OF_TRADE -> NPCCLICK -> answer the NPC menu (or a server menu) -> the shop list.</summary>
