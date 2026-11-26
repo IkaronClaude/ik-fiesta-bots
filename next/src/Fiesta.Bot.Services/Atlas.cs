@@ -75,7 +75,17 @@ public sealed class WorldAtlas
                 if (map < 0) continue;
                 var mob = (int)mc.Num(r, "Mob_ID");
                 double x = mc.Num(r, "CenterX"), y = mc.Num(r, "CenterY"), w = mc.Num(r, "Width"), h = mc.Num(r, "Height");
-                if (w == 0 && h == 0) Add(_npc, mob, new MapSpot(map, x, y));   // a point = a standing NPC
+                // three shapes: a rectangle (Width x Height; RangeDegree its rotation, 0xFFFFFFFF none), a circle (no
+                // width or height, RangeDegree its radius: 3,848 of the 8,045 rows - read as NPC points before, which
+                // lost every mob that spawns only in circles, the Angry Wolf of quest 18 among them), or a point (a
+                // standing NPC)
+                var range = (uint)mc.Num(r, "RangeDegree");
+                if (w == 0 && h == 0 && range is > 0 and < uint.MaxValue)
+                {
+                    var a = new SpawnArea(mob, map, x, y, range, range);
+                    Add(_spawn, mob, a); Add(_spawnByMap, map, a);
+                }
+                else if (w == 0 && h == 0) Add(_npc, mob, new MapSpot(map, x, y));
                 else
                 {
                     var a = new SpawnArea(mob, map, x, y, w / 2, h / 2);
