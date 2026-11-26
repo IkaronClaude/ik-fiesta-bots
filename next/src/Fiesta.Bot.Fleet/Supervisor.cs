@@ -81,6 +81,13 @@ public sealed class HostServices : IAsyncDisposable
         if (File.Exists(pvp)) foreach (var line in File.ReadAllLines(pvp)) if (int.TryParse(line, out var pm)) Atlas.LearnPvp(pm);
         Atlas.PvpLearned += m => { lock (Atlas) File.AppendAllText(pvp, m + Environment.NewLine); };
         Knowledge.Survey = new SurveyStore(Path.Combine(DataDir, "survey"));
+        // the NPCs earlier surveys saw are spots too (the client's MobCoordinate misses many)
+        foreach (var f in Directory.EnumerateFiles(Path.Combine(DataDir, "survey"), "*.json"))
+        {
+            var map = Path.GetFileNameWithoutExtension(f);
+            if (Data.Map(map) is not { } mi) continue;
+            foreach (var (id, s) in Knowledge.Survey.Of(map).Npcs) Atlas.LearnNpc(id, mi.Id, s.X, s.Y);
+        }
         var kn = Path.Combine(DataDir, "knowledge-npcs.json");
         if (File.Exists(kn)) Knowledge.ImportNpcs(File.ReadAllText(kn));
         var ks = Path.Combine(DataDir, "knowledge-shops.json");

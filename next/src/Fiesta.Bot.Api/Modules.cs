@@ -881,9 +881,14 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
         if (Q.Status(q) == 8) return true;   // the server's own "reward" state: every objective met
         var def = Ctx.Data.Quest(q);
         if (def is null || def.Objectives.Count == 0) return Q.Status(q) >= 2;
+        var handin = HandinNpc(q);
         for (var i = 0; i < def.Objectives.Count && i < 5; i++)
         {
             var o = def.Objectives[i];
+            // a quest of talks only: the talk to the hand-in NPC is the hand-in itself and never blocks readiness (60016 "Road to promotion!",
+            // one talk to GrandMasterShone, sat 'not ready' at status 6 and the job change was never planned). A talk that
+            // does not complete the quest is caught by the brain's give-up (talk resolved without the quest changing).
+            if (o.Kind == QuestObjectiveKind.Talk && o.MobId == handin && IsLastTalk(def, i) && OnlyTalks(def)) continue;
             var have = o.Kind == QuestObjectiveKind.Collect ? Ctx.World.Bag.Count(o.ItemId) : Q.Have(q, def.CounterOf(i));
             if (o.Kind != QuestObjectiveKind.Talk && have < o.Need) return false;
             // a talk objective is met when the server says so (its reward state 8), not by assumption: NextA 'handed in'
@@ -891,6 +896,16 @@ public sealed partial class QuestsModule(AgentContext ctx) : ApiModule(ctx)
             // [SCRIPT_DOING] each time: 01:02, 01:04)
             if (o.Kind == QuestObjectiveKind.Talk && Q.Status(q) >= 0) return false;
         }
+        return true;
+    }
+    private static bool OnlyTalks(QuestDef d)
+    {
+        foreach (var o in d.Objectives) if (o.Kind != QuestObjectiveKind.Talk) return false;
+        return true;
+    }
+    private static bool IsLastTalk(QuestDef d, int i)
+    {
+        for (var k = i + 1; k < d.Objectives.Count; k++) if (d.Objectives[k].Kind == QuestObjectiveKind.Talk) return false;
         return true;
     }
     /// <summary>Objective i (1-based): have, need.</summary>

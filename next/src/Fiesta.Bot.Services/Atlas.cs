@@ -137,7 +137,26 @@ public sealed class WorldAtlas
     private static double Dist(double ax, double ay, double bx, double by) => Math.Sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
 
     /// <summary>Where an NPC (MobInfo id) stands; several entries when it stands in more than one map.</summary>
-    public IReadOnlyList<MapSpot> NpcSpots(int npcId) => _npc.TryGetValue(npcId, out var l) ? l : [];
+    public IReadOnlyList<MapSpot> NpcSpots(int npcId) { lock (_npc) return _npc.TryGetValue(npcId, out var l) ? l.ToArray() : []; }
+
+    /// <summary>An NPC seen standing in the world (or remembered from a survey): a spot for it unless one within
+    /// <see cref="NpcSpotMerge"/> on that map is known. The client's MobCoordinate lacks many NPCs (the fighter's job
+    /// change master, GrandMasterShone, was seen on RouVal01 and still had no spot, so its quest was never planned).
+    /// True when new.</summary>
+    public bool LearnNpc(int npcId, int mapId, double x, double y)
+    {
+        if (npcId < 0 || mapId < 0) return false;
+        lock (_npc)
+        {
+            if (_npc.TryGetValue(npcId, out var l))
+                foreach (var s in l) if (s.MapId == mapId && Dist(s.X, s.Y, x, y) < NpcSpotMerge) return false;
+            Add(_npc, npcId, new MapSpot(mapId, x, y));
+            return true;
+        }
+    }
+
+    /// <summary>Two sightings of one NPC this close on one map are the same spot (bot behaviour: NPCs stand still).</summary>
+    public const double NpcSpotMerge = 200;
 
     /// <summary>Where a mob spawns.</summary>
     public IReadOnlyList<SpawnArea> SpawnAreas(int mobId) => _spawn.TryGetValue(mobId, out var l) ? l : [];

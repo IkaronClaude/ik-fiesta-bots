@@ -179,6 +179,11 @@ public sealed class AtlasLearner : ILearner
             case InboundKind.MapLink:
                 if (_mapBefore >= 0 && e.A != _mapBefore) ctx.Atlas.LearnArrival(_mapBefore, (int)e.A, e.X, e.Y);
                 break;
+            // an NPC standing in view: where to find it (the client data misses many)
+            case InboundKind.EntityAppeared when (((EntityKind)(int)(e.A & ~Fiesta.Bot.Protocol.EntityDecoder.KSpawning)) & (EntityKind.Npc | EntityKind.Gate)) == EntityKind.Npc:
+                if (ctx.Atlas.LearnNpc((int)e.B, ctx.World.Map.MapId, e.X, e.Y))
+                    ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"atlas: npc {(int)e.B} ({ctx.Data.Mob((int)e.B)?.Name}) learned on {ctx.World.Map.MapName} ({e.X},{e.Y})");
+                break;
             // a map where players may kill us (free battle / party battle zone, told by the zone on entry): never a
             // way through again (the client's gate tables link such zones like any field, so routes used to cross one)
             case InboundKind.PvpZone when e.A == 1 && ctx.World.Map.MapId >= 0:
