@@ -526,6 +526,7 @@ public class OpenShopProcedure(int npcHandle, int menuReply = 1) : ProcedureBase
     {
         if (!_started)
         {
+            if (Camp.FoldFirst(ctx, Action.Value)) return;
             _started = true;
             ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
             ctx.World.Bag.StorageOpenAt = -1;
@@ -609,6 +610,7 @@ public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewar
     {
         if (!_started)
         {
+            if (NpcHandle >= 0 && Camp.FoldFirst(ctx, Action.Value)) return;
             _started = true;
             if (QuestId >= 0 && ctx.Data.Quest(QuestId) is { } q) _answers = QuestScripts.MenuAnswers(q.Script);
             if (NpcHandle >= 0)
@@ -835,6 +837,7 @@ public sealed class GateHopProcedure(int gateHandle, string? destMap) : Procedur
         }
         if (Step == "click" && !_clicked)
         {
+            if (Camp.FoldFirst(ctx, Action.Value)) return;
             _clicked = true;
             ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value)); ctx.World.Bag.StorageOpenAt = -1;
             ctx.Actions.Send(IntentEncoder.NpcClick((ushort)GateHandle, Action.Value));
@@ -1021,4 +1024,26 @@ public sealed class ProcedureRunner
     public IReadOnlyList<IProcedure> Active => _active;
     /// <summary>Recently finished.</summary>
     public IReadOnlyList<(IProcedure P, long At)> Recent => _recent;
+}
+
+/// <summary>A click on an NPC or a gate from inside a pitched tent is ignored by the server without any answer (NextM
+/// camped at 02:24:35 and clicked three gates over five minutes: no menu, no error, no log). Every click folds the tent
+/// first and waits for the fold ack.</summary>
+public static class Camp
+{
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<AgentContext, System.Runtime.CompilerServices.StrongBox<long>> _sentAt = new();
+
+    /// <summary>True while the tent is still pitched (a fold was sent, at most once every 2 s): the caller waits.</summary>
+    public static bool FoldFirst(AgentContext ctx, int actionId)
+    {
+        if (!ctx.World.Self.TentPitched) return false;
+        var at = _sentAt.GetOrCreateValue(ctx);
+        if (ctx.Now - at.Value >= 2000)
+        {
+            at.Value = ctx.Now;
+            ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpFoldTent, default, actionId));
+            ctx.Log.Log(LogCategory.Core, LogLevel.Info, $"tent: folding before an npc click (a camped click gets no answer)");
+        }
+        return true;
+    }
 }

@@ -24,6 +24,7 @@ public sealed class MoveController
     private int _leg = -1;
     private double _legFx, _legFy, _legTx, _legTy;
     private long _legStart;
+    private bool _awaitFold;
     private ActionId _action = ActionId.None;
     private MoveOrder? _order;
     private JobTicket _ticket = JobTicket.None;
@@ -114,6 +115,7 @@ public sealed class MoveController
     public void Advance(AgentContext ctx)
     {
         var self = ctx.World.Self;
+        if (_awaitFold && _leg >= 0) { StartLeg(ctx); if (_awaitFold) return; }
         // the order's action was resolved from outside (timed out, cancelled by the caller): stop walking for it
         if (_action.Value > 0 && ctx.Actions.Get(_action) is { Id: > 0, Pending: false })
         {
@@ -159,6 +161,10 @@ public sealed class MoveController
     {
         var self = ctx.World.Self;
         if (_leg >= _path.Count) { Arrive(ctx); return; }
+        // a move from a pitched tent is not taken by the game either (NextM walked 133 legs across RouCos03 camped while
+        // the server kept it at the tent, 02:24-02:33): fold first, the leg starts on the fold ack (Advance)
+        _awaitFold = Camp.FoldFirst(ctx, _action.Value);
+        if (_awaitFold) return;
         var (fx, fy) = self.Pos;
         var (tx, ty) = (_path[_leg].X, (double)_path[_leg].Y);
         var d = Dist(fx, fy, tx, ty);

@@ -511,6 +511,43 @@ public class ActionTests
     }
 
     [Fact]
+    public void A_gate_click_from_a_pitched_tent_folds_it_first_and_clicks_after_the_fold_ack()
+    {
+        // NextM camped at 02:24:35 and clicked three gates over five minutes: the server answers no camped click
+        using var t = new TestBot();
+        t.Tick(30);
+        t.Ev(InboundKind.Tent, a: 1, b: 0x0A81);
+        t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)(EntityKind.Gate | EntityKind.Npc), b: 1, x: 5050, y: 5000, text: "Other");
+        t.Tick();
+        Assert.True(t.Ctx.World.Self.TentPitched);
+        t.Sent.Clear();
+        t.Ctx.Procedures.Start(new GateHopProcedure(3000, "Other"), ActionKind.Gate, 1, t.Ctx, 30000);
+        t.Tick(3);
+        Assert.Contains(IntentEncoder.OpFoldTent, t.Sent);
+        Assert.DoesNotContain(IntentEncoder.OpNpcClick, t.Sent);
+        t.Ev(InboundKind.Tent, a: 0, b: 0x0A81);
+        t.Tick(2);
+        Assert.Contains(IntentEncoder.OpNpcClick, t.Sent);
+    }
+
+    [Fact]
+    public void A_move_from_a_pitched_tent_folds_first_and_walks_after_the_fold_ack()
+    {
+        using var t = new TestBot();
+        t.Tick(30);
+        t.Ev(InboundKind.Tent, a: 1, b: 0x0A81);
+        t.Tick();
+        t.Sent.Clear();
+        t.Ctx.Move.Order(new MoveOrder(5400, 5000, false, 10, ActionId.None), t.Ctx, 1);
+        t.Tick(3);
+        Assert.Contains(IntentEncoder.OpFoldTent, t.Sent);
+        Assert.DoesNotContain(IntentEncoder.OpMoveRun, t.Sent);
+        t.Ev(InboundKind.Tent, a: 0, b: 0x0A81);
+        t.Tick(2);
+        Assert.Contains(IntentEncoder.OpMoveRun, t.Sent);
+    }
+
+    [Fact]
     public void A_cancelled_move_stops_walking()
     {
         using var t = new TestBot();
