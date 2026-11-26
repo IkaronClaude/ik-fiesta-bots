@@ -452,6 +452,23 @@ public sealed class ClientData : IClientData
     /// mover system) and Riding (ItemID, the older ride system).</summary>
     public bool IsMountItem(int itemId) => Item(itemId) is { } it && _mountItems.Value.Contains(it.InxName);
 
+    private Dictionary<string, (int From, int To)>? _fieldLevels;
+    /// <summary>The levels a map admits (the client's FieldLvCondition, its normal mode: Tower01 20-70 - the game's
+    /// "The level limit for this area is (20-70)."), null when the map has no limit.</summary>
+    public (int From, int To)? FieldLevels(string mapName)
+    {
+        if (_fieldLevels is null)
+        {
+            var d = new Dictionary<string, (int, int)>(StringComparer.OrdinalIgnoreCase);
+            if (T("FieldLvCondition") is { } t)
+                for (var r = 0; r < t.RowCount; r++)
+                    if (t.Str(r, "MapIndex") is { Length: > 0 } m && (t.Num(r, "ModeIDLv") <= 1 || !d.ContainsKey(m)))
+                        d[m] = ((int)t.Num(r, "LvFrom"), (int)t.Num(r, "LvTo"));
+            _fieldLevels = d;
+        }
+        return _fieldLevels.TryGetValue(mapName, out var v) ? v : null;
+    }
+
     /// <summary>A mount item's ride, from the client's MoverMain (joined by MoverItem): its run and walk speed in per
     /// mille of our foot speed (Z:/GateTest.pcapng: RunSpeed 2200 rode at 279 raw against 127), the cast before riding
     /// and the cooldown (ms), how long the item lasts (hours, 0 = for good); null for an item that is not a mount of the

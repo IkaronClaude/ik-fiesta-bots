@@ -342,7 +342,12 @@ public sealed class AgentContext
     /// <summary>Maps whose entry gate refused this bot, until when (ms); routes avoid them meanwhile.</summary>
     public Dictionary<int, long> RefusedMaps { get; } = new();
     /// <summary>Is a map's entry gate refusing us now?</summary>
-    public bool Refused(int mapId) => (RefusedMaps.TryGetValue(mapId, out var until) && Now < until) || Atlas.IsPvp(mapId);
+    public bool Refused(int mapId) => (RefusedMaps.TryGetValue(mapId, out var until) && Now < until) || Atlas.IsPvp(mapId) || LevelBarred(mapId);
+    /// <summary>Does the map's level limit (client data) keep us out at our level? NextM (18) walked into Tower01's
+    /// "The level limit for this area is (20-70)." again and again.</summary>
+    public bool LevelBarred(int mapId)
+        => Data is ClientData cd && World.Self.Level > 0 && Data.Map(mapId) is { } m && cd.FieldLevels(m.MapName) is { } r
+           && (World.Self.Level < r.From || World.Self.Level > r.To);
     /// <summary>The world atlas (client map graph, NPC spots, spawn areas, learned gates).</summary>
     public WorldAtlas Atlas { get; init; } = WorldAtlas.Empty;
     /// <summary>Per-bot nav overlay.</summary>

@@ -443,6 +443,7 @@ public static class ErrorCodes
         0x0700 => "item used",
         0x0381 => "sold",
         0x0201 => "bought",
+        0x020F => "buy refused: lack of coins (a coin-priced item)",
         0x0341 => "picked up",
         0x0346 => "bag full",
         0x0241 => "moved",

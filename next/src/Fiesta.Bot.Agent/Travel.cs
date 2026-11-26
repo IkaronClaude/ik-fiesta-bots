@@ -55,7 +55,8 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         }
         if (++_replans > 40) { Fail("too many re-plans"); return; }
         // maps whose easiest hostile mob is above maxMobLevel are routed around (crossing them is how bots died)
-        Func<int, bool>? avoid = ctx.RefusedMaps.Count == 0 ? null : m => ctx.Refused(m);
+        // (and maps our level may not enter: their level limit is in the client data)
+        Func<int, bool>? avoid = m => ctx.Refused(m);
         // the walk avoids the spawn areas of hostile mobs above maxMobLevel that lie on it
         Func<SpawnArea, bool>? danger = maxMobLevel == int.MaxValue ? null : a => ctx.Data.Mob(a.MobId) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi && mi.Level > maxMobLevel;
         if (ctx.Refused(target.Id)) { Fail($"{TargetMap} is avoided"); return; }
