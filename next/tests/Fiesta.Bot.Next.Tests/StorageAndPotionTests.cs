@@ -221,4 +221,25 @@ return M
         t.Tick();
         Assert.Equal(-1, t.Ctx.World.Bag.StoreAt(0).ItemId);
     }
+
+    [Fact]
+    public void A_2026_storage_page_lists_its_items()
+    {
+        // live 00:09:56, NextA at the Eld keeper: page 0 of 16 with nine stored items in cells 0-8 (the 2026 page carries
+        // its count as a u32 at 12, records from 16, 3 trailing bytes); our view read it as empty and the next deposit
+        // swapped a Long Sword out of cell 0
+        var frame = Convert.FromHexString("00000000000000001000001609000000460018FB0000000000000000FFFF00000000FFFF00000000FFFF00000000FFFF000000000000000000000000000000000000000000FFFFFFFFFFFFFFFFFF0000000000000000012E011810A400000000000000000000000001000000000000000000000000000000000000000000000000000303010012021802000000000000000000000000000001120318C8000000000000000000000000000001460418FA0000000000000000FFFF00000000FFFF00000000FFFF00000000FFFF000000000000000000000000000000000000000000FFFFFFFFFFFFFFFFFF00000000000000000012051803000000000000000000000000000001490618BC3400000000000000FFFF00000000FFFF00000000FFFF000000000000000000000000000000000000000000000000000000FFFFFFFFFFFFFFFFFF0100000000000000030203003107183408000000000000000000000000010000000000000000000000000000000000000000000000000005040100020100050818204E00000000");
+        var wire = WireProfile.For(WireKind.Wire2026);
+        const string Res = "Z:/Client2026patched_10_6_6/ressystem";
+        if (!Directory.Exists(Res)) return;   // the item classes come from the client's tables (BYO)
+        var data = new Fiesta.Bot.Services.ClientData(Res);
+        wire.ItemClassOf = data.ItemClass;
+        var sink = new Sink();
+        DecoderTable.CreateDefault(wire).Dispatch(0x3C08, frame, 0, sink);   // the table brings the 2026 shape to the canonical one
+        var cells = sink.E.Where(e => e.Kind == InboundKind.ItemCell).Select(e => (e.A, e.B, e.C)).ToList();
+        Assert.Equal(9, cells.Count);
+        Assert.Equal((6L, 0L, 251L), cells[0]);
+        Assert.Equal((6L, 1L, 42000L), cells[1]);
+        Assert.Equal((6L, 8L, 20000L), cells[8]);
+    }
 }

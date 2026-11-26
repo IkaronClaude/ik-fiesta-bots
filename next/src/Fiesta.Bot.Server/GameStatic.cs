@@ -186,14 +186,16 @@ public sealed class GameStatic
     /// <summary>Class.</summary>
     public object? Class(int id) => _h.Data.ClassName(id) is { Length: > 0 } n ? new { id, name = n } : null;
 
-    /// <summary>Map; <paramref name="complete"/> is false while the walkability grid is still loading (do not cache).</summary>
+    /// <summary>Map; <paramref name="complete"/> is false when its world size is unknown (never cache that).</summary>
     public object? Map(int id, out bool complete)
     {
         complete = true;
         if (_h.Data.Map(id) is not { } m) return null;
-        var layer = _h.Nav.Layer(m.MapName);
-        complete = layer is not null || !File.Exists(Path.Combine(_h.ClientRoot, "resmap"));
-        double? ww = layer is null ? null : layer.Width * BlockLayer.WorldPerTile, wh = layer is null ? null : layer.Height * BlockLayer.WorldPerTile;
+        // the world size comes from the block file's header (read at once, kept), not from a walkability grid a bot happens
+        // to have loaded: the record is complete from the first request (it used to serve world:null for a day)
+        var size = _sizes.GetOrAdd(m.MapName, n => BlockLayer.ReadSize(_h.ClientRoot, n));
+        complete = size is not null;
+        double? ww = size is { } sz ? sz.W * BlockLayer.WorldPerTile : null, wh = size is { } sz2 ? sz2.H * BlockLayer.WorldPerTile : null;
         object? cover = null;
         var vr = _mapView.Value is { } mv ? FindMapView(mv, m.MapName) : -1;
         if (vr >= 0 && ww is { } w && wh is { } h)
@@ -209,6 +211,8 @@ public sealed class GameStatic
             world = ww is null ? null : new { w = ww, h = wh }, cover,
         };
     }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (int W, int H)?> _sizes = new(StringComparer.OrdinalIgnoreCase);
 
     private static int FindMapView(ShnTable t, string mapName)
     {

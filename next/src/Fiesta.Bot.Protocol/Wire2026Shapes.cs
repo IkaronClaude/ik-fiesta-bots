@@ -44,7 +44,7 @@ public static class Wire2026Shapes
             case 0x6814: return Items.RecordList(p, 2, 15, itemClass);
             case 0x986E: return Items.RecordList(p, 10, 3, itemClass);
             case 0x302D: return Items.RecordList(p, 0, 3, itemClass);
-            case 0x3C08: return Items.RecordList(p, 11, 3, itemClass);
+            case 0x3C08: return Items.StoragePage(p, itemClass);   // MENU_OPENSTORAGE: one frame per page
             case 0x305C: return Items.LeadingItem(p, 2, itemClass);
             case 0x4C10: return Items.LeadingItem(p, 1, itemClass);
             case 0xC407: return Items.LeadingItem(p, 3, itemClass);
@@ -217,6 +217,34 @@ public static class Wire2026Shapes
         }
 
         /// <summary>header | count u32 | records | 4 zero -> header | count u8 | records | 1 zero.</summary>
+        /// <summary>MENU_OPENSTORAGE (2026): {cen u64, maxpage, curpage, opentype, u8 (not used), count u32, records,
+        /// 3 trailing bytes} -> canonical {cen u64, maxpage, curpage, opentype, count u8, records}. Measured live
+        /// (00:09:56, NextA at the Eld keeper): page 0 with count 9 and nine records (cells 0-8) ending 3 bytes before the
+        /// end; the empty pages carry count 0. Reading the count at byte 11 (as the item list does) lost every stored item,
+        /// and the bot deposited into occupied cells.</summary>
+        public static byte[]? StoragePage(ReadOnlySpan<byte> p, Func<int, int> classOf)
+        {
+            if (p.Length < 16) return null;
+            var count = (int)BinaryPrimitives.ReadUInt32LittleEndian(p[12..]);
+            if (count > 255) return null;
+            var o = new List<byte>(p.Length);
+            o.AddRange(p[..11].ToArray());
+            o.Add((byte)count);
+            var at = 16;
+            for (var k = 0; k < count; k++)
+            {
+                if (at >= p.Length) return null;
+                var len = p[at] + 1;
+                if (len < 5 || at + len > p.Length) return null;
+                var rec = LongRecord(p.Slice(at, len), 3, classOf);
+                if (rec is null) return null;
+                o.AddRange(rec);
+                at += len;
+            }
+            o.Add(0);
+            return o.ToArray();
+        }
+
         public static byte[]? RecordList(ReadOnlySpan<byte> p, int countAt, int itemAt, Func<int, int> classOf)
         {
             if (p.Length < countAt + 4) return null;

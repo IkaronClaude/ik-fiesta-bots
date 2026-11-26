@@ -60,6 +60,18 @@ public sealed class BlockLayer
         return null;
     }
 
+    /// <summary>A map's size in tiles from its .shbd header alone (8 bytes; no grid is loaded): width, height; null absent.</summary>
+    public static (int W, int H)? ReadSize(string root, string mapName, string? folder = null)
+    {
+        var shbd = FindFile(root, mapName, folder ?? mapName, ".shbd");
+        if (shbd is null) return null;
+        using var f = File.OpenRead(shbd);
+        Span<byte> b = stackalloc byte[8];
+        if (f.Read(b) < 8) return null;
+        int stride = BitConverter.ToInt32(b[..4]), h = BitConverter.ToInt32(b[4..]);
+        return stride > 0 && h > 0 ? (stride * 8, h) : null;
+    }
+
     /// <summary>Load a map's block files from a client root (or a flat .shbd directory); null when absent.</summary>
     public static BlockLayer? Load(string root, string mapName, string? folder = null)
     {
