@@ -615,6 +615,35 @@ objective progress now gives the quest up for a while, logged).
   nothing, 01:48-01:53).
 - Bag-walking upkeep conditions answer from a 2 s memo (upkeep idle ran 16 ms).
 
+#### Character readiness and the MiniPinky deaths (02:10-02:40)
+
+NextM (mage, lv 15) died 7 times between 01:47 and 02:21 to a MiniPinky (MobInfo: normal grade, lv 17, 353 HP,
+run speed 105 against our 120). Before blaming combat choices, the character itself was checked (coordinator):
+
+- **Readiness line** (`READINESS lv N: gear gap G (slot S) [worn pieces with levels], unspent stat points P, skills
+  behind K, money M`): logged at each level-up and every 10 minutes. The gear gap per slot is measured against the tier
+  client data says we may wear and buy at our level (`items.bestWearable`: highest demand level for our class, score
+  breaking ties), not against our own level: no mage body armor exists between the level-2 Novice Shirt and the
+  level-20 job-class shirts, so a first version's "13 levels behind" was false and itself sent NextM through RouCos03
+  to the Eld smith, where it died twice more. `skills.behind` counts skill families where a buyable book for our class
+  at our level teaches a higher rank than we know (production lines left out), logging the families.
+- **Readings (02:37):** NextM gear gap 0 (hat / pants / boots lv 8 and the lv-15 staff are its best tiers), 0 unspent
+  stat points, 1 skill behind (Fire Elixirs). NextA gear gap 16 at the necklace slot (none worn), 0 points, 1 skill.
+  Under-gearing is ruled out for NextM by data.
+- **Upkeep follows the gaps:** a worn piece below its tier sends us to the other smiths of the level (one visit each,
+  `smithsSeen`); a skill behind sends us to the other skill masters the same way.
+- **The real cause, read from the packets (02:21:38-51):** NextM's skills took the MiniPinky from 353 to 13 HP in 5 s,
+  then the caster cast NOTHING for 4.3 s with 174 HP and 158 SP and died. The "not safe" rule (mob dps against our HP
+  under 15 s) withheld every cast while the mob was close, and no kite step was taken either. Fixed by **the race**: an
+  instant cast is taken when our time to kill what is left (`combat.timeToKill`, measured damage out) times
+  WIN_MARGIN is shorter than our time to die (HP / its measured dps). A throttled `caster idle ...` line now names the
+  deciding values whenever a caster tick neither casts nor steps for 1.5 s, and `melee idle ...` does the same for a
+  melee fight that lands nothing for 5 s (NextA held a MiniPinky 3 x 30 s on RouVal01 without sending a packet,
+  02:28-02:30; the stall cleared after a brain swap, so the cause is still open until the line catches it).
+- Open: why no kite step was taken in that fight (the idle line will name the branch); skill empower levels are not
+  decoded yet (`skills.empower` returns zeros), so "empowered up to what the level allows" is not in the readiness
+  line - a decode gap, ticketed.
+
 #### Efficiency per bot (live, local stack)
 
 | time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
