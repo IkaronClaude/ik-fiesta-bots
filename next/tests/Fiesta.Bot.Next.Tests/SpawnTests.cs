@@ -18,4 +18,19 @@ public class SpawnTests
         Assert.Equal(3, wolf.Count);
         Assert.All(wolf, a => Assert.Equal(50, a.HalfW));
     }
+
+    [Fact]
+    public void Survey_respawn_gaps_come_from_spawns_and_drops_name_their_mob()
+    {
+        var sv = new SurveyStore(null);
+        sv.MobDied("M", 10, 1000, 1000, 10_000);
+        sv.SawMob("M", 10, 5, 1050, 1000, 20_000);                     // came into view near it: not a respawn
+        Assert.Empty(sv.Of("M").Respawns);
+        sv.SawMob("M", 10, 5, 1100, 1000, 31_000, spawned: true);      // spawned near the death 21 s later
+        Assert.Equal(21_000, Assert.Single(sv.Of("M").Respawns[10]));
+        Assert.Equal(1100, sv.ObservedArea("M", 10)!.Value.X);         // the spawn point, not the passing sighting
+        sv.SawDrop("M", 4242, byMob: 10);
+        var d = Assert.Single(sv.DroppersOf(4242));
+        Assert.Equal((10, 1, 1), (d.MobId, d.Drops, d.Deaths));
+    }
 }

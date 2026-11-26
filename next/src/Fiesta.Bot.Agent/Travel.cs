@@ -241,15 +241,22 @@ public sealed class SurveyLearner : ILearner
         {
             case InboundKind.EntityAppeared when e.Handle != w.Self.Handle:
             {
-                var kind = (EntityKind)(int)e.A;
+                var spawning = (e.A & Fiesta.Bot.Protocol.EntityDecoder.KSpawning) != 0;
+                var kind = (EntityKind)(int)(e.A & ~Fiesta.Bot.Protocol.EntityDecoder.KSpawning);
                 var d = MoveController.Dist(w.Self.Pos.X, w.Self.Pos.Y, e.X, e.Y);
                 // a sight sample only from a single entity coming into view (REGENMOB / LOGINCHARACTER), never the list
-                // a map entry sends (everything in view, measured from a position not settled yet - it read 14,679)
-                if ((kind & (EntityKind.Mob | EntityKind.Npc | EntityKind.Player)) != 0 && e.Opcode is 0x1C08 or 0x1C06 && Settled(ctx)) sv.Appeared(d);
+                // a map entry sends (everything in view, measured from a position not settled yet - it read 14,679), and
+                // never a mob spawning inside our view (it did not cross the edge of sight)
+                if ((kind & (EntityKind.Mob | EntityKind.Npc | EntityKind.Player)) != 0 && e.Opcode is 0x1C08 or 0x1C06 && !spawning && Settled(ctx)) sv.Appeared(d);
                 if ((kind & EntityKind.Gate) != 0 && !string.IsNullOrEmpty(e.Text)) sv.SawGate(map, e.X, e.Y, e.Text!);
                 else if ((kind & EntityKind.Npc) != 0) sv.SawNpc(map, (int)e.B, e.X, e.Y, unix);
-                else if ((kind & EntityKind.Mob) != 0) sv.SawMob(map, (int)e.B, e.C >= 0 ? (int)e.C : ctx.Data.Mob((int)e.B)?.Level ?? -1, e.X, e.Y, unix);
-                else if ((kind & EntityKind.Drop) != 0) sv.SawDrop(map, (int)e.B);
+                else if ((kind & EntityKind.Mob) != 0) sv.SawMob(map, (int)e.B, e.C >= 0 ? (int)e.C : ctx.Data.Mob((int)e.B)?.Level ?? -1, e.X, e.Y, unix, spawning);
+                else if ((kind & EntityKind.Drop) != 0)
+                {
+                    // the drop frame names the mob it fell from: an item -> mob link (quest items only show this way)
+                    var by = e.Handle2 >= 0 ? w.Entities.SlotOf(e.Handle2) : -1;
+                    sv.SawDrop(map, (int)e.B, by >= 0 ? w.Entities.MobId(by) : -1);
+                }
                 break;
             }
             case InboundKind.EntityLeft:

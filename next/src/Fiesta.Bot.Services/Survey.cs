@@ -22,7 +22,13 @@ public sealed class SurveyStore
         public Dictionary<string, string> Gates { get; set; } = new();
         /// <summary>Drops by item id: how many seen.</summary>
         public Dictionary<int, int> Drops { get; set; } = new();
-        /// <summary>Respawn gaps by mob id (ms): a mob type showing again where one died.</summary>
+        /// <summary>Drops by the mob that dropped them: mob id -> item id -> how many (the drop frame names its dropper).</summary>
+        public Dictionary<int, Dictionary<int, int>> DropsBy { get; set; } = new();
+        /// <summary>Deaths seen per mob id (the denominator of a drop rate).</summary>
+        public Dictionary<int, int> Deaths { get; set; } = new();
+        /// <summary>Spawns seen by mob id: where and when one appeared through its spawn in our view (capped per id).</summary>
+        public Dictionary<int, List<Sight>> Spawns { get; set; } = new();
+        /// <summary>Respawn gaps by mob id (ms): from a death of the type to the next spawn of the type near it.</summary>
         public Dictionary<int, List<long>> Respawns { get; set; } = new();
         /// <summary>Coverage cells seen ("cx,cy" in the plan's cell grid) and the cell size they were planned with.</summary>
         public HashSet<string> Seen { get; set; } = new();
@@ -40,6 +46,7 @@ public sealed class SurveyStore
     private readonly object _lock = new();
     private readonly double[] _leave = new double[512]; private int _leaveN;
     private double _appearMax;
+    // deaths waiting for their respawn: (map, mob id, x, y) -> unix ms
     private readonly ConcurrentDictionary<(string, int, int, int), long> _deathAt = new();
 
     /// <summary>Create over a folder (null: in memory only).</summary>
@@ -90,8 +97,8 @@ public sealed class SurveyStore
 
     // ---- the catalogue
 
-    /// <summary>A mob seen.</summary>
-    public void SawMob(string map, int mobId, int level, double x, double y, long unixMs)
+    /// <summary>A mob seen; <paramref name="spawned"/>: it appeared through its spawn (not coming into view).</summary>
+    public void SawMob(string map, int mobId, int level, double x, double y, long unixMs, bool spawned = false)
     {
         var s = Of(map);
         lock (_lock)
@@ -99,18 +106,39 @@ public sealed class SurveyStore
             if (!s.Mobs.TryGetValue(mobId, out var l)) s.Mobs[mobId] = l = new();
             l.Add(new Sight(mobId, level, x, y, unixMs));
             if (l.Count > SightsPerMob) l.RemoveAt(0);
-            // a mob type showing where one of its kind died: a respawn gap (the cell is the sight radius' grid)
-            var key = (map, mobId, Cell(x), Cell(y));
-            if (_deathAt.TryRemove(key, out var died) && unixMs > died)
+            if (!spawned) return;
+            if (!s.Spawns.TryGetValue(mobId, out var sp)) s.Spawns[mobId] = sp = new();
+            sp.Add(new Sight(mobId, level, x, y, unixMs));
+            if (sp.Count > SightsPerMob) sp.RemoveAt(0);
+            // a respawn gap: from the latest death of the type within a sight radius of the spawn (spawns scatter over
+            // their area; a death that far away is another spawn's)
+            var r0 = SightRadius(); var near = r0 > 0 ? r0 : DefaultRespawnNear;
+            (int, int, int, int) bestKey = default; long died = -1; var found = false;
+            foreach (var kv in _deathAt)
             {
-                if (!s.Respawns.TryGetValue(mobId, out var r)) s.Respawns[mobId] = r = new();
-                r.Add(unixMs - died); if (r.Count > 50) r.RemoveAt(0);
+                var (m, id, dx, dy) = kv.Key;
+                if (id != mobId || !string.Equals(m, map, StringComparison.OrdinalIgnoreCase)) continue;
+                if (Math.Sqrt((dx - x) * (dx - x) + (dy - y) * (dy - y)) > near || kv.Value >= unixMs || kv.Value <= died) continue;
+                bestKey = (0, id, dx, dy); died = kv.Value; found = true;
             }
+            if (!found) return;
+            _deathAt.TryRemove((map, mobId, bestKey.Item3, bestKey.Item4), out _);
+            if (!s.Respawns.TryGetValue(mobId, out var r)) s.Respawns[mobId] = r = new();
+            r.Add(unixMs - died); if (r.Count > 50) r.RemoveAt(0);
         }
     }
 
-    /// <summary>A mob died here (for respawn gaps).</summary>
-    public void MobDied(string map, int mobId, double x, double y, long unixMs) => _deathAt[(map, mobId, Cell(x), Cell(y))] = unixMs;
+    /// <summary>How near a death a spawn must be to close its respawn gap before the sight radius is measured (bot
+    /// behaviour: about a screen).</summary>
+    public const double DefaultRespawnNear = 1000;
+
+    /// <summary>A mob died here (for respawn gaps and drop rates).</summary>
+    public void MobDied(string map, int mobId, double x, double y, long unixMs)
+    {
+        _deathAt[(map, mobId, (int)x, (int)y)] = unixMs;
+        var s = Of(map);
+        lock (_lock) s.Deaths[mobId] = s.Deaths.GetValueOrDefault(mobId) + 1;
+    }
 
     private int Cell(double v) { var r = SightRadius(); return (int)Math.Floor(v / (r > 0 ? r : 1000)); }
 
@@ -118,8 +146,29 @@ public sealed class SurveyStore
     public void SawNpc(string map, int npcId, double x, double y, long unixMs) { var s = Of(map); lock (_lock) s.Npcs[npcId] = new Sight(npcId, 0, x, y, unixMs); }
     /// <summary>A gate seen.</summary>
     public void SawGate(string map, double x, double y, string dest) { var s = Of(map); lock (_lock) s.Gates[$"{x:0},{y:0}"] = dest; }
-    /// <summary>A drop seen.</summary>
-    public void SawDrop(string map, int itemId) { var s = Of(map); lock (_lock) s.Drops[itemId] = s.Drops.GetValueOrDefault(itemId) + 1; }
+    /// <summary>A drop seen; <paramref name="byMob"/>: the mob id that dropped it (-1 unknown).</summary>
+    public void SawDrop(string map, int itemId, int byMob = -1)
+    {
+        var s = Of(map);
+        lock (_lock)
+        {
+            s.Drops[itemId] = s.Drops.GetValueOrDefault(itemId) + 1;
+            if (byMob < 0) return;
+            if (!s.DropsBy.TryGetValue(byMob, out var d)) s.DropsBy[byMob] = d = new();
+            d[itemId] = d.GetValueOrDefault(itemId) + 1;
+        }
+    }
+
+    /// <summary>The mobs seen dropping an item on any surveyed map: (map, mob id, drops, deaths seen).</summary>
+    public IEnumerable<(string Map, int MobId, int Drops, int Deaths)> DroppersOf(int itemId)
+    {
+        foreach (var (map, s) in _maps)
+        {
+            List<(string, int, int, int)> found;
+            lock (_lock) found = s.DropsBy.Where(kv => kv.Value.ContainsKey(itemId)).Select(kv => (map, kv.Key, kv.Value[itemId], s.Deaths.GetValueOrDefault(kv.Key))).ToList();
+            foreach (var f in found) yield return f;
+        }
+    }
 
     /// <summary>A mob's observed spawn area on a map: the densest cluster of its sightings (cells of the sight radius),
     /// its centroid and the spread around it; null when never seen.</summary>
@@ -127,7 +176,13 @@ public sealed class SurveyStore
     {
         var s = Of(map);
         List<Sight> l;
-        lock (_lock) { if (!s.Mobs.TryGetValue(mobId, out var x) || x.Count == 0) return null; l = x.ToList(); }
+        // its spawn points when any were seen (where it appears, not where it wandered or chased us to), else sightings
+        lock (_lock)
+        {
+            if (s.Spawns.TryGetValue(mobId, out var sp) && sp.Count > 0) l = sp.ToList();
+            else if (s.Mobs.TryGetValue(mobId, out var x) && x.Count > 0) l = x.ToList();
+            else return null;
+        }
         var best = l.GroupBy(p => (Cell(p.X), Cell(p.Y))).OrderByDescending(g => g.Count()).First().ToList();
         double cx = best.Average(p => p.X), cy = best.Average(p => p.Y);
         var r = best.Max(p => Math.Sqrt((p.X - cx) * (p.X - cx) + (p.Y - cy) * (p.Y - cy)));

@@ -72,8 +72,10 @@ public sealed partial class SurveyModule(AgentContext ctx) : ApiModule(ctx)
         if (Store is not { } st) return "no survey store";
         var s = st.Of(map);
         var sightings = s.Mobs.Values.Sum(l => l.Count);
+        var spawns = s.Spawns.Values.Sum(l => l.Count);
+        var links = s.DropsBy.Values.Sum(d => d.Count);
         var resp = s.Respawns.Where(kv => kv.Value.Count > 0).Select(kv => $"{Ctx.Data.Mob(kv.Key)?.Name ?? kv.Key.ToString()} {kv.Value.Average() / 1000:0} s").Take(5);
-        return $"{map}: {s.Mobs.Count} mob types ({sightings} sightings), {s.Npcs.Count} npcs, {s.Gates.Count} gates, {s.Drops.Count} drop kinds, cells seen {s.Seen.Count}"
+        return $"{map}: {s.Mobs.Count} mob types ({sightings} sightings, {spawns} spawns), {s.Npcs.Count} npcs, {s.Gates.Count} gates, {s.Drops.Count} drop kinds ({links} item-mob links, {s.Deaths.Values.Sum()} deaths), cells seen {s.Seen.Count}"
             + (s.Respawns.Count > 0 ? "; respawns " + string.Join(", ", resp) : "")
             + "; mobs " + string.Join(", ", s.Mobs.OrderByDescending(kv => kv.Value.Count).Take(6).Select(kv => $"{Ctx.Data.Mob(kv.Key)?.Name ?? kv.Key.ToString()} lv{kv.Value[^1].Level} x{kv.Value.Count}"));
     }
