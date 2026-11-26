@@ -553,6 +553,22 @@ down 88, e.g. Ice Bolt) or stepped away from (away from all mobs, lateral zigzag
 walking; at 0 SP stand and auto-attack. Each fight logs: won / left, time, HP before / after, stones, casts, kite
 steps. After: to be measured (target: HP stones only against strong mobs, money/h positive).
 
+#### Open items (tracked, also on the bots tickets board)
+
+- P1 bag management as a decision (operator, 2026-11-26; an old-Lua bug not to carry over): a sell trip only when it
+  frees enough space; a bag full of kept items -> deposit / sell or drop the lowest-value kept items after re-checking
+  each keep reason / use consumables / stop picking up low-value loot; never alternate two actions without progress;
+  a full bag never blocks a quest reward. Test reproducing the loop. Next after the mage fight.
+- P2 storage is not a sink: depositing only delays the full-bag problem; the bot must also reduce what it keeps (sell /
+  discard / use up items whose keep reason no longer holds, storage contents included) and stop banking low-value
+  items. Each storage visit now logs how many cells are used; the 80 % warning needs the storage capacity, which the
+  window does not give (it gives the pages, 16 here, not the cells per page) - to be learned (open).
+- Pathing: RouCos03's gate (7494,15671) leads to Rou while the client's link table says RouN; a gate seen in the world
+  now drops wrong table links from its spot (434bf24). Still open: "a gate answers no menu twice" marks the whole
+  destination map refused instead of the gate.
+- Weapon reach is still a constant (120 melee / 600 bow): derive it from the item data and verify against out-of-range
+  refusals, with a test (operator: the old Lua's range formula was a known bug).
+
 #### Efficiency per bot (live, local stack)
 
 | time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
