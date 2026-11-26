@@ -37,12 +37,13 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached, Alloc = Alloc.LuaString)]
     public (string Map, double X, double Y, double R) MobSpot(int mobId)
     {
-        // what bots have SEEN comes first: an observed spawn area (the survey store) on the map nearest by route, and when
+        // what bots have SEEN comes first once a map has been swept: an observed spawn area (the survey store) on the map
+        // nearest by route, and when
         // the client's MobCoordinate disagrees (no data area on that map holds what was seen) that is said once
         (string Map, double X, double Y, double R)? seen = null; var sc = double.PositiveInfinity;
         if ((Ctx.Knowledge as KnowledgeStore)?.Survey is { } sv)
             foreach (var map in sv.Maps)
-                if (sv.ObservedArea(map, mobId) is { } o && Ctx.Data.Map(map) is { } mi)
+                if (sv.Of(map).CompletedUnixMs > 0 && sv.ObservedArea(map, mobId) is { } o && Ctx.Data.Map(map) is { } mi)   // a swept map only: a passing sighting is not a spawn area
                 {
                     var c = CostTo(mi.Id, o.X, o.Y);
                     if (c < sc) { sc = c; seen = (map, o.X, o.Y, Math.Max(o.R, 1)); }
