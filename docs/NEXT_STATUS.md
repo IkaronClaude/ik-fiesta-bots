@@ -551,7 +551,18 @@ skill was usable. Now: no auto-attack from level 5 with 3 damage skills; stand a
 open with the strongest skill; a mob closing within 200 is slowed (the slow found by its effect: SubAbState move-speed-
 down 88, e.g. Ice Bolt) or stepped away from (away from all mobs, lateral zigzag); never step during a cast or cast while
 walking; at 0 SP stand and auto-attack. Each fight logs: won / left, time, HP before / after, stones, casts, kite
-steps. After: to be measured (target: HP stones only against strong mobs, money/h positive).
+steps. After (caster port 00:01, cast-while-closing fix 00:22): from 00:22 to 00:31 NextM won every fight logged (Ratman,
+Boar) with no HP lost and 0 stones, 3-8 casts, 0-3 kite steps each. The 30-minute window at 00:32 (still holding the
+00:21 death): deaths 5.0/h (from 27.9/h), stones 257/h (from 1603/h), money -227/h (from -6857/h), exp 5852/h.
+Fixes found on the way: the old Lua's 'step away whenever within 200' kited a melee Ratman 29 steps with 3 casts and
+the outmatched-flee then ran the mage to its death (00:21); the mage's skills are instant (cast time 0), so a mob on
+top of it is still shot at and the kite step only fills cooldown gaps; a caster with SP no longer flees when merely
+outmatched. Fighter (NextA) for comparison: 0.06 stones per kill, no deaths in the same hours.
+
+Other leaks found this round: NextA bought 'Recipe: HP Potion (Tier 2)' for ~8700 cen at 00:20 with both production
+fields taken (refused 0x0B14 at once; recipes for a field we cannot take are no longer bought); NextA hunted 'Fine Deal'
+7 rounds (9 min) at 3/10 kills while the planner estimated 48 s each time (a hunt that comes back 3 times without
+objective progress now gives the quest up for a while, logged).
 
 #### Open items (tracked, also on the bots tickets board)
 
