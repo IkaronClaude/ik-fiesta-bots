@@ -44,6 +44,13 @@ public static class Burst
         }
         if (rn > 0) { ratio /= rn; sdFrac /= rn; } else ratio = 1;
 
+        // the equipped weapon (client data): the swing's prior before swings are measured, and the base a physical skill adds
+        // to - a fighter's skills carry little damage of their own, they scale the weapon (without this a fresh fighter
+        // saw "no damage source", pulled nothing, and so never measured anything: NextA hunted 30 min without one fight)
+        var weapon = d.Item(w.Bag.Equipped(WeaponSlot(d, w)));
+        var weaponDmg = weapon is null ? 0 : (weapon.MinWc + weapon.MaxWc) / 2.0;
+        var weaponIv = weapon is { AtkSpeed: > 0 } ? weapon.AtkSpeed : 0;
+
         // the cast queue
         Span<int> ids = stackalloc int[32]; Span<double> ready = stackalloc double[32]; Span<double> dmg = stackalloc double[32];
         var k = 0;
@@ -52,13 +59,20 @@ public static class Burst
             if (k >= ids.Length) break;
             if ((SkillTags.Of(d, id) & (int)SkillTag.Damage) == 0 || d.Skill(id) is not { } sk) continue;
             var (mean, sd, n) = f.Skill(id);
-            if (n == 0) { mean = Estimate(d, id) * ratio; sd = mean * sdFrac; }
+            if (n == 0)
+            {
+                var est = Estimate(d, id) + (sk.MinMa + sk.MaxMa > 0 ? 0 : weaponDmg);   // a physical skill hits with the weapon
+                mean = est * ratio; sd = mean * sdFrac;
+            }
             var low = Math.Max(0, mean - ConfidenceSd * sd);
             if (low <= 0) continue;
             ids[k] = id; dmg[k] = low; ready[k] = w.Skills.ReadyInMs(id, sk.DelayGroup, ctx.Now) / 1000.0; k++;
         }
-        var swingDmg = swings && f.Swing.N > 0 && f.SwingInterval.N > 0 ? Math.Max(0, f.Swing.Mean - ConfidenceSd * f.Swing.Sd) : 0;
-        var swingIv = (f.SwingInterval.Mean + ConfidenceSd * f.SwingInterval.Sd) / 1000.0;
+        // swings: measured, else the weapon's data (its damage at its attack interval)
+        double swingDmg = 0, swingIv = 0;
+        if (swings && f.Swing.N > 0 && f.SwingInterval.N > 0)
+        { swingDmg = Math.Max(0, f.Swing.Mean - ConfidenceSd * f.Swing.Sd); swingIv = (f.SwingInterval.Mean + ConfidenceSd * f.SwingInterval.Sd) / 1000.0; }
+        else if (swings && weaponDmg > 0 && weaponIv > 0) { swingDmg = weaponDmg; swingIv = weaponIv / 1000.0; }
         var nextSwing = swingDmg > 0 ? Math.Max(0, swingIv - Math.Max(0, ctx.Now - ctx.Combat.LastSwingAt) / 1000.0) : double.PositiveInfinity;
         var spacing = f.CastSpacing > 0 ? f.CastSpacing / 1000.0 : 0;
         var castFree = ctx.Combat.Casting(ctx.Now) ? spacing : 0.0;   // a cast in flight holds the next one by the spacing
@@ -102,6 +116,14 @@ public static class Burst
             : left > 0 && t <= ttd ? "runs out of SP / actions"
             : "it kills us first";
         return new(commit, killedAt, ttd, first, steps, why, unknown);
+    }
+
+    // the equipment slot weapons go in, from the client data of what we wear (the slot holding an item with weapon damage)
+    private static int WeaponSlot(IClientData d, WorldState w)
+    {
+        for (var slot = 0; slot < 64; slot++)
+            if (w.Bag.Equipped(slot) is var it and >= 0 && d.Item(it) is { } i && i.MaxWc > 0 && i.WeaponType > 0) return slot;
+        return -1;
     }
 
     // a skill's own damage from data (the prior before it is measured)

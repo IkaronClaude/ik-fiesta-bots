@@ -74,6 +74,8 @@ public sealed record ItemInfoRow(int Id, string InxName, string Name, int Type, 
     public int MinWc { get; init; }
     /// <summary>Max weapon damage.</summary>
     public int MaxWc { get; init; }
+    /// <summary>A weapon's attack interval as the client data gives it (ItemInfo AtkSpeed, ms between swings; 0 none).</summary>
+    public int AtkSpeed { get; init; }
     /// <summary>Defence.</summary>
     public int Ac { get; init; }
     /// <summary>Min magic damage.</summary>
@@ -366,7 +368,7 @@ public sealed class ClientData : IClientData
             var (eff, val) = use.TryGetValue(inx, out var u) ? u : (-1, 0);
             d[I("ID")] = new ItemInfoRow(I("ID"), inx, nm.Length > 0 ? nm : inx, I("Type"), I("Class"), I("Equip"), I("DemandLv"),
                 I("WeaponType"), I("SellPrice"), I("BuyPrice"), I("MaxLot"), I("UseClass"), t.Str(r, "ItemUseSkill") ?? "-")
-            { MinWc = I("MinWC"), MaxWc = I("MaxWC"), Ac = I("AC"), MinMa = I("MinMA"), MaxMa = I("MaxMA"), Mr = I("MR"), UseEffect = eff, UseValue = val };
+            { MinWc = I("MinWC"), MaxWc = I("MaxWC"), Ac = I("AC"), MinMa = I("MinMA"), MaxMa = I("MaxMA"), Mr = I("MR"), UseEffect = eff, UseValue = val, AtkSpeed = I("AtkSpeed") };
         }
         return d;
     }
