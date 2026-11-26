@@ -73,6 +73,7 @@ public sealed class HostServices : IAsyncDisposable
             foreach (var line in File.ReadAllLines(gates))
                 if (line.Split('\t') is [var a, var b, var c, var d] && int.TryParse(a, out var m) && double.TryParse(b, out var gx) && double.TryParse(c, out var gy) && int.TryParse(d, out var to))
                     Atlas.LearnGate(m, gx, gy, to);
+        Atlas.GateCorrected += (m, gx, gy, to, n) => Console.WriteLine($"[atlas] gate on map {m} at ({gx:0},{gy:0}) leads to map {to}: {n} table link(s) from that spot to other maps dropped");
         Atlas.GateLearned += (m, gx, gy, to) => { lock (Atlas) File.AppendAllText(gates, $"{m}\t{gx:0}\t{gy:0}\t{to}\n"); };
         var pvp = Path.Combine(DataDir, "atlas-pvp-maps.txt");
         if (File.Exists(pvp)) foreach (var line in File.ReadAllLines(pvp)) if (int.TryParse(line, out var pm)) Atlas.LearnPvp(pm);

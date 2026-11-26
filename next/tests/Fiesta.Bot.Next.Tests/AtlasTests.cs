@@ -101,4 +101,24 @@ public class AtlasTests
         a.RouteCostsBelow(from.Id, from.RegenX, from.RegenY, new Dictionary<int, double>(), null, 20, Hostile);
         Assert.True(sw.Elapsed.TotalMilliseconds < 20, $"{sw.Elapsed.TotalMilliseconds} ms with the walk levels known");
     }
+
+    [Fact]
+    public void A_gate_seen_in_the_world_overrides_a_wrong_table_link_from_its_spot()
+    {
+        // live 23:45: RouCos03's gate at (7494,15671) leads to Rou (its menu and its name say so), the link table sends
+        // it to RouN, and routes to RouN kept walking to a gate that never leads there
+        if (Load() is not var (a, d)) return;
+        int cos = d.Map("RouCos03")!.Id, rou = d.Map("Rou")!.Id, roun = d.Map("RouN")!.Id;
+        var corrected = 0;
+        a.GateCorrected += (_, _, _, _, n) => corrected += n;
+        a.LearnGate(cos, 7494, 15671, rou);
+        Assert.True(corrected > 0, "no table link from that spot to another map");
+        var costs = new Dictionary<int, double>();
+        a.RouteCosts(cos, 7494, 15600, costs);
+        Assert.True(costs.ContainsKey(rou));
+        // RouN, if reachable at all, is no longer one hop through that gate
+        var route = a.Route(cos, 7494, 15600, roun);
+        Assert.True(route is null || route.Hops.Count == 0 || !(route.Hops[0].From == cos && Math.Abs(route.Hops[0].X - 7494) < 300 && Math.Abs(route.Hops[0].Y - 15671) < 300 && route.Hops[0].To == roun),
+            "still routed to RouN through the Rou gate");
+    }
 }

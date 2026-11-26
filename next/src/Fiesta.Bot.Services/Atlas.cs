@@ -35,6 +35,9 @@ public sealed class WorldAtlas
     private readonly HashSet<int> _mapCostsDone = new();
     private readonly object _gate = new();
 
+    /// <summary>Raised when a gate seen in the world showed that table links from its spot to other maps were wrong (they
+    /// are dropped): map, x, y, the gate's real destination, links dropped.</summary>
+    public event Action<int, double, double, int, int>? GateCorrected;
     /// <summary>Raised (outside the lock) when a gate was learned, to persist it.</summary>
     public event Action<int, double, double, int>? GateLearned;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, byte> _pvp = new();
@@ -169,6 +172,15 @@ public sealed class WorldAtlas
         if (mapId < 0 || toMap < 0 || mapId == toMap) return false;
         lock (_gate)
         {
+            // the gate itself names where it leads: a table link from this spot to another map is wrong and goes
+            // (RouCos03's gate at (7494,15671) leads to Rou; the client's link table sends it to RouN, and routes kept
+            // walking there for a map it never reaches, 23:45)
+            var wrong = 0;
+            if (_nodesByMap.TryGetValue(mapId, out var near))
+                foreach (var n in near)
+                    if (Dist(_nodes[n].X, _nodes[n].Y, x, y) < 300)
+                        wrong += _adj[n].RemoveAll(e => e.Gate && _nodes[e.To].Map != toMap && _nodes[e.To].Map != mapId);
+            if (wrong > 0) { _mapCost.Clear(); _mapCostsDone.Clear(); _walkLevel = null; GateCorrected?.Invoke(mapId, x, y, toMap, wrong); }
             if (_nodesByMap.TryGetValue(mapId, out var list))
                 foreach (var n in list)
                     if (Dist(_nodes[n].X, _nodes[n].Y, x, y) < 300 && _adj[n].Exists(e => e.Gate && _nodes[e.To].Map == toMap)) return false;
