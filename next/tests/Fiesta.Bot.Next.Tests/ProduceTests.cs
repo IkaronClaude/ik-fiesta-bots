@@ -246,4 +246,16 @@ layers:
         t.Tick();
         Assert.False(t.Ctx.World.Self.BattleMode);
     }
+
+    [Fact]
+    public void A_cast_refused_as_another_cast_in_progress_holds_every_cast_600_ms()
+    {
+        using var t = new TestBot();
+        t.Tick(2);
+        t.Ev(InboundKind.CastFail, a: 0x0FC4);
+        t.Tick();
+        Assert.True(t.Ctx.Combat.Casting(t.Clock.NowMs));
+        t.Tick(15);   // 750 ms
+        Assert.False(t.Ctx.Combat.Casting(t.Clock.NowMs));
+    }
 }

@@ -445,6 +445,12 @@ public sealed class CombatController
             case InboundKind.SkillDamage when e.Handle == ctx.World.Self.Handle:
                 FightDamage += e.A; _castUntil = 0;
                 break;
+            // 0x0FC4 "Casting another skill now." / 0x0FC6 "Incorrect Skill." (the client's own error texts): every cast
+            // waits 600 ms, as the old drivers learned - re-pressing at tick cadence drew runs of refusals (NextM: 138
+            // 0x0FC4 refusals in an hour, 01:00-01:57)
+            case InboundKind.CastFail when e.A is 0x0FC4 or 0x0FC6:
+                _castUntil = ctx.Now + 600;
+                break;
             case InboundKind.CastFail:
             case InboundKind.CastAborted:
                 _castUntil = 0;
