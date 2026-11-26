@@ -167,14 +167,13 @@ public class WireTests
     [Fact]
     public void Soul_stone_window_carries_prices_and_shop_kinds_name_roles()
     {
-        // captured SHOPOPENSOULSTONE: hp {832, cap 179, ...}, sp {1156, ...}
-        var p = new byte[24];
-        BinaryPrimitives.WriteUInt32LittleEndian(p, 832); BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(4), 179);
-        BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(12), 1156); BinaryPrimitives.WriteUInt32LittleEndian(p.AsSpan(16), 120);
+        // NextA's SHOPOPENSOULSTONE (15:50:06): hp {339, max 58, price 28}, sp {179, max 20, price 12}; 6 HP stones then
+        // cost 168 and 2 SP stones 24 (CENCHANGE): the unit price is the third field
+        var p = Convert.FromHexString("530100003A0000001C000000B3000000140000000C000000");
         var sink = new Sink();
         DecoderTable.CreateDefault(WireProfile.For(WireKind.Wire2016)).Dispatch(0x3C05, p, 0, sink);
         var m = Assert.Single(sink.E, e => e.Kind == InboundKind.StoneShop);
-        Assert.Equal(832, m.A); Assert.Equal(179, m.B); Assert.Equal(1156, m.C); Assert.Equal(120u, m.X);
+        Assert.Equal(28, m.A); Assert.Equal(58, m.B); Assert.Equal(12, m.C); Assert.Equal(20u, m.X);
         Assert.Contains(sink.E, e => e.Kind == InboundKind.ShopList);
         Assert.Equal(2, OpenShopProcedure.RoleOfShop(0x3C05));
         Assert.Equal(4, OpenShopProcedure.RoleOfShop(0x3C0A));

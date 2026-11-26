@@ -535,6 +535,9 @@ public sealed class BotAgent
             case InboundKind.MountSpeed when e.Handle == Context.World.Self.MountHandle:
                 log.Log(LogCategory.Nav, LogLevel.Info, $"mount {e.Handle} speed: walk {e.A} run {e.B} raw (run {Context.World.Self.RunSpeed:0} u/s)");
                 break;
+            case InboundKind.StoneShop:
+                log.Log(LogCategory.Item, LogLevel.Info, $"soul stone window: HP {Context.World.Self.HpStones} / max {e.B} at {e.A} each, SP {Context.World.Self.SpStones} / max {e.X} at {e.C} each (first fields {e.Y} / {e.Handle2}: not decoded)");
+                break;
             case InboundKind.MountHunger when log.IsEnabled(LogCategory.Nav, LogLevel.Info):
                 log.Log(LogCategory.Nav, LogLevel.Info, $"mount hunger {e.A}");
                 break;

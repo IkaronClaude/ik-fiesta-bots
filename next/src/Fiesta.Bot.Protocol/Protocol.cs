@@ -824,13 +824,17 @@ public sealed class QuestMenuDecoder : IPacketDecoder
                 e.Options = opts; e.A = n;
                 break;
             }
-            case 0x3C05:   // SHOPOPENSOULSTONE {hp {price u32, cap u32, u32}, sp {price u32, cap u32, u32}} (24)
+            // SHOPOPENSOULSTONE {hp {u32 ?, max u32, price u32}, sp {u32 ?, max u32, price u32}} (24). The unit price is the
+            // THIRD field: NextA bought 6 HP stones at {339, 58, 28} and its money fell 168 = 6 x 28, then 2 SP stones at
+            // {179, 20, 12} for 24 (15:50:07). The first field (~13x the price) is not the price - meaning open.
+            case 0x3C05:
             {
                 e.Kind = InboundKind.ShopList; e.A = op; e.Handle = -1; e.B = 0;
                 sink.TryWrite(e);
-                if (p.Length < 20) return;
+                if (p.Length < 24) return;
                 var m = InboundEvent.Of(InboundKind.StoneShop, op, at);
-                m.A = Rd.U32(p, 0); m.B = Rd.U32(p, 4); m.C = Rd.U32(p, 12); m.X = Rd.U32(p, 16);
+                m.A = Rd.U32(p, 8); m.B = Rd.U32(p, 4); m.C = Rd.U32(p, 20); m.X = Rd.U32(p, 16);
+                m.Y = Rd.U32(p, 0); m.Handle2 = (int)Rd.U32(p, 12);   // the undecoded first fields, for the log line
                 sink.TryWrite(m);
                 return;
             }
