@@ -424,8 +424,9 @@ public sealed partial class SkillsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn]
     public int Behind()
     {
-        var lv = Ctx.World.Self.Level; var known = B.Learned.Count;
-        if (_behindLv == lv && _behindKnown == known) return _behind;
+        var lv = Ctx.World.Self.Level; var known = B.Learned.Count; var cls = Ctx.World.Self.ClassId;
+        // the class is part of the key: a promotion opens the new class's skills at the same level (NextA, 19:27:28)
+        if (_behindLv == lv && _behindKnown == known && _behindClass == cls) return _behind;
         var n = 0;
         if (Ctx.Data is ClientData cd)
         {
@@ -445,10 +446,10 @@ public sealed partial class SkillsModule(AgentContext ctx) : ApiModule(ctx)
             }
             Ctx.Log.Text(LogCategory.Script, LogLevel.Info, $"skills behind at level {lv}: {n} [{string.Join(", ", parts)}]", CallingLayer);
         }
-        _behindLv = lv; _behindKnown = known; _behind = n;
+        _behindLv = lv; _behindKnown = known; _behindClass = cls; _behind = n;
         return n;
     }
-    private int _behindLv = -1, _behindKnown = -1, _behind;
+    private int _behindLv = -1, _behindKnown = -1, _behindClass = -1, _behind;
     /// <summary>The tags of a skill that adds power (a production line - scrolls, recipes of any tier - has none).</summary>
     private const int PowerTags = (int)(SkillTag.Damage | SkillTag.Heal | SkillTag.Buff | SkillTag.Debuff | SkillTag.Slow | SkillTag.Stun);
     /// <summary>Learned?</summary>
