@@ -535,6 +535,24 @@ public static class ObservationEndpoints
     /// <summary>Map the routes.</summary>
     public static RouteGroupBuilder MapObservationEndpoints(this RouteGroupBuilder api)
     {
+        // the blocks this bot learned on its map beyond the client grid (legs the game refused, shut scripted doors): tiles
+        // for the console's walkability overlay. The overlay belongs to the tick thread; a copy taken while it changes is
+        // simply taken again.
+        api.MapGet("/bots/{id}/nav/learned", (string id, BotSupervisor s) =>
+        {
+            if (Need(s, id, out var b) is { } no) return no;
+            var ctx = b.Agent!.Context;
+            for (var i = 0; i < 3; i++)
+            {
+                try
+                {
+                    var tiles = ctx.Overlay.SnapshotBlocked(ctx.Now).Select(k => new[] { (int)(k >> 32), (int)(uint)k }).ToArray();
+                    return Results.Json(new { mapId = ctx.World.Map.MapId, worldPerTile = BlockLayer.WorldPerTile, tiles }, Http.Json);
+                }
+                catch (InvalidOperationException) { }
+            }
+            return Http.Problem(503, "the overlay kept changing; ask again");
+        });
         api.MapGet("/bots/{id}/debug", (string id, BotSupervisor s) => Need(s, id, out var b) ?? (b.Frame is { } f ? Results.Json(f, Http.Json) : Http.Problem(409, "no debug frame yet (no brain, or not in the world)")));
         api.MapGet("/bots/{id}/transitions", (string id, long? since, string? layer, BotSupervisor s) =>
         {

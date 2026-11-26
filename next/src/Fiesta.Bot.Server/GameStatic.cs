@@ -135,6 +135,37 @@ public sealed class GameStatic
         try { return ClientImages.ImagePng(path); } catch (IOException) { return null; }
     });
 
+    private readonly ConcurrentDictionary<int, byte[]?> _walks = new();
+    /// <summary>The largest side of a walk image in pixels: a map's grid is downsampled to it (one pixel = k x k tiles,
+    /// alpha by the blocked share) so even the biggest map is one small cached image (console drawing choice).</summary>
+    public const int WalkImageMax = 1024;
+
+    /// <summary>A map's walkability (the .shbd + .shab grid the bots path on) as a PNG: blocked ground opaque-ish, walkable
+    /// clear; image top = high world y, covering the map's world (0,0)-(w,h). Null when the map has no block file.</summary>
+    public byte[]? WalkImage(int mapId) => _walks.GetOrAdd(mapId, id =>
+    {
+        if (_h.Data.Map(id) is not { } m || BlockLayer.Load(_h.ClientRoot, m.MapName) is not { } b) return null;
+        var k = Math.Max(1, (int)Math.Ceiling(Math.Max(b.Width, b.Height) / (double)WalkImageMax));
+        int w = (b.Width + k - 1) / k, h = (b.Height + k - 1) / k;
+        var px = new byte[w * h * 4];
+        for (var oy = 0; oy < h; oy++)
+            for (var ox = 0; ox < w; ox++)
+            {
+                var n = 0; var tot = 0;
+                for (var dy = 0; dy < k; dy++)
+                    for (var dx = 0; dx < k; dx++)
+                    {
+                        int tx = ox * k + dx, ty = oy * k + dy;
+                        if (tx >= b.Width || ty >= b.Height) continue;
+                        tot++; if (b.Blocked(tx, ty)) n++;
+                    }
+                if (n == 0) continue;
+                var o = ((h - 1 - oy) * w + ox) * 4;   // row 0 = the top = the highest world y
+                px[o] = 0xE8; px[o + 1] = 0x5A; px[o + 2] = 0x4F; px[o + 3] = (byte)(40 + 160 * n / tot);
+            }
+        return ClientImages.Png(px, w, h);
+    });
+
     /// <summary>Item.</summary>
     public object? Item(int id) => _h.Data.Item(id) is not { } r ? null : new
     {
@@ -270,6 +301,8 @@ public static class GameStaticEndpoints
         });
         api.MapGet("/static/maps/{id:int}/minimap.png", (int id, HttpContext ctx, GameStatic s) =>
             Cached(ctx, s, $"minimap-{id}", () => s.Minimap(id) is { } png ? Results.File(png, "image/png") : null));
+        api.MapGet("/static/maps/{id:int}/walk.png", (int id, HttpContext ctx, GameStatic s) =>
+            Cached(ctx, s, $"walk-{id}", () => s.WalkImage(id) is { } png ? Results.File(png, "image/png") : null));
         api.MapGet("/static/{kind}/{id:int}", (string kind, int id, HttpContext ctx, GameStatic s) =>
             Cached(ctx, s, $"{kind}-{id}", () => Pick(s, kind)(id) is { } o ? Results.Json(o, Http.Json) : null));
         api.MapGet("/static/{kind}", (string kind, string? ids, HttpContext ctx, GameStatic s) =>
