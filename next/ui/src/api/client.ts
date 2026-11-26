@@ -84,6 +84,7 @@ export const api = {
   start: (id: string) => req('POST', `/bots/${enc(id)}/start`, {}),
   stop: (id: string) => req('POST', `/bots/${enc(id)}/stop`, { logout: true }),
   relog: (id: string) => req('POST', `/bots/${enc(id)}/relog`, {}),
+  navLearned: (id: string) => req<{ mapId: number; worldPerTile: number; tiles: [number, number][] }>('GET', `/bots/${enc(id)}/nav/learned`),
   pause: (id: string) => req('POST', `/bots/${enc(id)}/pause`, {}),
   resume: (id: string) => req('POST', `/bots/${enc(id)}/resume`, {}),
   step: (id: string, ticks = 1) => req('POST', `/bots/${enc(id)}/step`, { ticks }),

@@ -8,10 +8,21 @@
 import { useEffect, useRef, useState } from 'react';
 import type { GameEnt, GameState } from './types';
 import { image, imageFailed, lookup, type MapInfo, type MobInfo } from './staticData';
+import { api } from '../../../api/client';
 
 const ZOOMS = [800, 1600, 3200, 6400]; // world units across the view; last = whole map when art is known
 const BLEND_MS = 200;   // a correction near the drawn spot fades in over this long
 const SNAP_DIST = 150;  // further than this from the drawn spot: snap (teleport, link, respawn)
+const LEARNED_POLL_MS = 5000;   // the bot's learned blocks (refused legs, shut doors) change rarely
+
+// The walkability overlay: the viewer's choice is kept per kind of map (with art / without), default ON only where the
+// map has no art (there the grid is the only picture of the ground)
+const WALK_KEY = (art: boolean) => `mm.walk.${art ? 'art' : 'noart'}`;
+function walkPref(art: boolean): boolean {
+  try { const v = localStorage.getItem(WALK_KEY(art)); if (v === '1') return true; if (v === '0') return false; } catch { /* no storage */ }
+  return !art;
+}
+function setWalkPref(art: boolean, on: boolean) { try { localStorage.setItem(WALK_KEY(art), on ? '1' : '0'); } catch { /* no storage */ } }
 
 // a move segment in local time: at `t` (performance.now ms) at (x, y), walking to (tx, ty) at spd u/s; (bx, by) the
 // offset of the drawn spot from the new segment at `bt`, faded out over BLEND_MS
@@ -37,14 +48,29 @@ function along(tr: Track, now: number) {
   return { x: x + tr.bx * k, y: y + tr.by * k };
 }
 
-export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { ent: GameEnt; h: string; x: number; y: number } | null) => void }) {
+export function Minimap({ bot, state, onHover }: { bot: string; state: GameState; onHover: (e: { ent: GameEnt; h: string; x: number; y: number } | null) => void }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef(state);
   const tracks = useRef(new Map<string, Track>());
   const [zoom, setZoom] = useState(2); // 3200 u: the client minimap art is coarse, closer zooms only blur it
   const [labels, setLabels] = useState(true);
-  const view = useRef({ zoom: 1, labels: true, whole: false });
-  view.current.zoom = zoom; view.current.labels = labels;
+  // does the current map have art (decides the walk overlay's default); re-read when the map changes or its art loads
+  const mapRec = lookup<MapInfo>('maps', state.self.mapId);
+  const hasArt = !!(mapRec?.image && !imageFailed(mapRec.image) && mapRec.cover);
+  const [walkOverride, setWalkOverride] = useState<{ art: boolean; on: boolean } | null>(null);
+  const walk = walkOverride && walkOverride.art === hasArt ? walkOverride.on : walkPref(hasArt);
+  const view = useRef({ zoom: 1, labels: true, whole: false, walk: false });
+  view.current.zoom = zoom; view.current.labels = labels; view.current.walk = walk;
+  // the bot's learned blocks, polled while the overlay is on
+  const learned = useRef<{ mapId: number; worldPerTile: number; tiles: [number, number][] } | null>(null);
+  useEffect(() => {
+    if (!walk) { learned.current = null; return; }
+    let live = true;
+    const pull = () => api.navLearned(bot).then(d => { if (live) learned.current = d; }).catch(() => { /* offline: keep the last */ });
+    pull();
+    const t = setInterval(pull, LEARNED_POLL_MS);
+    return () => { live = false; clearInterval(t); };
+  }, [bot, walk]);
   const proj = useRef<{ sx: (x: number) => number; sy: (y: number) => number; s: number } | null>(null);
 
   // the server clock in local time: the smallest (arrival - server time) seen is the offset with the least delay
@@ -95,7 +121,8 @@ export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { e
       const me = pos('self', now) ?? { x: st.self.x, y: st.self.y };
       (window as any).__minimapSelf = { x: me.x, y: me.y, t: now };   // the drawn spot, for measuring smoothness
       const map = lookup<MapInfo>('maps', st.self.mapId);
-      const cover = map?.cover;
+      const world = map?.world ? { x0: 0, y0: 0, x1: map.world.w, y1: map.world.h } : undefined;
+      const cover = map?.cover ?? (view.current.walk ? world : undefined);
       const whole = view.current.zoom === ZOOMS.length - 1 && cover;
       const span = whole ? Math.max(cover!.x1 - cover!.x0, cover!.y1 - cover!.y0) : ZOOMS[view.current.zoom];
       const s = Math.min(w, h) / span;
@@ -129,6 +156,32 @@ export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { e
         const step = 200 * s; if (step > 6) {
           for (let x = ((sx(0) % step) + step) % step; x < w; x += step) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
           for (let y = ((sy(0) % step) + step) % step; y < h; y += step) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+        }
+      }
+      // walkability: the client grid the bots path on (blocked ground tinted), then this bot's learned blocks
+      if (view.current.walk && world) {
+        const wim = image(map?.walk);
+        if (wim) {
+          // one pixel = k x k tiles (the host downsamples big maps), the image's bottom-left at world (0,0): its extent is
+          // its pixel size x k tiles (a partial last block still takes a whole pixel)
+          const tileW = 6.25, k = Math.max(1, Math.ceil(Math.max(world.x1 / tileW / wim.naturalWidth, world.y1 / tileW / wim.naturalHeight) - 1e-9));
+          const cw = wim.naturalWidth * k * tileW, ch = wim.naturalHeight * k * tileW;
+          const wx0 = cx - w / 2 / s, wx1 = cx + w / 2 / s, wy0 = cy - h / 2 / s, wy1 = cy + h / 2 / s;
+          const srcX = (wx0 / cw) * wim.naturalWidth, srcW = ((wx1 - wx0) / cw) * wim.naturalWidth;
+          const srcY = (1 - wy1 / ch) * wim.naturalHeight, srcH = ((wy1 - wy0) / ch) * wim.naturalHeight;
+          g.imageSmoothingEnabled = false;
+          try { g.drawImage(wim, srcX, srcY, srcW, srcH, 0, 0, w, h); } catch { /* not decoded yet */ }
+          g.imageSmoothingEnabled = true;
+        }
+        const lb = learned.current;
+        if (lb && lb.mapId === st.self.mapId && lb.tiles.length) {
+          const t = lb.worldPerTile, px = Math.max(1, t * s);
+          g.fillStyle = 'rgba(255,170,40,.85)';
+          for (const [tx, ty] of lb.tiles) {
+            const x = sx(tx * t), y = sy((ty + 1) * t);
+            if (x < -px || y < -px || x > w || y > h) continue;
+            g.fillRect(x, y, px, px);
+          }
         }
       }
       // path ahead
@@ -200,6 +253,9 @@ export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { e
       <div className="mm-bar">
         {ZOOMS.map((z, i) => <button key={z} className={'btn sm ' + (i === zoom ? 'primary' : 'ghost')} onClick={() => setZoom(i)}>{i === ZOOMS.length - 1 ? 'map' : `${z}u`}</button>)}
         <label className="check small"><input type="checkbox" checked={labels} onChange={e => setLabels(e.target.checked)} /> names</label>
+        <label className="check small" title={`walkability (the grid the bots path on; orange = blocks this bot learned). Remembered for maps ${hasArt ? 'with' : 'without'} minimap art.`}>
+          <input type="checkbox" checked={walk} onChange={e => { setWalkPref(hasArt, e.target.checked); setWalkOverride({ art: hasArt, on: e.target.checked }); }} /> walk grid
+        </label>
         <span className="mm-legend small"><i className="lg self" />bot <i className="lg aggro" />aggro on us <i className="lg mob" />mob <i className="lg pl" />player <i className="lg npc" />npc <i className="lg gate" />gate</span>
       </div>
     </div>

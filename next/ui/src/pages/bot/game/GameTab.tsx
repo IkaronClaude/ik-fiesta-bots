@@ -94,7 +94,7 @@ export function GameTab({ bot, botState }: { bot: string; botState?: string }) {
       <Hud s={state} />
       <div className="game-grid">
         <div className="game-left">
-          <Minimap state={state} onHover={onEnt} />
+          <Minimap bot={bot} state={state} onHover={onEnt} />
           <TargetLine state={state} />
           <Buffs buffs={state.buffs} onTip={onTip} />
         </div>

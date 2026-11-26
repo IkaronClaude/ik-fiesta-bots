@@ -13,7 +13,7 @@ export interface SkillInfo { id: number; name: string; category?: SkillCategory;
 export interface AbstateInfo { id: number; name: string; debuff?: boolean; desc?: string; icon?: string | null }
 export interface MobInfo { id: number; name: string; level?: number; grade?: string; body?: number; maxHp?: number; npc?: boolean }
 export interface NpcInfo { id: number; name: string; role?: string }
-export interface MapInfo { id: number; short?: string; name: string; image?: string | null; cover?: { x0: number; y0: number; x1: number; y1: number } }
+export interface MapInfo { id: number; short?: string; name: string; image?: string | null; cover?: { x0: number; y0: number; x1: number; y1: number }; world?: { w: number; h: number } | null; walk?: string }
 
 type Entry = { state: 'loading' | 'ok' | 'missing'; data?: any };
 const cache = new Map<string, Entry>();
@@ -39,7 +39,8 @@ function norm(kind: StaticKind, d: any): any {
     case 'maps': {
       const cover = d.cover ?? (d.world ? { x0: 0, y0: 0, x1: d.world.w, y1: d.world.h } : null);
       const image = typeof d.image === 'string' ? d.image : d.minimap ? `/api/v3/static/maps/${d.id}/minimap.png` : null;
-      return { id: d.id, short: d.short ?? d.mapName, name: d.name ?? d.mapName ?? `map ${d.id}`, image, cover };
+      return { id: d.id, short: d.short ?? d.mapName, name: d.name ?? d.mapName ?? `map ${d.id}`, image, cover, world: d.world ?? null,
+        walk: `/api/v3/static/maps/${d.id}/walk.png` };
     }
     default: return d;
   }
