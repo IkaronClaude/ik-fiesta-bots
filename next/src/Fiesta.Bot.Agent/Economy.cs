@@ -10,11 +10,15 @@ public sealed class Economy
     private readonly int[] _deaths = new int[Minutes];
     private readonly long[] _bucketMinute = new long[Minutes];
     private long _lastDropAt = -1, _lastDrop;
-    private long _startedAt = -1;
+    // when the ledger began (local ms; negative for a ledger restored from before this process started - so 'not begun'
+    // is a flag, never a sentinel value: a restored start below 0 used to read as unset and the rates were taken over a
+    // minute, 98040 exp/h right after a restart)
+    private long _startedAt;
+    private bool _begun;
 
     private int Bucket(long now)
     {
-        if (_startedAt < 0) _startedAt = now;
+        if (!_begun) { _startedAt = now; _begun = true; }
         var m = now / 60_000; var i = (int)(((m % Minutes) + Minutes) % Minutes);
         if (_bucketMinute[i] != m) { _bucketMinute[i] = m; _exp[i] = _earn[i] = _spend[i] = _stones[i] = 0; _deaths[i] = 0; }
         return i;
@@ -85,7 +89,7 @@ public sealed class Economy
             if (_bucketMinute[i] != m - k) continue;
             exp += _exp[i]; net += _earn[i] - _spend[i]; stones += _stones[i]; deaths += _deaths[i];
         }
-        var hours = Math.Max(1.0 / 60, Math.Min(minutes, _startedAt < 0 ? 1 : (now - _startedAt) / 60_000.0 + 1) / 60.0);
+        var hours = Math.Max(1.0 / 60, Math.Min(minutes, !_begun ? 1 : (now - _startedAt) / 60_000.0 + 1) / 60.0);
         return (exp / hours, net / hours, deaths / hours, stones / hours);
     }
 
@@ -102,7 +106,7 @@ public sealed class Economy
             if (_exp[i] != 0 || _earn[i] != 0 || _spend[i] != 0 || _stones[i] != 0 || _deaths[i] != 0)
                 buckets.Add([_bucketMinute[i] + shift, _exp[i], _earn[i], _spend[i], _stones[i], _deaths[i]]);
         var mobs = _mobs.ToDictionary(kv => kv.Key, kv => new long[] { kv.Value.Kills, kv.Value.FightMs, kv.Value.Stones, kv.Value.Exp, kv.Value.Deaths });
-        return new Saved(_startedAt < 0 ? -1 : _startedAt + (unixNow - now), _questExp, buckets, mobs);
+        return new Saved(!_begun ? -1 : _startedAt + (unixNow - now), _questExp, buckets, mobs);
     }
 
     /// <summary>Restore a saved ledger (buckets older than an hour are dropped).</summary>
@@ -121,6 +125,6 @@ public sealed class Economy
         foreach (var (id, v) in s.Mobs)
             if (v.Length >= 5) _mobs[id] = new MobCost { Kills = (int)v[0], FightMs = v[1], Stones = (int)v[2], Exp = v[3], Deaths = (int)v[4] };
         _questExp = s.QuestExp;
-        if (s.StartedUnixMs >= 0) _startedAt = Math.Max(now - 3_600_000, s.StartedUnixMs - (unixNow - now));
+        if (s.StartedUnixMs >= 0) { _startedAt = Math.Max(now - 3_600_000, s.StartedUnixMs - (unixNow - now)); _begun = true; }
     }
 }

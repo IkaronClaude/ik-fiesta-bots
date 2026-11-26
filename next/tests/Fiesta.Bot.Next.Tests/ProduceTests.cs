@@ -224,6 +224,9 @@ layers:
         Assert.Equal(1, e.Mob(1).Kills);
         Assert.Equal(70, e.Mob(1).Exp);
         Assert.True(e.Rates(30, 5_000).ExpH > 0);
+        // the restored ledger began before this process (a negative local time): rates are over its real age (10+ min),
+        // not over a minute (70 exp in ~11 min is ~380/h, never thousands)
+        Assert.InRange(e.Rates(30, 5_000).ExpH, 1, 1000);
     }
 
     [Fact]
