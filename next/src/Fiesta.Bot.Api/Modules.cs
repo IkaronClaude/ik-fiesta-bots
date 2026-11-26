@@ -220,19 +220,23 @@ public sealed partial class ThreatModule(AgentContext ctx) : ApiModule(ctx)
     }
     /// <summary>HP/s we can recover (soul stones only so far; -1 unknown).</summary>
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached)] public double SustainableHps() => W.Self.HpStones > 0 ? W.Self.MaxHp * 0.05 : 0;
-    /// <summary>Incoming damage would kill us before we kill the aggressors.</summary>
+    /// <summary>The fight is lost: the drain net of what we can heal would kill us within <paramref name="ttdS"/> seconds,
+    /// and the attackers would not die first (within <paramref name="killFirst"/> of that time). The old Lua drivers'
+    /// outmatched() (OUTMATCH_TTD_S 15, KILL_FIRST_MARGIN 0.6): "time to die before time to kill" alone sent bots
+    /// running from fights they were winning (NextA fled at 79 % HP, 00:57).</summary>
     [LuaFn]
-    public bool Outmatched()
+    public bool Outmatched(double ttdS = 15, double killFirst = 0.6)
     {
-        var dps = IncomingDps();
+        var dps = IncomingDps() - SustainableHps();
         if (dps <= 0) return false;
         var ttd = W.Self.Hp / dps;
+        if (ttd >= ttdS) return false;
         var mine = Ctx.Combat.DpsOut(Ctx.Now);
         double hpLeft = 0; var s = Ctx.Scratch(1024); var (x, y) = W.Self.Pos;
         var n = W.Grid.Query(x, y, 2500, EntityKind.Mob | EntityKind.Aggro | EntityKind.Alive, W, Ctx.Now, s);
         for (var i = 0; i < n; i++) hpLeft += Math.Max(0, W.Entities.Hp(s[i]));
         var ttk = mine > 0 ? hpLeft / mine : double.MaxValue;
-        return ttd < ttk;
+        return ttk >= ttd * killFirst;
     }
     /// <summary>Other live mobs within r of h.</summary>
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.Ok)]
