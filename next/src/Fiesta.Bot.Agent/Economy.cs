@@ -59,6 +59,45 @@ public sealed class Economy
     public (long Sum, int Count) ExpLost => (_expLostSum, _expLostN);
     internal void LostExp(long amount) { _expLostSum += amount; _expLostN++; }
 
+    // which levels a death costs exp at, learned (the start level is server data, not in the client files): a death at
+    // level L that is revived with no BAT_EXPLOST in between means none is lost at L; a loss at L is measured there
+    private int _deathLevel = -1; private bool _lostSinceDeath;
+    private int _noLossMax = -1, _lossMin = -1;
+    private readonly Dictionary<int, (long Sum, long Span, int N)> _lossByLevel = new();
+    /// <summary>Highest level a death was seen to cost no exp at (-1 none), lowest it cost exp at (-1 none).</summary>
+    public (int NoLossMax, int LossMin) LossLevels => (_noLossMax, _lossMin);
+    /// <summary>A death at this level: its exp loss (or the lack of one) is decided at the revive.</summary>
+    internal void DiedAt(int level) { _deathLevel = level; _lostSinceDeath = false; }
+    /// <summary>The loss frame of a death at a level, with the level's span (for the fraction).</summary>
+    internal void LostAt(int level, long amount, long span)
+    {
+        _lostSinceDeath = true;
+        var c = _lossByLevel.GetValueOrDefault(level);
+        _lossByLevel[level] = (c.Sum + amount, c.Span + Math.Max(0, span), c.N + 1);
+        if (_lossMin < 0 || level < _lossMin) _lossMin = level;
+    }
+    /// <summary>An observed fact from earlier logs (operator input): a death at this level cost no exp.</summary>
+    public void NoteNoLoss(int level) { if (level > _noLossMax && (_lossMin < 0 || level < _lossMin)) _noLossMax = level; }
+    /// <summary>Revived: a death with no loss frame raises the no-loss level. True when that was learned now.</summary>
+    internal bool RevivedNoLoss()
+    {
+        if (_deathLevel < 0) return false;
+        var lv = _deathLevel; _deathLevel = -1;
+        if (_lostSinceDeath || lv <= _noLossMax) return false;
+        _noLossMax = lv; return true;
+    }
+    /// <summary>The fraction of a level's span a death takes at a level, learned: 0 at or below the no-loss level, the
+    /// measured fraction where losses were seen (the nearest measured level at or below), else -1 (use the prior).</summary>
+    public double LossFraction(int level)
+    {
+        if (level <= _noLossMax) return 0;
+        var best = -1;
+        foreach (var k in _lossByLevel.Keys) if (k <= level && k > best) best = k;
+        if (best < 0) return -1;
+        var c = _lossByLevel[best];
+        return c.Span > 0 ? (double)c.Sum / c.Span : -1;
+    }
+
     /// <summary>A mob type's measured numbers (all 0 when never fought).</summary>
     public MobCost Mob(int mobId) => _mobs.GetValueOrDefault(mobId);
     /// <summary>Exp that came with no kill (quest rewards), in the last-hour buckets' total.</summary>
@@ -99,7 +138,8 @@ public sealed class Economy
 
     // ---- persistence across sessions and host restarts (times as Unix minutes / ms)
     /// <summary>The ledger as plain data: the last hour's buckets keyed by Unix minute, the per-mob numbers, quest exp.</summary>
-    public sealed record Saved(long StartedUnixMs, long QuestExp, List<long[]> Buckets, Dictionary<int, long[]> Mobs, long ExpLostSum = 0, int ExpLostCount = 0);
+    public sealed record Saved(long StartedUnixMs, long QuestExp, List<long[]> Buckets, Dictionary<int, long[]> Mobs, long ExpLostSum = 0, int ExpLostCount = 0,
+        int NoLossMaxLevel = -1, Dictionary<int, long[]>? LossByLevel = null);
 
     /// <summary>Export for saving (<paramref name="unixNow"/> is the wall clock matching <paramref name="now"/>).</summary>
     public Saved Export(long now, long unixNow)
@@ -110,7 +150,8 @@ public sealed class Economy
             if (_exp[i] != 0 || _earn[i] != 0 || _spend[i] != 0 || _stones[i] != 0 || _deaths[i] != 0)
                 buckets.Add([_bucketMinute[i] + shift, _exp[i], _earn[i], _spend[i], _stones[i], _deaths[i]]);
         var mobs = _mobs.ToDictionary(kv => kv.Key, kv => new long[] { kv.Value.Kills, kv.Value.FightMs, kv.Value.Stones, kv.Value.Exp, kv.Value.Deaths });
-        return new Saved(!_begun ? -1 : _startedAt + (unixNow - now), _questExp, buckets, mobs, _expLostSum, _expLostN);
+        return new Saved(!_begun ? -1 : _startedAt + (unixNow - now), _questExp, buckets, mobs, _expLostSum, _expLostN,
+            _noLossMax, _lossByLevel.ToDictionary(kv => kv.Key, kv => new long[] { kv.Value.Sum, kv.Value.Span, kv.Value.N }));
     }
 
     /// <summary>Restore a saved ledger (buckets older than an hour are dropped).</summary>
@@ -130,6 +171,9 @@ public sealed class Economy
             if (v.Length >= 5) _mobs[id] = new MobCost { Kills = (int)v[0], FightMs = v[1], Stones = (int)v[2], Exp = v[3], Deaths = (int)v[4] };
         _questExp = s.QuestExp;
         _expLostSum = s.ExpLostSum; _expLostN = s.ExpLostCount;
+        _noLossMax = s.NoLossMaxLevel;
+        if (s.LossByLevel is { } lb)
+            foreach (var (lv, v) in lb) if (v.Length >= 3) { _lossByLevel[lv] = (v[0], v[1], (int)v[2]); if (_lossMin < 0 || lv < _lossMin) _lossMin = lv; }
         if (s.StartedUnixMs >= 0) { _startedAt = Math.Max(now - 3_600_000, s.StartedUnixMs - (unixNow - now)); _begun = true; }
     }
 }

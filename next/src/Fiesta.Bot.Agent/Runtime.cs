@@ -499,9 +499,16 @@ public sealed class BotAgent
         LastTickAt = now;
     }
 
+    private int _loggedNoLoss = -1;
+
     private void LogEvent(in InboundEvent e)
     {
         var log = Context.Log;
+        if (e.Kind == InboundKind.Revive && Context.World.Economy.LossLevels.NoLossMax is var nl && nl > _loggedNoLoss)
+        {
+            _loggedNoLoss = nl;
+            log.Log(LogCategory.Core, LogLevel.Note, $"death exp: a death at level {nl} was revived with no EXPLOST - deaths cost no exp up to level {nl} (learned)");
+        }
         switch (e.Kind)
         {
             case InboundKind.MapLoginAck:
