@@ -222,6 +222,27 @@ public sealed class DoorLearner : ILearner
 /// <summary>The map survey's eyes: every mob, NPC, gate and drop that comes into view goes into the host's survey store
 /// (where, when, what level), the distance live entities leave view at measures the sight radius, and a mob type showing
 /// again where one died gives its respawn gap.</summary>
+/// <summary>What NPC shops sell, from the lists they open (host-wide, persisted): where to buy an item is learned by
+/// having seen it on a shelf, never from a table of sellers.</summary>
+public sealed class ShopLearner : ILearner
+{
+    private int _npc = -1;
+    /// <inheritdoc/>
+    public void Observe(in InboundEvent e, AgentContext ctx)
+    {
+        if (ctx.Knowledge is not KnowledgeStore ks) return;
+        if (e.Kind == InboundKind.ShopList)
+        {
+            var s = ctx.World.Entities.SlotOf(e.Handle);
+            _npc = s >= 0 ? ctx.World.Entities.MobId(s) : -1;
+            if (_npc < 0) return;
+            var (x, y) = ctx.World.Entities.Pos(s, ctx.Now);
+            ks.ShopOpened(_npc, ctx.World.Map.MapName, (uint)x, (uint)y);
+        }
+        else if (e.Kind == InboundKind.ShopItem && _npc >= 0) ks.ShopSells(_npc, (int)e.B);
+    }
+}
+
 public sealed class SurveyLearner : ILearner
 {
     // in the world on this map long enough for our position to be the game's (bot behaviour: past the entry burst)

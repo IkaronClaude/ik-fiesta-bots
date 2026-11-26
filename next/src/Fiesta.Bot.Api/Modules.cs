@@ -779,6 +779,10 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
 
     /// <summary>Does using the item summon a mount (named by the client's MoverItem / Riding tables)?</summary>
     [LuaFn] public bool IsMount(int itemId) => (Ctx.Data as ClientData)?.IsMountItem(itemId) == true;
+    /// <summary>A mount item's ride from the client data: run speed as a multiple of our foot speed, the cast before
+    /// riding (ms), how long the item lasts (hours, 0 = for good); (-1, -1, -1) when it is no mount.</summary>
+    [LuaFn] public (double RunMult, int CastMs, int Hours) MountRide(int itemId)
+        => (Ctx.Data as ClientData)?.Mount(itemId) is { } m ? (m.RunPermille / 1000.0, m.CastMs, m.Hours) : (-1, -1, -1);
 
     /// <summary>Equipment slot an item goes into (ItemInfo Equip; 0 = not equipment).</summary>
     [LuaFn] public int EquipSlot(int itemId) => Ctx.Data.Item(itemId)?.Equip ?? 0;

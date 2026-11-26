@@ -471,6 +471,8 @@ public sealed class BotAgent
         var t3 = Stopwatch.GetTimestamp();
         // 4. movement, 5. combat
         c.Move.Advance(c);   // controllers run while the brain is paused (operator actions still move and fight)
+        if (c.Move.Moving && !c.World.Self.Mounted && _walkAt >= 0) c.World.Economy.Walked(Math.Min(1000, now - _walkAt), now);
+        _walkAt = now;
         var t4 = Stopwatch.GetTimestamp();
         c.Combat.Advance(c);
         var t5 = Stopwatch.GetTimestamp();
@@ -500,6 +502,8 @@ public sealed class BotAgent
     }
 
     private int _loggedNoLoss = -1;
+
+    private long _walkAt = -1;
 
     private void LogEvent(in InboundEvent e)
     {

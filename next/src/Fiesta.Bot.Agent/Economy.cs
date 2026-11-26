@@ -8,6 +8,8 @@ public sealed class Economy
     private const int Minutes = 60;
     private readonly long[] _exp = new long[Minutes], _earn = new long[Minutes], _spend = new long[Minutes], _stones = new long[Minutes];
     private readonly int[] _deaths = new int[Minutes];
+    // ms spent walking on foot per minute (what a mount would shorten)
+    private readonly long[] _walkMs = new long[Minutes];
     private readonly long[] _bucketMinute = new long[Minutes];
     private long _lastDropAt = -1, _lastDrop;
     // when the ledger began (local ms; negative for a ledger restored from before this process started - so 'not begun'
@@ -20,7 +22,7 @@ public sealed class Economy
     {
         if (!_begun) { _startedAt = now; _begun = true; }
         var m = now / 60_000; var i = (int)(((m % Minutes) + Minutes) % Minutes);
-        if (_bucketMinute[i] != m) { _bucketMinute[i] = m; _exp[i] = _earn[i] = _spend[i] = _stones[i] = 0; _deaths[i] = 0; }
+        if (_bucketMinute[i] != m) { _bucketMinute[i] = m; _exp[i] = _earn[i] = _spend[i] = _stones[i] = _walkMs[i] = 0; _deaths[i] = 0; }
         return i;
     }
 
@@ -43,6 +45,23 @@ public sealed class Economy
         if (_pendingStones >= 0 && delta < 0 && now - _pendingStones < 2000) { _stones[Bucket(now)] += -delta; _pendingStones = -1; }
     }
     internal void Death(long now) => _deaths[Bucket(now)]++;
+    /// <summary>We walked on foot for <paramref name="ms"/> (the tick's step while moving unmounted).</summary>
+    internal void Walked(long ms, long now) { if (ms > 0) _walkMs[Bucket(now)] += ms; }
+
+    /// <summary>The share of the last <paramref name="minutes"/> minutes we spent walking on foot (0..1), and the minutes
+    /// measured (a share over a few minutes is noise: the caller decides how many it needs).</summary>
+    public (double Share, double Minutes) WalkShare(int minutes, long now)
+    {
+        minutes = Math.Clamp(minutes, 1, Minutes);
+        var m = now / 60_000; long walk = 0;
+        for (var k = 0; k < minutes; k++)
+        {
+            var i = (int)((((m - k) % Minutes) + Minutes) % Minutes);
+            if (_bucketMinute[i] == m - k) walk += _walkMs[i];
+        }
+        var span = Math.Min(minutes * 60_000.0, !_begun ? 0 : now - _startedAt);
+        return span <= 0 ? (0, 0) : (Math.Min(1, walk / span), span / 60_000.0);
+    }
 
     // ---- per mob type, learned as we play: what a kill costs (time, stones) and pays (exp); deaths by it
     /// <summary>What we measured against one mob type.</summary>

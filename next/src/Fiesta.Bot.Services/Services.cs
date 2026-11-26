@@ -211,6 +211,7 @@ public sealed class ClientData : IClientData
         _classes = new(LoadClasses);
         _useClass = new(() => T("UseClassTypeInfo"));
         _mountItems = new(LoadMountItems);
+        _mountRows = new(LoadMountRows);
         _produce = new(LoadProduce);
     }
 
@@ -450,6 +451,30 @@ public sealed class ClientData : IClientData
     /// <summary>Does using this item summon a mount? The client's own tables name those items: MoverItem (ItemIDX, the
     /// mover system) and Riding (ItemID, the older ride system).</summary>
     public bool IsMountItem(int itemId) => Item(itemId) is { } it && _mountItems.Value.Contains(it.InxName);
+
+    /// <summary>A mount item's ride, from the client's MoverMain (joined by MoverItem): its run and walk speed in per
+    /// mille of our foot speed (Z:/GateTest.pcapng: RunSpeed 2200 rode at 279 raw against 127), the cast before riding
+    /// and the cooldown (ms), how long the item lasts (hours, 0 = for good); null for an item that is not a mount of the
+    /// mover system.</summary>
+    public sealed record MountRow(int RunPermille, int WalkPermille, int CastMs, int CoolMs, int Hours);
+
+    private readonly Lazy<Dictionary<string, MountRow>> _mountRows;
+
+    /// <summary>The ride of a mount item (see <see cref="MountRow"/>), null when it is none.</summary>
+    public MountRow? Mount(int itemId) => Item(itemId) is { } it && _mountRows.Value.TryGetValue(it.InxName, out var m) ? m : null;
+
+    private Dictionary<string, MountRow> LoadMountRows()
+    {
+        var d = new Dictionary<string, MountRow>(StringComparer.Ordinal);
+        if (T("MoverMain") is not { } mm || T("MoverItem") is not { } mi) return d;
+        var byMover = new Dictionary<string, MountRow>(StringComparer.Ordinal);
+        for (var r = 0; r < mm.RowCount; r++)
+            if (mm.Str(r, "MoverIDX") is { Length: > 0 } k)
+                byMover[k] = new((int)mm.Num(r, "RunSpeed"), (int)mm.Num(r, "WalkSpeed"), (int)mm.Num(r, "CastingTime"), (int)mm.Num(r, "CoolTime"), (int)mm.Num(r, "DurationHour"));
+        for (var r = 0; r < mi.RowCount; r++)
+            if (mi.Str(r, "ItemIDX") is { Length: > 0 } item && mi.Str(r, "MoverIDX") is { } mover && byMover.TryGetValue(mover, out var row)) d[item] = row;
+        return d;
+    }
 
     private HashSet<string> LoadMountItems()
     {
@@ -745,6 +770,35 @@ public sealed class KnowledgeStore : IKnowledgeStore
         foreach (var kv in _npc) if ((kv.Value.Mask & roleMask) != 0 && kv.Value.Map == mapId) return (kv.Key, kv.Value.X, kv.Value.Y);
         return null;
     }
+    // ---- what NPC shops sell, as their opened lists showed it (host-wide): npc mob id -> where, and the items
+    private readonly ConcurrentDictionary<int, (string Map, uint X, uint Y, HashSet<int> Items)> _shops = new();
+    /// <summary>A shop list opened by an NPC (mob id) on a map: the list replaces what was known of that NPC.</summary>
+    public void ShopOpened(int npcId, string map, uint x, uint y) => _shops[npcId] = (map, x, y, new HashSet<int>());
+    /// <summary>One item of the NPC's opened list.</summary>
+    public void ShopSells(int npcId, int itemId) { if (_shops.TryGetValue(npcId, out var s)) lock (s.Items) s.Items.Add(itemId); }
+    /// <summary>Every (npc, map, x, y, item) a seen shop sells.</summary>
+    public IEnumerable<(int NpcId, string Map, uint X, uint Y, int ItemId)> ShopOffers()
+    {
+        foreach (var kv in _shops)
+        {
+            int[] items; lock (kv.Value.Items) items = kv.Value.Items.ToArray();
+            foreach (var i in items) yield return (kv.Key, kv.Value.Map, kv.Value.X, kv.Value.Y, i);
+        }
+    }
+    /// <summary>Serialise the shop catalogue (JSON).</summary>
+    public string ExportShops() => System.Text.Json.JsonSerializer.Serialize(_shops.Select(k => { lock (k.Value.Items) return new { npc = k.Key, map = k.Value.Map, x = k.Value.X, y = k.Value.Y, items = k.Value.Items.ToArray() }; }));
+    /// <summary>Load the shop catalogue (JSON from <see cref="ExportShops"/>).</summary>
+    public void ImportShops(string json)
+    {
+        try
+        {
+            foreach (var e in System.Text.Json.JsonDocument.Parse(json).RootElement.EnumerateArray())
+                _shops[e.GetProperty("npc").GetInt32()] = (e.GetProperty("map").GetString() ?? "", e.GetProperty("x").GetUInt32(), e.GetProperty("y").GetUInt32(),
+                    e.GetProperty("items").EnumerateArray().Select(i => i.GetInt32()).ToHashSet());
+        }
+        catch (System.Text.Json.JsonException) { }
+    }
+
     /// <summary>Snapshot for persistence and the knowledge endpoint.</summary>
     public object Snapshot(int mobId) => Enum.GetValues<MobFact>().ToDictionary(f => f.ToString(), f => Mob(mobId, f));
 

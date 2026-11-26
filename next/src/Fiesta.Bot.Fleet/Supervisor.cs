@@ -83,6 +83,8 @@ public sealed class HostServices : IAsyncDisposable
         Knowledge.Survey = new SurveyStore(Path.Combine(DataDir, "survey"));
         var kn = Path.Combine(DataDir, "knowledge-npcs.json");
         if (File.Exists(kn)) Knowledge.ImportNpcs(File.ReadAllText(kn));
+        var ks = Path.Combine(DataDir, "knowledge-shops.json");
+        if (File.Exists(ks)) Knowledge.ImportShops(File.ReadAllText(ks));
         LogRenderer.MobName = id => Data.Mob(id)?.Name;
         EntityDecoder.IsNpc = id => Data.Mob(id)?.IsNpc ?? false;
         PacketCapture.OpcodeName = op => FiestaLibReloaded.Networking.PacketRegistry.TryGetType(op, out var t) && t is not null ? t.Name : null;
@@ -100,7 +102,11 @@ public sealed class HostServices : IAsyncDisposable
     // every bot's session end saves the shared file: two teardowns at once collided on it (live 21:32, IOException)
     public void SaveKnowledge()
     {
-        lock (_knowledgeSave) File.WriteAllText(Path.Combine(DataDir, "knowledge-npcs.json"), Knowledge.ExportNpcs());
+        lock (_knowledgeSave)
+        {
+            File.WriteAllText(Path.Combine(DataDir, "knowledge-npcs.json"), Knowledge.ExportNpcs());
+            File.WriteAllText(Path.Combine(DataDir, "knowledge-shops.json"), Knowledge.ExportShops());
+        }
         Knowledge.Survey.SaveAll();
     }
     private readonly object _knowledgeSave = new();
@@ -337,6 +343,7 @@ public sealed class BotRuntime
         ctx.Learners.Add(new AggroLearner());
         ctx.Learners.Add(new AtlasLearner());
         ctx.Learners.Add(new SurveyLearner());
+        ctx.Learners.Add(new ShopLearner());
         ctx.Learners.Add(new DoorLearner());
         LoadEconomy(ctx);
         var agent = new BotAgent(ctx, inbound, outbound, new ControlQueue(), null, _h.Clock);
