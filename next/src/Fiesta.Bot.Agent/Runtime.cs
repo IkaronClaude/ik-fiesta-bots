@@ -670,7 +670,12 @@ public sealed class BotAgent
                 if (c.Move.Moving) c.Move.Stop(c);
                 if (c.Combat.Bashing) c.Combat.StopBash(0, c);
                 break;
-            case ControlKind.Resume: Paused = false; _stepBudget = 0; break;
+            // resume also lifts a budget suspension of the brain (it is the only way out of one: the brain never saw this
+            // command before, so a suspended bot stood still until a host restart - NextM 15:53)
+            case ControlKind.Resume:
+                Paused = false; _stepBudget = 0;
+                try { Brain?.Control(cmd, c); } catch (Exception e) { cmd.Reply?.TrySetException(e); return; }
+                break;
             case ControlKind.Step: _stepBudget += Math.Max(1, cmd.Count); break;
             case ControlKind.Stop or ControlKind.Relog:
                 if (c.Move.Moving) c.Move.Stop(c);
