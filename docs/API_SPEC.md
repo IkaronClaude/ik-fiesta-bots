@@ -1069,13 +1069,13 @@ Each op is an array whose first element is its code.
 | `["tgt", handle]` | target changed (-1 none) |
 | `["path", [[x, y], ...]]` | new remaining path (`[]` = stopped) |
 | `["map", mapId]` | map changed: drop all entities and the path (new `e+` ops follow) |
-| `["e+", h, kind, id, x, y, hpPct, flags, name]` | an entity appeared (or its row changed kind / id) |
+| `["e+", h, kind, id, x, y, hpPct, flags, name, tx, ty, spd]` | an entity appeared (or its row changed kind / id) |
 | `["e-", h]` | an entity left view |
-| `["ep", h, x, y]` | an entity moved |
+| `["ep", h, x, y, tx, ty, spd]` | an entity moved, or its move segment changed: at the message's `now` it stood at (x, y), walking to (tx, ty) at spd u/s (0 = standing). Sent at once on a new segment, else every 250 ms; a viewer extrapolates along the segment every frame |
 | `["eh", h, hpPct]` | an entity's HP percentage changed |
 | `["ef", h, flags]` | an entity's flags changed |
 
-Positions are world units rounded to integers. World Y grows upward (north on the minimap).
+Positions are world units rounded to integers. `self` carries the same move segment as `x, y, tx, ty, spd`. World Y grows upward (north on the minimap).
 `self.dir` is the facing in whole degrees 0..359: 0 = east (+x), counter-clockwise, 90 = north (+y).
 
 Skills in the stream are the ACTIVE skill list (CLIENT_SKILL). Passive skills arrive in a separate list that is not

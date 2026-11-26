@@ -17,6 +17,8 @@ public sealed class GameCapture
     public int Session;
     /// <summary>Self fields.</summary>
     public int Handle, ClassId, Level, MapId, X, Y, Dir;
+    /// <summary>Our move segment: where the current leg ends and our speed (u/s; 0 standing, the end = where we are).</summary>
+    public int Tx, Ty, Spd;
     /// <summary>Self name.</summary>
     public string Name = "";
     /// <summary>Self numbers (-1 = not received yet).</summary>
@@ -53,6 +55,8 @@ public sealed class GameCapture
     public int PathN;
     /// <summary>Entity handles, ids, positions.</summary>
     public readonly int[] EH = new int[EntityTable.Cap], EId = new int[EntityTable.Cap], EX = new int[EntityTable.Cap], EY = new int[EntityTable.Cap];
+    /// <summary>Entity move segments: where the current move ends and the speed (u/s; 0 standing).</summary>
+    public readonly int[] ETx = new int[EntityTable.Cap], ETy = new int[EntityTable.Cap], ESpd = new int[EntityTable.Cap];
     /// <summary>Entity kind letter, HP percentage, flags (1 dead, 2 aggro, 4 our target, 8 huntable).</summary>
     public readonly byte[] EKind = new byte[EntityTable.Cap], EHp = new byte[EntityTable.Cap], EFlags = new byte[EntityTable.Cap];
     /// <summary>Entity names (players, gates).</summary>
@@ -68,6 +72,8 @@ public sealed class GameCapture
         Now = SystemClock.UnixMs(now); Session = session; InWorld = self.InWorld && w.LinkUp;
         Handle = self.Handle; ClassId = self.ClassId; Level = self.Level; MapId = w.Map.MapId; Name = self.Name;
         X = (int)Math.Round(self.Pos.X); Y = (int)Math.Round(self.Pos.Y);
+        if (c.Move.LegTarget is { } lt) { Tx = (int)Math.Round(lt.X); Ty = (int)Math.Round(lt.Y); Spd = (int)Math.Round(self.RunSpeed); }
+        else { Tx = X; Ty = Y; Spd = 0; }
         // degrees 0..359, 0 = east (+x), counter-clockwise (90 = +y, north on the minimap)
         Dir = ((int)Math.Round(Math.Atan2(self.Facing.Dy, self.Facing.Dx) * 180 / Math.PI) + 360) % 360;
         Exp = self.Exp; PrevExp = self.PrevExp; NextExp = self.NextExp; Money = self.MoneyKnown ? self.Money : -1;
@@ -119,6 +125,9 @@ public sealed class GameCapture
                 : (k & EntityKind.Npc) != 0 ? (byte)'n' : (byte)'m';
             EId[EN] = t.MobId(s);
             EX[EN] = (int)Math.Round(x); EY[EN] = (int)Math.Round(y);
+            var (vx, vy) = t.Velocity(s, now);
+            if (vx != 0 || vy != 0) { ETx[EN] = (int)Math.Round(t.ToX[s]); ETy[EN] = (int)Math.Round(t.ToY[s]); ESpd[EN] = (int)Math.Round(t.Spd[s]); }
+            else { ETx[EN] = EX[EN]; ETy[EN] = EY[EN]; ESpd[EN] = 0; }
             var mh = t.MaxHp(s);
             EHp[EN] = (byte)(mh > 0 ? Math.Clamp((int)Math.Round(t.Hp(s) * 100 / mh), 0, 100) : 100);
             EFlags[EN] = (byte)((t.IsDead(s) ? 1 : 0) | ((k & EntityKind.Aggro) != 0 ? 2 : 0) | (EH[EN] == Target ? 4 : 0) | ((k & EntityKind.Huntable) != 0 ? 8 : 0));

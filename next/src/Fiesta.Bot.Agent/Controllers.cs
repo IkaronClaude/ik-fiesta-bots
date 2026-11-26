@@ -45,6 +45,8 @@ public sealed class MoveController
     public bool Moving => _leg >= 0 && _leg < _path.Count;
     /// <summary>Where the current order goes, null without one.</summary>
     public (double X, double Y)? Destination => _order is { } o ? (o.X, o.Y) : null;
+    /// <summary>The leg being walked now (its end point), null standing.</summary>
+    public (double X, double Y)? LegTarget => Moving ? (_legTx, _legTy) : null;
     /// <summary>Index of the path point being walked to (-1 standing).</summary>
     public int Leg => _leg;
     /// <summary>Waiting for a path job.</summary>

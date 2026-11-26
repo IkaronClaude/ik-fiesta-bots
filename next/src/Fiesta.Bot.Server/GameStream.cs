@@ -27,14 +27,14 @@ public sealed class GameStream(string bot, GameTap tap)
         ["str", "end", "dex", "int", null, "spr", "wcMin", "wcMax", "def", "aim", "eva", "maMin", "maMax", "mdef", "maim", "meva"];
     private const int PosIntervalMs = 250, PosMin = 4, KeepAliveMs = 5000;
 
-    private sealed class Ent { public byte Kind; public int Id, X, Y; public byte Hp, Flags; public string? Name; }
+    private sealed class Ent { public byte Kind; public int Id, X, Y, Tx, Ty, Spd; public byte Hp, Flags; public string? Name; }
 
     private readonly List<GameViewer> _viewers = new();
     private readonly ArrayBufferWriter<byte> _buf = new(4096);
     // the state the viewers have
     private bool _has;
     private string? _offReason;
-    private int _session = -1, _mapId = int.MinValue, _target = -1, _x, _y, _bagSize = -1, _bagPages = -1;
+    private int _session = -1, _mapId = int.MinValue, _target = -1, _x, _y, _tx, _ty, _spd, _bagSize = -1, _bagPages = -1;
     private readonly Dictionary<string, long> _self = new();
     private readonly long[] _stats = new long[16];
     private readonly Dictionary<int, long> _ab = new();
@@ -140,7 +140,7 @@ public sealed class GameStream(string bot, GameTap tap)
     // take a capture as the new sent state (a snapshot follows)
     private void Load(GameCapture c)
     {
-        _session = c.Session; _mapId = c.MapId; _target = c.Target; _x = c.X; _y = c.Y; _name = c.Name;
+        _session = c.Session; _mapId = c.MapId; _target = c.Target; _x = c.X; _y = c.Y; _tx = c.Tx; _ty = c.Ty; _spd = c.Spd; _name = c.Name;
         foreach (var f in SelfFields) _self[f.Name] = f.Get(c);
         Array.Copy(c.Stats, _stats, 16);
         _ab.Clear(); for (var i = 0; i < c.AbN; i++) _ab[c.AbId[i]] = c.AbEnd[i];
@@ -153,7 +153,7 @@ public sealed class GameStream(string bot, GameTap tap)
         _lastPosAt = c.Now;
     }
 
-    private static Ent EntOf(GameCapture c, int i) => new() { Kind = c.EKind[i], Id = c.EId[i], X = c.EX[i], Y = c.EY[i], Hp = c.EHp[i], Flags = c.EFlags[i], Name = c.EName[i] };
+    private static Ent EntOf(GameCapture c, int i) => new() { Kind = c.EKind[i], Id = c.EId[i], X = c.EX[i], Y = c.EY[i], Tx = c.ETx[i], Ty = c.ETy[i], Spd = c.ESpd[i], Hp = c.EHp[i], Flags = c.EFlags[i], Name = c.EName[i] };
 
     private static int[] PathOf(GameCapture c)
     {
@@ -170,6 +170,7 @@ public sealed class GameStream(string bot, GameTap tap)
         w.WriteNumberValue(h); w.WriteStringValue(((char)e.Kind).ToString()); w.WriteNumberValue(e.Id);
         w.WriteNumberValue(e.X); w.WriteNumberValue(e.Y); w.WriteNumberValue(e.Hp); w.WriteNumberValue(e.Flags);
         if (e.Name is null) w.WriteNullValue(); else w.WriteStringValue(e.Name);
+        w.WriteNumberValue(e.Tx); w.WriteNumberValue(e.Ty); w.WriteNumberValue(e.Spd);
     }
 
     private string Snapshot()
@@ -179,7 +180,7 @@ public sealed class GameStream(string bot, GameTap tap)
         w.WriteStartObject("self");
         w.WriteString("name", _name);
         foreach (var f in SelfFields) { if (f.Bool) w.WriteBoolean(f.Name, _self[f.Name] != 0); else w.WriteNumber(f.Name, _self[f.Name]); }
-        w.WriteNumber("x", _x); w.WriteNumber("y", _y);
+        w.WriteNumber("x", _x); w.WriteNumber("y", _y); w.WriteNumber("tx", _tx); w.WriteNumber("ty", _ty); w.WriteNumber("spd", _spd);
         w.WriteEndObject();
         w.WriteStartObject("stats");
         for (var i = 0; i < 16; i++) if (StatNames[i] is { } n) w.WriteNumber(n, _stats[i]);
@@ -245,9 +246,12 @@ public sealed class GameStream(string bot, GameTap tap)
             if (f.Bool) w.WriteBoolean(f.Name, v != 0); else w.WriteNumber(f.Name, v);
         }
         if (c.Name != _name) { _name = c.Name; SelfField(w, "name"); w.WriteString("name", c.Name); }
-        if (posDue && (Math.Abs(c.X - _x) >= PosMin || Math.Abs(c.Y - _y) >= PosMin))
+        // a new move segment goes at once (the viewer extrapolates along it); the position itself only every PosIntervalMs
+        var segChanged = c.Tx != _tx || c.Ty != _ty || c.Spd != _spd;
+        if (segChanged || (posDue && (Math.Abs(c.X - _x) >= PosMin || Math.Abs(c.Y - _y) >= PosMin)))
         {
-            _x = c.X; _y = c.Y; SelfField(w, "x"); w.WriteNumber("x", c.X); w.WriteNumber("y", c.Y);
+            _x = c.X; _y = c.Y; _tx = c.Tx; _ty = c.Ty; _spd = c.Spd; SelfField(w, "x");
+            w.WriteNumber("x", c.X); w.WriteNumber("y", c.Y); w.WriteNumber("tx", c.Tx); w.WriteNumber("ty", c.Ty); w.WriteNumber("spd", c.Spd);
         }
         if (selfOpen) { w.WriteEndObject(); w.WriteEndArray(); }
 
@@ -336,10 +340,12 @@ public sealed class GameStream(string bot, GameTap tap)
                 w.WriteStartArray(); w.WriteStringValue("e+"); WriteEnt(w, h, e); w.WriteEndArray(); n++;
                 continue;
             }
-            if (posDue && (Math.Abs(e.X - c.EX[i]) >= PosMin || Math.Abs(e.Y - c.EY[i]) >= PosMin))
+            var eSeg = e.Tx != c.ETx[i] || e.Ty != c.ETy[i] || e.Spd != c.ESpd[i];
+            if (eSeg || (posDue && (Math.Abs(e.X - c.EX[i]) >= PosMin || Math.Abs(e.Y - c.EY[i]) >= PosMin)))
             {
-                e.X = c.EX[i]; e.Y = c.EY[i];
-                w.WriteStartArray(); w.WriteStringValue("ep"); w.WriteNumberValue(h); w.WriteNumberValue(e.X); w.WriteNumberValue(e.Y); w.WriteEndArray(); n++;
+                e.X = c.EX[i]; e.Y = c.EY[i]; e.Tx = c.ETx[i]; e.Ty = c.ETy[i]; e.Spd = c.ESpd[i];
+                w.WriteStartArray(); w.WriteStringValue("ep"); w.WriteNumberValue(h); w.WriteNumberValue(e.X); w.WriteNumberValue(e.Y);
+                w.WriteNumberValue(e.Tx); w.WriteNumberValue(e.Ty); w.WriteNumberValue(e.Spd); w.WriteEndArray(); n++;
             }
             if (e.Hp != c.EHp[i])
             {
