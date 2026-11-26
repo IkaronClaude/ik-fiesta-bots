@@ -582,6 +582,21 @@ objective progress now gives the quest up for a while, logged).
 - Weapon reach is still a constant (120 melee / 600 bow): derive it from the item data and verify against out-of-range
   refusals, with a test (operator: the old Lua's range formula was a known bug).
 
+#### Live round 00:40-01:25
+
+- threat.outmatched follows the old Lua's rule (df076fa): flee only if the drain net of healing kills us within 15 s
+  and the attackers would not die within 0.6 of that time (NextA had fled at 79 % HP and died 34 s into the run, 00:57).
+- A talk objective is met only on the server's reward state (status 8) (9a87617): NextA kept handing in two quests the
+  server still ran [SCRIPT_DOING] for (status 6), two give-ups each.
+- The economy ledger's start is a flag, not a negative sentinel (102821e): rates after a restart were taken over one
+  minute (98040 exp/h, -525180 money/h at 00:40).
+- Map-to-map route costs prepared for every map at host start (793bccb); each layer's slowest run in the last minute
+  is in the debug frame (0637804).
+- Bag decision, loot side: with the bag short of room only loot worth more than the cheapest sellable we carry is
+  picked up; with the bag full only quest items and gear (logged "loot: leaving ...").
+- Levels: NextA 16 (01:12), NextM 15 (01:09). The frequent redeploys of this round (each a 1-2 minute reconnect)
+  depress the hourly rates; fewer, batched restarts from here.
+
 #### Efficiency per bot (live, local stack)
 
 | time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
