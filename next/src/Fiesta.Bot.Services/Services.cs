@@ -676,6 +676,8 @@ public sealed class KnowledgeStore : IKnowledgeStore
 {
     /// <summary>NPC click statistics (host-wide).</summary>
     public ClickStats Clicks { get; } = new();
+    /// <summary>What bots have seen on each map (host-wide; the host gives it a folder to persist to).</summary>
+    public SurveyStore Survey { get; set; } = new(null);
     private sealed class Acc
     {
         public double Lo = double.NaN, Hi = double.NaN, Sum; public int N, Bounds;

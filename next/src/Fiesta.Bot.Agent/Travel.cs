@@ -218,3 +218,48 @@ public sealed class DoorLearner : ILearner
         ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"door '{name}' state {state}: {tiles.Count} tiles blocked beyond the map's own");
     }
 }
+
+/// <summary>The map survey's eyes: every mob, NPC, gate and drop that comes into view goes into the host's survey store
+/// (where, when, what level), the distance live entities leave view at measures the sight radius, and a mob type showing
+/// again where one died gives its respawn gap.</summary>
+public sealed class SurveyLearner : ILearner
+{
+    /// <inheritdoc/>
+    public void Observe(in InboundEvent e, AgentContext ctx)
+    {
+        if ((ctx.Knowledge as KnowledgeStore)?.Survey is not { } sv) return;
+        var w = ctx.World; var map = w.Map.MapName;
+        if (string.IsNullOrEmpty(map)) return;
+        var unix = SystemClock.UnixMs(ctx.Now);
+        switch (e.Kind)
+        {
+            case InboundKind.EntityAppeared when e.Handle != w.Self.Handle:
+            {
+                var kind = (EntityKind)(int)e.A;
+                var d = MoveController.Dist(w.Self.Pos.X, w.Self.Pos.Y, e.X, e.Y);
+                if ((kind & (EntityKind.Mob | EntityKind.Npc | EntityKind.Player)) != 0) sv.Appeared(d);
+                if ((kind & EntityKind.Gate) != 0 && !string.IsNullOrEmpty(e.Text)) sv.SawGate(map, e.X, e.Y, e.Text!);
+                else if ((kind & EntityKind.Npc) != 0) sv.SawNpc(map, (int)e.B, e.X, e.Y, unix);
+                else if ((kind & EntityKind.Mob) != 0) sv.SawMob(map, (int)e.B, e.C >= 0 ? (int)e.C : ctx.Data.Mob((int)e.B)?.Level ?? -1, e.X, e.Y, unix);
+                else if ((kind & EntityKind.Drop) != 0) sv.SawDrop(map, (int)e.B);
+                break;
+            }
+            case InboundKind.EntityLeft:
+            {
+                var s = w.Entities.SlotOf(e.Handle);
+                if (s < 0 || w.Entities.IsDead(s)) break;   // a death is not the edge of sight
+                var (x, y) = w.Entities.Pos(s, ctx.Now);
+                sv.Left(MoveController.Dist(w.Self.Pos.X, w.Self.Pos.Y, x, y));
+                break;
+            }
+            case InboundKind.EntityDied:
+            {
+                var s = w.Entities.SlotOf(e.Handle);
+                if (s < 0 || w.Entities.MobId(s) < 0) break;
+                var (x, y) = w.Entities.Pos(s, ctx.Now);
+                sv.MobDied(map, w.Entities.MobId(s), x, y, unix);
+                break;
+            }
+        }
+    }
+}

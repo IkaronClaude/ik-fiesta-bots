@@ -412,7 +412,7 @@ public static class BrainLinter
     /// <summary>The name a module is reachable by in conditions and state functions: its last path segment.</summary>
     public static string ShortName(string path) => StripPin(path)[(StripPin(path).LastIndexOf('/') + 1)..];
 
-    private static readonly HashSet<string> ApiModules = ["self", "ents", "threat", "combat", "skills", "act", "items", "quests", "nav", "npc", "social", "know", "time", "ev", "world", "dbg", "atlas", "team", "produce", "scenario", "econ"];   // every API module (a call into one is checked against the manifest)
+    private static readonly HashSet<string> ApiModules = ["self", "ents", "threat", "combat", "skills", "act", "items", "quests", "nav", "npc", "social", "know", "time", "ev", "world", "dbg", "atlas", "team", "produce", "scenario", "econ", "survey"];   // every API module (a call into one is checked against the manifest)
 
     private static IEnumerable<(int Line, string Ref)> ApiRefs(string src)
     {

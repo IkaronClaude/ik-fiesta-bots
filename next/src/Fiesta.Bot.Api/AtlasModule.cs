@@ -30,14 +30,35 @@ public sealed partial class AtlasModule(AgentContext ctx) : ApiModule(ctx)
         return best is { } b ? (MapName(b.MapId), b.X, b.Y) : ("", -1, -1);
     }
 
+    /// <summary>A map's regen point (MapInfo), where a traveller to the map can aim; (-1, -1) unknown.</summary>
+    [LuaFn] public (double X, double Y) RegenPoint(string map) => Ctx.Data.Map(map) is { } m && Ctx.Atlas.Regen(m.Id) is { } r ? r : (-1, -1);
+
     /// <summary>Where a mob spawns, the reachable area nearest by route: map, centre, radius ("" when unknown).</summary>
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached, Alloc = Alloc.LuaString)]
     public (string Map, double X, double Y, double R) MobSpot(int mobId)
     {
+        // what bots have SEEN comes first: an observed spawn area (the survey store) on the map nearest by route, and when
+        // the client's MobCoordinate disagrees (no data area on that map holds what was seen) that is said once
+        (string Map, double X, double Y, double R)? seen = null; var sc = double.PositiveInfinity;
+        if ((Ctx.Knowledge as KnowledgeStore)?.Survey is { } sv)
+            foreach (var map in sv.Maps)
+                if (sv.ObservedArea(map, mobId) is { } o && Ctx.Data.Map(map) is { } mi)
+                {
+                    var c = CostTo(mi.Id, o.X, o.Y);
+                    if (c < sc) { sc = c; seen = (map, o.X, o.Y, Math.Max(o.R, 1)); }
+                }
+        if (seen is { } s)
+        {
+            var onMap = Ctx.Atlas.SpawnAreas(mobId).Where(a => MapName(a.MapId) == s.Map).ToList();
+            if (!onMap.Any(a => Math.Abs(a.X - s.X) <= a.HalfW + s.R && Math.Abs(a.Y - s.Y) <= a.HalfH + s.R) && _saidConflict.Add((mobId, s.Map)))
+                Ctx.Log.Log(Fiesta.Bot.Services.Logging.LogCategory.Nav, Fiesta.Bot.Services.Logging.LogLevel.Note, $"survey: mob {mobId} seen on {s.Map} around ({s.X:0},{s.Y:0}) r {s.R:0}, where the client's spawn data has {(onMap.Count == 0 ? "no area for it" : $"{onMap.Count} area(s) elsewhere")}: using what was seen");
+            return s;
+        }
         SpawnArea? best = null; var bc = double.PositiveInfinity;
         foreach (var a in Ctx.Atlas.SpawnAreas(mobId)) { var c = CostTo(a.MapId, a.X, a.Y); if (c < bc) { bc = c; best = a; } }
         return best is { } b ? (MapName(b.MapId), b.X, b.Y, Math.Max(100, Math.Min(b.HalfW, b.HalfH))) : ("", -1, -1, -1);
     }
+    private readonly HashSet<(int, string)> _saidConflict = new();
 
     /// <summary>A grind spot for a level band: the spawn area of hostile mobs with level in [minLv, maxLv] that has the
     /// most such areas on its map nearby, weighed against the route to it. Returns map, centre, radius, mob id.</summary>

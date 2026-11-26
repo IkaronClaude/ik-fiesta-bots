@@ -80,6 +80,7 @@ public sealed class HostServices : IAsyncDisposable
         var pvp = Path.Combine(DataDir, "atlas-pvp-maps.txt");
         if (File.Exists(pvp)) foreach (var line in File.ReadAllLines(pvp)) if (int.TryParse(line, out var pm)) Atlas.LearnPvp(pm);
         Atlas.PvpLearned += m => { lock (Atlas) File.AppendAllText(pvp, m + Environment.NewLine); };
+        Knowledge.Survey = new SurveyStore(Path.Combine(DataDir, "survey"));
         var kn = Path.Combine(DataDir, "knowledge-npcs.json");
         if (File.Exists(kn)) Knowledge.ImportNpcs(File.ReadAllText(kn));
         LogRenderer.MobName = id => Data.Mob(id)?.Name;
@@ -331,6 +332,7 @@ public sealed class BotRuntime
         ctx.World.Self.Seed(login.CharacterName, login.ClassId, _h.Data.ClassFamily(login.ClassId), login.Level);
         ctx.Learners.Add(new AggroLearner());
         ctx.Learners.Add(new AtlasLearner());
+        ctx.Learners.Add(new SurveyLearner());
         ctx.Learners.Add(new DoorLearner());
         LoadEconomy(ctx);
         var agent = new BotAgent(ctx, inbound, outbound, new ControlQueue(), null, _h.Clock);

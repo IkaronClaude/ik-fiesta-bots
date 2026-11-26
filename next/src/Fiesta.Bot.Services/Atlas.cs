@@ -30,6 +30,8 @@ public sealed class WorldAtlas
     private readonly Dictionary<int, List<int>> _nodesByMap = new();
     private readonly Dictionary<int, List<(double X, double Y)>> _gatePoints = new();
     private readonly Dictionary<int, (double X, double Y)> _regen = new();
+    /// <summary>A map's regen point (MapInfo RegenX / RegenY), null unknown.</summary>
+    public (double X, double Y)? Regen(int mapId) => _regen.TryGetValue(mapId, out var r) ? r : null;
     private readonly List<(int Map, double X, double Y, int To)> _learned = new();
     private readonly Dictionary<(int, int), double> _mapCost = new();
     private readonly HashSet<int> _mapCostsDone = new();
