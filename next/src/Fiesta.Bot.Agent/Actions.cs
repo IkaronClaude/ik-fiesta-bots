@@ -1162,27 +1162,21 @@ public static class Camp
     }
 
     /// <summary>The farthest the game has answered one of our clicks from (game-held position to the NPC), -1 none yet: a
-    /// click from farther than any answered one walks in first, as a player steps up to an NPC that did not react.</summary>
+    /// lower bound of the game's reach, for the record (never a reason to refuse a click).</summary>
     public static double AnsweredReach(AgentContext ctx)
     {
         return Stats(ctx)?.Snapshot().Reach ?? -1;
     }
 
-    /// <summary>Why an NPC click would go unanswered now (dead, the NPC not in view, the game holding us farther than any
-    /// click it has answered), null when it can be sent. Out of reach re-syncs our believed position to the game's, so the
-    /// next walk starts there.</summary>
+    /// <summary>Why an NPC click cannot be sent now (dead, the NPC not in view), null when it can. The distance is not a
+    /// reason: the farthest answered click is only a lower bound of the game's reach (every earlier click was made close
+    /// up), and refusing clicks beyond it stopped NextA at 154-209 from its shops for 25 minutes (11:22-11:47). A player
+    /// clicks and walks closer only when nothing happens - the unanswered-click path does that.</summary>
     public static string? NotClickable(AgentContext ctx, int npcHandle)
     {
-        var self = ctx.World.Self;
-        if (self.Dead) return "dead: no click";
-        var s = ctx.World.Entities.SlotOf(npcHandle);
-        if (s < 0) return $"npc {npcHandle} not in view";
-        var (nx, ny) = ctx.World.Entities.Pos(s, ctx.Now);
-        var d = MoveController.Dist(self.ServerPos.X, self.ServerPos.Y, nx, ny);
-        var reach = AnsweredReach(ctx);
-        if (reach < 0 || d <= reach) return null;
-        self.Pos = (self.ServerPos.X, self.ServerPos.Y);
-        return $"the game holds us at ({self.ServerPos.X},{self.ServerPos.Y}), {d:0} from npc {npcHandle}: re-synced, walk in again";
+        if (ctx.World.Self.Dead) return "dead: no click";
+        if (ctx.World.Entities.SlotOf(npcHandle) < 0) return $"npc {npcHandle} not in view";
+        return null;
     }
 
     /// <summary>True while the tent is still pitched (a fold was sent, at most once every 2 s): the caller waits.</summary>
