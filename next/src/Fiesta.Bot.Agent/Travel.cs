@@ -224,6 +224,12 @@ public sealed class DoorLearner : ILearner
 /// again where one died gives its respawn gap.</summary>
 public sealed class SurveyLearner : ILearner
 {
+    // in the world on this map long enough for our position to be the game's (bot behaviour: past the entry burst)
+    private static bool Settled(AgentContext ctx) => ctx.World.Self.InWorld && ctx.Now - ctx.World.Self.SpawnedAt > SettleMs;
+    /// <summary>How long after a map entry sight samples are ignored (bot behaviour: the entry lists and the position
+    /// sync arrive in the first moments).</summary>
+    public const long SettleMs = 3000;
+
     /// <inheritdoc/>
     public void Observe(in InboundEvent e, AgentContext ctx)
     {
@@ -237,7 +243,9 @@ public sealed class SurveyLearner : ILearner
             {
                 var kind = (EntityKind)(int)e.A;
                 var d = MoveController.Dist(w.Self.Pos.X, w.Self.Pos.Y, e.X, e.Y);
-                if ((kind & (EntityKind.Mob | EntityKind.Npc | EntityKind.Player)) != 0) sv.Appeared(d);
+                // a sight sample only from a single entity coming into view (REGENMOB / LOGINCHARACTER), never the list
+                // a map entry sends (everything in view, measured from a position not settled yet - it read 14,679)
+                if ((kind & (EntityKind.Mob | EntityKind.Npc | EntityKind.Player)) != 0 && e.Opcode is 0x1C08 or 0x1C06 && Settled(ctx)) sv.Appeared(d);
                 if ((kind & EntityKind.Gate) != 0 && !string.IsNullOrEmpty(e.Text)) sv.SawGate(map, e.X, e.Y, e.Text!);
                 else if ((kind & EntityKind.Npc) != 0) sv.SawNpc(map, (int)e.B, e.X, e.Y, unix);
                 else if ((kind & EntityKind.Mob) != 0) sv.SawMob(map, (int)e.B, e.C >= 0 ? (int)e.C : ctx.Data.Mob((int)e.B)?.Level ?? -1, e.X, e.Y, unix);
@@ -246,6 +254,8 @@ public sealed class SurveyLearner : ILearner
             }
             case InboundKind.EntityLeft:
             {
+                // only the out-of-view frame (BRIEFINFODELETE), not a logout (MAP_LOGOUT_CMD), and not around a map entry
+                if (e.Opcode != 0x1C0E || !Settled(ctx)) break;
                 var s = w.Entities.SlotOf(e.Handle);
                 if (s < 0 || w.Entities.IsDead(s)) break;   // a death is not the edge of sight
                 var (x, y) = w.Entities.Pos(s, ctx.Now);
