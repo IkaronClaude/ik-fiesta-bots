@@ -43,12 +43,12 @@ public sealed class BlockLayer
     }
 
     /// <summary>Find a map's folder under a client root (resmap/&lt;kind&gt;/&lt;folder&gt;) or a flat block directory.</summary>
-    public static string? FindFile(string root, string mapName, string? folder, string ext)
+    public static string? FindFile(string root, string mapName, string? folder, string ext, bool optional = false)
     {
         // the client's own map files only (never a server data folder): the shared resolver's rules - the folder from
         // MapInfo's MapFolderName (Rou reads B_Rou/B_Rou.shbd), resmap kinds in the client's order, case-blind
         var files = ClientFiles.For(root);
-        return files.MapFile(folder ?? files.MapFolder(mapName), ext);
+        return files.MapFile(folder ?? files.MapFolder(mapName), ext, optional);
     }
 
     /// <summary>A map's size in tiles from its .shbd header alone (8 bytes; no grid is loaded): width, height; null absent.</summary>
@@ -70,7 +70,7 @@ public sealed class BlockLayer
         if (shbd is null || Read(shbd) is not { } m) return null;
         var bits = m.Bits;
         byte[]? attack = null;
-        var shabPath = FindFile(root, mapName, folder, ".shab");
+        var shabPath = FindFile(root, mapName, folder, ".shab", optional: true);   // only some maps have an attack layer
         if (shabPath is not null && Read(shabPath) is { } a && a.Stride == m.Stride && a.H == m.H)
         {
             attack = a.Bits;

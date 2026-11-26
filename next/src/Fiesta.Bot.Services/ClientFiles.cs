@@ -174,15 +174,16 @@ public sealed class ClientFiles
     }
 
     /// <summary>A map file: &lt;folder&gt;.&lt;ext&gt; in the map's folder, named after the folder actually found (ext with
-    /// its dot: ".shbd"); null (and a recorded miss) when absent.</summary>
-    public string? MapFile(string folder, string ext)
+    /// its dot: ".shbd"); null (and a recorded miss unless the file is <paramref name="optional"/> - a map may have no
+    /// .shab) when absent.</summary>
+    public string? MapFile(string folder, string ext, bool optional = false)
     {
         if (MapDir(folder) is not { } dir) return null;
         var found = dir[(dir.LastIndexOf('/') + 1)..];
         return _resolved.GetOrAdd("map|" + folder + "|" + ext, _ =>
         {
             if (FindFile(dir, found + ext) is { } f) return f;
-            Miss($"{folder}{ext}", [dir + "/" + found + ext]);
+            if (!optional) Miss($"{folder}{ext}", [dir + "/" + found + ext]);
             return null;
         });
     }

@@ -54,7 +54,7 @@ public static class MapDoorFile
     /// <summary>Load a map's doors from a client root (empty when the map has none).</summary>
     public static IReadOnlyList<MapDoor> Load(string clientRoot, string mapName, string? folder = null)
     {
-        var p = BlockLayer.FindFile(clientRoot, mapName, folder, ".sbi");
+        var p = BlockLayer.FindFile(clientRoot, mapName, folder, ".sbi", optional: true);
         if (p is null) return [];
         try { return Parse(File.ReadAllBytes(p)); } catch (IOException) { return []; }
     }
@@ -94,7 +94,7 @@ public static class ScenarioAreaFile
     /// <summary>Load a map's areas from a client root (empty when the map has no .aid).</summary>
     public static IReadOnlyList<ScenarioArea> Load(string clientRoot, string mapName, string? folder = null)
     {
-        var p = BlockLayer.FindFile(clientRoot, mapName, folder, ".aid");
+        var p = BlockLayer.FindFile(clientRoot, mapName, folder, ".aid", optional: true);
         if (p is null) return [];
         try { return Parse(File.ReadAllBytes(p)); } catch (IOException) { return []; }
     }
