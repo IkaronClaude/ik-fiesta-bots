@@ -597,6 +597,24 @@ objective progress now gives the quest up for a while, logged).
 - Levels: NextA 16 (01:12), NextM 15 (01:09). The frequent redeploys of this round (each a 1-2 minute reconnect)
   depress the hourly rates; fewer, batched restarts from here.
 
+#### Live round 01:25-01:55
+
+- The bag had 72 slots, not 48 (26148cf): the server keeps NextA's items at slots up to 66; with 2 assumed pages the
+  items past 47 were invisible to the brain yet counted as used, the bag read 0 free with 45 visible items and every
+  drop was left on the ground. A slot past the page count now adds the pages.
+- Bag auto-arrange wired (b3b4223, the old Lua's proactive sort: below 12 free slots, 15 s apart, not in fights or
+  travel); the first try answered 0x30A9 (not 0x30A8 as the real client's sort): retried after the cooldown.
+- Sellable now also: skill books we already know, recipes for a field we cannot take. NextA's first such trip sold
+  5 items (incl. the 1800-cen recipe).
+- No new pull below the rest line (60 % HP / 30 % SP): the 8 s combat window let the next pull start before the tent,
+  NextA chained fights on stones; now it rests (tent pitched at 44-59 % HP).
+- Stones: not "short" when already at the healer's cap (NextM went to buy nothing every minute, 01:37-01:44).
+- Caster: trades instant casts with a mob on it only above 75 % HP, below that it steps out (NextM died tanking a
+  level-17 MiniPinky, 51 a hit every second against 227 HP, 01:47).
+- A death no longer makes the gear / skill visits due again at the same level (a 4-minute town round that bought
+  nothing, 01:48-01:53).
+- Bag-walking upkeep conditions answer from a 2 s memo (upkeep idle ran 16 ms).
+
 #### Efficiency per bot (live, local stack)
 
 | time (UTC) | bot | lv | exp/h | quest exp | money/h | stones/h | deaths/h | chosen activity (score) |
