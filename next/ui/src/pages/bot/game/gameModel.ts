@@ -3,13 +3,14 @@
 // memoised bag slot / skill tile / entity re-renders only when its own record changed.
 import type { GameEnt, GameState } from './types';
 
-type Row = [number, string, number, number, number, number, number, string | null];
+type Row = [number, string, number, number, number, number, number, string | null, number?, number?, number?];
 
 const KIND: Record<string, GameEnt['k']> = { m: 'mob', n: 'npc', p: 'player', g: 'gate', d: 'drop' };
 
-function ent(r: Row | number[]): GameEnt {
-  const [, k, id, x, y, hp, flags, name] = r as Row;
-  return { k: KIND[k] ?? k, id, x, y, hpPct: hp, flags, dead: !!(flags & 1), aggro: !!(flags & 2), ourTarget: !!(flags & 4), huntable: !!(flags & 8), name: name ?? null };
+function ent(r: Row | number[], at?: number): GameEnt {
+  const [, k, id, x, y, hp, flags, name, tx, ty, spd] = r as Row;
+  return { k: KIND[k] ?? k, id, x, y, hpPct: hp, flags, dead: !!(flags & 1), aggro: !!(flags & 2), ourTarget: !!(flags & 4), huntable: !!(flags & 8), name: name ?? null,
+    tx: tx ?? x, ty: ty ?? y, spd: spd ?? 0, at };
 }
 
 function selfOf(s: any, prev?: GameState['self']): GameState['self'] {
@@ -29,13 +30,13 @@ function selfOf(s: any, prev?: GameState['self']): GameState['self'] {
 
 export function fromSnapshot(d: any, now: number): GameState {
   const ents: Record<string, GameEnt> = {};
-  for (const r of d.ents ?? []) ents[String(r[0])] = ent(r);
+  for (const r of d.ents ?? []) ents[String(r[0])] = ent(r, now);
   const slots: GameState['bag']['slots'] = {};
   for (const [slot, itemId, lot] of d.bag?.cells ?? []) if (itemId >= 0) slots[slot] = { itemId, lot };
   const size = d.bag?.size ?? 0, pages = d.bag?.pages || 1;
   return {
     v: 1, serverTime: now, offline: false,
-    self: { ...selfOf(d.self), target: d.target ?? -1, stats: d.stats ?? undefined },
+    self: { ...selfOf(d.self), target: d.target ?? -1, stats: d.stats ?? undefined, at: now },
     path: d.path ?? [],
     skills: Object.fromEntries((d.skills ?? []).map(([id, readyAt, durMs]: number[]) => [id, { id, cdEnd: readyAt, cdMs: durMs }])),
     skillOrder: (d.skills ?? []).map((r: number[]) => r[0]),
@@ -63,7 +64,7 @@ export function applyOps(s: GameState, ops: any[], now: number): GameState {
   };
   for (const op of ops) {
     switch (op[0]) {
-      case 'self': self = { ...selfOf(op[1], self) }; break;
+      case 'self': self = { ...selfOf(op[1], self) }; if ('x' in op[1]) self.at = now; break;
       case 'stats': self = { ...self, stats: { ...(self.stats ?? {}), ...op[1] } }; break;
       case 'ab': mut('buffs'); buffs[op[1]] = { id: op[1], endAt: op[2] || null }; break;
       case 'ab-': mut('buffs'); delete buffs[op[1]]; break;
@@ -75,9 +76,9 @@ export function applyOps(s: GameState, ops: any[], now: number): GameState {
       case 'tgt': self = { ...self, target: op[1] }; break;
       case 'path': path = op[1] ?? []; break;
       case 'map': self = { ...self, mapId: op[1] }; ents = {}; own.ents = true; path = []; break;
-      case 'e+': mut('ents'); ents[String(op[1])] = ent(op.slice(1)); break;
+      case 'e+': mut('ents'); ents[String(op[1])] = ent(op.slice(1), now); break;
       case 'e-': mut('ents'); delete ents[String(op[1])]; break;
-      case 'ep': { mut('ents'); const e = ents[String(op[1])]; if (e) ents[String(op[1])] = { ...e, x: op[2], y: op[3] }; break; }
+      case 'ep': { mut('ents'); const e = ents[String(op[1])]; if (e) ents[String(op[1])] = { ...e, x: op[2], y: op[3], tx: op[4] ?? op[2], ty: op[5] ?? op[3], spd: op[6] ?? 0, at: now }; break; }
       case 'eh': { mut('ents'); const e = ents[String(op[1])]; if (e) ents[String(op[1])] = { ...e, hpPct: op[2] }; break; }
       case 'ef': { mut('ents'); const e = ents[String(op[1])]; if (e) ents[String(op[1])] = { ...e, ...ent([0, '', 0, 0, 0, 0, op[2], null]), k: e.k, id: e.id, x: e.x, y: e.y, hpPct: e.hpPct, name: e.name }; break; }
       default: break; // unknown op: ignore (forward compatible)

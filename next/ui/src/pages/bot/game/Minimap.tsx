@@ -1,14 +1,41 @@
 // Minimap (canvas): the map art when the host has it, the bot with its facing and remaining path, mobs (aggro on us /
-// targeting us highlighted, our target ringed), players, NPCs and gates. Positions are interpolated between the
-// 5 Hz game updates and drawn every animation frame from refs, so React never re-renders for movement.
+// targeting us highlighted, our target ringed), players, NPCs and gates. Movement is drawn the way the game client
+// draws it: each update carries a move segment (where it stood at the server time, where it walks to, its speed) and
+// every animation frame places the dot along it, so the dot glides at the walking speed whatever the update cadence
+// (it was a 220 ms slide toward each ~300 ms sample, then a stop: the walk juddered). A correction that lands near
+// the extrapolated spot is blended out; a far one (teleport, map change) snaps. Drawn from refs: React never
+// re-renders for movement.
 import { useEffect, useRef, useState } from 'react';
 import type { GameEnt, GameState } from './types';
 import { image, imageFailed, lookup, type MapInfo, type MobInfo } from './staticData';
 
 const ZOOMS = [800, 1600, 3200, 6400]; // world units across the view; last = whole map when art is known
-const LERP_MS = 220;
+const BLEND_MS = 200;   // a correction near the drawn spot fades in over this long
+const SNAP_DIST = 150;  // further than this from the drawn spot: snap (teleport, link, respawn)
 
-type Track = { fx: number; fy: number; tx: number; ty: number; t: number };
+// a move segment in local time: at `t` (performance.now ms) at (x, y), walking to (tx, ty) at spd u/s; (bx, by) the
+// offset of the drawn spot from the new segment at `bt`, faded out over BLEND_MS
+type Track = { x: number; y: number; tx: number; ty: number; spd: number; t: number; bx: number; by: number; bt: number; rest?: [number, number][] };
+
+function along(tr: Track, now: number) {
+  let x = tr.x, y = tr.y;
+  if (tr.spd > 0) {
+    const dx = tr.tx - tr.x, dy = tr.ty - tr.y, d = Math.hypot(dx, dy);
+    let go = (tr.spd * Math.max(0, now - tr.t)) / 1000;
+    if (go <= d) { if (d > 0) { x += (dx / d) * go; y += (dy / d) * go; } }
+    else {
+      // past the leg's end: on along the remaining path (our own walk goes on to its next waypoint at once)
+      x = tr.tx; y = tr.ty; go -= d;
+      for (const [px, py] of tr.rest ?? []) {
+        const sd = Math.hypot(px - x, py - y);
+        if (sd >= go) { if (sd > 0) { x += ((px - x) / sd) * go; y += ((py - y) / sd) * go; } go = 0; break; }
+        x = px; y = py; go -= sd;
+      }
+    }
+  }
+  const k = Math.max(0, 1 - (now - tr.bt) / BLEND_MS);
+  return { x: x + tr.bx * k, y: y + tr.by * k };
+}
 
 export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { ent: GameEnt; h: string; x: number; y: number } | null) => void }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -20,21 +47,30 @@ export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { e
   view.current.zoom = zoom; view.current.labels = labels;
   const proj = useRef<{ sx: (x: number) => number; sy: (y: number) => number; s: number } | null>(null);
 
-  // record position changes for interpolation
+  // the server clock in local time: the smallest (arrival - server time) seen is the offset with the least delay
+  const clockOff = useRef(Number.POSITIVE_INFINITY);
+  // record move segments
   useEffect(() => {
     const now = performance.now();
-    const upd = (key: string, x: number, y: number) => {
+    const off = Date.now() - performance.now();   // performance.now -> unix ms
+    if (state.serverTime) clockOff.current = Math.min(clockOff.current, Date.now() - state.serverTime);
+    const local = (at?: number) => (at != null && Number.isFinite(clockOff.current) ? at + clockOff.current - off : now);
+    const upd = (key: string, o: { x: number; y: number; tx?: number; ty?: number; spd?: number; at?: number }) => {
       const tr = tracks.current.get(key);
-      if (!tr) { tracks.current.set(key, { fx: x, fy: y, tx: x, ty: y, t: now }); return; }
-      if (tr.tx === x && tr.ty === y) return;
-      const k = Math.min(1, (now - tr.t) / LERP_MS);
-      tr.fx = tr.fx + (tr.tx - tr.fx) * k; tr.fy = tr.fy + (tr.ty - tr.fy) * k;
-      // a jump (teleport, map change, respawn) snaps instead of sliding across the map
-      if (Math.hypot(x - tr.fx, y - tr.fy) > 600) { tr.fx = x; tr.fy = y; }
-      tr.tx = x; tr.ty = y; tr.t = now;
+      const seg = { x: o.x, y: o.y, tx: o.tx ?? o.x, ty: o.ty ?? o.y, spd: o.spd ?? 0, t: Math.min(now, local(o.at)) };
+      if (!tr) { tracks.current.set(key, { ...seg, bx: 0, by: 0, bt: 0 }); return; }
+      if (tr.x === seg.x && tr.y === seg.y && tr.tx === seg.tx && tr.ty === seg.ty && tr.spd === seg.spd) return;
+      const drawn = along(tr, now);
+      Object.assign(tr, seg);
+      const fresh = along({ ...tr, bx: 0, by: 0, bt: 0 }, now);
+      const dx = drawn.x - fresh.x, dy = drawn.y - fresh.y;
+      if (Math.hypot(dx, dy) > SNAP_DIST) { tr.bx = 0; tr.by = 0; tr.bt = 0; }
+      else { tr.bx = dx; tr.by = dy; tr.bt = now; }
     };
-    upd('self', state.self.x, state.self.y);
-    for (const [h, e] of Object.entries(state.ents)) upd(h, e.x, e.y);
+    upd('self', state.self);
+    const st = tracks.current.get('self');
+    if (st) { const p = state.path ?? []; const i = p.findIndex(([px, py]) => px === st.tx && py === st.ty); st.rest = i >= 0 ? p.slice(i + 1) : []; }
+    for (const [h, e] of Object.entries(state.ents)) upd(h, e);
     for (const k of [...tracks.current.keys()]) if (k !== 'self' && !(k in state.ents)) tracks.current.delete(k);
     stateRef.current = state;
   }, [state]);
@@ -43,8 +79,7 @@ export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { e
     let raf = 0;
     const pos = (key: string, now: number) => {
       const tr = tracks.current.get(key); if (!tr) return null;
-      const k = Math.min(1, (now - tr.t) / LERP_MS);
-      return { x: tr.fx + (tr.tx - tr.fx) * k, y: tr.fy + (tr.ty - tr.fy) * k };
+      return along(tr, now);
     };
     const draw = () => {
       raf = requestAnimationFrame(draw);
@@ -58,6 +93,7 @@ export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { e
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       const now = performance.now();
       const me = pos('self', now) ?? { x: st.self.x, y: st.self.y };
+      (window as any).__minimapSelf = { x: me.x, y: me.y, t: now };   // the drawn spot, for measuring smoothness
       const map = lookup<MapInfo>('maps', st.self.mapId);
       const cover = map?.cover;
       const whole = view.current.zoom === ZOOMS.length - 1 && cover;
@@ -152,7 +188,7 @@ export function Minimap({ state, onHover }: { state: GameState; onHover: (e: { e
     const mx = ev.clientX - r.left, my = ev.clientY - r.top;
     let best: [string, GameEnt] | null = null, bd = 9;
     for (const [h, e] of Object.entries(stateRef.current.ents)) {
-      const tr = tracks.current.get(h); const x = p.sx(tr?.tx ?? e.x), y = p.sy(tr?.ty ?? e.y);
+      const at = tracks.current.get(h); const q = at ? along(at, performance.now()) : e; const x = p.sx(q.x), y = p.sy(q.y);
       const d = Math.hypot(x - mx, y - my); if (d < bd) { bd = d; best = [h, e]; }
     }
     onHover(best ? { h: best[0], ent: best[1], x: ev.clientX, y: ev.clientY } : null);

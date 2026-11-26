@@ -6,12 +6,16 @@ export interface GameSelf {
   hp: number; maxHp: number; sp: number; maxSp: number; lp?: number | null; maxLp?: number | null;
   money: number; mapId: number; map?: string; x: number; y: number; f: number;
   moving?: boolean; mounted?: boolean; dead?: boolean; inCombat?: boolean; runSpeed?: number; target: number;
+  /** move segment: at server time `at` we stood at (x, y), walking to (tx, ty) at spd u/s (0 = standing) */
+  tx?: number; ty?: number; spd?: number; at?: number;
   stats?: Record<string, number>; freeStatPoints?: number; fame?: number; hpStones?: number; spStones?: number;
 }
 export interface GameEnt {
   k: 'mob' | 'npc' | 'player' | 'gate' | 'drop' | string; id?: number | null; name?: string | null;
   x: number; y: number; f?: number; hpPct?: number | null; lvl?: number | null; aggro?: boolean; tgt?: number | null; dead?: boolean;
   flags?: number; ourTarget?: boolean; huntable?: boolean;
+  /** move segment (see GameSelf) */
+  tx?: number; ty?: number; spd?: number; at?: number;
 }
 export interface GameSkill { id: number; cdEnd: number; cdMs: number }
 export interface GameStone { count: number; max?: number; cdEnd: number; cdMs: number }
