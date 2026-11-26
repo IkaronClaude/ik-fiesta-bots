@@ -518,7 +518,9 @@ Promotion); to be confirmed on a live hand-in.
 - The bag-slot-22 storage oddity was ours: the storage window comes one frame per page (pages 3, 0, 1, 2 in
   Z:/Storage.pcapng) and the decoder cleared the box on every frame, so occupied cells looked free and our deposits
   swapped stored items back into the bag. Fixed (d0c3e4d, test from the captured page order); a deposit that swaps
-  anything back now stops the visit with a crit line. To be proven at the next deposit (packet logs on).
+  anything back now stops the visit with a crit line. PROVEN live 01:01:46 (NextA, Rou keeper): the four page frames
+read as 9 stored items (cells 0-8), the deposit went to free cell 9: C-> RELOC_REQ {0x242E, 0x1809}, S<- CELLCHANGE
+{0x1809, 0x242E, 0xFFFF} (bag 46 emptied), CELLCHANGE {0x242E, 0x1809, item 251} (cell 9 filled), RELOC_ACK 0x0241.
 
 #### Behaviour knobs reviewed against the old Lua drivers (operator: the old Lua is the reference for tuned behaviour)
 
