@@ -189,6 +189,9 @@ public sealed class SurveyStore
         return (cx, cy, Math.Max(r, 1), best.Count);
     }
 
+    /// <summary>Write every map's catalogue (what bots saw passing through counts as much as a sweep).</summary>
+    public void SaveAll() { foreach (var m in _maps.Keys) { try { Save(m); } catch (IOException) { } } }
+
     /// <summary>Maps with a catalogue.</summary>
     public IEnumerable<string> Maps => _maps.Keys;
 }

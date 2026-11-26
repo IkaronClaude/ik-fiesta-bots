@@ -59,6 +59,10 @@ public sealed class SelfState
     public double WalkSpeed { get; internal set; } = 33;
     /// <summary>Mounted.</summary>
     public bool Mounted { get; internal set; }
+    /// <summary>Our mount's handle while riding (RIDE_ON), -1 on foot.</summary>
+    public int MountHandle { get; internal set; } = -1;
+    /// <summary>Our mount's hunger as the game last sent it (MOVER_HUNGRY), -1 never.</summary>
+    public int MountHunger { get; internal set; } = -1;
     /// <summary>Dead.</summary>
     public bool Dead { get; internal set; }
     /// <summary>Battle mode asserted this zone session.</summary>
@@ -1141,7 +1145,17 @@ public sealed class WorldState
                 break;
             case InboundKind.Mount:
                 Self.Mounted = e.A == 1;
+                Self.MountHandle = e.A == 1 ? e.Handle : -1;
                 Bump(WorldComponent.Self);
+                break;
+            case InboundKind.MountSpeed when Self.Mounted && e.Handle == Self.MountHandle:
+                // riding, our speed is the mount's (the self speed packet sends the foot speed back before RIDE_OFF)
+                if (e.B > 0) Self.RunSpeed = e.B * 120.0 / 127.0;
+                if (e.A > 0) Self.WalkSpeed = e.A * 120.0 / 127.0;
+                Bump(WorldComponent.Self);
+                break;
+            case InboundKind.MountHunger:
+                Self.MountHunger = (int)e.A;
                 break;
             case InboundKind.SelfStat:
                 if (Self.SetStat((int)e.A, e.B)) Bump(WorldComponent.Self);

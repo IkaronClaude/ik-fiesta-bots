@@ -98,7 +98,11 @@ public sealed class HostServices : IAsyncDisposable
 
     /// <summary>Persist knowledge.</summary>
     // every bot's session end saves the shared file: two teardowns at once collided on it (live 21:32, IOException)
-    public void SaveKnowledge() { lock (_knowledgeSave) File.WriteAllText(Path.Combine(DataDir, "knowledge-npcs.json"), Knowledge.ExportNpcs()); }
+    public void SaveKnowledge()
+    {
+        lock (_knowledgeSave) File.WriteAllText(Path.Combine(DataDir, "knowledge-npcs.json"), Knowledge.ExportNpcs());
+        Knowledge.Survey.SaveAll();
+    }
     private readonly object _knowledgeSave = new();
 
     /// <inheritdoc/>

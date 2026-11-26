@@ -524,6 +524,16 @@ public sealed class BotAgent
             case InboundKind.SelfLevel:
                 log.Log(LogCategory.Core, LogLevel.Note, $"LEVEL UP -> {e.A}");
                 break;
+            case InboundKind.Mount:
+                if (e.A == 1) log.Log(LogCategory.Nav, LogLevel.Note, $"mounted: mount {e.Handle} on {Context.World.Map.MapName}");
+                else log.Log(LogCategory.Nav, LogLevel.Note, $"dismounted on {Context.World.Map.MapName}: run speed {Context.World.Self.RunSpeed:0}");
+                break;
+            case InboundKind.MountSpeed when e.Handle == Context.World.Self.MountHandle:
+                log.Log(LogCategory.Nav, LogLevel.Info, $"mount {e.Handle} speed: walk {e.A} run {e.B} raw (run {Context.World.Self.RunSpeed:0} u/s)");
+                break;
+            case InboundKind.MountHunger when log.IsEnabled(LogCategory.Nav, LogLevel.Info):
+                log.Log(LogCategory.Nav, LogLevel.Info, $"mount hunger {e.A}");
+                break;
             case InboundKind.DeadMenu:
                 log.Log(LogCategory.Combat, LogLevel.Note, $"DIED on {Context.World.Map.MapName} at ({Context.World.Self.Pos.X:0},{Context.World.Self.Pos.Y:0}); revive menu {e.A} s");
                 break;

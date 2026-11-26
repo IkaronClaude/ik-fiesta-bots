@@ -195,6 +195,11 @@ public enum InboundKind : ushort
     Tent,
     /// <summary>Not decoded but passed (raw logging).</summary>
     Raw,
+    /// <summary>A mount's speed (MOVER_MOVESPEED 0xCC0D, sent after RIDE_ON): H mount handle, A walk, B run (raw, as the
+    /// self speed packet).</summary>
+    MountSpeed,
+    /// <summary>Our mount's hunger (MOVER_HUNGRY 0xCC0A, sent on RIDE_ON and as it changes): A the value.</summary>
+    MountHunger,
 }
 
 /// <summary>One decoded inbound event stored in rings. Variable text lives in <see cref="Text"/> (rare kinds only).</summary>
@@ -474,7 +479,7 @@ public sealed class SelfDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x1061, 0x2411, 0xCC02, 0xCC06, 0x4804, 0x4805, 0x1059];
+        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x1061, 0x2411, 0xCC02, 0xCC06, 0xCC0A, 0xCC0D, 0x4804, 0x4805, 0x1059];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -583,6 +588,10 @@ public sealed class SelfDecoder : IPacketDecoder
             case 0x1061: if (p.Length < 2) return; e.Kind = InboundKind.StatPointRefused; e.A = Rd.U16(p, 0); break;   // INCPOINTFAIL {err}
             case 0xCC02: e.Kind = InboundKind.Mount; e.A = 1; e.Handle = Rd.U16(p, 0); break;
             case 0xCC06: e.Kind = InboundKind.Mount; e.A = 0; break;
+            // MOVER_HUNGRY {nHungry u16}; MOVER_MOVESPEED {nMoverHandle u16, nWalk u16, nRun u16} (Z:/GateTest.pcapng: a
+            // mount's RIDE_ON is followed by HUNGRY 176 and MOVESPEED 36 / 279 against our 33 / 127 on foot)
+            case 0xCC0A: if (p.Length < 2) return; e.Kind = InboundKind.MountHunger; e.A = Rd.U16(p, 0); break;
+            case 0xCC0D: if (p.Length < 6) return; e.Kind = InboundKind.MountSpeed; e.Handle = Rd.U16(p, 0); e.A = Rd.U16(p, 2); e.B = Rd.U16(p, 4); break;
             default: return;
         }
         sink.TryWrite(e);
