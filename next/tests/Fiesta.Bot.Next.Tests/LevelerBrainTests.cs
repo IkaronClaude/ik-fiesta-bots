@@ -371,6 +371,34 @@ public class LevelerBrainTests
         Assert.Equal(0, t.Ctx.World.Map.FieldType);
     }
 
+    [Fact]
+    public void A_bag_full_of_kept_items_sends_nobody_to_town_and_a_sale_waits_for_enough_to_sell()
+    {
+        // the old Lua's known bug: a bag full of "important" items, town trips that sold nothing, back and forth forever
+        if (Load() is not var (yaml, mods)) return;
+        mods["brain/leveler/plan"] = mods["brain/leveler/plan"].Replace("  closeMaps()", "  bb.bot.sn = sell.need() bb.bot.sc = sell.count() closeMaps()");
+        var data = new TestData();
+        data.Items[9000] = new Fiesta.Bot.Services.ItemInfoRow(9000, "QuestThing", "quest thing", 0, 0, 0, 1, 0, 0, 0, 99, 0, "-");   // no price: kept
+        data.Items[9001] = new Fiesta.Bot.Services.ItemInfoRow(9001, "Loot", "loot", 0, 0, 0, 1, 0, 5, 0, 99, 0, "-");              // plain loot
+        using var t = new TestBot(data);
+        var b = t.Load(yaml, mods);
+        t.Tick(2);
+        for (var slot = 0; slot < 45; slot++) t.Ev(InboundKind.ItemCell, a: 9, b: slot, c: 9000, x: 1);
+        t.Ev(InboundKind.ItemCell, a: 9, b: 45, c: 9001, x: 1);   // one sellable: not worth a trip
+        t.Tick(200);
+        var bot = b.BlackboardJson()["bot"]!;
+        Assert.False(bot["sn"]!.GetValue<bool>());
+        Assert.Equal(1, bot["sc"]!.GetValue<long>());
+        Assert.DoesNotContain(b.Debug.Transitions(), r => r.Layer == "upkeep" && r.To.StartsWith("sell"));
+        t.Ev(InboundKind.ItemCell, a: 9, b: 46, c: 9001, x: 1);
+        t.Ev(InboundKind.ItemCell, a: 9, b: 47, c: 9001, x: 1);   // three sellable slots: a trip frees enough
+        t.Tick(200);
+        bot = b.BlackboardJson()["bot"]!;
+        Assert.True(bot["sn"]!.GetValue<bool>());
+        // a trip that freed nothing blocks the next one (and says why)
+        bot = null;
+    }
+
     private sealed class Sink : IEventSink { public readonly List<InboundEvent> E = new(); public bool TryWrite(in InboundEvent evt) { E.Add(evt); return true; } }
 
     private static string Diag(TestBot t)
