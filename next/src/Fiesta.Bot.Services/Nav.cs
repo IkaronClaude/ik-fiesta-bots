@@ -45,9 +45,14 @@ public sealed class BlockLayer
     /// <summary>Find a map's folder under a client root (resmap/&lt;kind&gt;/&lt;folder&gt;) or a flat block directory.</summary>
     public static string? FindFile(string root, string mapName, string? folder, string ext, bool optional = false)
     {
-        // the client's own map files only (never a server data folder): the shared resolver's rules - the folder from
-        // MapInfo's MapFolderName (Rou reads B_Rou/B_Rou.shbd), resmap kinds in the client's order, case-blind
+        // the client's own map files only (never a server data folder), through the shared resolver (resmap kinds in the
+        // client's order, case-blind). The map's OWN folder first, its MapInfo MapFolderName folder only when that has
+        // none: the MapFolderName folder (B_Eld for Eld) is the render map, and its walk grid differs from the one the
+        // game moves us on - Eld/Eld.shbd is the game's grid byte for byte, B_Eld/B_Eld.shbd differs in 48,012 cells, and
+        // a path planned on it walked NextA into a refused leg on every arrival (10:34-11:10); AlDn02 and PsyInDn02 alike.
+        // Maps with no folder of their own (BFGate02-04, Gate, ArkDn02) read the shared one, which matches.
         var files = ClientFiles.For(root);
+        if (folder is null && files.MapFile(mapName, ext, optional: true) is { } own) return own;
         return files.MapFile(folder ?? files.MapFolder(mapName), ext, optional);
     }
 
@@ -97,7 +102,19 @@ public sealed class BlockLayer
 /// <summary>Per-bot changes on top of the shared block layer: learned blocks with TTL, observed doors.</summary>
 public sealed class NavOverlay
 {
-    private readonly Dictionary<long, long> _blocked = new();
+    private readonly Dictionary<string, Dictionary<long, long>> _learned = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<long, long> _blocked = new();
+    private string _map = "";
+    /// <summary>The map the overlay applies to now: the blocks learned on it before come back (the game's grid does not
+    /// change between visits; only door states are forgotten).</summary>
+    public void OnMap(string map)
+    {
+        if (string.Equals(map, _map, StringComparison.OrdinalIgnoreCase)) return;
+        _map = map;
+        if (!_learned.TryGetValue(map, out var b)) _learned[map] = b = new();
+        _blocked = b;
+        _doors.Clear(); _doorTiles.Clear(); _doorTileCount = 0; Version++;
+    }
     private readonly Dictionary<string, bool> _doors = new();
     private readonly Dictionary<string, HashSet<long>> _doorTiles = new(StringComparer.Ordinal);
     private int _doorTileCount;
@@ -124,8 +141,8 @@ public sealed class NavOverlay
         if (_doorTileCount > 0) foreach (var t in _doorTiles.Values) if (t.Contains(k)) return true;
         return false;
     }
-    /// <summary>Forget everything (map change).</summary>
-    public void Clear() { _blocked.Clear(); _doors.Clear(); _doorTiles.Clear(); _doorTileCount = 0; Version++; }
+    /// <summary>Forget the door states (map change); learned blocks stay with their map.</summary>
+    public void Clear() { _doors.Clear(); _doorTiles.Clear(); _doorTileCount = 0; Version++; }
     /// <summary>A copy for a path job (jobs must not read the tick's live overlay).</summary>
     public HashSet<long> SnapshotBlocked(long nowMs)
     {

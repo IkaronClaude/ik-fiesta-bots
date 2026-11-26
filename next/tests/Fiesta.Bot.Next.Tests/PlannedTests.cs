@@ -601,6 +601,34 @@ public class ActionTests
     }
 
     [Fact]
+    public void A_refused_leg_blocks_its_tiles_on_that_map_and_they_survive_a_visit_elsewhere()
+    {
+        var o = new NavOverlay();
+        o.OnMap("Eld");
+        for (var tx = 10; tx <= 20; tx++) o.LearnBlocked(tx, 5, long.MaxValue);
+        Assert.Equal(11, o.SnapshotBlocked(0).Count);
+        o.OnMap("RouCos03");
+        Assert.Empty(o.SnapshotBlocked(0));                 // another map: its own (none yet)
+        o.Clear();                                          // a map change forgets doors only
+        o.OnMap("Eld");
+        Assert.Equal(11, o.SnapshotBlocked(0).Count);       // back on Eld: what the game taught us is still there
+    }
+
+    [Fact]
+    public void A_move_the_game_refuses_teaches_every_tile_of_the_leg()
+    {
+        using var t = new TestBot();
+        t.Tick(30);
+        t.Ctx.Move.Order(new MoveOrder(5100, 5000, false, 1, ActionId.None), t.Ctx, 1);
+        t.Tick(2);
+        t.Ev(InboundKind.MoveFail, x: 5000, y: 5000);         // refused where we stand
+        t.Tick();
+        var blocked = t.Ctx.Overlay.SnapshotBlocked(t.Clock.NowMs);
+        Assert.True(blocked.Count >= 15, $"{blocked.Count} tiles");   // 100 units = 16 tiles, the one we stand on excluded
+        Assert.DoesNotContain(((long)800 << 32) | 800u, blocked);
+    }
+
+    [Fact]
     public void A_cancelled_move_stops_walking()
     {
         using var t = new TestBot();

@@ -91,6 +91,7 @@ public sealed class MoveController
             _jobDone = true; _jobOk = true; _ticket = JobTicket.None;
             return;
         }
+        ctx.Overlay.OnMap(ctx.World.Map.MapName);   // the blocks learned on this map (kept across visits)
         var (sx, sy) = ctx.World.Self.Pos;
         _ticket = ctx.Nav.RequestPath(ctx.BotIndex, ctx.World.Map.MapName, ctx.Overlay.Count > 0 ? ctx.Overlay.SnapshotBlocked(ctx.Now) : null,
             (uint)sx, (uint)sy, (uint)o.X, (uint)o.Y, (_, ok) => { _jobOk = ok; _jobDone = true; ctx.PostJobDone(_ticket, ok); });
@@ -232,13 +233,17 @@ public sealed class MoveController
                 if (!Moving && _order is null) break;
                 if (kind == MoveFailKind.Blocked && Moving)
                 {
-                    // learn the first tile of the refused leg past the carried position, in this bot's overlay only
+                    // the game refused the whole leg: every tile it crosses past the one we stand on is learned as blocked
+                    // for this map (the client's grid differs from the game's in places - Rou in 23,386 cells), so the
+                    // next path goes round it instead of repeating the same refused leg
                     var dx = _legTx - evt.X; var dy = _legTy - evt.Y; var d = Math.Sqrt(dx * dx + dy * dy);
-                    if (d > 1)
+                    var (sx, sy) = BlockLayer.ToTile(evt.X, evt.Y);
+                    for (var s = 0.0; d > 1 && s <= d; s += BlockLayer.WorldPerTile / 2)
                     {
-                        var (tx, ty) = BlockLayer.ToTile(evt.X + dx / d * 8, evt.Y + dy / d * 8);
-                        ctx.Overlay.LearnBlocked(tx, ty, ctx.Now + 300_000);
+                        var (tx, ty) = BlockLayer.ToTile(evt.X + dx / d * s, evt.Y + dy / d * s);
+                        if (tx != sx || ty != sy) ctx.Overlay.LearnBlocked(tx, ty, long.MaxValue);
                     }
+                    ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"nav: the game refused ({_legFx:0},{_legFy:0})->({_legTx:0},{_legTy:0}) on {ctx.World.Map.MapName}: its tiles are blocked for this map now, re-planning");
                 }
                 if (++_fails > 4 || _order is null) { Fail(ctx, kind == MoveFailKind.Desync ? LocalRefusal.Desync : LocalRefusal.MoveFailed, $"{_fails} refusals"); break; }
                 _leg = -1; _path.Clear();
@@ -251,6 +256,7 @@ public sealed class MoveController
                 if (_action.Value > 0) ctx.Actions.Resolve(_action, ActionState.Failed, (ushort)LocalRefusal.NotInWorld);
                 _action = ActionId.None; _order = null; _path.Clear(); _leg = -1;
                 ctx.Overlay.Clear();
+                ctx.Overlay.OnMap(ctx.World.Map.MapName);
                 break;
         }
     }
