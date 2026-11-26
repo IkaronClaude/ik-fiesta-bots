@@ -779,6 +779,25 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
 
     /// <summary>Does using the item summon a mount (named by the client's MoverItem / Riding tables)?</summary>
     [LuaFn] public bool IsMount(int itemId) => (Ctx.Data as ClientData)?.IsMountItem(itemId) == true;
+    private List<(int Npc, int Item)>? _mountOffers;
+    /// <summary>Mounts on sale in the shop lists seen (host-wide catalogue): how many; read each with
+    /// <see cref="MountOfferAt"/>. Rebuilt on each call (rare: a buy decision).</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.On)] public int MountOffers()
+    {
+        _mountOffers = new();
+        if (Ctx.Knowledge is KnowledgeStore ks && Ctx.Data is ClientData cd)
+            foreach (var o in ks.ShopOffers()) if (cd.Mount(o.ItemId) is not null) _mountOffers.Add((o.NpcId, o.ItemId));
+        return _mountOffers.Count;
+    }
+    /// <summary>The i-th mount offer (0-based) of the last <see cref="MountOffers"/>: item, seller npc id, price (ItemInfo
+    /// BuyPrice), run speed multiple, hours it lasts (0 = for good); item -1 out of range.</summary>
+    [LuaFn] public (int Item, int Npc, int Price, double RunMult, int Hours) MountOfferAt(int i)
+    {
+        if (_mountOffers is null || i < 0 || i >= _mountOffers.Count) return (-1, -1, -1, -1, -1);
+        var (npc, item) = _mountOffers[i];
+        var m = (Ctx.Data as ClientData)!.Mount(item)!;
+        return (item, npc, Ctx.Data.Item(item)?.BuyPrice ?? -1, m.RunPermille / 1000.0, m.Hours);
+    }
     /// <summary>A mount item's ride from the client data: run speed as a multiple of our foot speed, the cast before
     /// riding (ms), how long the item lasts (hours, 0 = for good); (-1, -1, -1) when it is no mount.</summary>
     [LuaFn] public (double RunMult, int CastMs, int Hours) MountRide(int itemId)

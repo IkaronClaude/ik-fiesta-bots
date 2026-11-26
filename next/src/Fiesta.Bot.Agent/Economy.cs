@@ -155,6 +155,22 @@ public sealed class Economy
         return (exp / hours, net / hours, deaths / hours, stones / hours);
     }
 
+    /// <summary>Money spent per hour over the last <paramref name="minutes"/> minutes: everything, and the part that went
+    /// on soul stones (the rest is the other upkeep: gear, books, potions, repairs).</summary>
+    public (double SpendH, double StonesH) Spend(int minutes, long now)
+    {
+        minutes = Math.Clamp(minutes, 1, Minutes);
+        var m = now / 60_000; long spend = 0, stones = 0;
+        for (var k = 0; k < minutes; k++)
+        {
+            var i = (int)((((m - k) % Minutes) + Minutes) % Minutes);
+            if (_bucketMinute[i] != m - k) continue;
+            spend += _spend[i]; stones += _stones[i];
+        }
+        var hours = Math.Max(1.0 / 60, Math.Min(minutes, !_begun ? 1 : (now - _startedAt) / 60_000.0 + 1) / 60.0);
+        return (spend / hours, stones / hours);
+    }
+
     // ---- persistence across sessions and host restarts (times as Unix minutes / ms)
     /// <summary>The ledger as plain data: the last hour's buckets keyed by Unix minute, the per-mob numbers, quest exp.</summary>
     public sealed record Saved(long StartedUnixMs, long QuestExp, List<long[]> Buckets, Dictionary<int, long[]> Mobs, long ExpLostSum = 0, int ExpLostCount = 0,

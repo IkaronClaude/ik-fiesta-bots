@@ -295,13 +295,15 @@ public sealed class FleetStore(string path)
 /// <summary>Brain checkpoints for resume (files).</summary>
 public sealed class CheckpointStore(string dir)
 {
+    // a blackboard may hold math.huge (an operator request scored above every plan): written as "Infinity", not refused
+    private static readonly JsonSerializerOptions Opts = new() { NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals };
     /// <summary>Save.</summary>
-    public void Save(BrainCheckpoint c) { Directory.CreateDirectory(dir); File.WriteAllText(Path.Combine(dir, c.BotId + ".json"), JsonSerializer.Serialize(c)); }
+    public void Save(BrainCheckpoint c) { Directory.CreateDirectory(dir); File.WriteAllText(Path.Combine(dir, c.BotId + ".json"), JsonSerializer.Serialize(c, Opts)); }
     /// <summary>Latest for a bot.</summary>
     public BrainCheckpoint? Latest(string botId)
     {
         var f = Path.Combine(dir, botId + ".json");
-        try { return File.Exists(f) ? JsonSerializer.Deserialize<BrainCheckpoint>(File.ReadAllText(f)) : null; } catch (JsonException) { return null; }
+        try { return File.Exists(f) ? JsonSerializer.Deserialize<BrainCheckpoint>(File.ReadAllText(f), Opts) : null; } catch (JsonException) { return null; }
     }
 }
 

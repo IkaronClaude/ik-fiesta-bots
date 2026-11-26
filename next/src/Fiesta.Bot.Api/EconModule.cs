@@ -24,6 +24,8 @@ public sealed partial class EconModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>The share of the last <paramref name="minutes"/> minutes spent walking on foot (0..1) and the minutes
     /// measured: what a mount would shorten.</summary>
     [LuaFn] public (double Share, double Minutes) WalkShare(int minutes) => Ctx.World.Economy.WalkShare(minutes, Ctx.Now);
+    /// <summary>Money spent per hour over the last <paramref name="minutes"/> minutes: all of it, and the soul stones' part.</summary>
+    [LuaFn] public (double SpendH, double StonesH) Spend(int minutes) => Ctx.World.Economy.Spend(minutes, Ctx.Now);
 
     /// <summary>Exp that came with no kill (quest rewards) since the session began.</summary>
     [LuaFn] public long QuestExp() => Ctx.World.Economy.QuestExp;
