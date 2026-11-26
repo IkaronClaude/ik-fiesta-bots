@@ -548,6 +548,59 @@ public class ActionTests
     }
 
     [Fact]
+    public void An_unanswered_gate_click_is_logged_and_retried_never_a_map_avoid()
+    {
+        using var t = new TestBot();
+        t.Tick(30);
+        t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)(EntityKind.Gate | EntityKind.Npc), b: 1, x: 5050, y: 5000, text: "Other");
+        t.Tick();
+        var a = t.Ctx.Procedures.Start(new GateHopProcedure(3000, "Other"), ActionKind.Gate, 1, t.Ctx, 30000);
+        t.Tick();
+        Assert.Contains(IntentEncoder.OpNpcClick, t.Sent);
+        t.Tick(150);                                   // no menu for 7.5 s
+        Assert.Equal(ActionState.Failed, t.Ctx.Actions.Get(a).State);
+        Assert.Empty(t.Ctx.RefusedMaps);               // a gate is never banned: the fault is ours
+    }
+
+    [Fact]
+    public void A_gate_click_waits_for_the_game_held_position_to_be_in_reach()
+    {
+        using var t = new TestBot();
+        t.Tick(30);
+        t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)(EntityKind.Gate | EntityKind.Npc), b: 1, x: 5050, y: 5000, text: "Other");
+        t.Tick();
+        // the game still holds us 1600 away (e.g. moves it did not take): no click from here
+        t.Ctx.World.Self.GetType().GetProperty("ServerPos")!.SetValue(t.Ctx.World.Self, ((uint)6650, (uint)5000));
+        t.Sent.Clear();
+        t.Ctx.Procedures.Start(new GateHopProcedure(3000, "Other"), ActionKind.Gate, 1, t.Ctx, 30000);
+        t.Tick(2);
+        Assert.DoesNotContain(IntentEncoder.OpNpcClick, t.Sent);
+        // our belief is re-synced to where the game has us, so the walk in starts from the true spot (the test world
+        // has no walkability map, so the walk itself is not run here)
+        Assert.True(t.Ctx.World.Self.Pos.X > 6000);
+    }
+
+    [Fact]
+    public void The_click_answer_timeout_and_reach_are_learned_from_answered_clicks()
+    {
+        using var t = new TestBot();
+        t.Tick(30);
+        Assert.Equal(4321, Camp.AnswerTimeoutMs(t.Ctx, 4321));            // nothing measured: the caller's prior
+        t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)EntityKind.Npc, b: 28, x: 5100, y: 5000);
+        t.Tick();
+        for (var i = 0; i < Camp.MinSamples; i++)
+        {
+            Camp.Click(t.Ctx, 3000, -1);
+            t.Clock.NowMs += 40 + i;                                       // answers 40-47 ms later
+            t.Ev(InboundKind.NpcMenu, a: 28);
+            t.Tick(1, 0);
+        }
+        var timeout = Camp.AnswerTimeoutMs(t.Ctx, 4321);
+        Assert.InRange(timeout, 47 * 2, 47 * 4 + 10);                     // a high percentile x4, at least the slowest x2
+        Assert.Equal(100, Camp.AnsweredReach(t.Ctx), 0);                  // answered from 100 away (game-held position)
+    }
+
+    [Fact]
     public void A_cancelled_move_stops_walking()
     {
         using var t = new TestBot();

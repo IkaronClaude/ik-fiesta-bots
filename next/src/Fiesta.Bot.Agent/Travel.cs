@@ -19,8 +19,6 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
     private RouteHop _next;
     private int _hopFails, _replans;
     // destinations whose gate refused us (no menu: the server refuses silently, e.g. a level requirement); routed around
-    private readonly HashSet<int> _refusedInto = new();
-    private int _menuRefusals;
     private bool _waited;
     private readonly HashSet<(int, int)> _explored = new();
     private const double GateSight = 700;
@@ -57,10 +55,10 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         }
         if (++_replans > 40) { Fail("too many re-plans"); return; }
         // maps whose easiest hostile mob is above maxMobLevel are routed around (crossing them is how bots died)
-        Func<int, bool>? avoid = _refusedInto.Count == 0 && ctx.RefusedMaps.Count == 0 ? null : m => _refusedInto.Contains(m) || ctx.Refused(m);
+        Func<int, bool>? avoid = ctx.RefusedMaps.Count == 0 ? null : m => ctx.Refused(m);
         // the walk avoids the spawn areas of hostile mobs above maxMobLevel that lie on it
         Func<SpawnArea, bool>? danger = maxMobLevel == int.MaxValue ? null : a => ctx.Data.Mob(a.MobId) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi && mi.Level > maxMobLevel;
-        if (_refusedInto.Contains(target.Id) || ctx.Refused(target.Id)) { Fail($"the gate into {TargetMap} refuses us"); return; }
+        if (ctx.Refused(target.Id)) { Fail($"{TargetMap} is avoided"); return; }
         var route = ctx.Atlas.Route(w.Map.MapId, px, py, target.Id, x, y, avoid, danger);
         if (route is null || route.Hops.Count == 0)
         {
@@ -144,24 +142,13 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         Plan(ctx);
     }
 
-    /// <summary>How long a map whose gate answered no menu twice is routed around.</summary>
-    public const long GateSilentRefuseMs = 5 * 60 * 1000;
-
     private void Settle(AgentContext ctx)
     {
         if (_hop is null || _hop.Status == ProcedureStatus.Running) return;
         if (_hop.Status == ProcedureStatus.Succeeded) { _hop = null; _hopFails = 0; Go("start", ctx, 0); return; }
         ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"travel: gate hop failed ({_hop.FailReason})");
-        if (_hop.FailReason?.Contains("awaitMenu") == true && ++_menuRefusals >= 2)
-        {
-            _refusedInto.Add(_next.To); _menuRefusals = 0;
-            // remembered for later trips only briefly: a silent gate is not a shut map. After the 02:24 reconnect NextM's
-            // clicks on the gates to Rou, Eld and RouVal01 all went unanswered (no NPC answered any click in that
-            // session, the next session's first click opened a menu), and the old one-hour refusal cut it off from both
-            // towns and every quest field for an hour ("no quest", 02:38-02:48)
-            ctx.RefusedMaps[_next.To] = ctx.Now + GateSilentRefuseMs;
-            ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"travel: the gate to {ctx.Data.Map(_next.To)?.MapName} answers no menu twice: routing around it for {GateSilentRefuseMs / 60000} min");
-        }
+        // a gate that did not answer is never avoided (it answers a real player every time: the fault is ours, logged
+        // loudly by the hop); the hop is retried, re-checking its preconditions (walk in again, the game-held position)
         _hop = null;
         if (++_hopFails > 3) { Fail("gate hops keep failing"); return; }
         Go("start", ctx, 0);

@@ -646,8 +646,35 @@ public interface IKnowledgeStore
 }
 
 /// <summary>In-memory knowledge store with interval estimators, optionally persisted to a JSON file.</summary>
+/// <summary>NPC click statistics shared by a host's bots (the server's behaviour): the round trip of answered clicks and
+/// the distance (game-held position to the NPC) the game answered from.</summary>
+public sealed class ClickStats
+{
+    private readonly object _lock = new();
+    private readonly double[] _rtt = new double[256], _reach = new double[256];
+    private int _rttN, _reachN;
+    /// <summary>One answered click.</summary>
+    public void Answered(double rttMs, double dist)
+    {
+        lock (_lock) { _rtt[_rttN++ % _rtt.Length] = rttMs; if (dist >= 0) _reach[_reachN++ % _reach.Length] = dist; }
+    }
+    /// <summary>Sorted round trips (a copy) and the farthest answered distance (-1 none).</summary>
+    public (double[] Rtt, double Reach) Snapshot()
+    {
+        lock (_lock)
+        {
+            var a = _rtt[..Math.Min(_rttN, _rtt.Length)]; Array.Sort(a);
+            var n = Math.Min(_reachN, _reach.Length); var m = n == 0 ? -1.0 : 0.0;
+            for (var i = 0; i < n; i++) m = Math.Max(m, _reach[i]);
+            return (a, m);
+        }
+    }
+}
+
 public sealed class KnowledgeStore : IKnowledgeStore
 {
+    /// <summary>NPC click statistics (host-wide).</summary>
+    public ClickStats Clicks { get; } = new();
     private sealed class Acc
     {
         public double Lo = double.NaN, Hi = double.NaN, Sum; public int N, Bounds;

@@ -528,11 +528,12 @@ public class UpgradeAtNpcProcedure(int npcHandle, byte itemSlot, byte stoneSlot,
         if (!_started)
         {
             if (Camp.FoldFirst(ctx, Action.Value)) return;
+            if (Camp.NotClickable(ctx, npcHandle) is { } why) { Fail(why); return; }
             _started = true;
             ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
             ctx.World.Bag.StorageOpenAt = -1;
-            ctx.Actions.Send(IntentEncoder.NpcClick((ushort)npcHandle, Action.Value));
-            Go("awaitMenu", ctx, 5000);
+            Camp.Click(ctx, npcHandle, Action.Value);
+            Go("awaitMenu", ctx, Camp.AnswerTimeoutMs(ctx, 5000));
             return;
         }
         if (Expired(ctx)) Fail($"upgrade at npc {npcHandle}: nothing in step {Step}");
@@ -585,11 +586,12 @@ public class OpenShopProcedure(int npcHandle, int menuReply = 1) : ProcedureBase
         if (!_started)
         {
             if (Camp.FoldFirst(ctx, Action.Value)) return;
+            if (Camp.NotClickable(ctx, NpcHandle) is { } why) { Fail(why); return; }
             _started = true;
             ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
             ctx.World.Bag.StorageOpenAt = -1;
-            ctx.Actions.Send(IntentEncoder.NpcClick((ushort)NpcHandle, Action.Value));
-            Go("awaitMenuOrShop", ctx, 5000);
+            Camp.Click(ctx, NpcHandle, Action.Value);
+            Go("awaitMenuOrShop", ctx, Camp.AnswerTimeoutMs(ctx, 5000));
             return;
         }
         if (Expired(ctx)) Fail($"no shop list from npc {NpcHandle} in step {Step}");
@@ -669,14 +671,15 @@ public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewar
         if (!_started)
         {
             if (NpcHandle >= 0 && Camp.FoldFirst(ctx, Action.Value)) return;
+            if (NpcHandle >= 0 && Camp.NotClickable(ctx, NpcHandle) is { } why) { Fail(why); return; }
             _started = true;
             if (QuestId >= 0 && ctx.Data.Quest(QuestId) is { } q) _answers = QuestScripts.MenuAnswers(q.Script);
             if (NpcHandle >= 0)
             {
                 ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value)); ctx.World.Bag.StorageOpenAt = -1;
-                ctx.Actions.Send(IntentEncoder.NpcClick((ushort)NpcHandle, Action.Value));
+                Camp.Click(ctx, NpcHandle, Action.Value);
             }
-            Go("awaitPage", ctx, 4000);
+            Go("awaitPage", ctx, Camp.AnswerTimeoutMs(ctx, 4000));
             return;
         }
         if (Expired(ctx))
@@ -895,15 +898,44 @@ public sealed class GateHopProcedure(int gateHandle, string? destMap) : Procedur
         }
         if (Step == "click" && !_clicked)
         {
+            // preconditions a real player meets every time (a gate always answers them): not camped (fold and wait for
+            // the ack), alive, and within reach from the position the GAME holds for us (its last move ack / sync)
             if (Camp.FoldFirst(ctx, Action.Value)) return;
+            if (ctx.World.Self.Dead) { if (Expired(ctx)) Fail("dead at the gate"); return; }
+            var gs = ctx.World.Entities.SlotOf(GateHandle);
+            if (gs < 0) { Fail($"gate {GateHandle} not in view"); return; }
+            var (gx, gy) = ctx.World.Entities.Pos(gs, ctx.Now);
+            var sp = ctx.World.Self.ServerPos;
+            if (Dist(((double)sp.X, (double)sp.Y), (gx, gy)) > ClickRange)
+            {
+                ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"gate: the game holds us at ({sp.X},{sp.Y}), {Dist(((double)sp.X, (double)sp.Y), (gx, gy)):0} from the gate: re-syncing to it and walking in again");
+                ctx.World.Self.Pos = (sp.X, sp.Y);   // our belief was wrong: walk from where the game has us
+                Go("start", ctx, 0);
+                return;
+            }
             _clicked = true;
+            // no other window open: end any trade / NPC talk first
             ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value)); ctx.World.Bag.StorageOpenAt = -1;
-            ctx.Actions.Send(IntentEncoder.NpcClick((ushort)GateHandle, Action.Value));
-            Go("awaitMenu", ctx, 6000);
+            Camp.Click(ctx, GateHandle, Action.Value);
+            _clickAt = ctx.Now;
+            Go("awaitMenu", ctx, Camp.AnswerTimeoutMs(ctx, 6000));
             return;
         }
-        if (Expired(ctx)) Fail($"gate: nothing in step {Step}");
+        if (Expired(ctx))
+        {
+            if (Step == "awaitMenu")
+            {
+                // an unanswered gate click is always OUR bug (a gate answers a real player every time): say everything
+                // that decides it, loudly, so it is fixed - never avoided
+                var self = ctx.World.Self; var gs = ctx.World.Entities.SlotOf(GateHandle);
+                var (gx, gy) = gs >= 0 ? ctx.World.Entities.Pos(gs, ctx.Now) : (-1, -1);
+                ctx.Log.Log(LogCategory.Nav, LogLevel.Crit,
+                    $"GATE CLICK UNANSWERED (our bug): gate {GateHandle} at ({gx:0},{gy:0}); us believed ({self.Pos.X:0},{self.Pos.Y:0}), game-held ({self.ServerPos.X},{self.ServerPos.Y}); dead {self.Dead}, tent {self.TentPitched}, mounted {self.Mounted}, battle mode {self.BattleMode}; moving {ctx.Move.Moving}; storage open {ctx.World.Bag.StorageOpenAt >= 0}; clicked {(ctx.Now - _clickAt) / 1000.0:0.0} s ago - see the packet log around this time");
+            }
+            Fail($"gate: nothing in step {Step}");
+        }
     }
+    private long _clickAt;
 
     /// <inheritdoc/>
     public override void Apply(in InboundEvent e, AgentContext ctx)
@@ -1090,6 +1122,68 @@ public sealed class ProcedureRunner
 public static class Camp
 {
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<AgentContext, System.Runtime.CompilerServices.StrongBox<long>> _sentAt = new();
+
+    // ---- click statistics, host-wide (ctx.Knowledge.Clicks: the server's behaviour, not one character's): every answered
+    // click is a sample of the round trip (click -> menu / page / shop) and of the distance the game answers from
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<AgentContext, System.Runtime.CompilerServices.StrongBox<(long At, double Dist)>> _pending = new();
+    private static ClickStats? Stats(AgentContext ctx) => (ctx.Knowledge as KnowledgeStore)?.Clicks;
+
+    /// <summary>Send an NPC / gate click and remember it (when, from how far the game has us) for the statistics.</summary>
+    public static void Click(AgentContext ctx, int npcHandle, int actionId)
+    {
+        ctx.Actions.Send(IntentEncoder.NpcClick((ushort)npcHandle, actionId));
+        var s = ctx.World.Entities.SlotOf(npcHandle);
+        var d = -1.0;
+        if (s >= 0) { var (nx, ny) = ctx.World.Entities.Pos(s, ctx.Now); d = MoveController.Dist(ctx.World.Self.ServerPos.X, ctx.World.Self.ServerPos.Y, nx, ny); }
+        _pending.GetOrCreateValue(ctx).Value = (ctx.Now, d);
+    }
+
+    /// <summary>Feed an inbound event: the NPC's answer to our last click closes its sample.</summary>
+    public static void Observe(in InboundEvent e, AgentContext ctx)
+    {
+        if (e.Kind is not (InboundKind.NpcMenu or InboundKind.ServerMenu or InboundKind.QuestDialog or InboundKind.ShopList or InboundKind.StorageList)) return;
+        if (!_pending.TryGetValue(ctx, out var p) || p.Value.At <= 0) return;
+        var (at, d) = p.Value; p.Value = (0, -1);
+        Stats(ctx)?.Answered(ctx.Now - at, d);
+    }
+
+    /// <summary>The samples a statistic needs before it replaces its prior (bot behaviour: below this a percentile is noise).</summary>
+    public const int MinSamples = 8;
+
+    /// <summary>How long to wait for an NPC's answer: the 95th percentile of our measured click round trips, x4 (the answer
+    /// shares the server's tick with everything else; four times a high percentile waits out a busy tick without waiting
+    /// long on a click that was lost). Before <see cref="MinSamples"/> answers: the caller's prior (its step budget).</summary>
+    public static int AnswerTimeoutMs(AgentContext ctx, int prior)
+    {
+        if (Stats(ctx) is not { } st) return prior;
+        var a = st.Snapshot().Rtt; var n = a.Length;
+        if (n < MinSamples) return prior;
+        return (int)Math.Max(a[(int)(0.95 * (n - 1))] * 4, a[n - 1] * 2);   // never under twice the slowest answer seen
+    }
+
+    /// <summary>The farthest the game has answered one of our clicks from (game-held position to the NPC), -1 none yet: a
+    /// click from farther than any answered one walks in first, as a player steps up to an NPC that did not react.</summary>
+    public static double AnsweredReach(AgentContext ctx)
+    {
+        return Stats(ctx)?.Snapshot().Reach ?? -1;
+    }
+
+    /// <summary>Why an NPC click would go unanswered now (dead, the NPC not in view, the game holding us farther than any
+    /// click it has answered), null when it can be sent. Out of reach re-syncs our believed position to the game's, so the
+    /// next walk starts there.</summary>
+    public static string? NotClickable(AgentContext ctx, int npcHandle)
+    {
+        var self = ctx.World.Self;
+        if (self.Dead) return "dead: no click";
+        var s = ctx.World.Entities.SlotOf(npcHandle);
+        if (s < 0) return $"npc {npcHandle} not in view";
+        var (nx, ny) = ctx.World.Entities.Pos(s, ctx.Now);
+        var d = MoveController.Dist(self.ServerPos.X, self.ServerPos.Y, nx, ny);
+        var reach = AnsweredReach(ctx);
+        if (reach < 0 || d <= reach) return null;
+        self.Pos = (self.ServerPos.X, self.ServerPos.Y);
+        return $"the game holds us at ({self.ServerPos.X},{self.ServerPos.Y}), {d:0} from npc {npcHandle}: re-synced, walk in again";
+    }
 
     /// <summary>True while the tent is still pitched (a fold was sent, at most once every 2 s): the caller waits.</summary>
     public static bool FoldFirst(AgentContext ctx, int actionId)

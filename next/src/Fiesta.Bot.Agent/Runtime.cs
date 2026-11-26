@@ -504,6 +504,7 @@ public sealed class BotAgent
     private void LogEvent(in InboundEvent e)
     {
         var log = Context.Log;
+        Camp.Observe(e, Context);
         if (e.Kind == InboundKind.Revive && Context.World.Economy.LossLevels.NoLossMax is var nl && nl > _loggedNoLoss)
         {
             _loggedNoLoss = nl;
