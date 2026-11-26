@@ -321,6 +321,9 @@ public sealed class CombatController
     private bool _bashWanted;
     private bool _rearm;
     private long _castUntil;
+    /// <summary>How long casts wait after a refusal that a retry at tick rate would only repeat (0x0FC4, 0x0FC6,
+    /// 0x0FCA; bot behaviour, as the old drivers learned).</summary>
+    public const int RefusedCastHoldMs = 600;
     private int _castSkill = -1;
     private int _castTarget = -1;
     private double _castDist = -1;
@@ -578,13 +581,15 @@ public sealed class CombatController
             }
             case InboundKind.CastFail when e.A is 0x0FC4 or 0x0FC6:
                 CastsRefused++;
-                _castUntil = ctx.Now + 600;
+                _castUntil = ctx.Now + RefusedCastHoldMs;
                 break;
             // out of range although the client's own range rule said in range: the game holds us (or the target) elsewhere
             // than we believe - re-sync our position to the game's, so the next check walks in from where we really are
             case InboundKind.CastFail when e.A == 0x0FCA && _castSkill >= 0:
                 CastsRefused++;
-                _castUntil = 0;
+                // held like the other refusals: re-sent every tick it drew 36 refusals in 2 s at a ranged mob (NextA,
+                // Job1_Dn01, 18:36:57); the re-sync below lets the next try start from the game's position
+                _castUntil = ctx.Now + RefusedCastHoldMs;
                 ctx.Log.Log(LogCategory.Combat, LogLevel.Info, $"skill {_castSkill}: refused out of range at {_castDist:0} by our position: re-syncing to the game's ({ctx.World.Self.ServerPos.X},{ctx.World.Self.ServerPos.Y})");
                 ctx.World.Self.Pos = (ctx.World.Self.ServerPos.X, ctx.World.Self.ServerPos.Y);
                 break;
