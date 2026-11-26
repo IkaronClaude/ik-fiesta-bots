@@ -204,6 +204,9 @@ public sealed class LayerRuntime
     internal readonly List<ConditionTrace> Traces = new();
     internal readonly List<StateRuntime> Path = new();
     internal int BudgetStrikes;
+    // a layer over its budget three times in a row is restarted from its initial state (the rest of the brain runs on);
+    // RestartPending is acted on after the layer's run, Restarts / FirstRestartAt count them, Halted stops only this layer
+    internal bool RestartPending, Halted; internal int Restarts; internal long FirstRestartAt = -1;
     /// <summary>Name.</summary>
     public string Name => Def.Name;
     /// <summary>Layer index in the action system (1 = highest brain layer; 0 is the operator).</summary>
@@ -263,8 +266,14 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
     public SensorRegistry Sensors => _sensors;
     /// <summary>Debug tap.</summary>
     public DebugTap Debug { get; } = new();
-    /// <summary>Suspended after three budget overruns in a row (the operator resumes).</summary>
-    public bool Suspended => _suspended;
+    /// <summary>Suspended (the operator resumes): the whole brain, or a layer halted after <see cref="RestartsBeforeHalt"/>
+    /// budget restarts within <see cref="RestartWindowMs"/>.</summary>
+    public bool Suspended => _suspended || _layers.Exists(l => l.Halted);
+    /// <summary>Budget restarts of one layer within <see cref="RestartWindowMs"/> before that layer alone halts (bot
+    /// behaviour: a layer that overruns again right after a fresh start would only loop).</summary>
+    public const int RestartsBeforeHalt = 3;
+    /// <summary>The window those restarts are counted in (ms).</summary>
+    public const long RestartWindowMs = 600_000;
     /// <summary>Build / load errors (a brain with errors does not tick).</summary>
     public List<string> LoadErrors { get; } = new();
     /// <inheritdoc/>
@@ -451,11 +460,12 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
         for (var i = 0; i < _layers.Count; i++)
         {
             var lr = _layers[i];
-            if (!lr.Due(_now)) continue;
+            if (lr.Halted || !lr.Due(_now)) continue;
             ApiScope.Bind(_modules, _arena, _errors, lr.Index);
             _engine.BindLayer(lr.Name);
             var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
             RunLayer(lr, ctx);
+            if (lr.RestartPending) RestartLayer(lr);
             var us = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1e6 / System.Diagnostics.Stopwatch.Frequency;
             if (_now - lr.MaxAtMs > 60_000) { lr.MaxUs = 0; lr.MaxAtMs = _now; }
             if (us > lr.MaxUs) { lr.MaxUs = us; lr.MaxState = lr.Path.Count > 0 ? lr.Path[^1].Name : null; }
@@ -722,10 +732,13 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
         {
             _ctx.Events.Raise(EventKind.Budget, lr.Index);
             // the first 30 s of a brain warm the caches (route searches, tables): an overrun then is logged, never a strike
+            // three in a row: restart only this layer (one layer's slow state no longer stops the whole bot - NextM stood
+            // in a shop window from 15:53 when its upkeep tick overran); a layer that keeps doing it halts alone
             if (_now - _startAt >= 30_000 && ++lr.BudgetStrikes >= 3)
             {
-                _suspended = true;
-                _ctx.Log.Text(LogCategory.Brain, LogLevel.Crit, $"brain suspended: layer {lr.Name} state {s.Name} over its {lr.Def.BudgetMs} ms budget three times in a row");
+                lr.BudgetStrikes = 0;
+                lr.RestartPending = true;
+                _ctx.Log.Text(LogCategory.Brain, LogLevel.Crit, $"layer {lr.Name} state {s.Name} over its {lr.Def.BudgetMs} ms budget three times in a row: the layer restarts from its initial state");
             }
         }
         if (s.Def.OnError is { } onErr && s.Owner.States.TryGetValue(onErr, out var target) && what == "tick")
@@ -734,6 +747,21 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
             EnterState(lr, target, null, lr.Path.IndexOf(s));
         }
         return r;
+    }
+
+    // restart a layer from its initial state (after its run, never inside it); RestartsBeforeHalt restarts within
+    // RestartWindowMs halt that layer alone until the operator resumes
+    private void RestartLayer(LayerRuntime lr)
+    {
+        lr.RestartPending = false;
+        if (lr.FirstRestartAt < 0 || _now - lr.FirstRestartAt > RestartWindowMs) { lr.FirstRestartAt = _now; lr.Restarts = 0; }
+        if (++lr.Restarts >= RestartsBeforeHalt)
+        {
+            lr.Halted = true;
+            _ctx.Log.Text(LogCategory.Brain, LogLevel.Crit, $"layer {lr.Name} halted: {lr.Restarts} budget restarts in {(_now - lr.FirstRestartAt) / 1000} s (the other layers run on; resume to restart it)");
+        }
+        if (lr.Root.Active is { } top) ExitDownFrom(lr, top);
+        EnterMachine(lr, lr.Root, null, 0, "budget restart");
     }
 
     private void LogError(LayerRuntime lr, StateRuntime s, string err)
@@ -782,7 +810,7 @@ public sealed class BrainInstance : IBrainTicker, IDisposable
             }
             case ControlKind.Resume:
                 _suspended = false;
-                foreach (var l in _layers) l.BudgetStrikes = 0;
+                foreach (var l in _layers) { l.BudgetStrikes = 0; l.Restarts = 0; l.FirstRestartAt = -1; if (l.Halted) { l.Halted = false; RestartLayer(l); } }
                 return null;
         }
         return null;

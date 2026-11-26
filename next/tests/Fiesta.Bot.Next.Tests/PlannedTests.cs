@@ -954,7 +954,7 @@ layers:
     }
 
     [Fact]
-    public void Budget_is_enforced_and_three_overruns_suspend_the_brain()
+    public void Budget_is_enforced_three_overruns_restart_the_layer_and_repeated_restarts_halt_it()
     {
         using var t = new TestBot();
         var yaml = Two.Replace("tick: m.count", "tick: m.spin");
@@ -965,8 +965,10 @@ layers:
         Assert.False(b.Suspended);
         t.Tick(1, 30_000);
         t.Tick(3);
-        Assert.True(sw.ElapsedMilliseconds < 2000, "the spinning state was not stopped by the budget");
-        Assert.True(b.Suspended);
+        Assert.False(b.Suspended);                 // three overruns restart the layer, the brain runs on
+        t.Tick(6);
+        Assert.True(sw.ElapsedMilliseconds < 4000, "the spinning state was not stopped by the budget");
+        Assert.True(b.Suspended);                  // a layer restarted three times within the window halts
         Assert.Contains(b.Debug.Errors(), e => e.Error.Contains("E_BUDGET"));
     }
 
