@@ -437,6 +437,10 @@ public sealed class CombatController
         return ctx.Actions.Issue(ActionKind.StopBash, layer, 0, 0, buf);
     }
 
+    /// <summary>A selection sent outside this controller (the NPC click's TARGETTING): remembered so the next cast or
+    /// bash re-selects its own target.</summary>
+    public void NoteTarget(int handle) => _assertedTarget = handle;
+
     /// <summary>Set the selection explicitly (act.target).</summary>
     public ActionId SetTarget(int handle, byte layer, AgentContext ctx)
     {

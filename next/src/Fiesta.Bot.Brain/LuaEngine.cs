@@ -378,7 +378,11 @@ public sealed unsafe class NativeLuaEngine : ILuaEngine
             case 1: budget -= 5; return JsonValue.Create(Lua54.lua_toboolean(L, idx) != 0);
             case 3:
                 budget -= 8;
-                return Lua54.lua_isinteger(L, idx) != 0 ? JsonValue.Create(Lua54.lua_tointegerx(L, idx, null)) : JsonValue.Create(Lua54.lua_tonumberx(L, idx, null));
+                if (Lua54.lua_isinteger(L, idx) != 0) return JsonValue.Create(Lua54.lua_tointegerx(L, idx, null));
+                // math.huge / nan have no JSON number: the largest finite double keeps 'above everything' through a
+                // checkpoint (an operator survey request scores math.huge; its checkpoint failed and the apply answered 400)
+                var dv = Lua54.lua_tonumberx(L, idx, null);
+                return JsonValue.Create(double.IsNaN(dv) ? 0 : double.IsPositiveInfinity(dv) ? double.MaxValue : double.IsNegativeInfinity(dv) ? double.MinValue : dv);
             case 4: { var s = LuaPush.ToStr(L, idx) ?? ""; budget -= s.Length + 2; return JsonValue.Create(s); }
             case 5:
             {

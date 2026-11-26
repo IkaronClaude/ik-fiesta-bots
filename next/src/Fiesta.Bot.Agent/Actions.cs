@@ -539,6 +539,7 @@ public class UpgradeAtNpcProcedure(int npcHandle, byte itemSlot, byte stoneSlot,
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.Upgrade;
     private bool _started;
+    private ActionId _walk = ActionId.None;
 
     /// <inheritdoc/>
     public override void Advance(AgentContext ctx)
@@ -547,6 +548,7 @@ public class UpgradeAtNpcProcedure(int npcHandle, byte itemSlot, byte stoneSlot,
         {
             if (Camp.FoldFirst(ctx, Action.Value)) return;
             if (Camp.NotClickable(ctx, npcHandle) is { } why) { Fail(why); return; }
+            if (!Camp.Approach(ctx, npcHandle, ref _walk, out var wf)) { if (wf is not null) Fail(wf); return; }
             _started = true;
             ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
             ctx.World.Bag.StorageOpenAt = -1;
@@ -597,6 +599,7 @@ public class OpenShopProcedure(int npcHandle, int menuReply = 1) : ProcedureBase
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.OpenShop;
     private bool _started;
+    private ActionId _walk = ActionId.None;
 
     /// <inheritdoc/>
     public override void Advance(AgentContext ctx)
@@ -605,6 +608,7 @@ public class OpenShopProcedure(int npcHandle, int menuReply = 1) : ProcedureBase
         {
             if (Camp.FoldFirst(ctx, Action.Value)) return;
             if (Camp.NotClickable(ctx, NpcHandle) is { } why) { Fail(why); return; }
+            if (!Camp.Approach(ctx, NpcHandle, ref _walk, out var wf)) { if (wf is not null) Fail(wf); return; }
             _started = true;
             ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
             ctx.World.Bag.StorageOpenAt = -1;
@@ -676,6 +680,7 @@ public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewar
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.QuestDialogue;
     private bool _started, _selected;
+    private ActionId _walk = ActionId.None;
     private int _selectCode = -1;
     private Dictionary<int, uint>? _answers;
     /// <summary>Pages answered.</summary>
@@ -690,6 +695,7 @@ public sealed class QuestDialogueProcedure(int npcHandle, int questId, int rewar
         {
             if (NpcHandle >= 0 && Camp.FoldFirst(ctx, Action.Value)) return;
             if (NpcHandle >= 0 && Camp.NotClickable(ctx, NpcHandle) is { } why) { Fail(why); return; }
+            if (NpcHandle >= 0 && !Camp.Approach(ctx, NpcHandle, ref _walk, out var wf)) { if (wf is not null) Fail(wf); return; }
             _started = true;
             if (QuestId >= 0 && ctx.Data.Quest(QuestId) is { } q) _answers = QuestScripts.MenuAnswers(q.Script);
             if (NpcHandle >= 0)
@@ -889,9 +895,12 @@ public sealed class GateHopProcedure(int gateHandle, string? destMap) : Procedur
             if (s < 0) { Fail($"gate {GateHandle} not in view"); return; }
             var (gx, gy) = ctx.World.Entities.Pos(s, ctx.Now);
             var d = Dist(ctx.World.Self.Pos, (gx, gy));
-            if (d > ClickRange)
+            if (d >= Camp.NpcReach)
             {
-                _move = ctx.Move.Order(new MoveOrder(gx, gy, true, ClickRange * 0.6, ActionId.None), ctx, 0);
+                // the client's click walk: toward NpcWalkShort short of the gate, clicked as soon as inside NpcReach
+                var k = Camp.NpcWalkShort / d;
+                var (px, py) = ctx.World.Self.Pos;
+                _move = ctx.Move.Order(new MoveOrder(gx + (px - gx) * k, gy + (py - gy) * k, true, 10, ActionId.None), ctx, 0);
                 Go("walk", ctx, 60000);
             }
             else Go("click", ctx, 0);
@@ -905,6 +914,11 @@ public sealed class GateHopProcedure(int gateHandle, string? destMap) : Procedur
         }
         if (Step == "walk")
         {
+            if (ctx.World.Entities.SlotOf(GateHandle) is var ws and >= 0)
+            {
+                var (wx, wy) = ctx.World.Entities.Pos(ws, ctx.Now);
+                if (Dist(ctx.World.Self.Pos, (wx, wy)) < Camp.NpcReach) { if (ctx.Move.Moving) ctx.Move.Stop(ctx); Go("click", ctx, 0); return; }
+            }
             var r = ctx.Actions.Get(_move);
             if (r.Id != 0 && !r.Pending)
             {
@@ -1146,14 +1160,63 @@ public static class Camp
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<AgentContext, System.Runtime.CompilerServices.StrongBox<(long At, double Dist)>> _pending = new();
     private static ClickStats? Stats(AgentContext ctx) => (ctx.Knowledge as KnowledgeStore)?.Clicks;
 
-    /// <summary>Send an NPC / gate click and remember it (when, from how far the game has us) for the statistics.</summary>
+    // ---- the game client's click rule (GameFrameWork::UpdateMainCharOnRevActPickChar, run every frame for a clicked NPC):
+    // within NpcReach of it (the 3D distance) it sends NPCCLICK then STOP where we stand; farther, it walks toward the
+    // point NpcWalkShort short of the NPC (MainCharMoveToChar) and clicks the first frame it is within NpcReach.
+    /// <summary>The client's NPC click reach: a click is sent once nearer than this.</summary>
+    public const double NpcReach = 150;
+    /// <summary>The client's walk toward a clicked NPC ends this far short of it (on our side).</summary>
+    public const double NpcWalkShort = 99;
+
+    /// <summary>Walk into the client's NPC reach before a click: true once nearer than <see cref="NpcReach"/> (click now:
+    /// the click's STOP ends the walk); false while walking (the move kept in <paramref name="move"/>);
+    /// <paramref name="fail"/> set when the walk failed. A walk that ends outside the reach (no nearer walkable point)
+    /// clicks from there - the game decides.</summary>
+    public static bool Approach(AgentContext ctx, int npcHandle, ref ActionId move, out string? fail)
+    {
+        fail = null;
+        var s = ctx.World.Entities.SlotOf(npcHandle);
+        if (s < 0) { fail = $"npc {npcHandle} not in view"; return false; }
+        var (nx, ny) = ctx.World.Entities.Pos(s, ctx.Now);
+        var (px, py) = ctx.World.Self.Pos;
+        var d = MoveController.Dist(px, py, nx, ny);
+        if (d < NpcReach)
+        {
+            if (ctx.Move.Moving) ctx.Move.Stop(ctx);
+            return true;
+        }
+        if (move.Value > 0)
+        {
+            var r = ctx.Actions.Get(move);
+            if (r.Id != 0 && r.Pending) return false;
+            if (r.Id != 0 && r.State != ActionState.Acked) { fail = $"could not walk to npc {npcHandle}: {r.State} {ErrorCodes.Describe(r.Code)}"; return false; }
+            return true;   // the walk ended outside the reach: click from here
+        }
+        var k = NpcWalkShort / d;
+        move = ctx.Move.Order(new MoveOrder(nx + (px - nx) * k, ny + (py - ny) * k, true, 10, ActionId.None), ctx, 0);
+        if (move.Value <= 0) { fail = $"walk to npc {npcHandle} refused"; return false; }
+        if (ctx.Log.IsEnabled(LogCategory.Nav, LogLevel.Info))
+            ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"npc {npcHandle}: {d:0} away, walking toward {NpcWalkShort:0} short of it, clicking inside {NpcReach:0}");
+        return false;
+    }
+
+    /// <summary>Send an NPC / gate click as the client does (NPCCLICK, then STOP where we stand) and remember it (when,
+    /// from how far) for the statistics; the distance is logged against the client's reach.</summary>
     public static void Click(AgentContext ctx, int npcHandle, int actionId)
     {
+        var (px, py) = ctx.World.Self.Pos;
         ctx.Actions.Send(IntentEncoder.NpcClick((ushort)npcHandle, actionId));
+        ctx.Actions.Send(IntentEncoder.Stop((uint)px, (uint)py, actionId));
         var s = ctx.World.Entities.SlotOf(npcHandle);
-        var d = -1.0;
-        if (s >= 0) { var (nx, ny) = ctx.World.Entities.Pos(s, ctx.Now); d = MoveController.Dist(ctx.World.Self.ServerPos.X, ctx.World.Self.ServerPos.Y, nx, ny); }
+        double d = -1, believed = -1;
+        if (s >= 0)
+        {
+            var (nx, ny) = ctx.World.Entities.Pos(s, ctx.Now);
+            d = MoveController.Dist(ctx.World.Self.ServerPos.X, ctx.World.Self.ServerPos.Y, nx, ny);
+            believed = MoveController.Dist(px, py, nx, ny);
+        }
         _pending.GetOrCreateValue(ctx).Value = (ctx.Now, d);
+        ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"npc click {npcHandle}: {believed:0} away ({d:0} from the game-held position), client reach {NpcReach:0}");
     }
 
     /// <summary>Feed an inbound event: the NPC's answer to our last click closes its sample.</summary>
@@ -1163,6 +1226,7 @@ public static class Camp
         if (!_pending.TryGetValue(ctx, out var p) || p.Value.At <= 0) return;
         var (at, d) = p.Value; p.Value = (0, -1);
         Stats(ctx)?.Answered(ctx.Now - at, d);
+        ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"npc answered in {ctx.Now - at} ms, clicked from {d:0} (game-held)");
     }
 
     /// <summary>The samples a statistic needs before it replaces its prior (bot behaviour: below this a percentile is noise).</summary>
