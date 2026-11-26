@@ -432,6 +432,10 @@ public sealed class Inventory
             return o;
         }
         if (box != 9 || (uint)slot >= 256) return (-1, 0);
+        // the server puts items where the bag has slots: a slot past our page count means more pages than we assumed
+        // (NextA's bag holds items at slots up to 66 while we counted 2 pages of 24: everything past 47 was invisible
+        // to the brain yet counted as used, so the bag read 0 free with 45 visible items, 01:40)
+        if (item >= 0 && slot >= Size) Pages = slot / PageSlots + 1;
         var old = (_bag[slot], _lot[slot]);
         if (old.Item1 >= 0) { _used--; var c = _count[old.Item1] - old.Item2; if (c <= 0) _count.Remove(old.Item1); else _count[old.Item1] = c; }
         _bag[slot] = item; _lot[slot] = item >= 0 ? Math.Max(1, lot) : 0;

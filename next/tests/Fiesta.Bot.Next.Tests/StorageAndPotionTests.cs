@@ -242,4 +242,18 @@ return M
         Assert.Equal((6L, 1L, 42000L), cells[1]);
         Assert.Equal((6L, 8L, 20000L), cells[8]);
     }
+
+    [Fact]
+    public void An_item_past_the_assumed_pages_grows_the_bag()
+    {
+        // live 01:40: NextA's server bag holds items at slots 51-66; with 2 assumed pages (48) they were invisible to the
+        // brain yet counted as used, and the bag read 0 free with 45 visible items
+        using var t = new TestBot();
+        t.Tick(2);
+        for (var slot = 0; slot < 45; slot++) t.Ev(InboundKind.ItemCell, a: 9, b: slot, c: 9001, x: 1);
+        t.Ev(InboundKind.ItemCell, a: 9, b: 60, c: 9001, x: 1);
+        t.Tick();
+        Assert.Equal(72, t.Ctx.World.Bag.Size);
+        Assert.Equal(72 - 46, t.Ctx.World.Bag.Free);
+    }
 }
