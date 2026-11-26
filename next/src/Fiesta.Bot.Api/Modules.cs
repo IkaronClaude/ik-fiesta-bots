@@ -777,6 +777,9 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
 
     /// <summary>Buy price.</summary>
     [LuaFn] public int BuyPrice(int itemId) => Ctx.Data.Item(itemId)?.BuyPrice ?? -1;
+    /// <summary>Fame price (client ItemInfo BuyFame; 0 = none, -1 unknown item). Vitality [01] costs 1,200 fame and
+    /// no cen: bought with too little fame it is refused BUY_ACK 0x020C.</summary>
+    [LuaFn] public int BuyFame(int itemId) => Ctx.Data.Item(itemId) is { } it ? it.BuyFame : -1;
 
     /// <summary>Does using the item summon a mount (named by the client's MoverItem / Riding tables)?</summary>
     [LuaFn] public bool IsMount(int itemId) => (Ctx.Data as ClientData)?.IsMountItem(itemId) == true;

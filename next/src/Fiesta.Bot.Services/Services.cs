@@ -70,6 +70,8 @@ public sealed record ActiveSkillRow(int Id, string InxName, string Name, int Ste
 public sealed record ItemInfoRow(int Id, string InxName, string Name, int Type, int ItemClass, int Equip, int DemandLevel,
     int WeaponType, int SellPrice, int BuyPrice, int MaxLot, int UseClass, string ItemUseSkill)
 {
+    /// <summary>Fame the item costs in a shop (0 = priced in cen only).</summary>
+    public int BuyFame { get; init; }
     /// <summary>Weapon damage range, defence, magic damage range, magic defence (ItemInfo).</summary>
     public int MinWc { get; init; }
     /// <summary>Max weapon damage.</summary>
@@ -418,7 +420,7 @@ public sealed class ClientData : IClientData
             var (eff, val) = use.TryGetValue(inx, out var u) ? u : (-1, 0);
             d[I("ID")] = new ItemInfoRow(I("ID"), inx, nm.Length > 0 ? nm : inx, I("Type"), I("Class"), I("Equip"), I("DemandLv"),
                 I("WeaponType"), I("SellPrice"), I("BuyPrice"), I("MaxLot"), I("UseClass"), t.Str(r, "ItemUseSkill") ?? "-")
-            { MinWc = I("MinWC"), MaxWc = I("MaxWC"), Ac = I("AC"), MinMa = I("MinMA"), MaxMa = I("MaxMA"), Mr = I("MR"), UseEffect = eff, UseValue = val, AtkSpeed = I("AtkSpeed") };
+            { BuyFame = t.Col("BuyFame") >= 0 ? I("BuyFame") : 0, MinWc = I("MinWC"), MaxWc = I("MaxWC"), Ac = I("AC"), MinMa = I("MinMA"), MaxMa = I("MaxMA"), Mr = I("MR"), UseEffect = eff, UseValue = val, AtkSpeed = I("AtkSpeed") };
         }
         return d;
     }

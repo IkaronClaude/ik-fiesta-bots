@@ -479,7 +479,7 @@ public sealed class SelfDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x1061, 0x2411, 0xCC02, 0xCC06, 0xCC0A, 0xCC0D, 0x1C18, 0x4804, 0x4805, 0x1059];
+        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x1061, 0x2411, 0xCC02, 0xCC06, 0xCC0A, 0xCC0D, 0x1C18, 0x4804, 0x4805, 0x1059, 0x106F];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -527,6 +527,8 @@ public sealed class SelfDecoder : IPacketDecoder
             case 0x240B: if (p.Length < 4) return; e.Kind = InboundKind.SelfExp; e.A = Rd.U32(p, 0); e.Handle = Rd.U16(p, 4); break;
             case 0x2411: if (p.Length < 4) return; e.Kind = InboundKind.ExpLost; e.A = Rd.U32(p, 0); break;   // BAT_EXPLOST {explost u32}
             case 0x1033: if (p.Length < 8) return; e.Kind = InboundKind.SelfMoney; e.A = Rd.U64(p, 0); break;
+            // FAMECHANGE {fame u32}: our fame after a change (a fame-priced buy spends it: NextA's skill books, 19:52:45)
+            case 0x106F: if (p.Length < 4) return; e.Kind = InboundKind.SelfStat; e.A = 0x20; e.B = Rd.U32(p, 0); break;
             case 0x203E: if (p.Length < 4) return; e.Kind = InboundKind.SelfSpeed; e.A = Rd.U16(p, 0); e.B = Rd.U16(p, 2); break;
             // BRIEFINFO_ABSTATE_CHANGE {handle u16, abstate u32, keeptime ms u32, u32}: an abnormal state put on an entity in
             // view - ours too (the job change instance's StaQuestEntangle came this way, never as ABSTATESET: NextA,
