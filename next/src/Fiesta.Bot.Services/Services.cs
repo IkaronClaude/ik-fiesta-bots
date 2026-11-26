@@ -285,6 +285,55 @@ public sealed class ClientData : IClientData
         return _slowStates.Contains(abStateInx);
     }
 
+    // ROOTS: an abnormal state whose SubAbState carries the no-move action (ActionIndexA..D == 19: every stun and entangle
+    // row has it - SubStaBattleBlowStun 19 + 25, SubStaSpiritThornEntangle 19, SubStaQuestEntangle 19 + 25). Found by
+    // effect, keyed by the wire's abstate index (AbState AbStataIndex). The job change instance puts StaQuestEntangle on
+    // us for its opening speech: a move sent then is dropped without an answer, and our believed position ran ahead of
+    // the game's (NextA, Job1_Dn01, 17:46:26).
+    private const int NoMoveAction = 19;
+    // NO ACT: the action every stun row adds to the no-move one (SubStaBattleBlowStun / SubStaShockBladeStun 19 + 25,
+    // SubStaQuestEntangle 19 + 25; a plain entangle, SubStaSpiritThornEntangle, has 19 alone and still lets its holder fight)
+    private const int NoActAction = 25;
+    private Dictionary<int, (bool NoMove, bool NoAct)>? _stateEffects;
+    private (bool NoMove, bool NoAct) StateEffect(int abstateIndex)
+    {
+        if (_stateEffects is null)
+        {
+            var bySub = new Dictionary<string, (bool, bool)>(StringComparer.Ordinal);
+            if (T("SubAbState") is { } sub)
+                for (var r = 0; r < sub.RowCount; r++)
+                {
+                    bool mv = false, act = false;
+                    foreach (var c in new[] { "ActionIndexA", "ActionIndexB", "ActionIndexC", "ActionIndexD" })
+                    {
+                        if (sub.Col(c) < 0) continue;
+                        var a = sub.Num(r, c);
+                        if (a == NoMoveAction) mv = true;
+                        if (a == NoActAction) act = true;
+                    }
+                    if ((mv || act) && sub.Str(r, "InxName") is { Length: > 0 } n)
+                        bySub[n] = bySub.TryGetValue(n, out var o) ? (o.Item1 || mv, o.Item2 || act) : (mv, act);
+                }
+            var d = new Dictionary<int, (bool, bool)>();
+            if (T("AbState") is { } ab)
+                for (var r = 0; r < ab.RowCount; r++)
+                    if (ab.Str(r, "SubAbState") is { Length: > 0 } sn && bySub.TryGetValue(sn, out var e)) d[(int)ab.Num(r, "AbStataIndex")] = e;
+            _stateEffects = d;
+        }
+        return _stateEffects.TryGetValue(abstateIndex, out var v) ? v : (false, false);
+    }
+    /// <summary>Does the abnormal state (its wire index) keep its holder from moving?</summary>
+    public bool IsRootState(int abstateIndex) => StateEffect(abstateIndex).NoMove;
+    /// <summary>Does the abnormal state keep its holder from attacking and casting (a stun)?</summary>
+    public bool IsNoActState(int abstateIndex) => StateEffect(abstateIndex).NoAct;
+    /// <summary>The AbState row name of a wire index (for logs), null unknown.</summary>
+    public string? AbStateName(int abstateIndex)
+    {
+        if (T("AbState") is not { } ab) return null;
+        for (var r = 0; r < ab.RowCount; r++) if ((int)ab.Num(r, "AbStataIndex") == abstateIndex) return ab.Str(r, "InxName");
+        return null;
+    }
+
     private ShnTable? T(string name)
     {
         return ClientFiles.LoadTable(Dir, name);

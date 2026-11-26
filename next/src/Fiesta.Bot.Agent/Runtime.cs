@@ -537,6 +537,15 @@ public sealed class BotAgent
                 if (e.A == 1) log.Log(LogCategory.Nav, LogLevel.Note, $"mounted: mount {e.Handle} on {Context.World.Map.MapName}");
                 else log.Log(LogCategory.Nav, LogLevel.Note, $"dismounted on {Context.World.Map.MapName}: run speed {Context.World.Self.RunSpeed:0}");
                 break;
+            case InboundKind.SelfAbstate when e.Handle == Context.World.Self.Handle && Context.Data is ClientData acd:
+            {
+                var id = (int)e.A;
+                var what = acd.IsNoActState(id) ? " (stops moving, attacking and casting)" : acd.IsRootState(id) ? " (stops moving)" : "";
+                if (what.Length > 0 || log.IsEnabled(LogCategory.Combat, LogLevel.Info))
+                    log.Log(LogCategory.Combat, what.Length > 0 ? LogLevel.Note : LogLevel.Info,
+                        $"abstate {(e.B == 1 ? "on" : "off")}: {acd.AbStateName(id) ?? id.ToString()} ({id}){what}{(e.B == 1 && e.C > 0 && e.C < int.MaxValue ? $" for {e.C} ms" : "")}");
+                break;
+            }
             case InboundKind.MountSpeed when e.Handle == Context.World.Self.MountHandle:
                 log.Log(LogCategory.Nav, LogLevel.Info, $"mount {e.Handle} speed: walk {e.A} run {e.B} raw (run {Context.World.Self.RunSpeed:0} u/s)");
                 break;

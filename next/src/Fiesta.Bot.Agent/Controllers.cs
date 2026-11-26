@@ -24,7 +24,21 @@ public sealed class MoveController
     private int _leg = -1;
     private double _legFx, _legFy, _legTx, _legTy;
     private long _legStart;
-    private bool _awaitFold;
+    private bool _awaitFold, _awaitRoot;
+    private long _rootLoggedAt = long.MinValue / 2;
+
+    /// <summary>Does an abnormal state on us stop movement now (client data: its SubAbState's no-move action)?</summary>
+    public static bool Rooted(AgentContext ctx)
+    {
+        if (ctx.Data is not ClientData cd) return false;
+        var self = ctx.World.Self;
+        for (var i = 0; i < self.AbstateCount; i++)
+        {
+            var (id, until) = self.AbstateAt(i);
+            if (until > ctx.Now && cd.IsRootState(id)) return true;
+        }
+        return false;
+    }
     private ActionId _action = ActionId.None;
     private MoveOrder? _order;
     private JobTicket _ticket = JobTicket.None;
@@ -121,6 +135,7 @@ public sealed class MoveController
     {
         var self = ctx.World.Self;
         if (_awaitFold && _leg >= 0) { StartLeg(ctx); if (_awaitFold) return; }
+        if (_awaitRoot && _leg >= 0) { StartLeg(ctx); if (_awaitRoot) return; }
         // the order's action was resolved from outside (timed out, cancelled by the caller): stop walking for it
         if (_action.Value > 0 && ctx.Actions.Get(_action) is { Id: > 0, Pending: false })
         {
@@ -170,6 +185,15 @@ public sealed class MoveController
         // the server kept it at the tent, 02:24-02:33): fold first, the leg starts on the fold ack (Advance)
         _awaitFold = Camp.FoldFirst(ctx, _action.Value);
         if (_awaitFold) return;
+        // rooted (stun, entangle - client data): the game drops a move without an answer, so none is sent; the leg
+        // starts when the state ends (Advance retries)
+        if (Rooted(ctx))
+        {
+            _awaitRoot = true;
+            if (ctx.Now - _rootLoggedAt > 5000) { _rootLoggedAt = ctx.Now; ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"move: held - we are rooted (an abnormal state that stops movement)"); }
+            return;
+        }
+        _awaitRoot = false;
         var (fx, fy) = self.Pos;
         var (tx, ty) = (_path[_leg].X, (double)_path[_leg].Y);
         var d = Dist(fx, fy, tx, ty);
@@ -234,6 +258,17 @@ public sealed class MoveController
                 ctx.Events.Raise(EventKind.MoveFailed, (long)kind);
                 if (ctx.Log.IsEnabled(LogCategory.Nav, LogLevel.Info))
                     ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"MOVEFAIL {kind}: game has us at ({evt.X},{evt.Y}), our leg was ({_legFx:0},{_legFy:0})->({_legTx:0},{_legTy:0})");
+                // a desync: the game's position is the truth (taken above); the re-plan below starts from it
+                if (kind == MoveFailKind.Desync && Rooted(ctx))
+                {
+                    ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"move: refused while we are rooted: the game holds us at ({evt.X},{evt.Y}); waiting for the state to end");
+                    if (_order is not null) { _leg = -1; _path.Clear(); Plan(ctx); }   // the new path's first leg waits for the root to end
+                    break;
+                }
+                if (kind == MoveFailKind.Desync)
+                {
+                    ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"move: position corrected to the game's ({evt.X},{evt.Y}), {Dist(_legFx, _legFy, evt.X, evt.Y):0} from where we believed; re-planning from there");
+                }
                 if (!Moving && _order is null) break;
                 if (kind == MoveFailKind.Blocked && Moving)
                 {
@@ -409,6 +444,7 @@ public sealed class CombatController
     /// toward the target except our own moves.</summary>
     public ActionId Bash(int targetHandle, byte layer, AgentContext ctx)
     {
+        if (GameRules.Stunned(ctx)) return ctx.Actions.Refuse(ActionKind.Bash, layer, LocalRefusal.NotReady);
         var s = ctx.World.Entities.SlotOf(targetHandle);
         if (s < 0 || ctx.World.Entities.IsDead(s)) return ctx.Actions.Refuse(ActionKind.Bash, layer, LocalRefusal.InvalidTarget);
         Span<Intent> buf = _buf;
@@ -731,6 +767,19 @@ public static class GameRules
         return Math.Max(0, (long)Math.Ceiling(g.Value) - (ctx.Now - at));
     }
 
+    /// <summary>Does an abnormal state on us forbid attacking and casting now (client data: its no-act action)?</summary>
+    public static bool Stunned(AgentContext ctx)
+    {
+        if (ctx.Data is not ClientData cd) return false;
+        var self = ctx.World.Self;
+        for (var i = 0; i < self.AbstateCount; i++)
+        {
+            var (id, until) = self.AbstateAt(i);
+            if (until > ctx.Now && cd.IsNoActState(id)) return true;
+        }
+        return false;
+    }
+
     /// <summary>The generic usability check behind Lua `canUse` (API_SPEC 2.5.1). Objective only: no policy.</summary>
     public static CanUseReason CanUse(AgentContext ctx, int skillId, int targetHandle)
     {
@@ -742,6 +791,7 @@ public static class GameRules
         if (sk.Sp > self.Sp) return CanUseReason.Sp;
         if (sk.Hp > 0 && sk.Hp >= self.Hp) return CanUseReason.Hp;
         if (self.Mounted) return CanUseReason.Mounted;
+        if (Stunned(ctx)) return CanUseReason.State;
         if (ctx.Combat.Casting(ctx.Now)) return CanUseReason.Casting;
         if (LoginGuardLeftMs(ctx) > 0) return CanUseReason.JustEntered;
         if (targetHandle == self.Handle) return CanUseReason.Ok;
