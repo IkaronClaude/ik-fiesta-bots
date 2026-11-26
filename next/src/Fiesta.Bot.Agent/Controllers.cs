@@ -47,6 +47,9 @@ public sealed class MoveController
     private int _fails;
     private bool _waitMesh;
     private (uint X, uint Y) _lastSentFrom;
+    /// <summary>How long a refused leg's tiles stay blocked in an instance (bot behaviour: scripted doors there open
+    /// within a room's fight).</summary>
+    public const int InstanceBlockMs = 30_000;
     /// <summary>Maximum leg length sent in one MOVERUN (longer funnel legs are split).</summary>
     public const double MaxLeg = 800;
     /// <summary>After a spawn (map login, link, revive) the game refuses moves for about a second (measured on the
@@ -277,10 +280,14 @@ public sealed class MoveController
                     // next path goes round it instead of repeating the same refused leg
                     var dx = _legTx - evt.X; var dy = _legTy - evt.Y; var d = Math.Sqrt(dx * dx + dy * dy);
                     var (sx, sy) = BlockLayer.ToTile(evt.X, evt.Y);
+                    // in an instance a refusal is often a closed scripted door that opens later: its tiles are learned
+                    // only for InstanceBlockMs (NextA's job change: the legs refused at Door02 / Door03 stayed blocked
+                    // after the doors opened, and the final room read 'unreachable' - 19:01)
+                    var until = ctx.World.Map.IsInstance ? ctx.Now + InstanceBlockMs : long.MaxValue;
                     for (var s = 0.0; d > 1 && s <= d; s += BlockLayer.WorldPerTile / 2)
                     {
                         var (tx, ty) = BlockLayer.ToTile(evt.X + dx / d * s, evt.Y + dy / d * s);
-                        if (tx != sx || ty != sy) ctx.Overlay.LearnBlocked(tx, ty, long.MaxValue);
+                        if (tx != sx || ty != sy) ctx.Overlay.LearnBlocked(tx, ty, until);
                     }
                     ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"nav: the game refused ({_legFx:0},{_legFy:0})->({_legTx:0},{_legTy:0}) on {ctx.World.Map.MapName}: its tiles are blocked for this map now, re-planning");
                 }
