@@ -169,6 +169,9 @@ public enum InboundKind : ushort
     PvpZone,
     /// <summary>A stack split answered (ITEM_SPLIT_ACK): A code (0x0441 split; captured after the two cell changes).</summary>
     SplitAck,
+    /// <summary>The bag's auto-arrange answered (ITEM_AUTO_ARRANGE_INVEN_ACK): A code (0x30A8 = done, as the real client's
+    /// own sort receives it).</summary>
+    SortAck,
     /// <summary>Instance scenario (dept 27) and doors: A = scenario command (5 area entry asked, 7 area leave asked,
     /// 9 door state, 11 object type change, 22 timer, 33 timer start, 34 timer end, 4 notice, 27 system message; 1000 =
     /// BUILDDOOR), Text = area name / message, Handle = door / object, B = door state / object type / seconds / notice.</summary>
@@ -616,7 +619,7 @@ public sealed class ItemDecoder : IPacketDecoder
 
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x1047, 0x3001, 0x3002, 0x3016, 0x3004, 0x3005, 0x5003, 0x5004, 0x5005, 0x5006, 0x5008, 0x500A, 0x300A, 0x0700, 0x3C07, 0x3C08, 0x300C, 0x300E];
+        [0x1047, 0x3001, 0x3002, 0x3016, 0x3004, 0x3005, 0x5003, 0x5004, 0x5005, 0x5006, 0x5008, 0x500A, 0x300A, 0x0700, 0x3C07, 0x3C08, 0x300C, 0x300E, 0x304B];
 
     /// <summary>The storage box id in item locations.</summary>
     public const int StorageBox = 6;
@@ -653,6 +656,9 @@ public sealed class ItemDecoder : IPacketDecoder
                 break;
             case 0x300C:   // ITEM_RELOC_ACK {err u16}
                 e.Kind = InboundKind.RelocAck; e.A = p.Length >= 2 ? Rd.U16(p, 0) : -1;
+                break;
+            case 0x304B:   // ITEM_AUTO_ARRANGE_INVEN_ACK {err u16}
+                e.Kind = InboundKind.SortAck; e.A = p.Length >= 2 ? Rd.U16(p, 0) : -1;
                 break;
             case 0x300E:   // ITEM_SPLIT_ACK {err u16}
                 e.Kind = InboundKind.SplitAck; e.A = p.Length >= 2 ? Rd.U16(p, 0) : -1;
@@ -1002,7 +1008,7 @@ public static class IntentEncoder
         OpChangeMode = 0x2008, OpCastObj = 0x2440, OpCastFld = 0x2441, OpBashStart = 0x242B, OpBashStop = 0x2432,
         OpItemUse = 0x3015, OpBuy = 0x3003, OpSell = 0x3006, OpNpcClick = 0x200A, OpChat = 0x2001, OpPick = 0x3009,
         OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpQuestScriptAck = 0x4402,
-        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B, OpSplit = 0x300D, OpAreaEntryAck = 0x6C06, OpProduceCast = 0x2035, OpProductField = 0x4822, OpPitchTent = 0x2027, OpFoldTent = 0x202A,
+        OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B, OpSplit = 0x300D, OpAreaEntryAck = 0x6C06, OpProduceCast = 0x2035, OpProductField = 0x4822, OpPitchTent = 0x2027, OpFoldTent = 0x202A, OpBagSort = 0x304A,
         OpLoginComplete = 0x1803;
 
     private static Intent Make(ushort op, int action, ReadOnlySpan<byte> payload)

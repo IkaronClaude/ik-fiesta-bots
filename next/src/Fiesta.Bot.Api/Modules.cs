@@ -556,6 +556,9 @@ public sealed partial class ActModule(AgentContext ctx) : ApiModule(ctx)
         if (Ctx.Move.Moving) Ctx.Move.Stop(Ctx);
         return One(ActionKind.Tent, 1, 0, IntentEncoder.Raw(IntentEncoder.OpPitchTent, default, -1));
     }
+    /// <summary>The client's bag auto-arrange (ITEM_AUTO_ARRANGE_INVEN_REQ 0x304A, empty): stacks loose items of one kind
+    /// together and compacts the bag, as the client's sort button does; resolved by its answer.</summary>
+    [LuaFn] public int SortBag() => One(ActionKind.BagSort, 0, 0, IntentEncoder.Raw(IntentEncoder.OpBagSort, default, -1));
     /// <summary>Fold the tent (FOLDTENT_REQ) before acting again.</summary>
     [LuaFn] public int FoldTent() => One(ActionKind.Tent, 0, 0, IntentEncoder.Raw(IntentEncoder.OpFoldTent, default, -1));
     /// <summary>HP soul stone.</summary>
