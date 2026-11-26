@@ -747,6 +747,9 @@ public static class GameRules
         if (targetHandle == self.Handle) return CanUseReason.Ok;
         var s = w.Entities.SlotOf(targetHandle);
         if (s < 0 || w.Entities.IsDead(s)) return CanUseReason.Target;
+        // neither a mob nor a character: an NPC, or a scripted object in its NPC phase (the job change's shadow copy of
+        // us turns npc between its fights; every cast at it then drew 0x0FCD, 164 in 10 s - NextA 17:34)
+        if ((w.Entities.Kind(s) & (EntityKind.Mob | EntityKind.Player)) == 0) return CanUseReason.Target;
         if (SpawnGuardLeftMs(ctx, s) > 0) return CanUseReason.Spawning;
         var (tx, ty) = w.Entities.Pos(s, ctx.Now);
         var d = MoveController.Dist(self.Pos.X, self.Pos.Y, tx, ty);
