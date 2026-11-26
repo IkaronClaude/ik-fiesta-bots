@@ -543,9 +543,11 @@ public class UpgradeAtNpcProcedure(int npcHandle, byte itemSlot, byte stoneSlot,
     {
         switch (e.Kind)
         {
+            // the smith's window: its NPC menu, or a quest page when it has a quest for us (Blacksmith James, 05:51:43)
             case InboundKind.NpcMenu when Step == "awaitMenu":
+            case InboundKind.QuestDialog when Step == "awaitMenu" && e.B == 2:
                 ctx.Actions.Send(IntentEncoder.Upgrade(itemSlot, stoneSlot, left, right, middle, Action.Value));
-                ctx.Log.Log(LogCategory.Item, LogLevel.Note, $"upgrade: smith menu (mob {e.A}) open, sending ITEM_UPGRADE_REQ item slot {itemSlot}, stone slot {stoneSlot}, safety {left}/{right}/{middle}");
+                ctx.Log.Log(LogCategory.Item, LogLevel.Note, $"upgrade: smith window open ({(e.Kind == InboundKind.NpcMenu ? "menu" : "quest page")} {e.A}), sending ITEM_UPGRADE_REQ item slot {itemSlot}, stone slot {stoneSlot}, safety {left}/{right}/{middle}");
                 Go("awaitAnswer", ctx, 8000);
                 break;
             case InboundKind.UpgradeAck when Step == "awaitAnswer":
