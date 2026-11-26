@@ -384,8 +384,18 @@ public sealed partial class CombatModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public long LastSwingMs() => Ctx.Combat.LastSwingAt < 0 ? -1 : Ctx.Now - Ctx.Combat.LastSwingAt;
     /// <summary>Our damage/s over the current fight.</summary>
     [LuaFn] public double DpsOut() => Ctx.Combat.DpsOut(Ctx.Now);
-    /// <summary>Seconds to kill h at our current dps (-1 unknown).</summary>
-    [LuaFn] public double TimeToKill(int h) { var d = Ctx.Combat.DpsOut(Ctx.Now); var s = W.Entities.SlotOf(h); return d <= 0 || s < 0 ? -1 : Math.Max(0, W.Entities.Hp(s)) / d; }
+    /// <summary>The burst decision for target h (Burst.Decide): commit?, time to kill and to die (s, inf = never), the
+    /// first skill of the plan (-1 none: swings only / nothing). <paramref name="swings"/>: this character auto-attacks.</summary>
+    [LuaFn] public (bool Commit, double Ttk, double Ttd, int First) Burst(int h, bool swings = false)
+    { var p = Fiesta.Bot.Api.Burst.Decide(Ctx, h, swings); return (p.Commit, p.TtkS, p.TtdS, p.FirstSkill); }
+    /// <summary>The burst plan as text for a log line: the verdict, why, and the planned sequence (allocates: call it
+    /// only when logging).</summary>
+    [LuaFn(Cost = Fiesta.Bot.Api.Cost.On)] public string BurstText(int h, bool swings = false)
+    {
+        var sb = new System.Text.StringBuilder();
+        var p = Fiesta.Bot.Api.Burst.Decide(Ctx, h, swings, sb);
+        return $"{(p.Commit ? "COMMIT" : "BACK OFF")} ({p.Why}): ttk {p.TtkS:0.0} s vs ttd {p.TtdS:0.0} s{(p.UnknownAttackers > 0 ? $", {p.UnknownAttackers} attacker(s) not measured yet" : "")}; plan{sb}";
+    }
     /// <summary>Seconds to die at the incoming dps (-1 none incoming).</summary>
     [LuaFn] public double TimeToDie() { var dps = ((ThreatModule)ApiScope.Modules![ThreatModule.__ModuleIndex]).IncomingDps(); return dps <= 0 ? -1 : W.Self.Hp / dps; }
     /// <summary>Kills this session.</summary>

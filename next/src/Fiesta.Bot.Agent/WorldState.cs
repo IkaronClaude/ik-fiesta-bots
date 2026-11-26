@@ -724,6 +724,8 @@ public sealed class WorldState
     /// <summary>Trade.</summary>
     public TradeState Trade { get; } = new();
     /// <summary>Exp, money, stone spend and deaths over the last hour.</summary>
+    /// <summary>What our fighting measures (damage per skill, swings, cast spacing, stone heals).</summary>
+    public CombatStats Fight { get; } = new();
     public Economy Economy { get; } = new();
     /// <summary>Instance scenario state.</summary>
     public ScenarioState Scenario { get; } = new();
@@ -857,6 +859,7 @@ public sealed class WorldState
             {
                 var old = Self.Hp;
                 Self.Hp = e.A;
+                Fight.HpChanged(Self.Hp, Self.MaxHp, now);
                 if (Self.Hp > Self.MaxHp && Self.MaxHp > 0) Self.MaxHp = Self.Hp;
                 if (Self.Dead && Self.Hp > 0) { Self.Dead = false; ev.Raise(EventKind.Revived); }
                 if (old != Self.Hp) { Bump(WorldComponent.Self); ev.Raise(EventKind.HpChanged, (long)Self.Hp, (long)Self.MaxHp); }
@@ -932,6 +935,11 @@ public sealed class WorldState
             case InboundKind.Damage:
             case InboundKind.SkillDamage:
             {
+                if (e.Handle == me && me >= 0)
+                {
+                    if (e.Kind == InboundKind.SkillDamage) Fight.SkillHit((int)e.C, e.A);
+                    else Fight.SwingHit(e.Handle2, e.A, now);
+                }
                 if (e.Handle2 == me)
                 {
                     Self.LastHitAt = now;
@@ -982,6 +990,7 @@ public sealed class WorldState
             {
                 var sk = Data?.Skill((int)e.A);
                 Skills.Started((int)e.A, now, sk?.DelayMs ?? 0, sk?.DelayGroup ?? 0, sk?.DelayGroupMs ?? 0);
+                Fight.CastStarted((int)e.A, (int)e.B, now);
                 Bump(WorldComponent.Skills);
                 break;
             }
@@ -1030,6 +1039,7 @@ public sealed class WorldState
                 break;
             case InboundKind.StoneUse:
                 if (e.A is 0 or 1 && Self.InCombat(now)) Economy.StoneUsed();
+                if (e.A == 0) Fight.StoneAccepted(Self.Hp, now);
                 if (e.A == 0 && Self.HpStones > 0) Self.HpStones--;
                 else if (e.A == 1 && Self.SpStones > 0) Self.SpStones--;
                 Bag.Stones = (Self.HpStones, Self.SpStones);
