@@ -43,6 +43,9 @@ public class ReadinessTests
         var skills = new SkillsModule(t.Ctx);
         var n = skills.Behind();
         Assert.True(n > 0);
+        // production lines are not power: the INT Spell Scroll and Beast Potion recipe tiers are not counted (they made
+        // the live count 28 for both bots, 02:34)
+        Assert.True(n < 20, $"{n} behind");
         // a fresh level-1 mage has fewer books open to it
         t.Ctx.World.Self.Seed("m", 16, 16, 1);
         Assert.True(skills.Behind() < n);

@@ -397,7 +397,8 @@ public sealed partial class SkillsModule(AgentContext ctx) : ApiModule(ctx)
 
     /// <summary>Skills we are behind on: skill families where a buyable skill book (ItemInfo row named like an
     /// ActiveSkill row, a BuyPrice, demand level at most ours) for our class teaches a higher rank than the highest we
-    /// know (a family we lack entirely counts too; production recipes left out: they are a choice of field, not power).
+    /// know (a family we lack entirely counts too; production lines left out - no damage / heal / buff / debuff / slow /
+    /// stun tag, the Spell Scroll and Recipe tiers - they are a choice of field, not power).
     /// Cached per (level, learned count); each recompute logs the families and ranks behind.</summary>
     [LuaFn]
     public int Behind()
@@ -411,7 +412,7 @@ public sealed partial class SkillsModule(AgentContext ctx) : ApiModule(ctx)
             var top = new Dictionary<string, ActiveSkillRow>();
             foreach (var i in cd.AllItems)
                 if (i.BuyPrice > 0 && i.DemandLevel <= lv && i.InxName is { Length: > 0 } && byInx.TryGetValue(i.InxName, out var sk)
-                    && cd.Produce(sk.Id) is null && cd.ClassAllowed(sk.UseClass, Ctx.World.Self.ClassId) != false
+                    && cd.Produce(sk.Id) is null && (SkillTags.Of(cd, sk.Id) & PowerTags) != 0 && cd.ClassAllowed(sk.UseClass, Ctx.World.Self.ClassId) != false
                     && (!top.TryGetValue(sk.Family, out var t) || sk.Step > t.Step))
                     top[sk.Family] = sk;
             var parts = new List<string>();
@@ -427,6 +428,8 @@ public sealed partial class SkillsModule(AgentContext ctx) : ApiModule(ctx)
         return n;
     }
     private int _behindLv = -1, _behindKnown = -1, _behind;
+    /// <summary>The tags of a skill that adds power (a production line - scrolls, recipes of any tier - has none).</summary>
+    private const int PowerTags = (int)(SkillTag.Damage | SkillTag.Heal | SkillTag.Buff | SkillTag.Debuff | SkillTag.Slow | SkillTag.Stun);
     /// <summary>Learned?</summary>
     [LuaFn] public bool Has(int id) => B.Has(id);
     /// <summary>Learned skills (highest rank per family) with all tags of the mask.</summary>
