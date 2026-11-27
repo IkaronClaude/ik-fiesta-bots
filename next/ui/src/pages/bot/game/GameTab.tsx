@@ -91,8 +91,7 @@ export function GameTab({ bot, botState }: { bot: string; botState?: string }) {
 
   return (
     <div className={'game' + (state.offline ? ' offline' : '')} ref={root} onMouseLeave={() => setTip(null)}>
-      <Hud s={state} />
-      <Buffs buffs={Object.values(state.buffs)} onTip={onTip} className="hud-buffs" />
+      <Hud s={state} onTip={onTip} />
       <div className="game-grid">
         <div className="game-left">
           <Minimap bot={bot} state={state} onHover={onEnt} />
@@ -140,7 +139,7 @@ const Bar = memo(function Bar({ label, v, max, cls }: { label: string; v: number
   );
 });
 
-const Hud = memo(function Hud({ s: st }: { s: GameState }) {
+const Hud = memo(function Hud({ s: st, onTip }: { s: GameState; onTip: (t: Tip | null, ev?: any) => void }) {
   const s = st.self;
   const map = useStatic<MapInfo>('maps', s.mapId);
   const span = s.expNext - (s.expPrev ?? 0);
@@ -155,6 +154,7 @@ const Hud = memo(function Hud({ s: st }: { s: GameState }) {
         <span className="muted small">{map?.name ?? s.map ?? `map ${s.mapId}`} <span className="mono">({Math.round(s.x)}, {Math.round(s.y)})</span></span>
         {flags.map(f => <span key={f} className={'tag ' + (f === 'DEAD' ? 'err' : f === 'combat' ? 'warn' : '')}>{f}</span>)}
         <span className="grow" />
+        <Buffs buffs={Object.values(st.buffs)} onTip={onTip} className="hud-buffs" />
         <span className="hud-money" title="money">{fmtNum(s.money)} <span className="muted small">cen</span></span>
       </div>
       <div className="hud-bars">
@@ -168,7 +168,7 @@ const Hud = memo(function Hud({ s: st }: { s: GameState }) {
       </div>
     </div>
   );
-}, (a, b) => a.s.self === b.s.self);
+}, (a, b) => a.s.self === b.s.self && a.s.buffs === b.s.buffs && a.onTip === b.onTip);
 
 function TargetLine({ state }: { state: GameState }) {
   useStaticVersion();

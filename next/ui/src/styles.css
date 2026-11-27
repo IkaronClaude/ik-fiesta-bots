@@ -326,8 +326,10 @@ td.best { color: var(--accent); font-weight: 600; }
 .buff .sweep { position: absolute; inset: 0; background: conic-gradient(rgba(0,0,0,0) var(--sweep), rgba(0,0,0,.66) 0); opacity: 0; pointer-events: none; }
 .buff.cooling .sweep { opacity: 1; }
 .buff .cd-text { z-index: 1; }
-/* own states: one line under the EXP bar, kept as a gap when empty so the layout does not move */
-.hud-buffs { margin: 4px 0 2px; flex-wrap: nowrap; overflow: hidden; height: 26px; }
+/* own states: in the name line, left of the money (no row of their own) */
+.hud-buffs { flex-wrap: nowrap; min-height: 0; gap: 2px; margin-right: 6px; }
+.hud-buffs .buff { width: 22px; height: 22px; }
+.hud-buffs .buff img { width: 20px; height: 20px; }
 .target-buffs { margin-top: 2px; }
 .tt-buffs { margin-top: 3px; border-top: 1px solid #26333a; padding-top: 3px; }
 .tiles { display: flex; flex-wrap: wrap; gap: 3px; }
