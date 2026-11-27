@@ -106,10 +106,11 @@ public sealed class MoveController
             _waitMesh = true; _ticket = JobTicket.None;
             return;
         }
-        if (!o.UsePath || ctx.Nav.Layer(ctx.World.Map.MapName) is null)
+        // every walk is a pathfinder walk (operator: walks without pathfinding are nonsense): no straight-line fallback,
+        // a map without walkability refuses the move loudly instead of walking into walls
+        if (ctx.Nav.Layer(ctx.World.Map.MapName) is null)
         {
-            _path.Clear(); _path.Add(((uint)o.X, (uint)o.Y));
-            _jobDone = true; _jobOk = true; _ticket = JobTicket.None;
+            Fail(ctx, LocalRefusal.NoPath, $"no walkability for map {ctx.World.Map.MapName}");
             return;
         }
         ctx.Overlay.OnMap(ctx.World.Map.MapName);   // the blocks learned on this map (kept across visits)

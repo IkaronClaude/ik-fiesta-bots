@@ -30,16 +30,27 @@ public sealed class TestBot : IDisposable
         var log = new BotLogger("t", new LogRing(1024), null, Clock);
         Ctx = new AgentContext
         {
-            BotId = "t", Data = data, Nav = new NavService(Path.GetTempPath(), Jobs), Jobs = Jobs, Atlas = WorldAtlas.CreateEmpty(), Knowledge = new KnowledgeStore(), Log = log,
+            BotId = "t", Data = data, Nav = OpenNav(Jobs), Jobs = Jobs, Atlas = WorldAtlas.CreateEmpty(), Knowledge = new KnowledgeStore(), Log = log,
             Inbound = In, Actions = new ActionSystem(Out), World = new WorldState { Data = data },
         };
         Agent = new BotAgent(Ctx, In, Out, new ControlQueue(), null, Clock);
         Ev(InboundKind.LinkChanged, a: (long)LinkState.Ready);
-        Ev(InboundKind.SelfBase, a: 10, b: 0, c: 100);
+        Ev(InboundKind.SelfBase, a: 10, b: 0, c: 100, text: TestData.MapRow.MapName);   // on the test map (its walkability is open)
         Ev(InboundKind.SelfHp, a: 100);
         Ev(InboundKind.SelfSp, a: 50);
         Ev(InboundKind.MapLoginAck, h: 1000, x: 5000, y: 5000, a: 100, b: 50);
         Ev(InboundKind.SkillLearned, a: 0);
+    }
+
+    // every walk is a pathfinder walk: the test maps get a real, fully open walkability layer (20000 x 20000 units)
+    private static readonly BlockLayer OpenLayer = BlockLayer.FromBits("open", 3200, 3200, (_, _) => false);
+    private static readonly NavMesh OpenMesh = NavMesh.Build(OpenLayer);
+    private static NavService OpenNav(JobScheduler jobs)
+    {
+        var nav = new NavService(Path.GetTempPath(), jobs);
+        nav.Use(TestData.MapRow.MapName, OpenLayer, OpenMesh);
+        nav.Use(TestData.DnRow.MapName, OpenLayer, OpenMesh);
+        return nav;
     }
 
     public void Ev(InboundKind k, int h = -1, int h2 = -1, long a = 0, long b = 0, long c = 0, uint x = 0, uint y = 0, string? text = null)
@@ -56,6 +67,13 @@ public sealed class TestBot : IDisposable
             Agent.Tick();
             while (Out.TryDequeue(out var op, out _)) Sent.Add(op);
         }
+    }
+
+    /// <summary>Tick until the condition holds (at most <paramref name="max"/> ticks): a walk's path comes from the job pool,
+    /// which runs in real time while the test clock is manual.</summary>
+    public void TickUntil(Func<bool> condition, int max = 500)
+    {
+        for (var i = 0; i < max && !condition(); i++) { Thread.Sleep(1); Tick(); }
     }
 
     public BrainInstance Load(string yaml, Dictionary<string, string>? modules = null)
@@ -546,11 +564,12 @@ public class ActionTests
         t.Tick();
         t.Sent.Clear();
         t.Ctx.Move.Order(new MoveOrder(5400, 5000, false, 10, ActionId.None), t.Ctx, 1);
+        t.TickUntil(() => t.Sent.Contains(IntentEncoder.OpFoldTent));   // the fold goes with the first leg, after the path
         t.Tick(3);
         Assert.Contains(IntentEncoder.OpFoldTent, t.Sent);
         Assert.DoesNotContain(IntentEncoder.OpMoveRun, t.Sent);
         t.Ev(InboundKind.Tent, a: 0, b: 0x0A81);
-        t.Tick(2);
+        t.TickUntil(() => t.Sent.Contains(IntentEncoder.OpMoveRun));
         Assert.Contains(IntentEncoder.OpMoveRun, t.Sent);
     }
 
@@ -627,7 +646,7 @@ public class ActionTests
         using var t = new TestBot();
         t.Tick(30);
         t.Ctx.Move.Order(new MoveOrder(5100, 5000, false, 1, ActionId.None), t.Ctx, 1);
-        t.Tick(2);
+        t.TickUntil(() => t.Ctx.Move.Moving);
         t.Ev(InboundKind.MoveFail, x: 5000, y: 5000);         // refused where we stand
         t.Tick();
         var blocked = t.Ctx.Overlay.SnapshotBlocked(t.Clock.NowMs);
@@ -709,7 +728,7 @@ public class ActionTests
         using var t = new TestBot();
         t.Tick(30);
         var a = t.Ctx.Move.Order(new MoveOrder(7000, 5000, false, 10, ActionId.None), t.Ctx, 1);
-        t.Tick(5);
+        t.TickUntil(() => t.Ctx.Move.Moving);
         Assert.True(t.Ctx.Move.Moving);
         t.Ctx.Actions.Cancel(a);
         t.Tick();

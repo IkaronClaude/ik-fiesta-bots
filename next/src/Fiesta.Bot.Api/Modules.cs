@@ -578,8 +578,8 @@ public sealed partial class ActModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public int Untarget() => One(ActionKind.Untarget, 0, 0, IntentEncoder.Untarget(-1));
     /// <summary>Walk to (x,y) along a path (job); resolves on arrival / failure.</summary>
     [LuaFn] public int MoveTo(double x, double y, double within = 20) => Id(Ctx.Move.Order(new MoveOrder(x, y, true, within, ActionId.None), Ctx, CallingLayer));
-    /// <summary>One straight leg, no path.</summary>
-    [LuaFn] public int MoveDirect(double x, double y) => Id(Ctx.Move.Order(new MoveOrder(x, y, false, 5, ActionId.None), Ctx, CallingLayer));
+    /// <summary>Kept for older brains: a pathfinder walk that arrives within 5 units (there are no straight-line walks).</summary>
+    [LuaFn] public int MoveDirect(double x, double y) => Id(Ctx.Move.Order(new MoveOrder(x, y, true, 5, ActionId.None), Ctx, CallingLayer));
     /// <summary>Follow h at a distance: walks to its current position (re-issue each tick to keep following).</summary>
     [LuaFn]
     public int Follow(int h, double dist)

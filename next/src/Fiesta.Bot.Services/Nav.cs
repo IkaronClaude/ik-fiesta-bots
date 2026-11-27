@@ -493,6 +493,15 @@ public sealed class NavService(string clientRoot, IJobScheduler jobs, Func<strin
             return r;
         })).Value;
 
+    /// <summary>Install a map's walkability directly (tests; a map whose block file the client lacks): it is ready at
+    /// once and paths run over it like a loaded one.</summary>
+    public void Use(string mapName, BlockLayer layer, NavMesh? mesh = null)
+    {
+        var r = (layer, mesh ?? NavMesh.Build(layer));
+        _maps[mapName] = new Lazy<(BlockLayer?, NavMesh?)>(() => r);
+        _ready[mapName] = true;
+    }
+
     /// <summary>Non-blocking: the layer when the map is loaded, else null (and loading starts on the job pool). The
     /// tick thread must never build a mesh (hundreds of milliseconds on a large map).</summary>
     public BlockLayer? Layer(string mapName) { if (_ready.ContainsKey(mapName)) return Get(mapName).L; Prepare(mapName); return null; }

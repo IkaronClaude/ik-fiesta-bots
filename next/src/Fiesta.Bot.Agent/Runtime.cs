@@ -764,7 +764,7 @@ public static class OperatorActions
         switch ((cmd.Value ?? "").ToLowerInvariant())
         {
             case "move" or "moveto": id = c.Move.Order(new MoveOrder(D("x"), D("y"), true, L("within", 20), ActionId.None), c, 0); break;
-            case "movedirect": id = c.Move.Order(new MoveOrder(D("x"), D("y"), false, L("within", 10), ActionId.None), c, 0); break;
+            case "movedirect": id = c.Move.Order(new MoveOrder(D("x"), D("y"), true, L("within", 10), ActionId.None), c, 0); break;   // pathfinds too
             case "stop": c.Move.Stop(c); id = c.Actions.Issue(ActionKind.Stop, 0, 0, 0, []); break;
             case "cast": id = c.Combat.Cast((int)L("skill"), (int)L("target", c.World.Self.Handle), 0, c); break;
             case "bash": id = c.Combat.Bash((int)L("target"), 0, c); break;
