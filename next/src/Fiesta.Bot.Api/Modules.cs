@@ -118,6 +118,20 @@ public sealed partial class SelfModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public double RunSpeed() => S.RunSpeed;
     /// <summary>Abstate present?</summary>
     [LuaFn] public bool HasAbstate(int id) => S.HasAbstate(id, Ctx.Now);
+    /// <summary>Slowed or rooted right now (an active abnormal state whose client data cuts our speed or stops us):
+    /// running away or kiting then loses ground, the fight is the better bet.</summary>
+    [LuaFn]
+    public bool Slowed()
+    {
+        if (Ctx.Data is not Fiesta.Bot.Services.ClientData cd) return false;
+        for (var i = 0; i < S.AbstateCount; i++)
+        {
+            var (id, until) = S.AbstateAt(i);
+            if (until <= Ctx.Now) continue;
+            if (cd.IsSlowStateIndex(id) || cd.IsRootState(id)) return true;
+        }
+        return false;
+    }
     /// <summary>Abstate time left (ms), -1 absent.</summary>
     [LuaFn] public long AbstateLeftMs(int id) { var v = S.AbstateLeftMs(id, Ctx.Now); return v == long.MaxValue ? int.MaxValue : v; }
     /// <summary>Displayed stat (not decoded yet: -1).</summary>

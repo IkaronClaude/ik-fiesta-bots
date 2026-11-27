@@ -332,6 +332,9 @@ public sealed class ClientData : IClientData
     public bool IsRootState(int abstateIndex) => StateEffect(abstateIndex).NoMove;
     /// <summary>Does the abnormal state keep its holder from attacking and casting (a stun)?</summary>
     public bool IsNoActState(int abstateIndex) => StateEffect(abstateIndex).NoAct;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, bool> _slowByIndex = new();
+    /// <summary>Does the abnormal state (its wire index) slow its holder (<see cref="IsSlowState"/>)? Cached per index.</summary>
+    public bool IsSlowStateIndex(int abstateIndex) => _slowByIndex.GetOrAdd(abstateIndex, i => AbStateName(i) is { } n && IsSlowState(n));
     /// <summary>The AbState row name of a wire index (for logs), null unknown.</summary>
     public string? AbStateName(int abstateIndex)
     {
