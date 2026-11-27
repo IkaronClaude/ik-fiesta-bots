@@ -244,7 +244,7 @@ layers:
     }
 
     [Fact]
-    public void Death_exp_loss_levels_are_learned_from_deaths_with_and_without_a_loss_frame()
+    public void A_death_is_never_learned_to_be_free()
     {
         using var t = new TestBot();
         t.Tick(2);
@@ -252,19 +252,18 @@ layers:
         t.Ev(InboundKind.SelfExp, a: 15000);
         t.Tick();
         var e = t.Ctx.World.Economy;
-        Assert.Equal(-1, e.LossFraction(10));             // nothing known: the brain uses its prior
-        t.Ev(InboundKind.DeadMenu, a: 180); t.Tick();      // dies at level 10 (TestBot) ...
-        t.Ev(InboundKind.Revive, a: t.Ctx.World.Map.MapId, b: 1, x: 5000, y: 5000); t.Tick();
-        Assert.Equal(10, e.LossLevels.NoLossMax);          // ... revived with no EXPLOST: no loss at 10
-        Assert.Equal(0, e.LossFraction(10));
-        Assert.Equal(-1, e.LossFraction(11));
-        t.Ev(InboundKind.SelfLevel, a: 21); t.Tick();
+        Assert.Equal(-1, e.LossFraction(10));             // nothing measured: the brain uses its prior
+        // a death revived with no loss frame (a Blessing of Teva, or a frame we missed) teaches nothing: still the prior
         t.Ev(InboundKind.DeadMenu, a: 180); t.Tick();
-        t.Ev(InboundKind.ExpLost, a: 100); t.Tick();        // 1 % of the 10000 span at 21
         t.Ev(InboundKind.Revive, a: t.Ctx.World.Map.MapId, b: 1, x: 5000, y: 5000); t.Tick();
-        Assert.Equal(10, e.LossLevels.NoLossMax);
+        Assert.Equal(-1, e.LossFraction(10));
+        t.Ev(InboundKind.SelfLevel, a: 21); t.Tick();
+        t.Ev(InboundKind.ExpLost, a: 100); t.Tick();        // 1 % of the 10000 span at 21 (the frame before the dead menu)
+        t.Ev(InboundKind.DeadMenu, a: 180); t.Tick();
+        t.Ev(InboundKind.Revive, a: t.Ctx.World.Map.MapId, b: 1, x: 5000, y: 5000); t.Tick();
         Assert.Equal(0.01, e.LossFraction(21), 6);
         Assert.Equal(0.01, e.LossFraction(25), 6);         // the nearest measured level below
+        Assert.Equal(0.01, e.LossFraction(10), 6);         // below every measured level: the nearest above, never 0
     }
 
     [Fact]

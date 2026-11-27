@@ -1171,7 +1171,6 @@ public sealed class WorldState
             case InboundKind.Revive:
             {
                 Self.Dead = false;
-                Economy.RevivedNoLoss();
                 if (e.B == 0 && e.A != Map.MapId) { Entities.Clear(); Grid.Clear(); SetMap((int)e.A, Data?.Map((int)e.A)?.MapName ?? ""); }
                 Self.ServerPos = (e.X, e.Y); Self.Pos = (e.X, e.Y); Self.SpawnedAt = now;
                 ev.Raise(EventKind.Revived, e.A);
@@ -1180,7 +1179,6 @@ public sealed class WorldState
             case InboundKind.DeadMenu:
                 Self.Dead = true; Self.Deaths++; Self.Hp = 0;
                 Economy.Death(now);
-                Economy.DiedAt(Self.Level);
                 {   // the killer: the mob that hit us last
                     int ks = -1; long kat = -1;
                     for (var i = 0; i < Entities.Count; i++) { var sl = Entities.LiveSlot(i); if (Entities.HitUsAt[sl] > kat) { kat = Entities.HitUsAt[sl]; ks = sl; } }

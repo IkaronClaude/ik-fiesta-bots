@@ -138,7 +138,6 @@ public class AbstateTests
         t.Tick(2);
         t.Ev(InboundKind.Revive, a: t.Ctx.World.Map.MapId, b: 1, x: 5000, y: 5000);
         t.Tick(2);
-        Assert.Equal(-1, t.Ctx.World.Economy.LossLevels.NoLossMax);
         Assert.True(t.Ctx.World.Economy.LossFraction(t.Ctx.World.Self.Level) != 0);
     }
 }

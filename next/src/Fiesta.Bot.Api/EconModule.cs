@@ -34,9 +34,5 @@ public sealed partial class EconModule(AgentContext ctx) : ApiModule(ctx)
     /// <summary>The fraction of the level's span a death takes at a level, learned from deaths: 0 at or below the highest
     /// level a death cost nothing at, the measured fraction where losses were seen, -1 not known yet (use a prior).</summary>
     [LuaFn] public double DeathLossFraction(int level) => Ctx.World.Economy.LossFraction(level);
-    /// <summary>Record an observed no-loss death level (operator input from earlier logs); the new no-loss level.</summary>
-    [LuaFn] public int NoteNoLossLevel(int level) { Ctx.World.Economy.NoteNoLoss(level); return Ctx.World.Economy.LossLevels.NoLossMax; }
-    /// <summary>The highest level a death was seen to cost no exp at (-1 none).</summary>
-    [LuaFn] public int NoLossLevel() => Ctx.World.Economy.LossLevels.NoLossMax;
     [LuaFn] public (double Avg, int Count) ExpLost() { var (s, n) = Ctx.World.Economy.ExpLost; return n > 0 ? ((double)s / n, n) : (-1, 0); }
 }

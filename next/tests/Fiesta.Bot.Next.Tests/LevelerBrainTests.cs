@@ -255,12 +255,19 @@ public class LevelerBrainTests
         t.In.TryWrite(obj);
         t.Tick(2);
         Assert.True((t.Ctx.World.KindOf(t.Ctx.World.Entities.SlotOf(0x43BC), t.Clock.NowMs) & Fiesta.Bot.Agent.EntityKind.Huntable) != 0);
-        // the server asks for Zone_Mob01: the confirm is repeated until the room's wave appears
+        // the server asks for Zone_Mob01: the confirm waits for the scripted fight with the copy to end (the real client
+        // confirmed once, after beating its copy: Z:/JCQ2.pcapng) ...
         var req = InboundEvent.Of(InboundKind.Scenario, 0x6C05, t.Clock.NowMs); req.A = 5; req.Text = "Zone_Mob01";
         t.In.TryWrite(req);
         t.Sent.Clear();
         t.Tick(40);   // 2 s
-        Assert.True(t.Sent.Count(o => o == IntentEncoder.OpAreaEntryAck) >= 3, string.Join(",", t.Sent.Select(o => o.ToString("X4"))));
+        Assert.DoesNotContain(IntentEncoder.OpAreaEntryAck, t.Sent);
+        // ... and is sent once the copy is back in its NPC phase (fight over), repeated until the room's wave appears
+        var calm = InboundEvent.Of(InboundKind.Scenario, 0x6C0B, t.Clock.NowMs); calm.A = 11; calm.Handle = 0x43BC; calm.B = 4;
+        t.In.TryWrite(calm);
+        t.Sent.Clear();
+        t.Tick(40);
+        Assert.True(t.Sent.Count(o => o == IntentEncoder.OpAreaEntryAck) >= 1, string.Join(",", t.Sent.Select(o => o.ToString("X4"))));
         t.Ev(InboundKind.EntityAppeared, h: 3000, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 1200, y: 1000);
         t.Ev(InboundKind.EntityAppeared, h: 3001, a: (long)Fiesta.Bot.Agent.EntityKind.Mob, b: 1, x: 1250, y: 1000);
         t.Tick(10);

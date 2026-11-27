@@ -78,50 +78,30 @@ public sealed class Economy
     public (long Sum, int Count) ExpLost => (_expLostSum, _expLostN);
     internal void LostExp(long amount) { _expLostSum += amount; _expLostN++; }
 
-    // which levels a death costs exp at, learned (the start level is not in the client files): a death at
-    // level L that is revived with no BAT_EXPLOST in between means none is lost at L; a loss at L is measured there
-    private int _deathLevel = -1; private bool _lostSinceDeath;
-    private int _noLossMax = -1, _lossMin = -1;
+    // the exp a death costs, measured per level from the game's loss frames (BAT_EXPLOST). Every death costs exp (1 % of
+    // the level, unless a Blessing of Teva item is active - operator); a death is never learned to be free. (A no-loss
+    // learner used to live here: the loss frame comes BEFORE the dead menu, its flag was reset by the menu, and deaths that
+    // cost 312 exp were "learned" to cost none, up to level 27 - NextA 18:07.)
+    private int _lossMin = -1;
     private readonly Dictionary<int, (long Sum, long Span, int N)> _lossByLevel = new();
-    /// <summary>Highest level a death was seen to cost no exp at (-1 none), lowest it cost exp at (-1 none).</summary>
-    public (int NoLossMax, int LossMin) LossLevels => (_noLossMax, _lossMin);
-    /// <summary>A death at this level: its exp loss (or the lack of one) is decided at the revive.</summary>
-    // (the loss frame comes BEFORE the dead menu: resetting the flag here erased every loss, and a level-27 death that cost
-    // 312 exp was "learned" to cost none, NextA 18:07. The flag is cleared after the revive has judged the death.)
-    internal void DiedAt(int level) { _deathLevel = level; }
+    /// <summary>The lowest level a death was measured to cost exp at (-1 none).</summary>
+    public int LossMinLevel => _lossMin;
     /// <summary>The loss frame of a death at a level, with the level's span (for the fraction).</summary>
     internal void LostAt(int level, long amount, long span)
     {
-        _lostSinceDeath = true;
-        // a loss at or below the no-loss level proves the learned level wrong: the old ordering bug above raised it death by
-        // death, so no lower value is trustworthy either - it is forgotten and learned again from real revives
-        if (level <= _noLossMax) _noLossMax = -1;
         var c = _lossByLevel.GetValueOrDefault(level);
         _lossByLevel[level] = (c.Sum + amount, c.Span + Math.Max(0, span), c.N + 1);
         if (_lossMin < 0 || level < _lossMin) _lossMin = level;
     }
-    /// <summary>An observed fact from earlier logs (operator input): a death at this level cost no exp.</summary>
-    public void NoteNoLoss(int level) { if (level > _noLossMax && (_lossMin < 0 || level < _lossMin)) _noLossMax = level; }
-    /// <summary>Revived: a death with no loss frame raises the no-loss level. True when that was learned now.</summary>
-    /// <summary>How many times a revive taught a new no-loss level (the log watches it).</summary>
-    public int NoLossLearned { get; private set; }
-    internal bool RevivedNoLoss()
-    {
-        if (_deathLevel < 0) return false;
-        var lv = _deathLevel; _deathLevel = -1;
-        var lost = _lostSinceDeath; _lostSinceDeath = false;
-        if (lost || lv <= _noLossMax) return false;
-        _noLossMax = lv; NoLossLearned++; return true;
-    }
-    /// <summary>The fraction of a level's span a death takes at a level, learned: 0 at or below the no-loss level, the
-    /// measured fraction where losses were seen (the nearest measured level at or below), else -1 (use the prior).</summary>
+    /// <summary>The fraction of a level's span a death takes at a level: the measured fraction (the nearest measured level
+    /// at or below, else the nearest above), -1 none measured yet (use the prior).</summary>
     public double LossFraction(int level)
     {
-        if (level <= _noLossMax) return 0;
-        var best = -1;
-        foreach (var k in _lossByLevel.Keys) if (k <= level && k > best) best = k;
-        if (best < 0) return -1;
-        var c = _lossByLevel[best];
+        int below = -1, above = int.MaxValue;
+        foreach (var k in _lossByLevel.Keys) { if (k <= level && k > below) below = k; if (k > level && k < above) above = k; }
+        var pick = below >= 0 ? below : above;
+        if (pick == int.MaxValue) return -1;
+        var c = _lossByLevel[pick];
         return c.Span > 0 ? (double)c.Sum / c.Span : -1;
     }
 
@@ -194,7 +174,7 @@ public sealed class Economy
                 buckets.Add([_bucketMinute[i] + shift, _exp[i], _earn[i], _spend[i], _stones[i], _deaths[i]]);
         var mobs = _mobs.ToDictionary(kv => kv.Key, kv => new long[] { kv.Value.Kills, kv.Value.FightMs, kv.Value.Stones, kv.Value.Exp, kv.Value.Deaths });
         return new Saved(!_begun ? -1 : _startedAt + (unixNow - now), _questExp, buckets, mobs, _expLostSum, _expLostN,
-            _noLossMax, _lossByLevel.ToDictionary(kv => kv.Key, kv => new long[] { kv.Value.Sum, kv.Value.Span, kv.Value.N }));
+            -1, _lossByLevel.ToDictionary(kv => kv.Key, kv => new long[] { kv.Value.Sum, kv.Value.Span, kv.Value.N }));
     }
 
     /// <summary>Restore a saved ledger (buckets older than an hour are dropped).</summary>
@@ -214,7 +194,6 @@ public sealed class Economy
             if (v.Length >= 5) _mobs[id] = new MobCost { Kills = (int)v[0], FightMs = v[1], Stones = (int)v[2], Exp = v[3], Deaths = (int)v[4] };
         _questExp = s.QuestExp;
         _expLostSum = s.ExpLostSum; _expLostN = s.ExpLostCount;
-        _noLossMax = s.NoLossMaxLevel;
         if (s.LossByLevel is { } lb)
             foreach (var (lv, v) in lb) if (v.Length >= 3) { _lossByLevel[lv] = (v[0], v[1], (int)v[2]); if (_lossMin < 0 || lv < _lossMin) _lossMin = lv; }
         if (s.StartedUnixMs >= 0) { _startedAt = Math.Max(now - 3_600_000, s.StartedUnixMs - (unixNow - now)); _begun = true; }
