@@ -93,8 +93,9 @@ public sealed class Economy
     internal void LostAt(int level, long amount, long span)
     {
         _lostSinceDeath = true;
-        // a loss at or below the no-loss level proves that level wrong (a bad sample, or the old ordering bug above)
-        if (level <= _noLossMax) _noLossMax = level - 1;
+        // a loss at or below the no-loss level proves the learned level wrong: the old ordering bug above raised it death by
+        // death, so no lower value is trustworthy either - it is forgotten and learned again from real revives
+        if (level <= _noLossMax) _noLossMax = -1;
         var c = _lossByLevel.GetValueOrDefault(level);
         _lossByLevel[level] = (c.Sum + amount, c.Span + Math.Max(0, span), c.N + 1);
         if (_lossMin < 0 || level < _lossMin) _lossMin = level;
@@ -102,13 +103,15 @@ public sealed class Economy
     /// <summary>An observed fact from earlier logs (operator input): a death at this level cost no exp.</summary>
     public void NoteNoLoss(int level) { if (level > _noLossMax && (_lossMin < 0 || level < _lossMin)) _noLossMax = level; }
     /// <summary>Revived: a death with no loss frame raises the no-loss level. True when that was learned now.</summary>
+    /// <summary>How many times a revive taught a new no-loss level (the log watches it).</summary>
+    public int NoLossLearned { get; private set; }
     internal bool RevivedNoLoss()
     {
         if (_deathLevel < 0) return false;
         var lv = _deathLevel; _deathLevel = -1;
         var lost = _lostSinceDeath; _lostSinceDeath = false;
         if (lost || lv <= _noLossMax) return false;
-        _noLossMax = lv; return true;
+        _noLossMax = lv; NoLossLearned++; return true;
     }
     /// <summary>The fraction of a level's span a death takes at a level, learned: 0 at or below the no-loss level, the
     /// measured fraction where losses were seen (the nearest measured level at or below), else -1 (use the prior).</summary>

@@ -506,7 +506,7 @@ public sealed class BotAgent
         LastTickAt = now;
     }
 
-    private int _loggedNoLoss = -1;
+    private int _loggedNoLoss;
 
     private long _walkAt = -1;
 
@@ -514,9 +514,10 @@ public sealed class BotAgent
     {
         var log = Context.Log;
         Camp.Observe(e, Context);
-        if (e.Kind == InboundKind.Revive && Context.World.Economy.LossLevels.NoLossMax is var nl && nl > _loggedNoLoss)
+        // only when a revive really taught it (a level lowered by a contradiction, or loaded from the save, is not news)
+        if (e.Kind == InboundKind.Revive && Context.World.Economy.NoLossLearned > _loggedNoLoss && Context.World.Economy.LossLevels.NoLossMax is var nl)
         {
-            _loggedNoLoss = nl;
+            _loggedNoLoss = Context.World.Economy.NoLossLearned;
             log.Log(LogCategory.Core, LogLevel.Note, $"death exp: a death at level {nl} was revived with no EXPLOST - deaths cost no exp up to level {nl} (learned)");
         }
         switch (e.Kind)
