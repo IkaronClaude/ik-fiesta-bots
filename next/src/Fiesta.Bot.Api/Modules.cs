@@ -208,6 +208,21 @@ public sealed partial class EntsModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public int TargetOf(int h) { var s = Slot(h); return s < 0 ? -1 : W.Entities.TargetOf(s); }
     /// <summary>Hit us or targets us (confident).</summary>
     [LuaFn] public bool IsAggroOnUs(int h) { var s = Slot(h); return s >= 0 && (W.KindOf(s, Ctx.Now) & EntityKind.Aggro) != 0; }
+    /// <summary>Is the entity under a state that stops it attacking and casting (a stun, by its effect)? Stunning one
+    /// that already is wastes the stun.</summary>
+    [LuaFn]
+    public bool Stunned(int h)
+    {
+        var s = Slot(h);
+        if (s < 0 || Ctx.Data is not Fiesta.Bot.Services.ClientData cd) return false;
+        var e = W.Entities;
+        for (var i = 0; i < e.AbstateCount(s); i++)
+        {
+            var (id, end) = e.Abstate(s, i);
+            if (end > Ctx.Now && cd.IsNoActState(id)) return true;
+        }
+        return false;
+    }
     /// <summary>Ms since it last hit us, -1 never.</summary>
     [LuaFn] public long LastHitUsMs(int h) { var s = Slot(h); if (s < 0) return -1; var t = W.Entities.LastHitUsAt(s); return t < 0 ? -1 : Ctx.Now - t; }
     /// <summary>Body size.</summary>
