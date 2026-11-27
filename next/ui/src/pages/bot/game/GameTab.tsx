@@ -97,7 +97,7 @@ export function GameTab({ bot, botState }: { bot: string; botState?: string }) {
         <div className="game-left">
           <Minimap bot={bot} state={state} onHover={onEnt} />
           <TargetLine state={state} />
-          <Buffs buffs={targetOf(state)?.buffs ?? []} onTip={onTip} className="target-buffs" />
+          <Buffs buffs={liveTargetBuffs(state)} onTip={onTip} className="target-buffs" />
         </div>
         <div className="game-right">
           <SkillBar skills={state.skills} order={state.skillOrder} stones={stonesOf(state)} onTip={onTip} />
@@ -280,6 +280,13 @@ function Buffs({ buffs, onTip, className }: { buffs: GameBuff[]; onTip: (t: Tip 
 
 function targetOf(s: GameState): GameEnt | undefined {
   return s.self.target >= 0 ? s.ents[String(s.self.target)] : undefined;
+}
+
+const NO_BUFFS: GameBuff[] = [];
+/** The target's states; none without a target or once it is dead (a corpse shows none). */
+function liveTargetBuffs(s: GameState): GameBuff[] {
+  const t = targetOf(s);
+  return t && !t.dead ? t.buffs ?? NO_BUFFS : NO_BUFFS;
 }
 
 const Slot = memo(function Slot({ itemId, lot, upgrade, label, onTip }: { itemId?: number; lot?: number; upgrade?: number; label?: string; onTip: (t: Tip | null, ev?: any) => void }) {
