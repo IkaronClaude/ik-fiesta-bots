@@ -11,13 +11,19 @@ public static class ClientImages
     /// not 8 - the old fixed 8 x 8 grid cut those into 16-pixel quarters).</summary>
     public const int IconCell = 32;
 
-    /// <summary>One cell of a DDS atlas as PNG, or null.</summary>
-    public static byte[]? AtlasCellPng(string ddsPath, int index)
+    /// <summary>Abstate icon sheets are read eight icons to a row whatever their width (AbStateView indexes 0-63 into
+    /// the 128-pixel AbState00..03 sheets, 16-pixel cells; its few entries in a 256-pixel skill sheet land on that
+    /// sheet's 32-pixel cells). The item / skill sheets keep <see cref="IconCell"/> (ItemGrade, 128 wide, is 4 x 4).</summary>
+    public const int AbstatePerRow = 8;
+
+    /// <summary>One cell of a DDS atlas as PNG, or null; <paramref name="columns"/> &gt; 0 cuts the sheet that many cells
+    /// to a row instead of <see cref="IconCell"/>-pixel cells.</summary>
+    public static byte[]? AtlasCellPng(string ddsPath, int index, int columns = 0)
     {
         if (!File.Exists(ddsPath)) return null;
         var surface = DecodeDds(File.ReadAllBytes(ddsPath), out var w, out var h);
         if (surface is null) return null;
-        var size = Math.Min(IconCell, Math.Min(w, h));
+        var size = columns > 0 ? Math.Max(1, w / columns) : Math.Min(IconCell, Math.Min(w, h));
         var perRow = Math.Max(1, w / size);
         var cells = perRow * Math.Max(1, h / size);
         if (index < 0 || index >= cells) return null;

@@ -108,7 +108,7 @@ public sealed class GameStatic
     {
         var cell = k.Item1 switch { 'i' => ItemIcon(k.Item2), 's' => SkillIcon(k.Item2), _ => AbIcon(k.Item2) };
         if (cell is not { } c || _files.Icon(c.File) is not { } path) return null;
-        try { return ClientImages.AtlasCellPng(path, c.Index); } catch (IOException) { return null; }
+        try { return ClientImages.AtlasCellPng(path, c.Index, k.Item1 == 'a' ? ClientImages.AbstatePerRow : 0); } catch (IOException) { return null; }
     });
 
     /// <summary>A map's minimap art file and whether the game shows a minimap there at all, from MapViewInfo: the art is

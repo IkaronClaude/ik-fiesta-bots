@@ -49,7 +49,8 @@ public enum InboundKind : ushort
     SelfMoney,
     /// <summary>Walk speed A / run speed B (raw).</summary>
     SelfSpeed,
-    /// <summary>Abstate A on H set (B = 1) or reset (B = 0), C = ms left (-1 unknown).</summary>
+    /// <summary>Abstate A set (B = 1) or reset (B = 0), C = ms left (-1 unknown), on H: -1 = ours (no handle on the
+    /// wire), else the entity it is on (ours too when H is our handle).</summary>
     SelfAbstate,
     /// <summary>MAP_LOGIN_ACK: H = our handle, X,Y spawn, A max HP, B max SP, C next exp; H2 = prev exp (low 31 bits).</summary>
     MapLoginAck,
@@ -479,7 +480,7 @@ public sealed class SelfDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
     public IReadOnlyList<ushort> Opcodes { get; } =
-        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x1061, 0x2411, 0xCC02, 0xCC06, 0xCC0A, 0xCC0D, 0x1C18, 0x4804, 0x4805, 0x1059, 0x106F];
+        [0x240E, 0x240F, 0x1035, 0x1038, 0x240C, 0x240B, 0x1033, 0x203E, 0x2427, 0x2428, 0x2429, 0x242A, 0x1C19, 0x1802, 0x1804, 0x103D, 0x105B, 0x105F, 0x1061, 0x2411, 0xCC02, 0xCC06, 0xCC0A, 0xCC0D, 0x1C18, 0x4804, 0x4805, 0x1059, 0x106F];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -537,6 +538,25 @@ public sealed class SelfDecoder : IPacketDecoder
                 if (p.Length < 10) return;
                 e.Kind = InboundKind.SelfAbstate; e.Handle = Rd.U16(p, 0); e.A = Rd.U32(p, 2); e.B = 1; e.C = Rd.U32(p, 6);
                 break;
+            // ABSTATEINFORM / _NOEFFECT {abstate u32, keeptime ms u32}: a state put on US, no handle (NextA, 09:44:40:
+            // 0x242A 6F000000 B0240300 = state 111 for 206 s, the matching BRIEFINFO_ABSTATE_CHANGE carried our handle)
+            case 0x2429 or 0x242A:
+                if (p.Length < 8) return;
+                e.Kind = InboundKind.SelfAbstate; e.A = Rd.U32(p, 0); e.B = 1; e.C = Rd.U32(p, 4);
+                break;
+            // BRIEFINFO_ABSTATE_CHANGE_LIST {handle u16, count u8, (abstate u32, rest keeptime ms u32, strength u32) x count}:
+            // the states an entity already has as it comes into view (NextA 09:44:03: 6219 01 23010000 88130000 01000000)
+            case 0x1C19:
+            {
+                if (p.Length < 3) return;
+                int h = Rd.U16(p, 0), n = p[2];
+                for (var i = 0; i < n && 3 + 12 * i + 8 <= p.Length; i++)
+                {
+                    var a = InboundEvent.Of(InboundKind.SelfAbstate, op, at); a.Handle = h; a.A = Rd.U32(p, 3 + 12 * i); a.B = 1; a.C = Rd.U32(p, 3 + 12 * i + 4);
+                    sink.TryWrite(a);
+                }
+                return;
+            }
             case 0x2427 or 0x2428:   // ABSTATESET / RESET {handle u16, abstate u32 ...}
                 if (p.Length < 6) return;
                 e.Kind = InboundKind.SelfAbstate; e.Handle = Rd.U16(p, 0); e.A = Rd.U32(p, 2); e.B = op == 0x2427 ? 1 : 0;

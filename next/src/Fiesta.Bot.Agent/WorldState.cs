@@ -173,6 +173,29 @@ public sealed class EntityTable
     internal readonly long[] LastSwingAt = new long[Cap];
     internal readonly double[] HitDist = new double[Cap];
 
+    /// <summary>Abnormal states kept per entity (more are dropped: the view shows a few under the target).</summary>
+    public const int MaxAbstates = 8;
+    internal readonly int[] AbN = new int[Cap];
+    internal readonly int[] AbIds = new int[Cap * MaxAbstates];
+    internal readonly long[] AbEnds = new long[Cap * MaxAbstates];
+    /// <summary>Abnormal states on the entity in slot s (as the server shows them to us).</summary>
+    public int AbstateCount(int s) => AbN[s];
+    /// <summary>The slot's abstate i: wire id and end (monotonic ms, long.MaxValue = no end).</summary>
+    public (int Id, long End) Abstate(int s, int i) => (AbIds[s * MaxAbstates + i], AbEnds[s * MaxAbstates + i]);
+    internal void SetAbstate(int s, int id, bool on, long until)
+    {
+        int b = s * MaxAbstates, n = AbN[s], i = 0;
+        while (i < n && AbIds[b + i] != id) i++;
+        if (!on)
+        {
+            if (i == n) return;
+            AbIds[b + i] = AbIds[b + n - 1]; AbEnds[b + i] = AbEnds[b + n - 1]; AbN[s] = n - 1;
+            return;
+        }
+        if (i == n) { if (n == MaxAbstates) return; AbN[s] = n + 1; }
+        AbIds[b + i] = id; AbEnds[b + i] = until;
+    }
+
     /// <summary>Create.</summary>
     public EntityTable()
     {
@@ -254,7 +277,7 @@ public sealed class EntityTable
             _livePos[s] = LiveN; Live[LiveN++] = s;
             Handle[s] = handle; HpV[s] = -1; MaxHpV[s] = -1; Lvl[s] = -1; TargetH[s] = -1; HitUsAt[s] = -1; DamagedAt[s] = -1;
             HasFace[s] = false; Dead[s] = false; DamageByUs[s] = 0; FirstHitByUsAt[s] = -1; Name[s] = null; SpawnX[s] = x; SpawnY[s] = y; AppearedAt[s] = now; SpawnAt[s] = -1;
-            LastSwingAt[s] = -1; HitDist[s] = -1;
+            LastSwingAt[s] = -1; HitDist[s] = -1; AbN[s] = 0;
         }
         Kinds[s] = kind; Mob[s] = mob; X[s] = x; Y[s] = y; ToX[s] = x; ToY[s] = y; Spd[s] = 0; MoveAt[s] = now;
         return s;
@@ -940,7 +963,9 @@ public sealed class WorldState
                 if (e.A > 0) Self.WalkSpeed = e.A * 120.0 / 127.0;
                 break;
             case InboundKind.SelfAbstate:
-                if (e.Handle == me || me < 0) Self.SetAbstate((int)e.A, e.B == 1, e.C > 0 ? now + e.C : long.MaxValue);
+                // ours (no handle on the wire, or our own) or an entity in view (allies and enemies alike)
+                if (e.Handle < 0 || e.Handle == me || me < 0) Self.SetAbstate((int)e.A, e.B == 1, e.C > 0 ? now + e.C : long.MaxValue);
+                else if (Entities.SlotOf(e.Handle) is var es and >= 0) { Entities.SetAbstate(es, (int)e.A, e.B == 1, e.C > 0 ? now + e.C : long.MaxValue); Bump(WorldComponent.Entities); }
                 break;
             case InboundKind.Damage:
             case InboundKind.SkillDamage:
@@ -1141,6 +1166,16 @@ public sealed class WorldState
                     for (var i = 0; i < Entities.Count; i++) { var sl = Entities.LiveSlot(i); if (Entities.HitUsAt[sl] > kat) { kat = Entities.HitUsAt[sl]; ks = sl; } }
                     if (ks >= 0) Economy.DiedTo(Entities.Mob[ks]);
                 }
+                // dead, nothing is fighting us any more: forget who hit us and whose target we were (the "aggro on us" count
+                // kept every attacker after the death, operator 2026-11-27); a mob that still wants us after the revive hits
+                // or targets us again and is counted afresh
+                for (var i = 0; i < Entities.Count; i++)
+                {
+                    var sl = Entities.LiveSlot(i);
+                    Entities.HitUsAt[sl] = -1;
+                    if (Entities.TargetH[sl] == Self.Handle) Entities.TargetH[sl] = -1;
+                }
+                Bump(WorldComponent.Entities);
                 Npc.DeadMenu = (e.A, now);
                 Bump(WorldComponent.Self);
                 ev.Raise(EventKind.Died, e.A);

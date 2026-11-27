@@ -1048,9 +1048,10 @@ the browser draws the sweep `1 - (readyAt - nowServer) / durMs` until `readyAt`.
 }
 ```
 
-`ents` rows: `[handle, kind, id, x, y, hpPct, flags, name]`. `kind`: `m` mob, `n` NPC, `p` player, `g` gate,
+`ents` rows: `[handle, kind, id, x, y, hpPct, flags, name, tx, ty, spd, abstates]`; `abstates` = the abnormal states shown on that
+entity, `[[wire abstate id, endsAt (0 = no end)], ...]` (allies and enemies alike; run-out ones are dropped). `kind`: `m` mob, `n` NPC, `p` player, `g` gate,
 `d` drop. `id`: the MobInfo id for mobs / NPCs / gates, the item id for drops, the class id for players.
-`flags` bits: 1 dead, 2 aggro (hit us or targets us), 4 our target, 8 huntable. `name`: players' names and the
+`flags` bits: 1 dead, 2 aggro (hit us in the last 10 s or targets us; cleared when we die), 4 our target, 8 huntable. `name`: players' names and the
 gates' destination text; `null` otherwise (the browser takes the mob name from the static data).
 
 #### Delta ops
@@ -1069,11 +1070,12 @@ Each op is an array whose first element is its code.
 | `["tgt", handle]` | target changed (-1 none) |
 | `["path", [[x, y], ...]]` | new remaining path (`[]` = stopped) |
 | `["map", mapId]` | map changed: drop all entities and the path (new `e+` ops follow) |
-| `["e+", h, kind, id, x, y, hpPct, flags, name, tx, ty, spd]` | an entity appeared (or its row changed kind / id) |
+| `["e+", h, kind, id, x, y, hpPct, flags, name, tx, ty, spd, abstates]` | an entity appeared (or its row changed kind / id) |
 | `["e-", h]` | an entity left view |
 | `["ep", h, x, y, tx, ty, spd]` | an entity moved, or its move segment changed: at the message's `now` it stood at (x, y), walking to (tx, ty) at spd u/s (0 = standing). Sent at once on a new segment, else every 250 ms; a viewer extrapolates along the segment every frame |
 | `["eh", h, hpPct]` | an entity's HP percentage changed |
 | `["ef", h, flags]` | an entity's flags changed |
+| `["ea", h, [[id, endsAt], ...]]` | an entity's abnormal states changed (the whole list) |
 
 Positions are world units rounded to integers. `self` carries the same move segment as `x, y, tx, ty, spd`. World Y grows upward (north on the minimap).
 `self.dir` is the facing in whole degrees 0..359: 0 = east (+x), counter-clockwise, 90 = north (+y).

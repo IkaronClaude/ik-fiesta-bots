@@ -27,7 +27,7 @@ public sealed class GameStream(string bot, GameTap tap)
         ["str", "end", "dex", "int", null, "spr", "wcMin", "wcMax", "def", "aim", "eva", "maMin", "maMax", "mdef", "maim", "meva"];
     private const int PosIntervalMs = 250, PosMin = 4, KeepAliveMs = 5000;
 
-    private sealed class Ent { public byte Kind; public int Id, X, Y, Tx, Ty, Spd; public byte Hp, Flags; public string? Name; }
+    private sealed class Ent { public byte Kind; public int Id, X, Y, Tx, Ty, Spd; public byte Hp, Flags; public string? Name; public long[] Ab = []; }
 
     private readonly List<GameViewer> _viewers = new();
     private readonly ArrayBufferWriter<byte> _buf = new(4096);
@@ -153,7 +153,31 @@ public sealed class GameStream(string bot, GameTap tap)
         _lastPosAt = c.Now;
     }
 
-    private static Ent EntOf(GameCapture c, int i) => new() { Kind = c.EKind[i], Id = c.EId[i], X = c.EX[i], Y = c.EY[i], Tx = c.ETx[i], Ty = c.ETy[i], Spd = c.ESpd[i], Hp = c.EHp[i], Flags = c.EFlags[i], Name = c.EName[i] };
+    private static Ent EntOf(GameCapture c, int i) => new() { Kind = c.EKind[i], Id = c.EId[i], X = c.EX[i], Y = c.EY[i], Tx = c.ETx[i], Ty = c.ETy[i], Spd = c.ESpd[i], Hp = c.EHp[i], Flags = c.EFlags[i], Name = c.EName[i], Ab = AbOf(c, i) };
+
+    /// <summary>An entity's abnormal states as id, end (unix ms, 0 none) pairs.</summary>
+    private static long[] AbOf(GameCapture c, int i)
+    {
+        if (c.EAbN[i] == 0) return [];
+        var a = new long[c.EAbN[i] * 2];
+        for (var k = 0; k < c.EAbN[i]; k++) { a[2 * k] = c.EAbId[i * EntityTable.MaxAbstates + k]; a[2 * k + 1] = c.EAbEnd[i * EntityTable.MaxAbstates + k]; }
+        return a;
+    }
+
+    private static bool SameAb(long[] a, GameCapture c, int i)
+    {
+        if (a.Length != c.EAbN[i] * 2) return false;
+        for (var k = 0; k < c.EAbN[i]; k++)
+            if (a[2 * k] != c.EAbId[i * EntityTable.MaxAbstates + k] || a[2 * k + 1] != c.EAbEnd[i * EntityTable.MaxAbstates + k]) return false;
+        return true;
+    }
+
+    private static void WriteAb(Utf8JsonWriter w, long[] ab)
+    {
+        w.WriteStartArray();
+        for (var k = 0; k < ab.Length; k += 2) { w.WriteStartArray(); w.WriteNumberValue(ab[k]); w.WriteNumberValue(ab[k + 1]); w.WriteEndArray(); }
+        w.WriteEndArray();
+    }
 
     private static int[] PathOf(GameCapture c)
     {
@@ -171,6 +195,7 @@ public sealed class GameStream(string bot, GameTap tap)
         w.WriteNumberValue(e.X); w.WriteNumberValue(e.Y); w.WriteNumberValue(e.Hp); w.WriteNumberValue(e.Flags);
         if (e.Name is null) w.WriteNullValue(); else w.WriteStringValue(e.Name);
         w.WriteNumberValue(e.Tx); w.WriteNumberValue(e.Ty); w.WriteNumberValue(e.Spd);
+        WriteAb(w, e.Ab);
     }
 
     private string Snapshot()
@@ -356,6 +381,11 @@ public sealed class GameStream(string bot, GameTap tap)
             {
                 e.Flags = c.EFlags[i];
                 w.WriteStartArray(); w.WriteStringValue("ef"); w.WriteNumberValue(h); w.WriteNumberValue(e.Flags); w.WriteEndArray(); n++;
+            }
+            if (!SameAb(e.Ab, c, i))
+            {
+                e.Ab = AbOf(c, i);
+                w.WriteStartArray(); w.WriteStringValue("ea"); w.WriteNumberValue(h); WriteAb(w, e.Ab); w.WriteEndArray(); n++;
             }
         }
         if (_ents.Count != _seen.Count)

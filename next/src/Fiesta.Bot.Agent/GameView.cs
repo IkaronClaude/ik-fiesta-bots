@@ -61,6 +61,10 @@ public sealed class GameCapture
     public readonly byte[] EKind = new byte[EntityTable.Cap], EHp = new byte[EntityTable.Cap], EFlags = new byte[EntityTable.Cap];
     /// <summary>Entity names (players, gates).</summary>
     public readonly string?[] EName = new string?[EntityTable.Cap];
+    /// <summary>Entity abnormal states: count per entity, then wire id and end (unix ms, 0 = no end) at
+    /// [entity * EntityTable.MaxAbstates + i].</summary>
+    public readonly int[] EAbN = new int[EntityTable.Cap], EAbId = new int[EntityTable.Cap * EntityTable.MaxAbstates];
+    public readonly long[] EAbEnd = new long[EntityTable.Cap * EntityTable.MaxAbstates];
     /// <summary>Entity count.</summary>
     public int EN;
 
@@ -132,6 +136,14 @@ public sealed class GameCapture
             EHp[EN] = (byte)(mh > 0 ? Math.Clamp((int)Math.Round(t.Hp(s) * 100 / mh), 0, 100) : 100);
             EFlags[EN] = (byte)((t.IsDead(s) ? 1 : 0) | ((k & EntityKind.Aggro) != 0 ? 2 : 0) | (EH[EN] == Target ? 4 : 0) | ((k & EntityKind.Huntable) != 0 ? 8 : 0));
             EName[EN] = (k & (EntityKind.Player | EntityKind.Gate)) != 0 ? t.NameOf(s) : null;
+            var an = 0;
+            for (var a = 0; a < t.AbstateCount(s); a++)
+            {
+                var (aid, until) = t.Abstate(s, a);
+                if (until != long.MaxValue && until <= now) continue;   // run out (the reset may never come for a mob we left)
+                EAbId[EN * EntityTable.MaxAbstates + an] = aid; EAbEnd[EN * EntityTable.MaxAbstates + an] = until == long.MaxValue ? 0 : SystemClock.UnixMs(until); an++;
+            }
+            EAbN[EN] = an;
             EN++;
         }
     }
