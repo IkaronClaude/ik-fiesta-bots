@@ -14,7 +14,7 @@ export interface HostInfo {
 }
 
 export interface Vitals {
-  hp: number; maxHp: number; sp: number; maxSp: number; exp: number; expNext: number; money: number;
+  hp: number; maxHp: number; sp: number; maxSp: number; exp: number; expPrev?: number; expNext: number; money: number;
   bagFree: number; bagSize: number; x: number; y: number;
 }
 

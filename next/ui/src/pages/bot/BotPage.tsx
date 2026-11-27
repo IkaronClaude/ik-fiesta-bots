@@ -52,7 +52,8 @@ export function BotPage({ id, tab }: { id: string; tab?: string }) {
         <div className="bot-head-row vitals-row">
           <Meter label="HP" v={v?.hp ?? 0} max={v?.maxHp ?? 0} cls="hp" />
           <Meter label="SP" v={v?.sp ?? 0} max={v?.maxSp ?? 0} cls="sp" />
-          <Meter label="EXP" v={v?.exp ?? 0} max={v?.expNext ?? 0} cls="xp" />
+          {/* progress within the level, like the game (and the Game tab): (exp - level start) / (next - level start) */}
+          <Meter label="EXP" v={(v?.exp ?? 0) - (v?.expPrev ?? 0)} max={(v?.expNext ?? 0) - (v?.expPrev ?? 0)} cls="xp" />
           <span title="money" className="num-tab nowrap">{v ? fmtNum(v.money) : '-'} cen</span>
           <span title={v ? `bag slots used / size (${v.bagFree} free)` : 'bag'} className="num-tab nowrap">bag {v ? `${v.bagSize - v.bagFree}/${v.bagSize}` : '-'}</span>
         </div>
