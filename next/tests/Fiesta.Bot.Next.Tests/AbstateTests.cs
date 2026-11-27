@@ -67,6 +67,24 @@ public class AbstateTests
     }
 
     [Fact]
+    public void A_corpse_shows_no_states()
+    {
+        var (t, s, got) = Setup();
+        t.Ev(InboundKind.EntityAppeared, h: Mob, a: (long)EntityKind.Mob, b: 1, x: 5100, y: 5000);
+        t.Ev(InboundKind.SelfAbstate, h: Mob, a: 307, b: 1, c: 5000);
+        t.Tick(3); s.Pump(0, null);
+
+        t.Ev(InboundKind.EntityDied, h: Mob);
+        t.Tick(3); s.Pump(0, null);
+        Assert.Equal(0, Ops(got).Last(o => o[0].GetString() == "ea")[2].GetArrayLength());
+
+        // the server keeps sending states for the corpse (NextA: mob 6541 got states 1 and 0 after it died): ignored
+        t.Ev(InboundKind.SelfAbstate, h: Mob, a: 1, b: 1, c: 5000);
+        t.Tick(3); s.Pump(0, null);
+        Assert.Equal(0, Ops(got).Last(o => o[0].GetString() == "ea")[2].GetArrayLength());
+    }
+
+    [Fact]
     public void A_handleless_state_is_ours()
     {
         var (t, s, got) = Setup();

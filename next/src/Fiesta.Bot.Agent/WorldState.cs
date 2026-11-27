@@ -875,7 +875,7 @@ public sealed class WorldState
                 if (e.Handle == me) break;
                 var s = Entities.SlotOf(e.Handle);
                 if (s < 0) break;
-                Entities.Dead[s] = true; Entities.HpV[s] = 0; Entities.Spd[s] = 0;
+                Entities.Dead[s] = true; Entities.HpV[s] = 0; Entities.Spd[s] = 0; Entities.AbN[s] = 0;   // a corpse shows no states (the server never resets them)
                 var mob = Entities.Mob[s];
                 if (e.Handle2 == me || Entities.DamageByUs[s] > 0)
                 {
@@ -965,7 +965,7 @@ public sealed class WorldState
             case InboundKind.SelfAbstate:
                 // ours (no handle on the wire, or our own) or an entity in view (allies and enemies alike)
                 if (e.Handle < 0 || e.Handle == me || me < 0) Self.SetAbstate((int)e.A, e.B == 1, e.C > 0 ? now + e.C : long.MaxValue);
-                else if (Entities.SlotOf(e.Handle) is var es and >= 0) { Entities.SetAbstate(es, (int)e.A, e.B == 1, e.C > 0 ? now + e.C : long.MaxValue); Bump(WorldComponent.Entities); }
+                else if (Entities.SlotOf(e.Handle) is var es and >= 0 && !Entities.Dead[es]) { Entities.SetAbstate(es, (int)e.A, e.B == 1, e.C > 0 ? now + e.C : long.MaxValue); Bump(WorldComponent.Entities); }
                 break;
             case InboundKind.Damage:
             case InboundKind.SkillDamage:
