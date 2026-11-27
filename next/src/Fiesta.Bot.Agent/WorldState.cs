@@ -164,6 +164,12 @@ public sealed class EntityTable
     internal readonly bool[] HasFace = new bool[Cap];
     internal readonly int[] TargetH = new int[Cap];
     internal readonly long[] HitUsAt = new long[Cap], DamagedAt = new long[Cap], AppearedAt = new long[Cap], SpawnAt = new long[Cap];
+    /// <summary>When the entity last showed it was on us (a swing started at us or a hit on us); its <see cref="TargetH"/>
+    /// counts as aggro only that long after (<see cref="AggroWindowMs"/>).</summary>
+    internal readonly long[] TargetAt = new long[Cap];
+    /// <summary>How long a hit on us or a swing started at us keeps an entity "on us": a mob that gave up (leashed home,
+    /// switched target) sends nothing, so its last target would otherwise count forever while it stays in view.</summary>
+    public const long AggroWindowMs = 10000;
     internal readonly double[] HitPosX = new double[Cap], HitPosY = new double[Cap], SpawnX = new double[Cap], SpawnY = new double[Cap];
     internal readonly bool[] Dead = new bool[Cap];
     internal readonly long[] DamageByUs = new long[Cap];
@@ -275,7 +281,7 @@ public sealed class EntityTable
             s = _free[--_freeN];
             _slotOf[handle] = (short)s;
             _livePos[s] = LiveN; Live[LiveN++] = s;
-            Handle[s] = handle; HpV[s] = -1; MaxHpV[s] = -1; Lvl[s] = -1; TargetH[s] = -1; HitUsAt[s] = -1; DamagedAt[s] = -1;
+            Handle[s] = handle; HpV[s] = -1; MaxHpV[s] = -1; Lvl[s] = -1; TargetH[s] = -1; TargetAt[s] = -1; HitUsAt[s] = -1; DamagedAt[s] = -1;
             HasFace[s] = false; Dead[s] = false; DamageByUs[s] = 0; FirstHitByUsAt[s] = -1; Name[s] = null; SpawnX[s] = x; SpawnY[s] = y; AppearedAt[s] = now; SpawnAt[s] = -1;
             LastSwingAt[s] = -1; HitDist[s] = -1; AbN[s] = 0;
         }
@@ -784,7 +790,9 @@ public sealed class WorldState
         var k = Entities.Kinds[slot];
         if (!Entities.Dead[slot]) k |= EntityKind.Alive;
         var hit = Entities.HitUsAt[slot];
-        if ((hit >= 0 && now - hit < 10000) || (Entities.TargetH[slot] == Self.Handle && Self.Handle >= 0)) k |= EntityKind.Aggro;
+        var tat = Entities.TargetAt[slot];
+        if ((hit >= 0 && now - hit < EntityTable.AggroWindowMs)
+            || (Entities.TargetH[slot] == Self.Handle && Self.Handle >= 0 && tat >= 0 && now - tat < EntityTable.AggroWindowMs)) k |= EntityKind.Aggro;
         // huntable: a live mob that has hit points and is not on the player side (gathering nodes have MaxHP 0)
         if ((k & EntityKind.Mob) != 0 && !Entities.Dead[slot] && Data?.Mob(Entities.Mob[slot]) is not { IsPlayerSide: true } && Data?.Mob(Entities.Mob[slot]) is not { MaxHp: 0 }) k |= EntityKind.Huntable;
         return k;
@@ -834,7 +842,7 @@ public sealed class WorldState
             {
                 var s = Entities.SlotOf(e.Handle);
                 if (s < 0) break;
-                var wasAggro = Entities.HitUsAt[s] >= 0 && now - Entities.HitUsAt[s] < 10000;
+                var wasAggro = Entities.HitUsAt[s] >= 0 && now - Entities.HitUsAt[s] < EntityTable.AggroWindowMs;
                 Grid.Remove(s);
                 Entities.Remove(e.Handle);
                 Bump(WorldComponent.Entities);
@@ -883,7 +891,7 @@ public sealed class WorldState
                     Self.Kills++;
                     ev.Raise(EventKind.Kill, e.Handle, mob);
                 }
-                if (Entities.HitUsAt[s] >= 0 && now - Entities.HitUsAt[s] < 10000) ev.Raise(EventKind.AggroLost, e.Handle);
+                if (Entities.HitUsAt[s] >= 0 && now - Entities.HitUsAt[s] < EntityTable.AggroWindowMs) ev.Raise(EventKind.AggroLost, e.Handle);
                 ev.Raise(EventKind.TargetDied, e.Handle, mob);
                 Bump(WorldComponent.Entities);
                 break;
@@ -984,7 +992,7 @@ public sealed class WorldState
                     if (s >= 0)
                     {
                         var first = Entities.HitUsAt[s] < 0 || now - Entities.HitUsAt[s] > 15000;
-                        Entities.HitUsAt[s] = now; Entities.TargetH[s] = me;
+                        Entities.HitUsAt[s] = now; Entities.TargetH[s] = me; Entities.TargetAt[s] = now;
                         var (mx, my) = Entities.Pos(s, now);
                         var d = Math.Sqrt((mx - Self.Pos.X) * (mx - Self.Pos.X) + (my - Self.Pos.Y) * (my - Self.Pos.Y));
                         Entities.HitDist[s] = d;
@@ -1044,7 +1052,7 @@ public sealed class WorldState
                 if (e.Handle2 == me)
                 {
                     var s = Entities.SlotOf(e.Handle);
-                    if (s >= 0) Entities.TargetH[s] = me;
+                    if (s >= 0) { Entities.TargetH[s] = me; Entities.TargetAt[s] = now; }
                 }
                 break;
             case InboundKind.MoveFail:

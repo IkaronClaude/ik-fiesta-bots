@@ -95,6 +95,23 @@ public class AbstateTests
     }
 
     [Fact]
+    public void A_mob_that_stopped_attacking_is_no_longer_on_us()
+    {
+        using var t = new TestBot();
+        t.Ev(InboundKind.EntityAppeared, h: Mob, a: (long)EntityKind.Mob, b: 1, x: 5050, y: 5000);
+        t.Ev(InboundKind.Damage, h: Mob, h2: t.Ctx.World.Self.Handle >= 0 ? t.Ctx.World.Self.Handle : 1000, a: 5, b: 50);
+        t.Tick(2);
+        var w = t.Ctx.World;
+        var slot = w.Entities.SlotOf(Mob);
+        Assert.True((w.KindOf(slot, t.Clock.NowMs) & EntityKind.Aggro) != 0);
+
+        // no hit and no swing at us for longer than the window (it leashed home): its last target is still us, but it
+        // is not on us any more
+        t.Tick(1, (int)EntityTable.AggroWindowMs + 50);
+        Assert.Equal(0, (int)(w.KindOf(slot, t.Clock.NowMs) & EntityKind.Aggro));
+    }
+
+    [Fact]
     public void Dying_clears_who_is_on_us()
     {
         using var t = new TestBot();
