@@ -132,6 +132,8 @@ public sealed class GameStream(string bot, GameTap tap)
         ("sp", false, c => c.Sp), ("maxSp", false, c => c.MaxSp), ("money", false, c => c.Money), ("fame", false, c => c.Fame),
         ("statPoints", false, c => c.StatPoints), ("hpStones", false, c => c.HpStones), ("spStones", false, c => c.SpStones),
         ("maxHpStones", false, c => c.MaxHpStones), ("maxSpStones", false, c => c.MaxSpStones), ("dead", true, c => c.Dead ? 1 : 0),
+        ("hpStoneCdEnd", false, c => c.HpStoneCdEnd), ("hpStoneCdMs", false, c => c.HpStoneCdMs),
+        ("spStoneCdEnd", false, c => c.SpStoneCdEnd), ("spStoneCdMs", false, c => c.SpStoneCdMs),
         ("battle", true, c => c.Battle ? 1 : 0), ("mounted", true, c => c.Mounted ? 1 : 0), ("dir", false, c => c.Dir), ("mapId", false, c => c.MapId),
     ];
 

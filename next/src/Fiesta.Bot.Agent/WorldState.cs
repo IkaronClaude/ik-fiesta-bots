@@ -764,6 +764,10 @@ public sealed class WorldState
     /// <summary>Exp, money, stone spend and deaths over the last hour.</summary>
     /// <summary>What our fighting measures (damage per skill, swings, cast spacing, stone heals).</summary>
     public CombatStats Fight { get; } = new();
+    /// <summary>When the last HP (0) / SP (1) soul stone was taken (monotonic ms), -1 none.</summary>
+    public readonly long[] StoneUsedAt = [-1, -1];
+    /// <summary>The shortest gap seen between two HP (0) / SP (1) stones (ms): their cooldown, -1 not seen yet.</summary>
+    public readonly long[] StoneGapMs = [-1, -1];
     public Economy Economy { get; } = new();
     /// <summary>Instance scenario state.</summary>
     public ScenarioState Scenario { get; } = new();
@@ -1081,6 +1085,14 @@ public sealed class WorldState
                 Bump(WorldComponent.Self);
                 break;
             case InboundKind.StoneUse:
+                if (e.A is 0 or 1)
+                {
+                    // the stone's cooldown for the view: the last use and the shortest gap seen between two (per kind)
+                    var k = (int)e.A;
+                    if (StoneUsedAt[k] >= 0) { var gap = now - StoneUsedAt[k]; if (gap > 0 && (StoneGapMs[k] < 0 || gap < StoneGapMs[k])) StoneGapMs[k] = gap; }
+                    StoneUsedAt[k] = now;
+                    Bump(WorldComponent.Self);
+                }
                 if (e.A is 0 or 1 && Self.InCombat(now)) Economy.StoneUsed();
                 if (e.A == 0) Fight.StoneAccepted(Self.Hp, now);
                 if (e.A == 0 && Self.HpStones > 0) Self.HpStones--;

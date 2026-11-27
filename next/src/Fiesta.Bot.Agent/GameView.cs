@@ -23,6 +23,8 @@ public sealed class GameCapture
     public string Name = "";
     /// <summary>Self numbers (-1 = not received yet).</summary>
     public long Exp, PrevExp, NextExp, Money, Fame, StatPoints, HpStones, SpStones, MaxHpStones, MaxSpStones, Hp, MaxHp, Sp, MaxSp;
+    /// <summary>Soul stone cooldowns: end (unix ms, 0 none) and length (ms, 0 unknown) for HP and SP.</summary>
+    public long HpStoneCdEnd, HpStoneCdMs, SpStoneCdEnd, SpStoneCdMs;
     /// <summary>Self flags.</summary>
     public bool Dead, Battle, Mounted;
     /// <summary>Stats 0..15 (-1 unknown).</summary>
@@ -70,6 +72,13 @@ public sealed class GameCapture
 
     /// <summary>Fill from the world (tick thread).</summary>
     [HotPath]
+    // a stone cooldown as the view shows it: (end unix ms, length ms); (0, 0) when none is running or none was measured
+    private static (long End, long Ms) StoneCd(WorldState w, int k, long now)
+    {
+        long at = w.StoneUsedAt[k], gap = w.StoneGapMs[k];
+        if (at < 0 || gap <= 0 || now - at >= gap) return (0, gap > 0 ? gap : 0);
+        return (SystemClock.UnixMs(at + gap), gap);
+    }
     public void Fill(AgentContext c, int session)
     {
         var w = c.World; var self = w.Self; var now = c.Now;
@@ -83,6 +92,8 @@ public sealed class GameCapture
         Exp = self.Exp; PrevExp = self.PrevExp; NextExp = self.NextExp; Money = self.MoneyKnown ? self.Money : -1;
         Fame = self.Fame; StatPoints = self.StatPoints; HpStones = self.HpStones; SpStones = self.SpStones;
         (MaxHpStones, MaxSpStones) = self.MaxStones;
+        (HpStoneCdEnd, HpStoneCdMs) = StoneCd(w, 0, now);
+        (SpStoneCdEnd, SpStoneCdMs) = StoneCd(w, 1, now);
         Hp = (long)self.Hp; MaxHp = (long)self.MaxHp; Sp = (long)self.Sp; MaxSp = (long)self.MaxSp;
         Dead = self.Dead; Battle = self.BattleMode; Mounted = self.Mounted;
         for (var i = 0; i < 16; i++) Stats[i] = (long)self.Stat(i);
