@@ -64,6 +64,9 @@ public static class Burst
         {
             if (k >= ids.Length) break;
             if ((SkillTags.Of(d, id) & (int)SkillTag.Damage) == 0 || d.Skill(id) is not { } sk) continue;
+            // a skill our weapon cannot use is no part of the plan (Slice and Dice with an axe opened every plan and was
+            // refused, NextA 17:27)
+            if (!GameRules.WeaponMeets(ctx, sk.DemandType)) continue;
             var (mean, sd, n) = f.Skill(id);
             if (n == 0)
             {
