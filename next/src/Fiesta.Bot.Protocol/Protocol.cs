@@ -201,6 +201,9 @@ public enum InboundKind : ushort
     MountSpeed,
     /// <summary>Our mount's hunger (MOVER_HUNGRY 0xCC0A, sent on RIDE_ON and as it changes): A the value.</summary>
     MountHunger,
+    /// <summary>The answer to a town portal request (MAP_TOWNPORTAL_ACK 0x181B): A the code (0x19C1 = going; a refusal
+    /// otherwise: 0x19C2 not in a state to travel, 0x19C3 no such portal, 0x19C4 below the destination's level).</summary>
+    TownPortalAck,
 }
 
 /// <summary>One decoded inbound event stored in rings. Variable text lives in <see cref="Text"/> (rare kinds only).</summary>
@@ -928,7 +931,7 @@ public sealed class SocialDecoder : IPacketDecoder
 public sealed class WorldDecoder : IPacketDecoder
 {
     /// <inheritdoc/>
-    public IReadOnlyList<ushort> Opcodes { get; } = [0x1809, 0x180A, 0x104D, 0x104F, 0x1050, 0x1812, 0x1813, 0x1818, 0x1819, 0x1827, 0x182B];
+    public IReadOnlyList<ushort> Opcodes { get; } = [0x1809, 0x180A, 0x104D, 0x104F, 0x1050, 0x1812, 0x1813, 0x1818, 0x1819, 0x1827, 0x182B, 0x181B];
 
     /// <inheritdoc/>
     public void Decode(ushort op, ReadOnlySpan<byte> p, long at, WireProfile wire, IEventSink sink)
@@ -941,6 +944,7 @@ public sealed class WorldDecoder : IPacketDecoder
                 e.Kind = InboundKind.MapLink; e.A = Rd.U16(p, 0); e.X = Rd.U32(p, 2); e.Y = Rd.U32(p, 6); e.B = op == 0x180A ? 1 : 0;
                 break;
             case 0x104D: e.Kind = InboundKind.DeadMenu; e.A = Rd.U32(p, 0); break;
+            case 0x181B: if (p.Length < 2) return; e.Kind = InboundKind.TownPortalAck; e.A = Rd.U16(p, 0); break;   // TOWNPORTAL_ACK {code u16}
             case 0x1827: if (p.Length < 4) return; e.Kind = InboundKind.FieldAttribute; e.A = Rd.U32(p, 0); break;   // FIELD_ATTRIBUTE {eFieldMapType u32}
             case 0x182B: if (p.Length < 1) return; e.Kind = InboundKind.ReviveItemAllowed; e.A = p[0]; break;           // CAN_USE_REVIVEITEM {u8}
             case 0x1812 or 0x1813 or 0x1818 or 0x1819:   // MAP_FREEPKZONE_ON / OFF, MAP_PARTYBATTLEZONE_ON / OFF
@@ -1061,7 +1065,7 @@ public static class IntentEncoder
     public const ushort OpMoveRun = 0x2019, OpMoveWalk = 0x2017, OpStop = 0x2012, OpTarget = 0x2401, OpUntarget = 0x2408,
         OpChangeMode = 0x2008, OpCastObj = 0x2440, OpCastFld = 0x2441, OpBashStart = 0x242B, OpBashStop = 0x2432,
         OpItemUse = 0x3015, OpBuy = 0x3003, OpSell = 0x3006, OpNpcClick = 0x200A, OpChat = 0x2001, OpPick = 0x3009,
-        OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpQuestScriptAck = 0x4402,
+        OpServerMenuAck = 0x3C02, OpNpcMenuAck = 0x201D, OpEndOfTrade = 0x200B, OpTownPortal = 0x181A, OpQuestScriptAck = 0x4402,
         OpQuestSelectStart = 0x440F, OpRevive = 0x104E, OpHeartbeatAck = 0x0805, OpStoneHp = 0x5007, OpStoneSp = 0x5009, OpStoneBuyHp = 0x5001, OpStoneBuySp = 0x5002, OpStatPoint = 0x105C, OpEquip = 0x300F, OpPartyAllow = 0x3804, OpFriendConfirm = 0x5404, OpQuestGiveUp = 0x4407, OpQuestRewardSelect = 0x4411, OpReloc = 0x300B, OpSplit = 0x300D, OpAreaEntryAck = 0x6C06, OpProduceCast = 0x2035, OpProductField = 0x4822, OpPitchTent = 0x2027, OpFoldTent = 0x202A, OpBagSort = 0x304A, OpUpgrade = 0x3017,
         OpLoginComplete = 0x1803;
 

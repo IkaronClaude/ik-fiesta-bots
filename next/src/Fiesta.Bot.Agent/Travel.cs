@@ -15,7 +15,7 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
     /// <inheritdoc/>
     public override ProcedureKind Kind => ProcedureKind.Travel;
     private ActionId _move = ActionId.None;
-    private GateHopProcedure? _hop;
+    private ProcedureBase? _hop;
     private RouteHop _next;
     private int _hopFails, _replans;
     // destinations whose gate refused us (no menu: the server refuses silently, e.g. a level requirement); routed around
@@ -60,7 +60,7 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         // the walk avoids the spawn areas of hostile mobs above maxMobLevel that lie on it
         Func<SpawnArea, bool>? danger = maxMobLevel == int.MaxValue ? null : a => ctx.Data.Mob(a.MobId) is { IsNpc: false, IsPlayerSide: false, MaxHp: > 0 } mi && mi.Level > maxMobLevel;
         if (ctx.Refused(target.Id)) { Fail($"{TargetMap} is avoided"); return; }
-        var route = ctx.Atlas.Route(w.Map.MapId, px, py, target.Id, x, y, avoid, danger);
+        var route = ctx.Atlas.Route(w.Map.MapId, px, py, target.Id, x, y, avoid, danger, w.Self.Level);
         if (route is null || route.Hops.Count == 0)
         {
             // no known link from this map: walk to the nearest gate exit we have not explored, to learn where it leads
@@ -81,7 +81,15 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
         }
         _next = route.Hops[0];
         ctx.Log.Log(LogCategory.Nav, LogLevel.Info,
-            $"travel: {w.Map.MapName} -> {TargetMap} in {route.Hops.Count} hop(s), next gate ({_next.X:0},{_next.Y:0}) to {ctx.Data.Map(_next.To)?.MapName}");
+            $"travel: {w.Map.MapName} -> {TargetMap} in {route.Hops.Count} hop(s), next {(_next.Portal >= 0 ? "town portal" : "gate")} ({_next.X:0},{_next.Y:0}) to {ctx.Data.Map(_next.To)?.MapName}");
+        if (_next.Portal >= 0)
+        {
+            // a town portal: the hop walks to it, clicks it and asks for the destination
+            _hop = new PortalHopProcedure(_next.Portal, _next.X, _next.Y, ctx.Data.Map(_next.To)?.MapName ?? "?") { Action = Action };
+            Go("hop", ctx, 180000);
+            _hop.Advance(ctx);
+            return;
+        }
         if (TryHop(ctx)) return;
         _move = ctx.Move.Order(new MoveOrder(_next.X, _next.Y, true, 120, ActionId.None), ctx, 0);
         Go("walkGate", ctx, 600000);
@@ -147,7 +155,10 @@ public sealed class TravelProcedure(string targetMap, double x = double.NaN, dou
     {
         if (_hop is null || _hop.Status == ProcedureStatus.Running) return;
         if (_hop.Status == ProcedureStatus.Succeeded) { _hop = null; _hopFails = 0; Go("start", ctx, 0); return; }
-        ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"travel: gate hop failed ({_hop.FailReason})");
+        ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"travel: {(_hop is PortalHopProcedure ? "portal" : "gate")} hop failed ({_hop.FailReason})");
+        // the client data put a portal where none stands: routes stop using this map's portal
+        if (_hop is PortalHopProcedure { Missing: true } && ctx.Atlas.PortalMissing(ctx.World.Map.MapId))
+            ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"atlas: no town portal stands on {ctx.World.Map.MapName} (the client data has one): its portal links dropped");
         // a gate that did not answer is never avoided (it answers a real player every time: the fault is ours, logged
         // loudly by the hop); the hop is retried, re-checking its preconditions (walk in again, the game-held position)
         _hop = null;

@@ -21,6 +21,12 @@ public class AtlasTests
         Assert.True(a.Links > 100);
         int rou = d.Map("Rou")!.Id, cos1 = d.Map("RouCos01")!.Id, val1 = d.Map("RouVal01")!.Id, cos2 = d.Map("RouCos02")!.Id;
         // the client graph links the new Roumen, not the old one the server runs: Roumen's own gates are learned when seen
+        // (the client data puts a town portal on old Roumen; one missing in the world is dropped - here, to test the gates)
+        // the portal NPC type is found from where NPCs stand beside the portal spots
+        Assert.Equal("Gate_Town", d.Mob(a.PortalNpc)?.InxName);
+        var viaPortal = a.Route(rou, 9456, 2408, val1)!;
+        Assert.True(viaPortal.Hops[0].Portal >= 0);
+        Assert.True(a.PortalMissing(rou));
         Assert.Null(a.Route(rou, 9456, 2408, val1));
         Assert.NotEmpty(a.GatePoints(rou));
         Assert.True(a.LearnGate(rou, 4021, 2879, cos1));

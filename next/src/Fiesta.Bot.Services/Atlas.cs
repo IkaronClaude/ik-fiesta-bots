@@ -6,8 +6,13 @@ public readonly record struct MapSpot(int MapId, double X, double Y);
 /// <summary>A mob spawn region (MobCoordinate): centre and half extents.</summary>
 public readonly record struct SpawnArea(int MobId, int MapId, double X, double Y, double HalfW, double HalfH);
 
-/// <summary>One map change of a route: leave <see cref="From"/> through the gate at (X, Y) into <see cref="To"/>.</summary>
-public readonly record struct RouteHop(int From, double X, double Y, int To);
+/// <summary>One map change of a route: leave <see cref="From"/> through the gate at (X, Y) into <see cref="To"/>, or - when
+/// <see cref="Portal"/> is not -1 - through the town portal standing at (X, Y), asking it for that portal index.</summary>
+public readonly record struct RouteHop(int From, double X, double Y, int To, int Portal = -1);
+
+/// <summary>A town portal destination (client TownPortal): its index, the level it needs, and where it lands (the
+/// portal there stands beside that spot).</summary>
+public readonly record struct TownPortalSpot(int Index, int MinLevel, int MapId, double X, double Y);
 
 /// <summary>A route between maps: the hops in order and the walking cost (world units, straight segments).</summary>
 public sealed record WorldRoute(IReadOnlyList<RouteHop> Hops, double Cost);
@@ -30,6 +35,41 @@ public sealed class WorldAtlas
     private readonly Dictionary<int, List<int>> _nodesByMap = new();
     private readonly Dictionary<int, List<(double X, double Y)>> _gatePoints = new();
     private readonly Dictionary<int, (double X, double Y)> _regen = new();
+    // town portal links: (from node, to node) -> the destination's portal index and level
+    private readonly Dictionary<(int, int), (int Index, int MinLevel)> _portalLinks = new();
+    private readonly List<TownPortalSpot> _portals = new();
+    /// <summary>The town portal destinations (client TownPortal): every portal reaches every other one whose level we have.</summary>
+    public IReadOnlyList<TownPortalSpot> Portals => _portals;
+    /// <summary>What a portal use costs in the route search, in world units of walking (bot behaviour: the click and the
+    /// map load take about as long as this walk).</summary>
+    public const double PortalUseCost = 800;
+    /// <summary>The level route searches without a level assume: only portals open to everyone are used.</summary>
+    public const int AnyLevel = 1;
+    /// <summary>How far from a portal spot its portal stands (bot behaviour: the spot is where travellers land, the portal
+    /// stands beside it).</summary>
+    public const double PortalNear = 200;
+    /// <summary>The NPC type that is the town portal: the one standing beside the most portal spots (no table names it;
+    /// -1 when no type stands beside two). Only it is clicked for a portal hop - any other NPC there is not a portal.</summary>
+    public int PortalNpc { get; private set; } = -1;
+    private readonly HashSet<int> _portalMissing = new();
+    /// <summary>A map where the client data puts a portal and none stands (the client's tables and the server's differ):
+    /// its portal links are dropped for this host's life. True when new.</summary>
+    public bool PortalMissing(int mapId)
+    {
+        lock (_gate)
+        {
+            if (!_portalMissing.Add(mapId)) return false;
+            var drop = new List<(int, int)>();
+            foreach (var k in _portalLinks.Keys) if (_nodes[k.Item1].Map == mapId || _nodes[k.Item2].Map == mapId) drop.Add(k);
+            foreach (var (u, v) in drop)
+            {
+                _portalLinks.Remove((u, v));
+                _adj[u].RemoveAll(e => e.To == v && e.Gate);
+            }
+            _mapCost.Clear(); _mapCostsDone.Clear(); _walkLevel = null;
+            return true;
+        }
+    }
     /// <summary>A map's regen point (MapInfo RegenX / RegenY), null unknown.</summary>
     public (double X, double Y)? Regen(int mapId) => _regen.TryGetValue(mapId, out var r) ? r : null;
     private readonly List<(int Map, double X, double Y, int To)> _learned = new();
@@ -126,7 +166,44 @@ public sealed class WorldAtlas
             foreach (var i in list)
                 foreach (var j in list)
                     if (i != j) _adj[i].Add((j, Dist(_nodes[i].X, _nodes[i].Y, _nodes[j].X, _nodes[j].Y), false));
+        LoadPortals(T("TownPortal"), mapIdByName);
     }
+
+    // TownPortal: each row is a destination, and a portal stands beside each one; from any portal the client offers
+    // every destination (a real client on Eld's portal went to another group's map). Its X / Y columns carry no names
+    // in the client file (positions 4 and 5).
+    private void LoadPortals(ShnTable? t, Func<string, int> mapIdByName)
+    {
+        if (t is null) return;
+        var nodes = new List<int>();
+        for (var r = 0; r < t.RowCount; r++)
+        {
+            var map = mapIdByName(t.Str(r, "MapName") ?? "");
+            if (map < 0) continue;
+            var p = new TownPortalSpot((int)t.Num(r, "Index"), (int)t.Num(r, "MinLevel"), map, t.Num(r, 4), t.Num(r, 5));
+            _portals.Add(p);
+            nodes.Add(AddNode(map, p.X, p.Y));
+        }
+        // the portal NPC type: the one standing beside the most portal spots (the client's own NPC spots)
+        var bestCount = 1;
+        foreach (var (npc, spots) in _npc)
+        {
+            var n = 0;
+            foreach (var p in _portals)
+                foreach (var s in spots)
+                    if (s.MapId == p.MapId && Dist(s.X, s.Y, p.X, p.Y) <= PortalNear) { n++; break; }
+            if (n > bestCount) { bestCount = n; PortalNpc = npc; }
+        }
+        for (var i = 0; i < nodes.Count; i++)
+            for (var j = 0; j < nodes.Count; j++)
+            {
+                if (_portals[i].MapId == _portals[j].MapId) continue;
+                _adj[nodes[i]].Add((nodes[j], PortalUseCost, true));
+                _portalLinks[(nodes[i], nodes[j])] = (_portals[j].Index, _portals[j].MinLevel);
+            }
+    }
+
+    private bool PortalClosed(int u, int v, int level) => _portalLinks.TryGetValue((u, v), out var p) && p.MinLevel > level;
 
     private static void Add<TK, TV>(Dictionary<TK, List<TV>> d, TK k, TV v) where TK : notnull
     {
@@ -216,7 +293,7 @@ public sealed class WorldAtlas
             if (_nodesByMap.TryGetValue(mapId, out var near))
                 foreach (var n in near)
                     if (Dist(_nodes[n].X, _nodes[n].Y, x, y) < 300)
-                        wrong += _adj[n].RemoveAll(e => e.Gate && _nodes[e.To].Map != toMap && _nodes[e.To].Map != mapId);
+                        wrong += _adj[n].RemoveAll(e => e.Gate && !_portalLinks.ContainsKey((n, e.To)) && _nodes[e.To].Map != toMap && _nodes[e.To].Map != mapId);
             if (wrong > 0) { _mapCost.Clear(); _mapCostsDone.Clear(); _walkLevel = null; GateCorrected?.Invoke(mapId, x, y, toMap, wrong); }
             if (_nodesByMap.TryGetValue(mapId, out var list))
                 foreach (var n in list)
@@ -251,10 +328,11 @@ public sealed class WorldAtlas
 
     /// <summary>Route from a spot to a map (and a spot on it when x/y are given): Dijkstra over the gate graph. Null
     /// when the maps are not connected; an empty hop list when already on the map.</summary>
+    /// <param name="level">Our level: town portals to a destination above it are not used.</param>
     public WorldRoute? Route(int fromMap, double fx, double fy, int toMap, double tx = double.NaN, double ty = double.NaN, Func<int, bool>? avoid = null,
-        Func<SpawnArea, bool>? dangerous = null)
+        Func<SpawnArea, bool>? dangerous = null, int level = AnyLevel)
     {
-        lock (_gate) return RouteLocked(fromMap, fx, fy, toMap, tx, ty, avoid, dangerous);
+        lock (_gate) return RouteLocked(fromMap, fx, fy, toMap, tx, ty, avoid, dangerous, level);
     }
 
     /// <summary>Does the straight walk between two points of a map pass through (within margin of) a spawn area the
@@ -285,7 +363,7 @@ public sealed class WorldAtlas
     private readonly Dictionary<int, int> _easiest = new();
 
     private WorldRoute? RouteLocked(int fromMap, double fx, double fy, int toMap, double tx, double ty, Func<int, bool>? avoid = null,
-        Func<SpawnArea, bool>? dangerous = null)
+        Func<SpawnArea, bool>? dangerous = null, int level = AnyLevel)
     {
         if (fromMap == toMap) return new WorldRoute([], double.IsNaN(tx) ? 0 : Dist(fx, fy, tx, ty));
         if (!_nodesByMap.TryGetValue(fromMap, out var starts) || !_nodesByMap.ContainsKey(toMap)) return null;
@@ -309,6 +387,7 @@ public sealed class WorldAtlas
             {
                 var vm = _nodes[v].Map;
                 if (avoid is not null && vm != toMap && vm != fromMap && avoid(vm)) continue;
+                if (PortalClosed(u, v, level)) continue;
                 // a walk inside a map that passes a dangerous spawn area is not taken (danger on the path, not on the map)
                 // (not on the map we stand on: the way out has to be walked whatever spawns there)
                 if (dangerous is not null && vm == _nodes[u].Map && vm != fromMap
@@ -322,7 +401,8 @@ public sealed class WorldAtlas
         for (var v = best; prev[v] >= 0; v = prev[v])
         {
             var u = prev[v];
-            if (_nodes[u].Map != _nodes[v].Map) hops.Add(new RouteHop(_nodes[u].Map, _nodes[u].X, _nodes[u].Y, _nodes[v].Map));
+            if (_nodes[u].Map != _nodes[v].Map)
+                hops.Add(new RouteHop(_nodes[u].Map, _nodes[u].X, _nodes[u].Y, _nodes[v].Map, _portalLinks.TryGetValue((u, v), out var pl) ? pl.Index : -1));
         }
         hops.Reverse();
         return new WorldRoute(hops, bestCost);
@@ -427,6 +507,7 @@ public sealed class WorldAtlas
                 {
                     var (v, c, _) = adj[k];
                     var vm = _nodes[v].Map;
+                    if (PortalClosed(u, v, AnyLevel)) continue;
                     if (vm == um && vm != fromMap)
                     {
                         if (byLevel && WalkLevel(u, k, v) > dangerKey) continue;

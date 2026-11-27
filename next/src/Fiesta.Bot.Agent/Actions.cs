@@ -470,7 +470,7 @@ public static class ErrorCodes
 }
 
 /// <summary>Procedure kinds (multi-packet interactions).</summary>
-public enum ProcedureKind : byte { OpenShop, QuestDialogue, GateHop, Dismount, Revive, Trade, Tent, Storage, Travel, Upgrade }
+public enum ProcedureKind : byte { OpenShop, QuestDialogue, GateHop, Dismount, Revive, Trade, Tent, Storage, Travel, Upgrade, TownPortal }
 
 /// <summary>Procedure outcome.</summary>
 public enum ProcedureStatus : byte { Running, Succeeded, Failed, Cancelled }
@@ -851,6 +851,147 @@ public static class QuestScripts
             lastSay = -1;
         }
         return map;
+    }
+}
+
+/// <summary>Town portal hop, as the client does it: walk to the portal standing at a portal spot, click it, and when its
+/// menu opens ask for the destination's portal index (MAP_TOWNPORTAL_REQ, then END_OF_TRADE); the answer (TOWNPORTAL_ACK)
+/// and the map link follow. The portal is whatever NPC stands at the spot (none is named in the data).</summary>
+public sealed class PortalHopProcedure(int portalIndex, double spotX, double spotY, string destMap) : ProcedureBase
+{
+    /// <summary>The destination's portal index.</summary>
+    public int PortalIndex { get; } = portalIndex;
+    /// <summary>Destination map.</summary>
+    public string DestMap { get; } = destMap;
+    /// <inheritdoc/>
+    public override ProcedureKind Kind => ProcedureKind.TownPortal;
+    private ActionId _move = ActionId.None;
+    private int _npc = -1, _mapAtStart = -1;
+    /// <summary>The hop found no portal standing at the spot (the client data puts one there, the world does not).</summary>
+    public bool Missing { get; private set; }
+
+    // the portal NPC (the atlas's portal type) standing at the spot - never any other NPC: the game would take the
+    // request from anywhere, a real client only asks a portal
+    private int FindPortal(AgentContext ctx)
+    {
+        var e = ctx.World.Entities; var best = -1; var bd = WorldAtlas.PortalNear;
+        var portalNpc = ctx.Atlas.PortalNpc;
+        if (portalNpc < 0) return -1;
+        for (var i = 0; i < e.Count; i++)
+        {
+            var s = e.LiveSlot(i);
+            if (e.MobId(s) != portalNpc) continue;
+            var (x, y) = e.Pos(s, ctx.Now);
+            var d = MoveController.Dist(x, y, spotX, spotY);
+            if (d < bd) { bd = d; best = e.HandleOf(s); }
+        }
+        return best;
+    }
+
+    private static string Describe(long code) => code switch
+    {
+        0x19C1 => "going",
+        0x19C2 => "not in a state to travel",
+        0x19C3 => "no such portal",
+        0x19C4 => "below the destination's level",
+        _ => $"0x{code:X4}",
+    };
+
+    /// <inheritdoc/>
+    public override void Advance(AgentContext ctx)
+    {
+        switch (Step)
+        {
+            case "start":
+            {
+                _mapAtStart = ctx.World.Map.MapId;
+                if (ctx.World.Self.Mounted)
+                {
+                    var m = Mounts.FindMount(ctx);
+                    if (m < 0) { Fail("mounted, and no mount item in the bag to get off with"); return; }
+                    ctx.Actions.Send(IntentEncoder.UseItem((byte)m, 9, Action.Value));
+                    Go("dismount", ctx, 8000);
+                    return;
+                }
+                if (ctx.Atlas.PortalNpc < 0) { Fail("no NPC type is known to be the town portal"); return; }
+                _npc = FindPortal(ctx);
+                var (px, py) = ctx.World.Self.Pos;
+                if (_npc < 0)
+                {
+                    // not in view yet: walk to the spot (paths only - every walk is a pathfinder walk)
+                    _move = ctx.Move.Order(new MoveOrder(spotX, spotY, true, Camp.NpcWalkShort, ActionId.None), ctx, 0);
+                    Go("walkSpot", ctx, 120000);
+                    return;
+                }
+                var s = ctx.World.Entities.SlotOf(_npc);
+                var (nx, ny) = ctx.World.Entities.Pos(s, ctx.Now);
+                var d = MoveController.Dist(px, py, nx, ny);
+                if (d >= Camp.NpcReach)
+                {
+                    var k = Camp.NpcWalkShort / d;
+                    _move = ctx.Move.Order(new MoveOrder(nx + (px - nx) * k, ny + (py - ny) * k, true, 10, ActionId.None), ctx, 0);
+                    Go("walk", ctx, 120000);
+                }
+                else Go("click", ctx, 0);
+                return;
+            }
+            case "dismount":
+                if (!ctx.World.Self.Mounted) { Go("start", ctx, 0); Advance(ctx); }
+                else if (Expired(ctx)) Fail("could not get off the mount");
+                return;
+            case "walkSpot":
+            case "walk":
+            {
+                var r = ctx.Actions.Get(_move);
+                if (Step == "walkSpot" && FindPortal(ctx) >= 0 && r.Pending) { ctx.Move.Stop(ctx, resolveCancelled: true); Go("start", ctx, 0); return; }
+                if (r.Id != 0 && !r.Pending)
+                {
+                    if (r.State != ActionState.Acked) { Fail($"could not reach the portal: {r.State} {ErrorCodes.Describe(r.Code)}"); return; }
+                    if (Step == "walkSpot" && FindPortal(ctx) < 0) { Missing = true; Fail($"no portal stands at ({spotX:0},{spotY:0}) on {ctx.World.Map.MapName}"); return; }
+                    Go(Step == "walk" ? "click" : "start", ctx, 0);
+                }
+                else if (Expired(ctx)) Fail("walk to the portal timed out");
+                return;
+            }
+            case "click":
+            {
+                if (Camp.FoldFirst(ctx, Action.Value)) return;
+                if (ctx.World.Self.Dead) { if (Expired(ctx)) Fail("dead at the portal"); return; }
+                if (ctx.World.Entities.SlotOf(_npc) < 0) { Go("start", ctx, 0); return; }
+                ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value)); ctx.World.Bag.StorageOpenAt = -1;
+                Camp.Click(ctx, _npc, Action.Value);
+                Go("awaitMenu", ctx, Camp.AnswerTimeoutMs(ctx, 6000));
+                return;
+            }
+        }
+        if (Expired(ctx))
+        {
+            if (Step == "awaitMenu")
+                ctx.Log.Log(LogCategory.Nav, LogLevel.Crit, $"PORTAL CLICK UNANSWERED (our bug): npc {_npc} for portal {PortalIndex} ({DestMap}); us ({ctx.World.Self.Pos.X:0},{ctx.World.Self.Pos.Y:0}), game-held ({ctx.World.Self.ServerPos.X},{ctx.World.Self.ServerPos.Y})");
+            Fail($"portal: nothing in step {Step}");
+        }
+    }
+
+    /// <inheritdoc/>
+    public override void Apply(in InboundEvent e, AgentContext ctx)
+    {
+        switch (e.Kind)
+        {
+            case InboundKind.NpcMenu when Step == "awaitMenu":
+                Span<byte> b = [(byte)PortalIndex];
+                ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpTownPortal, b, Action.Value));
+                ctx.Actions.Send(IntentEncoder.Raw(IntentEncoder.OpEndOfTrade, default, Action.Value));
+                ctx.Log.Log(LogCategory.Nav, LogLevel.Note, $"portal: menu of npc {e.A} open: asking for portal {PortalIndex} ({DestMap})");
+                Go("awaitAck", ctx, 10000);
+                break;
+            case InboundKind.TownPortalAck:
+                if (e.A == 0x19C1) { ctx.Log.Log(LogCategory.Nav, LogLevel.Info, $"portal: {DestMap} - going"); Go("awaitLink", ctx, 15000); }
+                else Fail($"portal {PortalIndex} ({DestMap}) refused: {Describe(e.A)}");
+                break;
+            case InboundKind.MapLink when e.A != _mapAtStart:
+                Done();
+                break;
+        }
     }
 }
 
