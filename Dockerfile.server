@@ -1,0 +1,23 @@
+# The redesigned bot server (next/src/Fiesta.Bot.Server) with the console UI. Like the old host's image it ships NO
+# game data and NO XOR table: the client files (CLIENT_DATA_DIR / CLIENT_ROOT), the cipher table (XOR_TABLE_HEX /
+# XOR_TABLE_PATH) and the bot data (BOT_DATA_DIR: brains, fleet, checkpoints) are mounted / provided at runtime.
+#
+# The UI lives in its own repository (ik-fiesta-bots-ui); its built bundle comes in as a second build context:
+#   docker buildx build -f Dockerfile.server --build-context ui=<ik-fiesta-bots-ui>/next/ui/dist -t <image> .
+# (the FiestaLib-Reloaded submodule must be checked out: git submodule update --init)
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+COPY next/ next/
+COPY lib/FiestaLib-Reloaded/ lib/FiestaLib-Reloaded/
+RUN dotnet publish next/src/Fiesta.Bot.Server/Fiesta.Bot.Server.csproj -c Release -o /app /p:UseAppHost=false
+
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
+WORKDIR /app
+COPY --from=build /app ./
+COPY --from=ui . /app/ui
+ENV ASPNETCORE_URLS=http://+:8080 \
+    UI_DIR=/app/ui \
+    BOT_DATA_DIR=/data \
+    FIESTA_WIRE=2026
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "Fiesta.Bot.Server.dll"]
