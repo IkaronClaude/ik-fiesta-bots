@@ -86,11 +86,15 @@ public sealed class Economy
     /// <summary>Highest level a death was seen to cost no exp at (-1 none), lowest it cost exp at (-1 none).</summary>
     public (int NoLossMax, int LossMin) LossLevels => (_noLossMax, _lossMin);
     /// <summary>A death at this level: its exp loss (or the lack of one) is decided at the revive.</summary>
-    internal void DiedAt(int level) { _deathLevel = level; _lostSinceDeath = false; }
+    // (the loss frame comes BEFORE the dead menu: resetting the flag here erased every loss, and a level-27 death that cost
+    // 312 exp was "learned" to cost none, NextA 18:07. The flag is cleared after the revive has judged the death.)
+    internal void DiedAt(int level) { _deathLevel = level; }
     /// <summary>The loss frame of a death at a level, with the level's span (for the fraction).</summary>
     internal void LostAt(int level, long amount, long span)
     {
         _lostSinceDeath = true;
+        // a loss at or below the no-loss level proves that level wrong (a bad sample, or the old ordering bug above)
+        if (level <= _noLossMax) _noLossMax = level - 1;
         var c = _lossByLevel.GetValueOrDefault(level);
         _lossByLevel[level] = (c.Sum + amount, c.Span + Math.Max(0, span), c.N + 1);
         if (_lossMin < 0 || level < _lossMin) _lossMin = level;
@@ -102,7 +106,8 @@ public sealed class Economy
     {
         if (_deathLevel < 0) return false;
         var lv = _deathLevel; _deathLevel = -1;
-        if (_lostSinceDeath || lv <= _noLossMax) return false;
+        var lost = _lostSinceDeath; _lostSinceDeath = false;
+        if (lost || lv <= _noLossMax) return false;
         _noLossMax = lv; return true;
     }
     /// <summary>The fraction of a level's span a death takes at a level, learned: 0 at or below the no-loss level, the
