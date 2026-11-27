@@ -712,7 +712,7 @@ public sealed class BotAgent
         var w = Context.World; var self = w.Self;
         _snapshot = new AgentSnapshot(Context.BotId, Context.Tick, _clock.UtcNow, w.Map.MapName, self.Pos.X, self.Pos.Y, self.Level,
             self.Hp, self.MaxHp, self.Sp, self.MaxSp, self.Money, w.Bag.Free, self.Dead, self.InCombat(now), w.Map.MapId, self.InWorld)
-        { RunSpeed = self.RunSpeed, Exp = self.Exp, NextExp = self.NextExp, Name = self.Name, ClassId = self.ClassId, Kills = self.Kills, Deaths = self.Deaths, ExpGained = self.ExpGained, Entities = w.Entities.Count, Paused = Paused, Econ = w.Economy.Rates(30, now), QuestExp = w.Economy.QuestExp };
+        { RunSpeed = self.RunSpeed, Exp = self.Exp, PrevExp = self.PrevExp, NextExp = self.NextExp, Name = self.Name, ClassId = self.ClassId, Kills = self.Kills, Deaths = self.Deaths, ExpGained = self.ExpGained, Entities = w.Entities.Count, Paused = Paused, Econ = w.Economy.Rates(30, now), QuestExp = w.Economy.QuestExp };
     }
 
     /// <summary>Latest published snapshot (immutable, any thread).</summary>
@@ -730,6 +730,8 @@ public sealed record AgentSnapshot(string BotId, long Tick, DateTime At, string 
     /// <summary>Exp.</summary>
     public long Exp { get; init; }
     /// <summary>Exp for the next level.</summary>
+    /// <summary>The exp the current level started at (the level's span is NextExp - PrevExp).</summary>
+    public long PrevExp { get; init; }
     public long NextExp { get; init; }
     /// <summary>Character name.</summary>
     public string Name { get; init; } = "";

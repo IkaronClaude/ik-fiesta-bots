@@ -114,7 +114,7 @@ public static class Http
             LastTransition = lt is null ? null : new { at = lt.At, layer = lt.Layer, from = lt.From, to = lt.To, reason = lt.Reason },
             Vitals = snap is null ? null : new
             {
-                hp = snap.Hp, maxHp = snap.MaxHp, sp = snap.Sp, maxSp = snap.MaxSp, exp = snap.Exp, expNext = snap.NextExp, money = snap.Money,
+                hp = snap.Hp, maxHp = snap.MaxHp, sp = snap.Sp, maxSp = snap.MaxSp, exp = snap.Exp, expPrev = snap.PrevExp, expNext = snap.NextExp, money = snap.Money,
                 bagFree = snap.BagFree, bagSize = b.Agent?.Context.World.Bag.Size ?? 0, x = Math.Round(snap.X), y = Math.Round(snap.Y), runSpeed = Math.Round(snap.RunSpeed, 1),
             },
         };
