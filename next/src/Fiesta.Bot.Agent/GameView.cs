@@ -46,7 +46,7 @@ public sealed class GameCapture
     /// <summary>Bag cells (-1 empty).</summary>
     public readonly int[] BagItem = new int[256], BagLot = new int[256];
     /// <summary>Equipment (-1 empty).</summary>
-    public readonly int[] Equip = new int[64];
+    public readonly int[] Equip = new int[Inventory.EquipSlots];
     /// <summary>Target handle (-1 none).</summary>
     public int Target;
     /// <summary>Remaining path.</summary>
@@ -105,7 +105,7 @@ public sealed class GameCapture
 
         BagSize = w.Bag.Size; BagPages = w.Bag.Pages;
         for (var i = 0; i < 256; i++) { var (it, lot) = w.Bag.At(i); BagItem[i] = it; BagLot[i] = lot; }
-        for (var i = 0; i < 64; i++) Equip[i] = w.Bag.Equipped(i);
+        for (var i = 0; i < Inventory.EquipSlots; i++) Equip[i] = w.Bag.Equipped(i);
 
         Target = c.Combat.Target;
         PathN = 0;

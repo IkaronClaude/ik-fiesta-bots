@@ -379,7 +379,9 @@ public sealed class Inventory
     /// <summary>Slots per bag page.</summary>
     public const int PageSlots = 24;
     private readonly int[] _bag = new int[256], _lot = new int[256];
-    private readonly int[] _equip = new int[64];
+    /// <summary>Worn-equipment slots (box 8) the view keeps.</summary>
+    public const int EquipSlots = 64;
+    private readonly int[] _equip = new int[EquipSlots];
     private readonly Dictionary<int, int> _count = new();
     private int _used;
 
@@ -400,7 +402,7 @@ public sealed class Inventory
     /// <summary>Used slots.</summary>
     public int Used => _used;
     /// <summary>Equipped item id by equipment slot, -1 none.</summary>
-    public int Equipped(int equipSlot) => (uint)equipSlot < 64 ? _equip[equipSlot] : -1;
+    public int Equipped(int equipSlot) => (uint)equipSlot < EquipSlots ? _equip[equipSlot] : -1;
     /// <summary>HP/SP soul stone reserves (mirrors SelfState).</summary>
     public (int Hp, int Sp) Stones { get; internal set; }
 
@@ -431,7 +433,7 @@ public sealed class Inventory
     /// <summary>Set a cell; returns (old item, old lot).</summary>
     internal (int Item, int Lot) Set(int box, int slot, int item, int lot)
     {
-        if (box == 8) { if ((uint)slot < 64) { var o = _equip[slot]; _equip[slot] = item; return (o, 1); } return (-1, 0); }
+        if (box == 8) { if ((uint)slot < EquipSlots) { var o = _equip[slot]; _equip[slot] = item; return (o, 1); } return (-1, 0); }
         if (box == 6)
         {
             if ((uint)slot >= StoreCells) return (-1, 0);

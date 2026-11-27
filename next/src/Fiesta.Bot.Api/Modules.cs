@@ -838,13 +838,69 @@ public sealed partial class ItemsModule(AgentContext ctx) : ApiModule(ctx)
     }
     private readonly Dictionary<long, int> _bestWearable = new();
 
-    /// <summary>Is the item an upgrade over what we wear in its slot (usable by our class at our level)?</summary>
-    [LuaFn]
-    public bool IsUpgrade(int itemId)
+    /// <summary>Is the item an upgrade over what it would replace (usable by our class at our level)? See
+    /// <see cref="UpgradeGain"/>.</summary>
+    [LuaFn] public bool IsUpgrade(int itemId) => Gain(itemId).Upgrade;
+
+    /// <summary>What wearing the item gains in <see cref="GearScore"/> over what it takes off; negative infinity when we
+    /// may not wear it. Hands count as one: a two-hander takes off everything in both hands, and a shield or one-hander
+    /// worn over a two-hander takes the two-hander off, so it is counted with the best piece the bag has for the other
+    /// hand. (NextA, lv26: a level-1 shield in the "empty" off-hand stripped its lv20 Steel Axe, the empty main hand then
+    /// took a lv15 Sun Broadsword, and the axe came back on later - over and over, 08:30-09:25.)</summary>
+    [LuaFn] public double UpgradeGain(int itemId) => Gain(itemId).Value;
+
+    private (bool Upgrade, double Value) Gain(int itemId)
     {
-        if (Ctx.Data.Item(itemId) is not { Equip: > 0 } i || i.DemandLevel > Ctx.World.Self.Level || !ClassOk(itemId)) return false;
-        var worn = B.Equipped(i.Equip);
-        return worn < 0 || GearScore(itemId) > GearScore(worn);
+        if (Ctx.Data.Item(itemId) is not { Equip: > 0 } i || i.DemandLevel > Ctx.World.Self.Level || !ClassOk(itemId))
+            return (false, double.NegativeInfinity);
+        var score = GearScore(itemId);
+        if (!IsHandPiece(i))
+        {
+            var worn = B.Equipped(i.Equip);
+            return worn < 0 ? (true, score) : (score > GearScore(worn), score - GearScore(worn));
+        }
+        var (handsScore, handsWorn, twoHander) = WornHands();
+        if (i.TwoHand) return (handsWorn == 0 || score > handsScore, score - handsScore);
+        if (twoHander >= 0)
+        {
+            var with = score + BestBagHandPiece(i.Equip);
+            return (with > GearScore(twoHander), with - GearScore(twoHander));
+        }
+        var inSlot = B.Equipped(i.Equip);
+        return inSlot < 0 ? (true, score) : (score > GearScore(inSlot), score - GearScore(inSlot));
+    }
+
+    /// <summary>A weapon, a shield or a two-hander (ItemInfo WeaponType / ShieldAC / TwoHand).</summary>
+    private static bool IsHandPiece(ItemInfoRow i) => i.WeaponType > 0 || i.ShieldAc > 0 || i.TwoHand;
+
+    /// <summary>The hand pieces worn: their summed score (a two-hander counted once, whichever slots show it), how many
+    /// there are, and the worn two-hander (-1 none).</summary>
+    private (double Score, int Count, int TwoHander) WornHands()
+    {
+        double sum = 0; var n = 0; var two = -1;
+        for (var s = 0; s < Inventory.EquipSlots; s++)
+        {
+            var id = B.Equipped(s);
+            if (id < 0 || Ctx.Data.Item(id) is not { } w || !IsHandPiece(w)) continue;
+            if (w.TwoHand) { if (two == id) continue; two = id; }
+            sum += GearScore(id); n++;
+        }
+        return (sum, n, two);
+    }
+
+    /// <summary>The best score among bag hand pieces we may wear in a hand other than <paramref name="notSlot"/>, not
+    /// two-handers (0 none): the partner that fills the other hand once a two-hander comes off.</summary>
+    private double BestBagHandPiece(int notSlot)
+    {
+        double best = 0;
+        for (var s = 0; s < B.Size; s++)
+        {
+            var (id, _) = B.At(s);
+            if (id < 0 || Ctx.Data.Item(id) is not { Equip: > 0 } p || p.Equip == notSlot || p.TwoHand || !IsHandPiece(p)
+                || p.DemandLevel > Ctx.World.Self.Level || !ClassOk(id)) continue;
+            best = Math.Max(best, GearScore(id));
+        }
+        return best;
     }
 
     /// <summary>The first bag item that is an upgrade (bag slot, -1 none).</summary>

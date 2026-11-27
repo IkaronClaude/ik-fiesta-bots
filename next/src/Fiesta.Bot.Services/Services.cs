@@ -91,6 +91,10 @@ public sealed record ItemInfoRow(int Id, string InxName, string Name, int Type, 
     public int UseEffect { get; init; } = -1;
     /// <summary>The amount of <see cref="UseEffect"/> (ItemUseEffect UseValueA).</summary>
     public int UseValue { get; init; }
+    /// <summary>A two-handed weapon (ItemInfo TwoHand): worn, it takes both hands, so no shield or second weapon.</summary>
+    public bool TwoHand { get; init; }
+    /// <summary>Shield defence (ItemInfo ShieldAC); above 0 = a shield, an off-hand piece.</summary>
+    public int ShieldAc { get; init; }
 }
 
 /// <summary>A client Produce row: the recipe (ProductID = the production skill id), what one cast makes (item, lot),
@@ -420,7 +424,8 @@ public sealed class ClientData : IClientData
             var (eff, val) = use.TryGetValue(inx, out var u) ? u : (-1, 0);
             d[I("ID")] = new ItemInfoRow(I("ID"), inx, nm.Length > 0 ? nm : inx, I("Type"), I("Class"), I("Equip"), I("DemandLv"),
                 I("WeaponType"), I("SellPrice"), I("BuyPrice"), I("MaxLot"), I("UseClass"), t.Str(r, "ItemUseSkill") ?? "-")
-            { BuyFame = t.Col("BuyFame") >= 0 ? I("BuyFame") : 0, MinWc = I("MinWC"), MaxWc = I("MaxWC"), Ac = I("AC"), MinMa = I("MinMA"), MaxMa = I("MaxMA"), Mr = I("MR"), UseEffect = eff, UseValue = val, AtkSpeed = I("AtkSpeed") };
+            { BuyFame = t.Col("BuyFame") >= 0 ? I("BuyFame") : 0, MinWc = I("MinWC"), MaxWc = I("MaxWC"), Ac = I("AC"), MinMa = I("MinMA"), MaxMa = I("MaxMA"), Mr = I("MR"), UseEffect = eff, UseValue = val, AtkSpeed = I("AtkSpeed"),
+              TwoHand = t.Col("TwoHand") >= 0 && I("TwoHand") != 0, ShieldAc = t.Col("ShieldAC") >= 0 ? I("ShieldAC") : 0 };
         }
         return d;
     }
