@@ -256,6 +256,16 @@ public sealed partial class ThreatModule(AgentContext ctx) : ApiModule(ctx)
         }
         return sum;
     }
+    /// <summary>Expected damage/s one mob deals us (its type's learned hit / interval), -1 not measured yet.</summary>
+    [LuaFn]
+    public double Dps(int h)
+    {
+        var s = W.Entities.SlotOf(h);
+        if (s < 0) return -1;
+        var mob = W.Entities.MobId(s);
+        var hit = Ctx.Knowledge.Mob(mob, MobFact.HitAvg); var iv = Ctx.Knowledge.Mob(mob, MobFact.AttackInterval);
+        return hit.Samples > 0 ? hit.Value / Math.Max(0.5, (iv.Samples > 0 ? iv.Value : 2000) / 1000.0) : -1;
+    }
     /// <summary>HP/s we can recover (soul stones only so far; -1 unknown).</summary>
     [LuaFn(Cost = Fiesta.Bot.Api.Cost.Cached)] public double SustainableHps() => W.Self.HpStones > 0 ? W.Self.MaxHp * 0.05 : 0;
     /// <summary>The fight is lost: the drain net of what we can heal would kill us within <paramref name="ttdS"/> seconds,
