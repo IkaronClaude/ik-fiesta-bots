@@ -64,6 +64,10 @@ public sealed record ActiveSkillRow(int Id, string InxName, string Name, int Ste
     public int SpecialValueA { get; init; }
     /// <summary>Maximum rank of the family.</summary>
     public int MaxStep { get; init; }
+    /// <summary>ActiveSkill First: who the skill is cast at (the client's TargetType: 0 enemy, 1 me, 2 party, 3 friend, ...).</summary>
+    public int First { get; init; }
+    /// <summary>ActiveSkill Last: who the skill's effect lands on (TargetType, as <see cref="First"/>).</summary>
+    public int Last { get; init; }
 }
 
 /// <summary>Client ItemInfo row.</summary>
@@ -335,6 +339,22 @@ public sealed class ClientData : IClientData
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, bool> _slowByIndex = new();
     /// <summary>Does the abnormal state (its wire index) slow its holder (<see cref="IsSlowState"/>)? Cached per index.</summary>
     public bool IsSlowStateIndex(int abstateIndex) => _slowByIndex.GetOrAdd(abstateIndex, i => AbStateName(i) is { } n && IsSlowState(n));
+    private Dictionary<string, int>? _stateIndexByName;
+    private int StateIndexByName(string abStateInx)
+    {
+        if (_stateIndexByName is null)
+        {
+            var d = new Dictionary<string, int>(StringComparer.Ordinal);
+            if (T("AbState") is { } ab)
+                for (var r = 0; r < ab.RowCount; r++)
+                    if (ab.Str(r, "InxName") is { Length: > 0 } n) d[n] = (int)ab.Num(r, "AbStataIndex");
+            _stateIndexByName = d;
+        }
+        return _stateIndexByName.TryGetValue(abStateInx, out var v) ? v : -1;
+    }
+    /// <summary>Does the abnormal state (AbState InxName) keep its holder from attacking and casting (a stun, by effect)?</summary>
+    public bool IsStunStateName(string abStateInx) => StateIndexByName(abStateInx) is >= 0 and var ix && IsNoActState(ix);
+
     /// <summary>The AbState row name of a wire index (for logs), null unknown.</summary>
     public string? AbStateName(int abstateIndex)
     {
@@ -405,7 +425,7 @@ public sealed class ClientData : IClientData
                 I("UsableDegree"), I("DemandType"), I("SkillTargetState"), I("EffectType"), I("UseClass"),
                 I("MinWC"), I("MaxWC"), I("MinMA"), I("MaxMA"), FamilyOf(inx),
                 t.Str(r, "StaNameA") ?? "-", t.Str(r, "StaNameB") ?? "-", t.Str(r, "StaNameC") ?? "-", t.Str(r, "StaNameD") ?? "-")
-            { SpecialIndexA = I("SpecialIndexA"), SpecialValueA = I("SpecialValueA"), MaxStep = I("MaxStep") };
+            { SpecialIndexA = I("SpecialIndexA"), SpecialValueA = I("SpecialValueA"), MaxStep = I("MaxStep"), First = I("First"), Last = I("Last") };
         }
         return d;
     }

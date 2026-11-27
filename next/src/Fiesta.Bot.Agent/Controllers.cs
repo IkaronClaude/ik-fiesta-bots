@@ -743,17 +743,56 @@ public static class GameRules
 
     /// <summary>Weapon class of our equipped weapon (ItemInfo WeaponType of equip slot 12 = right hand by the
     /// 2016 equipment order; bow types read from the item name space are not hardcoded: unknown = melee).</summary>
-    public static WeaponClass Weapon(AgentContext ctx)
+    public static WeaponClass Weapon(AgentContext ctx) => WornWeapon(ctx)?.WeaponType switch
     {
-        for (var slot = 0; slot < 64; slot++)
+        WtBow => WeaponClass.Bow,
+        WtCrossbow => WeaponClass.Crossbow,
+        _ => WeaponClass.Melee,
+    };
+
+    // the client's WeaponTypeEnum (ItemInfo WeaponType) and WeaponDemandType (ActiveSkill DemandType)
+    private const int WtBow = 2, WtStaff = 3, WtMace = 5, WtCrossbow = 10, WtWand = 11, WtHammer = 13,
+        WtInvincibleHammer = 16, WtDualSword = 17, WtClaw = 18, WtBlade = 19;
+    private const int DtOneHand = 0, DtTwoHand = 1, DtAll = 2, DtWeapon = 3, DtHammer = 4, DtMace = 5, DtNone = 6, DtShield = 7,
+        DtBow = 8, DtCrossbow = 9, DtStaff = 10, DtWand = 11, DtClaw = 12, DtDualSword = 13, DtBlade = 14;
+    private const int MaxEquipSlots = 64;
+
+    /// <summary>The weapon we wear (the first equipped item with a WeaponType), null bare-handed.</summary>
+    public static ItemInfoRow? WornWeapon(AgentContext ctx)
+    {
+        for (var slot = 0; slot < MaxEquipSlots; slot++)
+            if (ctx.World.Bag.Equipped(slot) is >= 0 and var item && ctx.Data.Item(item) is { WeaponType: > 0 } it) return it;
+        return null;
+    }
+
+    /// <summary>Does what we wear meet a skill's weapon demand (ActiveSkill DemandType)? Slice and Dice wants a one-handed
+    /// weapon: with an axe worn the game refuses it, yet the bot had it in every burst plan (NextA, 17:0x).</summary>
+    public static bool WeaponMeets(AgentContext ctx, int demand)
+    {
+        if (demand is DtAll or DtNone) return true;
+        if (demand == DtShield)
         {
-            var item = ctx.World.Bag.Equipped(slot);
-            if (item < 0 || ctx.Data.Item(item) is not { } it || it.WeaponType == 0) continue;
-            if (it.InxName.Contains("CrossBow", StringComparison.OrdinalIgnoreCase)) return WeaponClass.Crossbow;
-            if (it.InxName.Contains("Bow", StringComparison.OrdinalIgnoreCase)) return WeaponClass.Bow;
-            return WeaponClass.Melee;
+            for (var slot = 0; slot < MaxEquipSlots; slot++)
+                if (ctx.World.Bag.Equipped(slot) is >= 0 and var item && ctx.Data.Item(item) is { ShieldAc: > 0 }) return true;
+            return false;
         }
-        return WeaponClass.Melee;
+        if (WornWeapon(ctx) is not { } w) return false;
+        return demand switch
+        {
+            DtOneHand => !w.TwoHand,
+            DtTwoHand => w.TwoHand,
+            DtWeapon => true,
+            DtHammer => w.WeaponType is WtHammer or WtInvincibleHammer,
+            DtMace => w.WeaponType == WtMace,
+            DtBow => w.WeaponType == WtBow,
+            DtCrossbow => w.WeaponType == WtCrossbow,
+            DtStaff => w.WeaponType == WtStaff,
+            DtWand => w.WeaponType == WtWand,
+            DtClaw => w.WeaponType == WtClaw,
+            DtDualSword => w.WeaponType == WtDualSword,
+            DtBlade => w.WeaponType == WtBlade,
+            _ => true,
+        };
     }
 
     /// <summary>Ms until a mob that spawned in our view takes skills (0 = now): observed, skills at a mob that has just
@@ -799,6 +838,7 @@ public static class GameRules
         var w = ctx.World; var self = w.Self;
         var sk = ctx.Data.Skill(skillId);
         if (sk is null || !w.Skills.Has(skillId)) return CanUseReason.NotLearned;
+        if (!WeaponMeets(ctx, sk.DemandType)) return CanUseReason.Weapon;
         if (self.Dead) return CanUseReason.Dead;
         if (w.Skills.ReadyInMs(skillId, sk.DelayGroup, ctx.Now) > 0) return CanUseReason.Cooldown;
         if (sk.Sp > self.Sp) return CanUseReason.Sp;

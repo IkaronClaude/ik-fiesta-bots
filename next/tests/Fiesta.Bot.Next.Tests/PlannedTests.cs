@@ -93,7 +93,7 @@ public sealed class TestBot : IDisposable
 public sealed class TestData : IClientData
 {
     public static readonly MobInfoRow M = new(1, "TestMob", "Test Mob", 10, 500, 30, 100, false, 1000, 1, 0, 1, false);
-    public static readonly ActiveSkillRow S = new(0, "TestHit01", "Test Hit", 1, 100, 0, 1, 0, 1000, 0, 0, 5, 0, false, 0, 0, 0, 0, 0, 10, 20, 0, 0, "TestHit", "-", "-", "-", "-");
+    public static readonly ActiveSkillRow S = new(0, "TestHit01", "Test Hit", 1, 100, 0, 1, 0, 1000, 0, 0, 5, 0, false, 0, 2, 0, 0, 0, 10, 20, 0, 0, "TestHit", "-", "-", "-", "-");
     public MobInfoRow? Mob(int id) => id == 1 ? M : null;
     public ActiveSkillRow? Skill(int id) => id == 0 ? S : null;
     public readonly Dictionary<int, ItemInfoRow> Items = new();

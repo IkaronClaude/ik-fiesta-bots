@@ -10,10 +10,12 @@ namespace Fiesta.Bot.Api;
 
 /// <summary>Skill tags derived from client ActiveSkill columns (no per-skill table): Damage = a weapon or magic damage
 /// value; Heal = effect type 5 (heal amount in SpecialValueA when SpecialIndexA is 1); Aoe = an area with more than
-/// one target; Buff/Debuff = an abstate applied by a non-damaging / damaging skill; Self = range 0; Moving =
-/// castable while moving; Stun = an applied abstate whose name says stun.</summary>
+/// one target; Buff/Debuff = an abstate the skill lands on a friend / an enemy (ActiveSkill Last); Self = cast at
+/// ourselves (First); Moving = castable while moving; Stun = an enemy state that stops its holder acting (by effect).</summary>
 public static class SkillTags
 {
+    // the client's TargetType values in ActiveSkill First / Last
+    private const int TargetEnemy = 0, TargetMe = 1;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, int> Cache = new();
     /// <summary>Tag mask of a skill.</summary>
     public static int Of(IClientData data, int id)
@@ -29,10 +31,13 @@ public static class SkillTags
             if (dmg && !heal) m |= (int)SkillTag.Damage;
             if (heal) m |= (int)SkillTag.Heal;
             if (s.Area > 0 && s.TargetNumber > 1) m |= (int)SkillTag.Aoe;
-            if (s.Range == 0) m |= (int)SkillTag.Self;
+            // who it is cast at / lands on comes from the skill's own target columns (First / Last), never its range: melee
+            // skills all have Range 0 and are cast at an enemy
+            if (s.First == TargetMe) m |= (int)SkillTag.Self;
             if (s.IsMovingSkill) m |= (int)SkillTag.Moving;
-            if (sta.Length > 0) m |= dmg ? (int)SkillTag.Debuff : (int)SkillTag.Buff;
-            if (sta.Contains("Stun", StringComparison.OrdinalIgnoreCase)) m |= (int)SkillTag.Stun;
+            // a state landing on an enemy is a debuff (Concussive Charge: no damage, stuns its enemy target), else a buff
+            if (sta.Length > 0) m |= s.Last == TargetEnemy ? (int)SkillTag.Debuff : (int)SkillTag.Buff;
+            if (sta.Length > 0 && s.Last == TargetEnemy && data is ClientData sd && sd.IsStunStateName(sta)) m |= (int)SkillTag.Stun;
             if (sta.Length > 0 && data is ClientData cd && cd.IsSlowState(sta)) m |= (int)SkillTag.Slow;
             if (s.EffectType == 8) m |= (int)SkillTag.Dispel;
         }

@@ -10,7 +10,7 @@ namespace Fiesta.Bot.Next.Tests;
 public sealed class BurstData : IClientData
 {
     private readonly TestData _t = new();
-    public static readonly ActiveSkillRow S1 = new(1, "TestBolt01", "Test Bolt", 1, 300, 0, 1, 0, 3000, 0, 0, 5, 0, false, 0, 0, 0, 0, 0, 0, 0, 20, 30, "TestBolt", "-", "-", "-", "-");
+    public static readonly ActiveSkillRow S1 = new(1, "TestBolt01", "Test Bolt", 1, 300, 0, 1, 0, 3000, 0, 0, 5, 0, false, 0, 2, 0, 0, 0, 0, 0, 20, 30, "TestBolt", "-", "-", "-", "-");
     public MobInfoRow? Mob(int id) => _t.Mob(id);
     public ActiveSkillRow? Skill(int id) => id == 1 ? S1 : _t.Skill(id);
     public ItemInfoRow? Item(int id) => _t.Item(id);
