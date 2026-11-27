@@ -407,6 +407,15 @@ public sealed partial class CombatModule(AgentContext ctx) : ApiModule(ctx)
     [LuaFn] public double TimeToDie() { var dps = ((ThreatModule)ApiScope.Modules![ThreatModule.__ModuleIndex]).IncomingDps(); return dps <= 0 ? -1 : W.Self.Hp / dps; }
     /// <summary>Kills this session.</summary>
     [LuaFn] public int Kills() => W.Self.Kills;
+    /// <summary>The HP stone's cooldown as measured (the shortest gap between two of our stones, ms; -1 not measured yet).</summary>
+    [LuaFn] public double StoneGapMs() => W.Fight.StoneGap;
+    /// <summary>Ms until the next HP stone can be used by the measured gap (0 ready, -1 gap not measured yet).</summary>
+    [LuaFn] public double StoneWaitMs()
+    {
+        var f = W.Fight;
+        if (f.StoneGap < 0) return -1;
+        return f.LastStoneAt < 0 ? 0 : Math.Max(0, f.StoneGap - (Ctx.Now - f.LastStoneAt));
+    }
 }
 
 /// <summary>Lua module `skills`.</summary>
