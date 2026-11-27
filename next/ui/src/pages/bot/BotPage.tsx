@@ -54,7 +54,7 @@ export function BotPage({ id, tab }: { id: string; tab?: string }) {
           <Meter label="SP" v={v?.sp ?? 0} max={v?.maxSp ?? 0} cls="sp" />
           <Meter label="EXP" v={v?.exp ?? 0} max={v?.expNext ?? 0} cls="xp" />
           <span title="money" className="num-tab nowrap">{v ? fmtNum(v.money) : '-'} cen</span>
-          <span title="free bag slots" className="num-tab nowrap">bag {v ? `${v.bagFree}/${v.bagSize}` : '-'}</span>
+          <span title={v ? `bag slots used / size (${v.bagFree} free)` : 'bag'} className="num-tab nowrap">bag {v ? `${v.bagSize - v.bagFree}/${v.bagSize}` : '-'}</span>
         </div>
       </div>
       <Tabs<Tab> tabs={TABS} value={t} onChange={x => go(`/bots/${encodeURIComponent(id)}/${x}`)} />
