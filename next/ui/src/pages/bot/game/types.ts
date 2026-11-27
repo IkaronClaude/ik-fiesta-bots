@@ -14,12 +14,16 @@ export interface GameEnt {
   k: 'mob' | 'npc' | 'player' | 'gate' | 'drop' | string; id?: number | null; name?: string | null;
   x: number; y: number; f?: number; hpPct?: number | null; lvl?: number | null; aggro?: boolean; tgt?: number | null; dead?: boolean;
   flags?: number; ourTarget?: boolean; huntable?: boolean;
+  /** the abnormal states shown on it (allies and enemies alike) */
+  buffs?: GameBuff[];
   /** move segment (see GameSelf) */
   tx?: number; ty?: number; spd?: number; at?: number;
 }
 export interface GameSkill { id: number; cdEnd: number; cdMs: number }
 export interface GameStone { count: number; max?: number; cdEnd: number; cdMs: number }
-export interface GameBuff { id: number; level?: number; endAt: number | null }
+/** An abnormal state: `endAt` host-clock end (null = no end); `startAt` when this view first saw it with that end (the
+ *  radial shadow runs from it to the end). */
+export interface GameBuff { id: number; level?: number; endAt: number | null; startAt?: number | null }
 export interface GameState {
   v: number;
   serverTime: number;

@@ -1,16 +1,31 @@
 // Reassembles the `game` topic (API_SPEC section 14: one snapshot, then small op lists) into the view model the
 // Game tab renders. Updates are immutable with structural sharing: an op copies only the map it touches, so a
 // memoised bag slot / skill tile / entity re-renders only when its own record changed.
-import type { GameEnt, GameState } from './types';
+import type { GameBuff, GameEnt, GameState } from './types';
 
-type Row = [number, string, number, number, number, number, number, string | null, number?, number?, number?];
+type Row = [number, string, number, number, number, number, number, string | null, number?, number?, number?, number[][]?];
 
 const KIND: Record<string, GameEnt['k']> = { m: 'mob', n: 'npc', p: 'player', g: 'gate', d: 'drop' };
 
 function ent(r: Row | number[], at?: number): GameEnt {
-  const [, k, id, x, y, hp, flags, name, tx, ty, spd] = r as Row;
-  return { k: KIND[k] ?? k, id, x, y, hpPct: hp, flags, dead: !!(flags & 1), aggro: !!(flags & 2), ourTarget: !!(flags & 4), huntable: !!(flags & 8), name: name ?? null,
-    tx: tx ?? x, ty: ty ?? y, spd: spd ?? 0, at };
+  const [, k, id, x, y, hp, flags, name, tx, ty, spd, ab] = r as Row;
+  return { k: KIND[k] ?? k, id, x, y, hpPct: hp, name: name ?? null, ...flagsOf(flags),
+    tx: tx ?? x, ty: ty ?? y, spd: spd ?? 0, at, buffs: buffsOf(ab, undefined, at) };
+}
+
+function flagsOf(flags: number) {
+  return { flags, dead: !!(flags & 1), aggro: !!(flags & 2), ourTarget: !!(flags & 4), huntable: !!(flags & 8) };
+}
+
+/** One state, keeping when this view first saw it with this end (so its shadow does not restart on every update). */
+function buffOf(id: number, endsAt: number, prev: GameBuff | undefined, now?: number): GameBuff {
+  const endAt = endsAt || null;
+  return { id, endAt, startAt: prev && prev.endAt === endAt ? prev.startAt : now ?? null };
+}
+
+/** An entity's `[[id, endsAt], ...]` list. */
+function buffsOf(list: number[][] | undefined, prev: GameBuff[] | undefined, now?: number): GameBuff[] {
+  return (list ?? []).map(([id, end]) => buffOf(id, end, prev?.find(b => b.id === id), now));
 }
 
 function selfOf(s: any, prev?: GameState['self']): GameState['self'] {
@@ -40,7 +55,7 @@ export function fromSnapshot(d: any, now: number): GameState {
     path: d.path ?? [],
     skills: Object.fromEntries((d.skills ?? []).map(([id, readyAt, durMs]: number[]) => [id, { id, cdEnd: readyAt, cdMs: durMs }])),
     skillOrder: (d.skills ?? []).map((r: number[]) => r[0]),
-    buffs: Object.fromEntries((d.abstates ?? []).map(([id, endsAt]: number[]) => [id, { id, endAt: endsAt || null }])),
+    buffs: Object.fromEntries((d.abstates ?? []).map(([id, endsAt]: number[]) => [id, buffOf(id, endsAt, undefined, now)])),
     bag: { size, pageSize: Math.ceil(size / pages) || 24, slots },
     equip: Object.fromEntries((d.equip ?? []).map(([slot, itemId]: number[]) => [slot, { itemId }])),
     ents,
@@ -66,7 +81,7 @@ export function applyOps(s: GameState, ops: any[], now: number): GameState {
     switch (op[0]) {
       case 'self': self = { ...selfOf(op[1], self) }; if ('x' in op[1]) self.at = now; break;
       case 'stats': self = { ...self, stats: { ...(self.stats ?? {}), ...op[1] } }; break;
-      case 'ab': mut('buffs'); buffs[op[1]] = { id: op[1], endAt: op[2] || null }; break;
+      case 'ab': mut('buffs'); buffs[op[1]] = buffOf(op[1], op[2], buffs[op[1]], now); break;
       case 'ab-': mut('buffs'); delete buffs[op[1]]; break;
       case 'sk': mut('skills'); if (!skills[op[1]]) skillOrder = [...skillOrder, op[1]]; skills[op[1]] = { id: op[1], cdEnd: op[2], cdMs: op[3] }; break;
       case 'sk-': mut('skills'); delete skills[op[1]]; skillOrder = skillOrder.filter(x => x !== op[1]); break;
@@ -80,7 +95,8 @@ export function applyOps(s: GameState, ops: any[], now: number): GameState {
       case 'e-': mut('ents'); delete ents[String(op[1])]; break;
       case 'ep': { mut('ents'); const e = ents[String(op[1])]; if (e) ents[String(op[1])] = { ...e, x: op[2], y: op[3], tx: op[4] ?? op[2], ty: op[5] ?? op[3], spd: op[6] ?? 0, at: now }; break; }
       case 'eh': { mut('ents'); const e = ents[String(op[1])]; if (e) ents[String(op[1])] = { ...e, hpPct: op[2] }; break; }
-      case 'ef': { mut('ents'); const e = ents[String(op[1])]; if (e) ents[String(op[1])] = { ...e, ...ent([0, '', 0, 0, 0, 0, op[2], null]), k: e.k, id: e.id, x: e.x, y: e.y, hpPct: e.hpPct, name: e.name }; break; }
+      case 'ef': { mut('ents'); const e = ents[String(op[1])]; if (e) ents[String(op[1])] = { ...e, ...flagsOf(op[2]) }; break; }
+      case 'ea': { mut('ents'); const e = ents[String(op[1])]; if (e) ents[String(op[1])] = { ...e, buffs: buffsOf(op[2], e.buffs, now) }; break; }
       default: break; // unknown op: ignore (forward compatible)
     }
   }

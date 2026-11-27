@@ -322,6 +322,14 @@ td.best { color: var(--accent); font-weight: 600; }
 .buff.debuff { border-color: #8a3434; }
 .buff img { width: 24px; height: 24px; }
 .buff .cd-text { position: absolute; left: 0; right: 0; bottom: -1px; text-align: center; font-size: 9px; font-weight: 700; color: #fff; text-shadow: 0 0 3px #000, 0 0 2px #000; font-family: var(--mono); }
+/* the radial shadow: the remaining arc (--sweep, set by the countdown loop) stays clear, the elapsed part darkens */
+.buff .sweep { position: absolute; inset: 0; background: conic-gradient(rgba(0,0,0,0) var(--sweep), rgba(0,0,0,.66) 0); opacity: 0; pointer-events: none; }
+.buff.cooling .sweep { opacity: 1; }
+.buff .cd-text { z-index: 1; }
+/* own states: one line under the EXP bar, kept as a gap when empty so the layout does not move */
+.hud-buffs { margin: 4px 0 2px; flex-wrap: nowrap; overflow: hidden; height: 26px; }
+.target-buffs { margin-top: 2px; }
+.tt-buffs { margin-top: 3px; border-top: 1px solid #26333a; padding-top: 3px; }
 .tiles { display: flex; flex-wrap: wrap; gap: 3px; }
 .tile { position: relative; width: 36px; height: 36px; border: 1px solid #2b3a41; border-radius: 4px; background: #0d1517; overflow: hidden; display: flex; align-items: center; justify-content: center; --sweep: 0deg; }
 .tile img { width: 32px; height: 32px; image-rendering: auto; }

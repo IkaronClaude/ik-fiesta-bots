@@ -92,11 +92,12 @@ export function GameTab({ bot, botState }: { bot: string; botState?: string }) {
   return (
     <div className={'game' + (state.offline ? ' offline' : '')} ref={root} onMouseLeave={() => setTip(null)}>
       <Hud s={state} />
+      <Buffs buffs={Object.values(state.buffs)} onTip={onTip} className="hud-buffs" />
       <div className="game-grid">
         <div className="game-left">
           <Minimap bot={bot} state={state} onHover={onEnt} />
           <TargetLine state={state} />
-          <Buffs buffs={state.buffs} onTip={onTip} />
+          <Buffs buffs={targetOf(state)?.buffs ?? []} onTip={onTip} className="target-buffs" />
         </div>
         <div className="game-right">
           <SkillBar skills={state.skills} order={state.skillOrder} stones={stonesOf(state)} onTip={onTip} />
@@ -258,21 +259,27 @@ function SkillBar({ skills, order, stones, onTip }: { skills: GameState['skills'
 const BuffChip = memo(function BuffChip({ b, onTip }: { b: GameBuff; onTip: (t: Tip | null, ev?: any) => void }) {
   const info = useStatic<AbstateInfo>('abstates', b.id);
   return (
-    <div className={'buff' + (info?.debuff ? ' debuff' : '')} data-end={b.endAt ?? undefined} onMouseMove={e => onTip({ kind: 'buff', id: b.id, endAt: b.endAt }, e)} onMouseLeave={() => onTip(null)}>
+    <div className={'buff' + (info?.debuff ? ' debuff' : '')} data-end={b.endAt ?? undefined}
+      data-dur={b.endAt && b.startAt && b.endAt > b.startAt ? b.endAt - b.startAt : undefined}
+      onMouseMove={e => onTip({ kind: 'buff', id: b.id, endAt: b.endAt }, e)} onMouseLeave={() => onTip(null)}>
       <Icon url={info?.icon} fallback={String(b.id)} />
+      <div className="sweep" />
       <span className="cd-text" />
     </div>
   );
 });
 
-function Buffs({ buffs, onTip }: { buffs: GameState['buffs']; onTip: (t: Tip | null, ev?: any) => void }) {
-  const list = Object.values(buffs);
+/** One row of state icons; it keeps its height when empty so nothing below moves as states come and go. */
+function Buffs({ buffs, onTip, className }: { buffs: GameBuff[]; onTip: (t: Tip | null, ev?: any) => void; className?: string }) {
   return (
-    <div className="buffs">
-      {list.map(b => <BuffChip key={b.id} b={b} onTip={onTip} />)}
-      {!list.length && <span className="muted small">no buffs / debuffs</span>}
+    <div className={'buffs' + (className ? ' ' + className : '')}>
+      {buffs.map(b => <BuffChip key={b.id} b={b} onTip={onTip} />)}
     </div>
   );
+}
+
+function targetOf(s: GameState): GameEnt | undefined {
+  return s.self.target >= 0 ? s.ents[String(s.self.target)] : undefined;
 }
 
 const Slot = memo(function Slot({ itemId, lot, upgrade, label, onTip }: { itemId?: number; lot?: number; upgrade?: number; label?: string; onTip: (t: Tip | null, ev?: any) => void }) {
@@ -340,6 +347,12 @@ function Tooltip({ tip, x, y, offset }: { tip: Tip; x: number; y: number; offset
   return <div ref={ref} className="gtip" style={pos}><TipBody tip={tip} offset={offset} /></div>;
 }
 
+/** A state's name and time left, for the entity tooltip. */
+function BuffName({ b, now }: { b: GameBuff; now: number }) {
+  const ab = useStatic<AbstateInfo>('abstates', b.id);
+  return <div className={ab?.debuff ? 'bad-text' : ''}>{ab?.name ?? `state ${b.id}`}{b.endAt ? <span className="muted"> {Math.max(0, Math.ceil((b.endAt - now) / 1000))} s</span> : null}</div>;
+}
+
 function TipBody({ tip, offset }: { tip: Tip; offset: number }) {
   const item = useStatic<ItemInfo>('items', tip.kind === 'item' ? tip.id : null);
   const skill = useStatic<SkillInfo>('skills', tip.kind === 'skill' ? tip.id : null);
@@ -374,6 +387,7 @@ function TipBody({ tip, offset }: { tip: Tip; offset: number }) {
         <div className="muted">{tip.e.k}{tip.e.id != null ? ` #${tip.e.id}` : ''} · h {tip.h}{mob?.grade ? ` · ${mob.grade}` : ''}{mob?.maxHp ? ` · max HP ${fmtNum(mob.maxHp)}` : ''}</div>
         {tip.e.hpPct != null && <div>HP {tip.e.hpPct}%</div>}
         {tip.e.aggro && <div className="bad-text">aggro on us</div>}{tip.e.ourTarget && <div>our target</div>}{tip.e.dead && <div className="muted">dead</div>}
+        {tip.e.buffs?.length ? <div className="tt-buffs">{tip.e.buffs.map(b => <BuffName key={b.id} b={b} now={now} />)}</div> : null}
       </>);
     default: return <div>{tip.text}</div>;
   }
